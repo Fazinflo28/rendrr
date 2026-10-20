@@ -44,6 +44,9 @@ importers:
       fastify:
         specifier: 5.12.7
         version: 5.12.7
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
       zod:
         specifier: 3.25.76
         version: 3.25.76
@@ -84,10 +87,12 @@ importers:
       '@rendrr/shared':
         specifier: workspace:*
         version: link:../shared
-    devDependencies:
       prisma:
         specifier: 6.19.3
         version: 6.19.3(typescript@5.9.3)
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
 
   packages/shared:
     dependencies:
