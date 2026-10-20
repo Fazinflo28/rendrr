@@ -1,0 +1,28 @@
+{
+  "name": "rendrr",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "engines": { "node": ">=20.9.0" },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "dev:api": "pnpm --filter @rendrr/api dev",
+    "dev:worker": "pnpm --filter @rendrr/worker dev",
+    "dev:mcp": "pnpm --filter @rendrr/mcp dev",
+    "dev:web": "pnpm --filter @rendrr/web dev",
+    "db:generate": "pnpm --filter @rendrr/db generate",
+    "db:migrate": "pnpm --filter @rendrr/db migrate:deploy",
+    "db:seed": "pnpm --filter @rendrr/db seed",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "devDependencies": {
+    "turbo": "2.11.10",
+    "typescript": "5.9.3",
+    "tsx": "4.23.15",
+    "@types/node": "22.15.30"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["@prisma/client", "@prisma/engines", "prisma", "esbuild", "sharp", "puppeteer"]
+  }
+}
