@@ -13,3 +13,4 @@ coverage/
 packages/db/prisma/dev.db*
 apps/web/next-env.d.ts
 .vercel
+assets-out/

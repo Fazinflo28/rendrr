@@ -1,0 +1,381 @@
+// Rendrr database. Field names follow the UI's fake `db` object where it has them.
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  clerkId        String   @unique
+  email          String
+  name           String   @default("")
+  photoKey       String?  // storage key; the API returns a signed URL as `photo`
+  logoKey        String?  // storage key; the API returns a signed URL as `logo`
+  plan           String   @default("Studio")
+  planRenewsAt   DateTime @default(dbgenerated("(now() + interval '30 days')"))
+  credits        Int      @default(0)
+  storageLimitGB Float    @default(100)
+  settings       Json     @default("{\"autoDelete\": true, \"theme\": \"system\"}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  drive       DriveConnection?
+  videos      Video[]
+  folders     Folder[]
+  projects    Project[]
+  styles      Style[]
+  references  Reference[]
+  graphics    Graphic[]
+  reviews     Review[]
+  gallery     GalleryItem[]
+  likes       GalleryLike[]
+  usage       UsageEvent[]
+  aiClients   AiConnection[]
+  renders     Render[]
+}
+
+model DriveConnection {
+  userId       String   @id
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  googleEmail  String
+  refreshToken String   // AES-256-GCM encrypted, never logged
+  scopes       String
+  stub         Boolean  @default(false) // true when Google keys are not set: a fake Drive with sample files
+  connectedAt  DateTime @default(now())
+}
+
+model Video {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  seconds          Float     @default(0)
+  sizeBytes        BigInt    @default(0)
+  orientation      String    @default("Landscape")
+  fps              Float?
+  width            Int?
+  height           Int?
+  hasAudio         Boolean   @default(true)
+  source           String    // drive | local
+  sample           Boolean   @default(false) // built-in sample footage: original kept in our storage
+  driveFileId      String?
+  originalName     String?
+  originalSize     BigInt?
+  sourceKey        String?   // storage key of an original we are allowed to keep (samples only)
+  status           String    // linking | preview | previewing | uploading | paused | processing | ready | failed | missing | expired
+  step             Int?
+  progress         Int?
+  error            String?
+  art              String    @default("a")
+  proxyKey         String?
+  audioKey         String?
+  thumbKey         String?
+  previewSizeBytes BigInt    @default(0)
+  previewExpiresAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  analysis  FootageAnalysis?
+  projects  Project[]
+  originals TempOriginal[]
+
+  @@index([userId, createdAt])
+}
+
+model FootageAnalysis {
+  videoId     String   @id
+  video       Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  transcriber String   // assemblyai | stub
+  transcript  Json     // lines -> words { id, text, t, end, filler }
+  silences    Json     @default("[]")
+  sceneCuts   Json     @default("[]")
+  keyFrames   Json     @default("[]") // [{ t, key }]
+  musicBeats  Json?
+  faces       Json?
+  ocrText     Json?
+  createdAt   DateTime @default(now())
+}
+
+model Folder {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  workspace String
+  cover     Int       @default(1)
+  members   Int       @default(1)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  projects  Project[]
+  reviews   Review[]
+
+  @@index([userId])
+}
+
+model Project {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folderId       String
+  folder         Folder    @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  videoId        String
+  video          Video     @relation(fields: [videoId], references: [id], onDelete: Restrict)
+  styleId        String
+  name           String
+  status         String    @default("Draft")
+  aspect         String    @default("16:9")
+  timeline       Json
+  currentVersion Int       @default(1)
+  art            String    @default("a")
+  sizeBytes      BigInt    @default(0)
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  versions  ProjectVersion[]
+  aiActions AiAction[]
+  renders   Render[]
+  originals TempOriginal[]
+  reviews   Review[]
+  gallery   GalleryItem[]
+
+  @@index([userId, updatedAt])
+  @@index([folderId])
+}
+
+model ProjectVersion {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  v         Int
+  note      String
+  timeline  Json     // snapshot: { timeline, name, aspect, styleId }
+  createdBy String   // user | claude | chatgpt | rendrr
+  sealed    Boolean  @default(false) // rendered, shared or followed by an AI change: never edited in place again
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, v])
+}
+
+model AiAction {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId        String
+  ai            String   // display name: Claude, ChatGPT, Rendrr
+  text          String
+  toolName      String
+  input         Json
+  beforeVersion Int
+  afterVersion  Int
+  undone        Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([projectId, createdAt])
+}
+
+model Style {
+  id          String   @id
+  ownerId     String?  // null = built in
+  owner       User?    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  type        String
+  vibe        String
+  ori         String[]
+  platforms   String[]
+  captionLook String
+  cutPace     String
+  captionRule String
+  zoomRules   String
+  musicVibe   String
+  rules       Json
+  art         String
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+model Reference {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  recipe    Json
+  keyFrames Json     @default("[]")
+  createdAt DateTime @default(now())
+}
+
+model Graphic {
+  id           String   @id @default(cuid())
+  ownerId      String?  // null = built-in template
+  owner        User?    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name         String
+  kind         String   // template | custom
+  paramsSchema Json     @default("{}")
+  code         String?  // custom only
+  renderedKey  String?
+  checkFrames  Json     @default("[]")
+  durationSec  Float
+  width        Int      @default(1080)
+  height       Int      @default(1920)
+  transparent  Boolean  @default(true)
+  status       String   @default("ready") // queued | rendering | ready | failed
+  error        String?
+  attempts     Int      @default(0)
+  createdAt    DateTime @default(now())
+}
+
+model Render {
+  id         String    @id @default(cuid())
+  projectId  String
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind       String    // preview | final
+  version    Int
+  status     String    @default("queued") // queued | running | done | failed
+  steps      Json      @default("[]")
+  step       Int       @default(0)
+  progress   Int       @default(0)
+  outputKey  String?
+  framesKeys Json      @default("[]")
+  sizeBytes  BigInt    @default(0)
+  seconds    Float     @default(0)
+  quality    String?
+  error      String?
+  errorCode  String?
+  plan       Json?
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([userId, kind])
+}
+
+model TempOriginal {
+  id        String    @id @default(cuid())
+  projectId String
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  videoId   String
+  video     Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  key       String
+  uploadId  String?
+  sizeBytes BigInt
+  completed Boolean   @default(false)
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+}
+
+model Review {
+  token         String          @id
+  userId        String
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId     String?
+  project       Project?        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  folderId      String?
+  folder        Folder?         @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  version       Int             @default(1)
+  passwordHash  String?
+  expiresAt     DateTime?
+  expiresLabel  String          @default("No expiry")
+  allowDownload Boolean         @default(false)
+  showLogo      Boolean         @default(true)
+  views         Int             @default(0)
+  approved      Boolean         @default(false)
+  createdAt     DateTime        @default(now())
+  comments      ReviewComment[]
+
+  @@index([userId])
+}
+
+model ReviewComment {
+  id          String   @id @default(cuid())
+  reviewToken String
+  review      Review   @relation(fields: [reviewToken], references: [token], onDelete: Cascade)
+  projectId   String?
+  time        Float    @default(0)
+  text        String
+  author      String   @default("Client")
+  resolved    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([reviewToken])
+  @@index([projectId])
+}
+
+model GalleryItem {
+  id            String        @id @default(cuid())
+  projectId     String?
+  project       Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  author        String
+  title         String
+  styleId       String
+  ori           String
+  platforms     String[]
+  likes         Int           @default(0)
+  views         Int           @default(0)
+  recreates     Int           @default(0)
+  allowRecreate Boolean       @default(true)
+  recipe        Json          @default("{}")
+  createdAt     DateTime      @default(now())
+  likedBy       GalleryLike[]
+}
+
+model GalleryLike {
+  galleryItemId String
+  item          GalleryItem @relation(fields: [galleryItemId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now())
+
+  @@id([galleryItemId, userId])
+}
+
+model UsageEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String   // render_preview | render_final | video_edited | job
+  amount    Float    @default(0) // minutes for renders
+  meta      Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model JobLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  queue      String
+  jobId      String
+  name       String
+  event      String   // start | finish | fail
+  durationMs Int?
+  error      String?
+  meta       Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([queue, createdAt])
+}
+
+model AiConnection {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client     String    // claude | chatgpt | other
+  clientName String    @default("")
+  lastSeenAt DateTime  @default(now())
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@unique([userId, client])
+}
