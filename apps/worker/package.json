@@ -1,0 +1,19 @@
+{
+  "name": "@rendrr/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --env-file=../../.env src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@rendrr/core": "workspace:*",
+    "@rendrr/db": "workspace:*",
+    "@rendrr/shared": "workspace:*",
+    "bullmq": "5.81.5",
+    "puppeteer-core": "24.43.1",
+    "tsx": "4.23.15"
+  }
+}

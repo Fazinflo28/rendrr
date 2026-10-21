@@ -19,7 +19,18 @@ export class AssemblyAI implements Transcriber {
     if (!r.ok) throw new TranscriptionError(`Transcription service said: ${(body as { error?: string }).error || r.statusText}`);
     return body as Record<string, unknown>;
   }
+  /** Local storage is not reachable from the internet: send the bytes instead of a link. */
+  private async reachableUrl(audioUrl: string, signal?: AbortSignal) {
+    if (!/^https?:\/\/(127\.|localhost|10\.|192\.168\.|\[?::1)/.test(audioUrl)) return audioUrl;
+    const audio = await fetch(audioUrl, { signal });
+    if (!audio.ok) throw new TranscriptionError("We could not read the audio for transcription.");
+    const r = await fetch("https://api.assemblyai.com/v2/upload", { method: "POST", headers: { authorization: this.key, "content-type": "application/octet-stream" }, body: Buffer.from(await audio.arrayBuffer()), signal });
+    const j = (await r.json().catch(() => ({}))) as { upload_url?: string };
+    if (!r.ok || !j.upload_url) throw new TranscriptionError("We could not send the audio for transcription.");
+    return j.upload_url;
+  }
   async transcribe(audioUrl: string, opts: { language?: string; signal?: AbortSignal } = {}) {
+    audioUrl = await this.reachableUrl(audioUrl, opts.signal);
     const created = await this.call("/v2/transcript", {
       method: "POST",
       // Universal-2 with word timestamps; disfluencies keeps "um" and "uh" so filler removal works.
