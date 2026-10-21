@@ -110,11 +110,18 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
   return result;
 }
 
-/** Puts a project back to an earlier version, as a new version (nothing is ever lost). */
-export async function restoreVersion(projectId: string, v: number, actor: ChangeActor, note?: string) {
+/**
+ * Puts a project back to an earlier version, as a new version (nothing is ever lost). `keepName` keeps the edit's
+ * current name (a manual "Restore this version" is about the edit, not its title); undoing an AI action restores all.
+ */
+export async function restoreVersion(projectId: string, v: number, actor: ChangeActor, note?: string, opts: { keepName?: boolean } = {}) {
   const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v } } });
   if (!ver) throw notFound(`Version ${v} does not exist.`);
-  const snap = ver.timeline as unknown as Snapshot;
+  let snap = ver.timeline as unknown as Snapshot;
+  if (opts.keepName) {
+    const p = await prisma.project.findUnique({ where: { id: projectId }, select: { name: true } });
+    if (p) snap = { ...snap, name: p.name };
+  }
   return applyTimelineChange(projectId, { op: "restore_snapshot", snapshot: snap, note: note || `restored version ${v}` }, actor);
 }
 

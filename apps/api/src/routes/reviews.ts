@@ -146,10 +146,14 @@ export default async function reviews(app: FastifyInstance) {
       await prisma.review.update({ where: { token: r.token }, data: { views: { increment: 1 } } });
       return fullReview({ ...r, views: r.views + 1 });
     });
+    // ?v=N asks for one version of a single-edit review: if it was never rendered, a preview is made now
+    // (the page shows "Rendering the preview…" and asks again until it is there).
     pub.get("/public/reviews/:token/media", async (req) => {
       const r = await publicReview((req.params as { token: string }).token);
       if (!unlocked(req, r)) throw new AppError("This review is locked.", 401, "locked");
       const ctx = await reviewContext(r);
+      const v = Number((req.query as { v?: string }).v);
+      if (ctx.project && Number.isInteger(v) && v >= 1 && v <= r.version) await ensureRendered(r.userId, [ctx.project], v);
       return reviewMedia(r, ctx.project ? [ctx.project] : ctx.items);
     });
     // Password guesses: 10 a minute per address (the rest of the review page allows 90).

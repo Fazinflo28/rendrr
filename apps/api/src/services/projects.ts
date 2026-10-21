@@ -99,3 +99,16 @@ export async function purgeProjectFiles(where: Prisma.ProjectWhereInput) {
   for (const o of originals) if (!o.completed && o.uploadId) await abortMultipart(o.key, o.uploadId);
   await deleteObjects(originals.map((o) => o.key));
 }
+
+/** Edits made before the output length was stored show no length; fill it in once (best effort, at start). */
+export async function backfillOutputSeconds() {
+  const ps = await prisma.project.findMany({ where: { outputSeconds: 0, deletedAt: null }, take: 500, include: { video: { include: { analysis: true } } } });
+  for (const p of ps) {
+    try {
+      const tr = (p.video.analysis?.transcript as unknown as Transcript) || [];
+      const secs = Math.round(outputDuration(p.timeline as unknown as Snapshot["timeline"], allWords(tr)) * 100) / 100;
+      if (secs > 0) await prisma.project.update({ where: { id: p.id }, data: { outputSeconds: secs } });
+    } catch { /* a broken old timeline keeps showing no length */ }
+  }
+  return ps.length;
+}

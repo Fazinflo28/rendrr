@@ -281,7 +281,7 @@ export const api: any = {
   },
   listFoldersLite: () => get("/folders?lite=1"),
   getReview: (t: string) => get(`/public/reviews/${enc(t)}`, { auth: false, headers: reviewHeaders(t) }),
-  getReviewMedia: (t: string) => get(`/public/reviews/${enc(t)}/media`, { auth: false, headers: reviewHeaders(t) }),
+  getReviewMedia: (t: string, v?: number) => get(`/public/reviews/${enc(t)}/media${v ? `?v=${v}` : ""}`, { auth: false, headers: reviewHeaders(t) }),
   checkReviewPassword: async (t: string, pw: string) => {
     const r = await post(`/public/reviews/${enc(t)}/unlock`, { password: pw || "" }, { auth: false });
     try { sessionStorage.setItem("rendrr-review-" + t, r.key); } catch { /* private mode: unlock lasts this page only */ }

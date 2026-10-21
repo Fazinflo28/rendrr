@@ -83,7 +83,8 @@ export default async function account(app: FastifyInstance) {
       return {
         renderMinutes: Math.round((minutes._sum.amount || 0) * 10) / 10, videosEdited: finalsThisMonth.length, plan: u.plan,
         planRenew: fmtShortDate(u.planRenewsAt), previewsGB, finalsGB, storageTotalGB: u.storageLimitGB,
-        storageUsedGB: Math.round((previewsGB + finalsGB) * 10) / 10,
+        // One decimal like the UI, but two below 1 GB so it matches the breakdown shown next to it.
+        storageUsedGB: previewsGB + finalsGB < 1 ? Math.round((previewsGB + finalsGB) * 100) / 100 : Math.round((previewsGB + finalsGB) * 10) / 10,
       };
     });
 

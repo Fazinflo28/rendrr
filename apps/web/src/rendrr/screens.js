@@ -483,6 +483,15 @@ function ClientReviewPage({ token }) {
   const pb = usePlayback(dur);
   // Video links last 10 minutes: fetch fresh ones when the browser says one stopped working.
   const refreshMedia = async () => { try { const m = await api.getReviewMedia(token); q.setData((d) => (d ? { ...d, media: m } : d)); } catch { /* keep the old one */ } };
+  // Nothing to play yet (a version never rendered, or a render still going): ask for it, then look again every 5 s.
+  useEffect(() => {
+    if (!r || r.locked || clip || !itemId) return;
+    let on = true, n = 0;
+    const tick = async () => { try { const m = await api.getReviewMedia(token, r.folder ? undefined : version); if (on) q.setData((d) => (d ? { ...d, media: m } : d)); } catch { /* try again */ } };
+    tick();
+    const t = setInterval(() => { if (++n > 60) clearInterval(t); else tick(); }, 5000);
+    return () => { on = false; clearInterval(t); };
+  }, [r?.token, r?.locked, itemId, version, !!clip]);
   const unlock = async (e) => { e.preventDefault(); setPwBusy(true); setPwErr(null); try { await api.checkReviewPassword(token, pw); setUnlocked(true); q.reload(); } catch (er) { setPwErr(er.message); } finally { setPwBusy(false); } };
   const openCompose = () => { pb.setPlaying(false); setCompose(pb.time); setText(""); };
   const send = async () => { if (!text.trim()) return; setBusy("comment"); try { const c = await api.addReviewComment(token, { time: compose, text, projectId: r?.folder ? itemId : undefined }); q.setData((d) => ({ ...d, comments: [...d.comments, c] })); setCompose(null); toast("Comment added at " + fmtTime(compose), { icon: "check", tone: "brand" }); } catch (e) { toast(e.message); } finally { setBusy(""); } };

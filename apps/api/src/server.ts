@@ -9,6 +9,7 @@ import library from "./routes/library";
 import projects from "./routes/projects";
 import render from "./routes/render";
 import reviews from "./routes/reviews";
+import { backfillOutputSeconds } from "./services/projects";
 
 export async function buildServer() {
   const e = env();
@@ -83,10 +84,12 @@ export async function buildServer() {
   app.get("/", async () => ({ service: "rendrr-api", health: "/health" }));
 
   // Storage must accept uploads from the web app (preview copies, originals for export). Best effort.
-  const corsOrigins = [...origins, "http://localhost:3000"];
-  ensureBucketCors([...corsOrigins, "https://*.vercel.app"])
+  const corsOrigins = Array.from(new Set([...origins, "http://localhost:3000"]));
+  ensureBucketCors([...corsOrigins, "https://*.vercel.app", "http://localhost:*", "http://127.0.0.1:*"])
     .catch(() => ensureBucketCors(corsOrigins)) // some stores refuse wildcard origins
     .then(() => app.log.info({ origins: corsOrigins }, "bucket CORS set"), (e) => app.log.warn({ msg: (e as Error).message }, "could not set bucket CORS: browser uploads will fail"));
+
+  backfillOutputSeconds().catch(() => {});
 
   await app.register(account);
   await app.register(library);

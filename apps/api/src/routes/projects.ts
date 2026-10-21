@@ -125,7 +125,7 @@ export default async function projects(app: FastifyInstance) {
     const { id, v } = req.params as { id: string; v: string };
     await getOwnedProject(req.user!.id, id);
     if (!/^\d{1,9}$/.test(v)) throw notFound(`Version ${v.slice(0, 20)} does not exist.`);
-    const r = await restoreVersion(id, Number(v), { kind: "user", userId: req.user!.id }, `Restored V${v}`);
+    const r = await restoreVersion(id, Number(v), { kind: "user", userId: req.user!.id }, `Restored V${v}`, { keepName: true });
     return { ok: true, version: r.version };
   });
 
