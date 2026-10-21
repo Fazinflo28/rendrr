@@ -1,7 +1,7 @@
 import {
   AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObjectCommand, CreateMultipartUploadCommand,
   DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command,
-  PutObjectCommand, S3Client, UploadPartCommand,
+  PutBucketCorsCommand, PutObjectCommand, S3Client, UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -117,4 +117,11 @@ export async function abortMultipart(key: string, uploadId: string) {
 export function contentTypeFor(key: string): string {
   const ext = key.split(".").pop()?.toLowerCase();
   return ({ mp4: "video/mp4", m4a: "audio/mp4", webm: "video/webm", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", json: "application/json", mov: "video/quicktime", wav: "audio/wav" } as Record<string, string>)[ext || ""] || "application/octet-stream";
+}
+
+/** Browsers upload previews and originals straight to storage, so the bucket must allow the web app's origin. */
+export async function ensureBucketCors(origins: string[]) {
+  await s3().send(new PutBucketCorsCommand({ Bucket: Bucket(), CORSConfiguration: { CORSRules: [{
+    AllowedOrigins: origins, AllowedMethods: ["GET", "PUT", "HEAD"], AllowedHeaders: ["*"], ExposeHeaders: ["ETag", "Content-Length", "Content-Range"], MaxAgeSeconds: 3600,
+  }] } }));
 }

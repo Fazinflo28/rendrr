@@ -1,6 +1,6 @@
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  applyOp, EditError, GRAPHIC_TEMPLATES, StyleRulesSchema, TimelineSchema,
+  allWords, applyOp, EditError, GRAPHIC_TEMPLATES, outputDuration, StyleRulesSchema, TimelineSchema,
   type Actor, type EditContext, type Op, type Silence, type Snapshot, type StyleLite, type Timeline, type Transcript,
 } from "@rendrr/shared";
 import { AppError, notFound } from "./errors";
@@ -93,7 +93,8 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
     }
     await tx.project.update({
       where: { id: projectId },
-      data: { timeline: out.snap.timeline as unknown as Prisma.InputJsonValue, name: out.snap.name, aspect: out.snap.aspect, styleId: out.snap.styleId, currentVersion: v, status: p.status === "Rendering" ? p.status : p.status },
+      data: { timeline: out.snap.timeline as unknown as Prisma.InputJsonValue, name: out.snap.name, aspect: out.snap.aspect, styleId: out.snap.styleId, currentVersion: v,
+        outputSeconds: Math.round(outputDuration(out.snap.timeline, allWords(ctx.transcript)) * 100) / 100 },
     });
     if (actor.kind !== "user") {
       await tx.aiAction.create({

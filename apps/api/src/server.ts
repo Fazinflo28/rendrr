@@ -1,6 +1,6 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import { env, redis, toFriendly } from "@rendrr/core";
+import { ensureBucketCors, env, redis, toFriendly } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import Fastify from "fastify";
 import account from "./routes/account";
@@ -58,6 +58,9 @@ export async function buildServer() {
     return { ok: db === "ok" && rd === "ok", db, redis: rd, service: "rendrr-api", commit: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || null, time: new Date().toISOString() };
   });
   app.get("/", async () => ({ service: "rendrr-api", health: "/health" }));
+
+  // Storage must accept uploads from the web app (preview copies, originals for export). Best effort.
+  ensureBucketCors([...origins, "https://*.vercel.app", "http://localhost:3000"]).then(() => app.log.info("bucket CORS set"), (e) => app.log.warn({ msg: (e as Error).message }, "could not set bucket CORS"));
 
   await app.register(account);
   await app.register(library);

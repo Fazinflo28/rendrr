@@ -131,6 +131,7 @@ model Project {
   aspect         String    @default("16:9")
   timeline       Json
   currentVersion Int       @default(1)
+  outputSeconds  Float     @default(0) // length of the edited output, kept current by applyTimelineChange
   art            String    @default("a")
   sizeBytes      BigInt    @default(0)
   deletedAt      DateTime?

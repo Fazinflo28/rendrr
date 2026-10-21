@@ -39,7 +39,7 @@ export function folderOut(f: Folder, extra: { count?: number; shares?: number } 
 }
 
 export function projectOut(p: Project) {
-  return { id: p.id, folderId: p.folderId, name: p.name, videoId: p.videoId, styleId: p.styleId, status: p.status, aspect: p.aspect, updated: p.updatedAt.getTime(), version: p.currentVersion, art: p.art, size: fmtSize(p.sizeBytes) };
+  return { id: p.id, folderId: p.folderId, name: p.name, videoId: p.videoId, styleId: p.styleId, status: p.status, aspect: p.aspect, updated: p.updatedAt.getTime(), version: p.currentVersion, art: p.art, size: fmtSize(p.sizeBytes), seconds: p.outputSeconds || null };
 }
 
 export function commentOut(c: ReviewComment) {

@@ -1,6 +1,6 @@
 import { AppError, applyTimelineChange, notFound, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { aspectFor, buildInitialTimeline, DEFAULT_STYLE_ID, type Snapshot, type Transcript } from "@rendrr/shared";
+import { allWords, aspectFor, buildInitialTimeline, DEFAULT_STYLE_ID, outputDuration, type Snapshot, type Transcript } from "@rendrr/shared";
 import { activityOut, commentOut, folderOut, projectOut, styleOut, videoOut } from "../serialize";
 
 export async function defaultFolderId(userId: string, name?: string): Promise<string> {
@@ -42,17 +42,13 @@ export async function createProject(userId: string, input: { videoId: string; st
   const p = await prisma.project.create({
     data: {
       userId, folderId, videoId: v.id, styleId, name, aspect, status: "Draft", art: v.art,
-      timeline: timeline as unknown as Prisma.InputJsonValue, currentVersion: 1,
+      timeline: timeline as unknown as Prisma.InputJsonValue, currentVersion: 1, outputSeconds: Math.round(outputDuration(timeline, allWords(transcript)) * 100) / 100,
       versions: { create: { v: 1, note: input.cut?.length ? `First cut (${input.cut.length} words removed)` : "Footage as recorded", timeline: snap as unknown as Prisma.InputJsonValue, createdBy: opts.actorKind || "user", sealed: true } },
     },
   });
   await prisma.folder.update({ where: { id: folderId }, data: { updatedAt: new Date() } });
   if (opts.autoStyle) await applyTimelineChange(p.id, { op: "apply_style", styleId }, { kind: "rendrr", userId, toolName: "apply_style", input: { styleId } });
   return prisma.project.findUniqueOrThrow({ where: { id: p.id } });
-}
-
-export async function projectListItem(p: Project & { style?: unknown; video?: unknown; folder?: unknown }) {
-  return p;
 }
 
 export async function listProjects(userId: string) {
