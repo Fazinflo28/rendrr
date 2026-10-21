@@ -31,7 +31,11 @@ GAPS=(0.4 0.35 1.4 0.3 0.6 0.35 0.5 1.4 0.3 0.45 0.6 0.4)
 : > "$T/list.txt"
 for i in "${!LINES[@]}"; do
   $FF -f lavfi -i "anullsrc=r=48000:cl=mono" -t "${GAPS[$i]}" -c:a pcm_s16le "$T/gap$i.wav"
-  $FF -f lavfi -i "flite=text='${LINES[$i]}':voice=slt" -af "aresample=48000,atempo=1.08,volume=1.6" -ac 1 -c:a pcm_s16le "$T/l$i.wav"
+  if ffmpeg -hide_banner -filters 2>/dev/null | grep -q " flite "; then
+    $FF -f lavfi -i "flite=text='${LINES[$i]}':voice=slt" -af "aresample=48000,atempo=1.08,volume=1.6" -ac 1 -c:a pcm_s16le "$T/l$i.wav"
+  else
+    espeak-ng -s 165 -w "$T/raw$i.wav" "${LINES[$i]}" && $FF -i "$T/raw$i.wav" -af "aresample=48000,volume=1.4" -ac 1 -c:a pcm_s16le "$T/l$i.wav"
+  fi
   echo "file '$T/gap$i.wav'" >> "$T/list.txt"; echo "file '$T/l$i.wav'" >> "$T/list.txt"
 done
 $FF -f lavfi -i "anullsrc=r=48000:cl=mono" -t 1.2 -c:a pcm_s16le "$T/tail.wav"; echo "file '$T/tail.wav'" >> "$T/list.txt"
