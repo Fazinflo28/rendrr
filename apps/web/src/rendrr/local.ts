@@ -143,13 +143,16 @@ function put(url: string, body: Blob, contentType: string | null, onLoaded: (n: 
   });
 }
 
+// At most one progress report per interval, and progress within a stage never goes backwards.
 function throttle(fn: (status: string, pct: number) => Promise<unknown>, ms = 1200) {
-  let last = 0;
+  let last = 0, stage = "", best = 0;
   return (status: string, pct: number, force = false) => {
+    if (status !== stage) { stage = status; best = 0; }
+    best = Math.max(best, Math.round(pct));
     const now = Date.now();
     if (!force && now - last < ms) return;
     last = now;
-    fn(status, Math.round(pct)).catch(() => {});
+    fn(status, best).catch(() => {});
   };
 }
 
