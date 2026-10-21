@@ -18,7 +18,7 @@ export function s3(): S3Client {
   const e = env();
   client = new S3Client({
     endpoint: e.S3_ENDPOINT,
-    region: e.S3_REGION === "auto" ? "us-east-1" : e.S3_REGION,
+    region: e.S3_REGION || "auto", // R2 and Railway Buckets expect "auto"; AWS and MinIO take a real region
     forcePathStyle: e.S3_FORCE_PATH_STYLE === "true",
     credentials: { accessKeyId: e.S3_ACCESS_KEY_ID, secretAccessKey: e.S3_SECRET_ACCESS_KEY },
     requestChecksumCalculation: "WHEN_REQUIRED",
