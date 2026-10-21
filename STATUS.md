@@ -34,6 +34,16 @@ The web app now uses `ui/rendrr-ui-v2.html`, wired to the real backend:
 - **Billing** page: plans, card and invoices (payments are not switched on yet, see below).
 - **Final ready** popup: Save to this computer, or Save to Google Drive.
 
+### Phones and tablets
+
+Under 1024px wide the app has its own touch layout (the desktop design above that is unchanged): the top bar wraps with the categories scrolling underneath, a bottom tab bar (Explore, Projects, Add, Library, Account) when logged in, dialogs and the login window as bottom sheets, one- or two-column grids, and an editor that stacks the player, the Comments/AI/Style/Transcript panel and the timeline. Checked on every screen at 360px, 390px, 820px and 1440px wide.
+
+### Preview without the backend
+
+A clickable preview of the whole UI runs in the browser with the design's demo data (no server, no real login): https://claude.ai/artifact/KduyKRPmudMLzg9L7fBZF5 (private to you until you share it from its Share menu). Rebuild it with `pnpm --filter @rendrr/web preview:build`.
+
+In the preview you can log in with any email and password, browse Explore and the categories, add footage (sample, the fake Drive, or a video from your phone or computer, which then plays in the editor), make an edit, cut words, leave notes, use the AI chat (canned replies), render a final, share a review link and open the client page, publish to the gallery, and change plan or settings. Nothing is saved: a reload starts fresh. Downloads and "Save image" do nothing inside the preview window.
+
 ## 2. What works end to end
 
 Checked tonight on a full local copy of the system (Postgres, Redis, S3-compatible storage, real Clerk login, real AssemblyAI), and again **from the exact Docker images Railway will build**:
@@ -81,6 +91,7 @@ To try the AI: in Claude, Settings → Connectors → Add custom connector → `
 
 | Change | Why |
 |---|---|
+| Phone and tablet layout (bottom tab bar, bottom sheets, stacked editor) | The design was desktop only; on a phone it was shrunk to a tiny page |
 | Explore shows example videos posted by "Rendrr" instead of the design's invented creators, likes and views | No made-up people or numbers in a real app |
 | Billing: "No card on file. Payments are not switched on yet…", "No invoices yet.", PDF button only for a real invoice | Payments are stubbed |
 | The editor's AI chat is real Claude; without a key it says what to set | The design's chat gave canned replies |
@@ -126,7 +137,6 @@ Three reviews (API, worker/render, web app) plus tests in the real Docker images
 ## Known limits (not blocking a test)
 
 From the new design itself (kept as designed):
-- It is a desktop layout. On a phone or a narrow window the whole page is shrunk to fit, so text gets small.
 - `/styles` opens the Clipping wall; style packs are picked when you make an edit.
 - There is no "Render preview" button: the player shows every change live, and "Render final" makes the video. (The AI connector can still render previews.)
 - The dark look is the only theme.
