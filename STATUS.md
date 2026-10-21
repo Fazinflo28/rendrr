@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 21 October 2026, morning (UTC).
+Last updated: 21 October 2026, afternoon (UTC). The app now uses the new design (V2).
 
 ## 1. Links
 
@@ -13,14 +13,26 @@ Last updated: 21 October 2026, morning (UTC).
 The Railway project `rendrr` is fully set up: Postgres, Redis, a private file bucket, the four services (`web`, `api`, `worker`, `mcp`), their settings, domains and health checks, all in **US East** next to the bucket.
 What is missing is the code: Railway is not allowed to read the GitHub repo yet, so nothing has been built there.
 
-### One thing you need to do
+### What you need to do
 
 1. Open https://github.com/settings/installations.
 2. Find **Railway** and press **Configure**.
 3. Under "Repository access", add **rendrr** (or pick "All repositories") and **Save**.
-4. Tell me (or any Claude session with the Railway connector) "Railway can see the repo now". The four services then get connected to the branch `claude/rendrr-backend-mcp-1vbkgg` and build by themselves (about 5 minutes). Every later push redeploys automatically.
+4. In claude.ai → Settings → Connectors, reconnect **Railway** (it asked to log in again on 21 October).
+5. Tell me (or any Claude session with the Railway connector) "Railway can see the repo now". The four services then get connected to the branch `claude/rendrr-backend-mcp-1vbkgg` and build by themselves (about 5 minutes). Every later push redeploys automatically.
 
 If you prefer to do it yourself in the Railway dashboard: for each of `api`, `worker`, `mcp`, `web` → Settings → Source → Connect repo `Fazinflo28/rendrr`, branch `claude/rendrr-backend-mcp-1vbkgg`. The Dockerfile paths and everything else are already set.
+
+## New design (V2)
+
+The web app now uses `ui/rendrr-ui-v2.html`, wired to the real backend:
+
+- **Explore** (the new start page), **Create** pages per category (Clipping, Talking head, Ads, …) and **Styles** work without logging in. Liking, recreating, adding footage or using a style opens the login window first, then carries on.
+- Explore starts with **example videos posted by Rendrr** (two per style). Real videos appear once you publish edits.
+- **Editor**: the new AI tab is a chat. You type a change, Claude makes it with the same editing tools as the AI connector, and shows the steps it took. Every change is a new version you can undo. Changes made through the Claude or ChatGPT connector show up in the same thread.
+- **Editor notes**: leave a note at any moment of the video; it sits next to your client's review comments.
+- **Billing** page: plans, card and invoices (payments are not switched on yet, see below).
+- **Final ready** popup: Save to this computer, or Save to Google Drive.
 
 ## 2. What works end to end
 
@@ -42,11 +54,15 @@ Checked tonight on a full local copy of the system (Postgres, Redis, S3-compatib
 | Stub | What happens now | Key that unblocks it | Where it goes |
 |---|---|---|---|
 | Google Drive | A fake Drive shows the UI's demo folders, backed by the built-in sample videos | `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (Google Cloud → OAuth client, Drive API on, redirect URI `https://api-production-2428.up.railway.app/drive/callback`) | Railway → `api` and `worker` → Variables |
-| Billing | Everyone is on the Studio plan, 100 GB, no render limits | `STRIPE_SECRET_KEY` (plus product setup, not built yet) | Railway → `api` |
+| Billing | The Billing page shows Free / Pro / Studio. Switching changes the plan name and storage figure only; there is no card, no invoices and no limits | `STRIPE_SECRET_KEY` (plus product setup, not built yet) | Railway → `api` |
+| Editor AI chat | Replies that it needs a key, and points to the Connect AI page | `ANTHROPIC_API_KEY` (console.anthropic.com → API keys). Optional: `AI_CHAT_EFFORT` = low, medium (default), high | Railway → `api` |
+| Save final to Google Drive | Says it is not switched on yet; Save to this computer works | Same Google keys as Drive (above) | Railway → `api` |
 | Transcription | **Real** (your AssemblyAI key is set). Without a key every video would get the sample transcript | `ASSEMBLYAI_API_KEY` | already set on `api` and `worker` |
 | Login | **Real** Clerk (development instance `mature-joey-7879`; Google login uses Clerk's shared test credentials) | For a public launch: a Clerk production instance and your own Google OAuth app | Railway → `api`, `mcp`, `web` |
 
 Keys live only in Railway's settings and in a local `.env` that is never committed.
+
+With `ANTHROPIC_API_KEY` set, the chat uses Claude Opus 5.5. If Claude's safety filter declines a request, Anthropic automatically retries it on its recommended fallback model ("server-side fallbacks"), so the chat answers instead of failing.
 
 ## 4. The one command to test it
 
@@ -64,6 +80,13 @@ To try the AI: in Claude, Settings → Connectors → Add custom connector → `
 
 | Change | Why |
 |---|---|
+| Explore shows example videos posted by "Rendrr" instead of the design's invented creators, likes and views | No made-up people or numbers in a real app |
+| Billing: "No card on file. Payments are not switched on yet…", "No invoices yet.", PDF button only for a real invoice | Payments are stubbed |
+| The editor's AI chat is real Claude; without a key it says what to set | The design's chat gave canned replies |
+| Changes made through the Claude/ChatGPT connector appear in the editor's AI thread | So you see in the editor what an outside AI changed |
+| The hint on "Preview up to date" now says the player shows changes live and a preview render burns in captions, zooms and music | Previews are not rendered after every change |
+| "Save to Google Drive" says it is not switched on until the Google keys are set | Drive is the fake Drive for now |
+| Logging in with Google and logging out land on Explore | Explore is the new start page |
 | Connect page: the sentence about a private URL now says it is one URL for everyone with a login | The connector uses OAuth (Phase 0 answer) |
 | "720p preview" text now says 540p | Previews render at 540p (Phase 0 answer) |
 | Password reset gained a "code + new password" step | Clerk sends a code by email; the fake API had no real reset |
@@ -74,7 +97,7 @@ To try the AI: in Claude, Settings → Connectors → Add custom connector → `
 | Retry on footage from your computer asks for the file again | The browser forgets the file after a reload; without it Retry hung |
 | The client review page makes a preview for a version that was never rendered | Otherwise picking that version showed "Rendering…" forever |
 
-Everything else is the UI from `ui/rendrr-ui.html`, wired to the real API.
+Everything else is the UI from `ui/rendrr-ui-v2.html`, wired to the real API. (The old design stays in `ui/rendrr-ui.html` for reference.)
 
 ## Bugs found and fixed tonight
 
