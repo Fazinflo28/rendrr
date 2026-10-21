@@ -28,19 +28,25 @@ LINES=(
 "and now the AI does the first draft for us"
 )
 GAPS=(0.4 0.35 1.4 0.3 0.6 0.35 0.5 1.4 0.3 0.45 0.6 0.4)
+# Read the filter list once into a variable: piping it into "grep -q" fails under pipefail (SIGPIPE).
+FILTERS="$(ffmpeg -hide_banner -filters 2>/dev/null || true)"
+HAS_FLITE=0; grep -q " flite " <<<"$FILTERS" && HAS_FLITE=1
+if [ "$HAS_FLITE" = 0 ] && ! command -v espeak-ng >/dev/null; then echo "make-assets: no speech engine (FFmpeg flite or espeak-ng)" >&2; exit 1; fi
 : > "$T/list.txt"
 for i in "${!LINES[@]}"; do
   $FF -f lavfi -i "anullsrc=r=48000:cl=mono" -t "${GAPS[$i]}" -c:a pcm_s16le "$T/gap$i.wav"
-  if ffmpeg -hide_banner -filters 2>/dev/null | grep -q " flite "; then
+  if [ "$HAS_FLITE" = 1 ]; then
     $FF -f lavfi -i "flite=text='${LINES[$i]}':voice=slt" -af "aresample=48000,atempo=1.08,volume=1.6" -ac 1 -c:a pcm_s16le "$T/l$i.wav"
   else
     espeak-ng -s 165 -w "$T/raw$i.wav" "${LINES[$i]}" && $FF -i "$T/raw$i.wav" -af "aresample=48000,volume=1.4" -ac 1 -c:a pcm_s16le "$T/l$i.wav"
   fi
+  [ -s "$T/l$i.wav" ] || { echo "make-assets: speech line $i was not generated" >&2; exit 1; }
   echo "file '$T/gap$i.wav'" >> "$T/list.txt"; echo "file '$T/l$i.wav'" >> "$T/list.txt"
 done
 $FF -f lavfi -i "anullsrc=r=48000:cl=mono" -t 1.2 -c:a pcm_s16le "$T/tail.wav"; echo "file '$T/tail.wav'" >> "$T/list.txt"
 $FF -f concat -safe 0 -i "$T/list.txt" -c:a pcm_s16le "$T/speech.wav"
 DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$T/speech.wav")
+awk -v d="$DUR" 'BEGIN { exit !(d > 20) }' || { echo "make-assets: speech track is only ${DUR}s" >&2; exit 1; }
 
 # ---------- picture: a simple presenter silhouette on two backdrops (gives scene cuts) ----------
 mkpic() { # $1 out $2 w $3 h $4 bg-r $5 bg-g $6 bg-b
