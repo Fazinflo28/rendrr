@@ -59,6 +59,10 @@ importers:
       zod:
         specifier: 3.25.76
         version: 3.25.76
+    devDependencies:
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
 
   apps/mcp:
     dependencies:

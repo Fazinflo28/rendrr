@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/server.ts",
     "start": "tsx src/server.ts",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "vercel-build": "pnpm --filter @rendrr/db exec prisma generate && pnpm --filter @rendrr/db exec prisma migrate deploy && pnpm --filter @rendrr/db exec tsx src/seed.ts && node vercel-build.mjs"
   },
   "dependencies": {
     "@clerk/backend": "3.26.0",
@@ -19,5 +20,8 @@
     "zod": "3.25.76",
     "tsx": "4.23.15",
     "bullmq": "5.81.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }
