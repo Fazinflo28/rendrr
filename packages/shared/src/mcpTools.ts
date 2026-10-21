@@ -22,7 +22,7 @@ export const MCP_TOOLS: ToolDef[] = [
   { name: "get_project", title: "Read an edit", description: "Read one edit: clips per track with times and labels, cut word count, captions on/off and look, style, aspect, status and current version. Clip times are seconds in the original footage.", input: z.object({ projectId }) },
   { name: "get_reference", title: "Read a reference", description: "Read a reference recipe (from the community gallery or a saved reference): cut rhythm, caption look, zoom pattern and structure, plus up to 5 frames.", input: z.object({ referenceId: id("reference or gallery item") }) },
   { name: "list_graphics", title: "List graphics", description: "List graphic templates and the user's custom graphics, with the params each template accepts. Also lists the music tracks and sound effects.", input: z.object({}) },
-  { name: "get_comments", title: "Read client comments", description: "Read the client's review comments on an edit: time, text, resolved.", input: z.object({ projectId }) },
+  { name: "get_comments", title: "Read comments", description: "Read the comments on an edit: the client's review comments and the user's own notes from the editor, each with time, text and resolved.", input: z.object({ projectId }) },
   { name: "get_preview_frames", title: "See the preview", description: "Get up to 5 frames from the latest preview render (at the given OUTPUT times in seconds, or spread evenly) plus the transcript as it now plays after cuts. Render a preview first.",
     input: z.object({ projectId, times: z.array(z.number().min(0)).max(5).optional() }) },
 
@@ -57,7 +57,7 @@ export const MCP_TOOLS: ToolDef[] = [
   { name: "render_final", title: "Render the final", long: true, description: "Render the full-quality 1080p final from the original. Waits up to 180 seconds; otherwise returns a render id for get_render. Footage from the user's computer needs the original once: the tool says so.", input: z.object({ projectId }) },
   { name: "get_render", title: "Check a render", description: "Status of a render. When done: link, quality, size and 4 frames.", input: z.object({ renderId: id("render") }) },
   { name: "create_review_link", title: "Share for review", write: true, description: "Make a client review link for an edit (the client can watch, comment and approve without an account).", input: z.object({ projectId, password: z.string().max(100).optional(), expiresDays: z.number().int().min(1).max(365).optional(), allowDownload: z.boolean().optional() }) },
-  { name: "resolve_comment", title: "Resolve a comment", write: true, description: "Mark a client comment as resolved.", input: z.object({ commentId: id("comment") }) },
+  { name: "resolve_comment", title: "Resolve a comment", write: true, description: "Mark a comment (client comment or the user's note) as resolved.", input: z.object({ commentId: id("comment") }) },
 ];
 
 export const HOW_TO_EDIT = `# How to edit with Rendrr

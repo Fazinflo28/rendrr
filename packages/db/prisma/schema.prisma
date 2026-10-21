@@ -37,6 +37,8 @@ model User {
   usage       UsageEvent[]
   aiClients   AiConnection[]
   renders     Render[]
+  chat        AiChatMessage[]
+  notes       ProjectComment[]
 }
 
 model DriveConnection {
@@ -141,6 +143,8 @@ model Project {
   versions  ProjectVersion[]
   aiActions AiAction[]
   renders   Render[]
+  chat      AiChatMessage[]
+  notes     ProjectComment[]
   originals TempOriginal[]
   reviews   Review[]
   gallery   GalleryItem[]
@@ -173,6 +177,7 @@ model AiAction {
   text          String
   toolName      String
   input         Json
+  via           String?  // "chat" = asked in the editor's AI chat (shown there as chat messages, not as connector activity)
   beforeVersion Int
   afterVersion  Int
   undone        Boolean  @default(false)
@@ -379,4 +384,36 @@ model AiConnection {
   createdAt  DateTime  @default(now())
 
   @@unique([userId, client])
+}
+
+// The AI chat inside an edit (editor > AI tab): what the user asked, what the AI replied, and the steps it ran.
+model AiChatMessage {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String   // user | ai
+  ai        String?  // who answered: "Claude", or "Rendrr" for notices
+  text      String
+  workflow  Json     @default("[]")
+  changed   Boolean  @default(false) // the AI changed the edit while answering
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+// Notes left inside the editor at a moment of the video (client comments live on reviews).
+model ProjectComment {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  time      Float    @default(0)
+  text      String
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
 }

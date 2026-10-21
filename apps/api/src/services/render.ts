@@ -49,7 +49,7 @@ export async function renderResult(r: Render) {
   const frames = await Promise.all(((r.framesKeys as string[]) || []).slice(0, 5).map((k) => signGet(k, 3600)));
   const source = video?.source || "drive";
   const note = r.kind === "final" ? (source === "drive" && !video?.sample ? "Final ready. Original file deleted from our servers." : video?.sample ? "Final ready." : "Final ready. Your original was deleted from our servers.") : undefined;
-  return { renderId: r.id, url, downloadUrl, fileName, quality: r.quality || (r.kind === "final" ? "1080p" : "540p"), size: fmtSize(r.sizeBytes), seconds: r.seconds, source, note, version: r.version, frames };
+  return { renderId: r.id, url, downloadUrl, fileName, quality: r.quality || (r.kind === "final" ? "1080p" : "540p"), size: fmtSize(r.sizeBytes), seconds: r.seconds, source, note, version: r.version, frames, steps: (r.steps as string[]) || [] };
 }
 
 export async function renderStatus(r: Render) {

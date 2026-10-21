@@ -1,7 +1,7 @@
 import { abortMultipart, AppError, applyTimelineChange, deleteObjects, notFound, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
 import { allWords, aspectFor, buildInitialTimeline, DEFAULT_STYLE_ID, outputDuration, type Snapshot, type Transcript } from "@rendrr/shared";
-import { activityOut, commentOut, folderOut, projectOut, styleOut, videoOut } from "../serialize";
+import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
 export async function defaultFolderId(userId: string, name?: string): Promise<string> {
   const f = await prisma.folder.findFirst({ where: { userId }, orderBy: { updatedAt: "desc" } });
@@ -64,14 +64,20 @@ export async function latestRender(projectId: string, kind: "preview" | "final",
 
 export async function projectFull(userId: string, id: string) {
   const p = await getOwnedProject(userId, id);
-  const [video, style, versions, reviews, activity] = await Promise.all([
+  const [video, style, versions, reviews, activity, notes, owner] = await Promise.all([
     prisma.video.findUniqueOrThrow({ where: { id: p.videoId }, include: { analysis: true } }),
     prisma.style.findUnique({ where: { id: p.styleId } }),
     prisma.projectVersion.findMany({ where: { projectId: p.id }, orderBy: { v: "asc" }, select: { v: true, note: true, createdAt: true, updatedAt: true, createdBy: true } }),
     prisma.review.findMany({ where: { OR: [{ projectId: p.id }, { folderId: p.folderId }] }, include: { comments: true } }),
     prisma.aiAction.findMany({ where: { projectId: p.id, undone: false }, orderBy: { createdAt: "desc" }, take: 50 }),
+    prisma.projectComment.findMany({ where: { projectId: p.id }, orderBy: { createdAt: "asc" } }),
+    prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { name: true } }),
   ]);
-  const comments = reviews.flatMap((r) => r.comments.filter((c) => !c.projectId || c.projectId === p.id)).map(commentOut).sort((a, b) => a.at - b.at);
+  // Client comments and the user's own notes, in video order.
+  const comments = [
+    ...reviews.flatMap((r) => r.comments.filter((c) => !c.projectId || c.projectId === p.id)).map(commentOut),
+    ...notes.map((n) => noteOut(n, owner.name)),
+  ].sort((a, b) => a.time - b.time || a.at - b.at);
   const preview = await latestRender(p.id, "preview");
   const final = await latestRender(p.id, "final");
   return {

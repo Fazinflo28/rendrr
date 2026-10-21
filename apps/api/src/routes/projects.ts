@@ -1,10 +1,11 @@
 import { AppError, applyTimelineChange, notFound, projectChannel, restoreVersion } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { CreateFolderInput, CreateProjectInput, PLATFORMS, RenameFolderInput, STYLE_TYPES, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
+import { AiChatInput, CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
-import { activityOut, commentOut, folderOut, projectOut, styleOut } from "../serialize";
+import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
+import { projectChat, sendChat } from "../services/aiChat";
 import { createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles } from "../services/projects";
 
 /** Server-sent events on a raw response. Keeps CORS headers that Fastify already set. */
@@ -65,7 +66,10 @@ export default async function projects(app: FastifyInstance) {
   // ---------------- projects (edits inside folders) ----------------
   app.get("/projects", async (req) => listProjects(req.user!.id));
 
-  app.get("/projects/:id", async (req) => projectFull(req.user!.id, (req.params as { id: string }).id));
+  app.get("/projects/:id", async (req) => {
+    const p = await projectFull(req.user!.id, (req.params as { id: string }).id);
+    return { ...p, aiChat: await projectChat(req.user!.id, p.id) };
+  });
 
   app.post("/projects", async (req) => {
     const input = CreateProjectInput.parse(req.body);
@@ -154,24 +158,33 @@ export default async function projects(app: FastifyInstance) {
     return { ok: true, version: r.version };
   });
 
-  // ---------------- styles ----------------
-  app.get("/styles", async (req) => {
-    const ss = await prisma.style.findMany({ where: { OR: [{ ownerId: null }, { ownerId: req.user!.id }] }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] });
-    return ss.map(styleOut);
-  });
-  app.get("/styles/filters", async () => ({ types: STYLE_TYPES, platforms: PLATFORMS }));
-  app.get("/styles/:id", async (req) => {
-    const s = await prisma.style.findFirst({ where: { id: (req.params as { id: string }).id, OR: [{ ownerId: null }, { ownerId: req.user!.id }] } });
-    if (!s) throw notFound("That style does not exist.");
-    return styleOut(s);
+  // ---------------- comments (editor side) ----------------
+  // The user's own notes on an edit, at a moment of the video. Client comments arrive through review links.
+  app.post("/projects/:id/comments", async (req) => {
+    const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    const { time, text } = ProjectCommentInput.parse(req.body);
+    const n = await prisma.projectComment.create({ data: { projectId: p.id, userId: req.user!.id, time, text } });
+    return noteOut(n, req.user!.name);
   });
 
-  // ---------------- comments (editor side) ----------------
   app.patch("/comments/:id", async (req) => {
-    const c = await prisma.reviewComment.findUnique({ where: { id: (req.params as { id: string }).id }, include: { review: true } });
-    if (!c || c.review.userId !== req.user!.id) throw notFound("That comment is gone.");
+    const id = (req.params as { id: string }).id;
     const resolved = (req.body as { resolved?: boolean })?.resolved !== false;
-    return commentOut(await prisma.reviewComment.update({ where: { id: c.id }, data: { resolved } }));
+    const c = await prisma.reviewComment.findUnique({ where: { id }, include: { review: true } });
+    if (c && c.review.userId === req.user!.id) return commentOut(await prisma.reviewComment.update({ where: { id: c.id }, data: { resolved } }));
+    const n = await prisma.projectComment.findUnique({ where: { id } });
+    if (!n || n.userId !== req.user!.id) throw notFound("That comment is gone.");
+    return noteOut(await prisma.projectComment.update({ where: { id: n.id }, data: { resolved } }), req.user!.name);
+  });
+
+  // ---------------- AI chat (editor side) ----------------
+  app.get("/projects/:id/ai-chat", async (req) => {
+    const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    return projectChat(req.user!.id, p.id);
+  });
+  app.post("/projects/:id/ai-chat", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => {
+    const { text } = AiChatInput.parse(req.body);
+    return sendChat(req.user!.id, (req.params as { id: string }).id, text);
   });
 }
 

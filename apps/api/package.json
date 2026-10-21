@@ -10,16 +10,18 @@
     "vercel-build": "pnpm --filter @rendrr/db exec prisma generate && pnpm --filter @rendrr/db exec prisma migrate deploy && pnpm --filter @rendrr/db exec tsx src/seed.ts && node vercel-build.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "0.133.0",
     "@clerk/backend": "3.26.0",
     "@fastify/cors": "11.3.1",
     "@fastify/rate-limit": "10.3.0",
     "@rendrr/core": "workspace:*",
     "@rendrr/db": "workspace:*",
     "@rendrr/shared": "workspace:*",
+    "bullmq": "5.81.5",
     "fastify": "5.12.7",
-    "zod": "3.25.76",
     "tsx": "4.23.15",
-    "bullmq": "5.81.5"
+    "zod": "3.25.76",
+    "zod-to-json-schema": "3.25.2"
   },
   "devDependencies": {
     "esbuild": "0.28.2"

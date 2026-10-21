@@ -15,6 +15,7 @@ export type ChangeActor = {
   kind: Actor;               // user | claude | chatgpt | rendrr
   userId: string;            // owner of the project (Rendrr user id)
   ai?: string;               // display name for the activity feed: "Claude", "ChatGPT", "Rendrr"
+  via?: "chat";              // the change was asked for in the editor's AI chat
   toolName?: string;         // MCP tool or UI action name
   input?: unknown;           // tool input, stored on ai_actions
 };
@@ -98,7 +99,7 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
     });
     if (actor.kind !== "user") {
       await tx.aiAction.create({
-        data: { projectId, userId: p.userId, ai: displayAi(actor.kind, actor.ai), text: out.summary.slice(0, 500), toolName: actor.toolName || change.op, input: ((actor.input ?? { op: change.op }) as Prisma.InputJsonValue), beforeVersion: prevV, afterVersion: v },
+        data: { projectId, userId: p.userId, ai: displayAi(actor.kind, actor.ai), text: out.summary.slice(0, 500), toolName: actor.toolName || change.op, input: ((actor.input ?? { op: change.op }) as Prisma.InputJsonValue), via: actor.via ?? null, beforeVersion: prevV, afterVersion: v },
       });
     }
     return { projectId, version: v, summary: out.summary, snapshot: out.snap, createdVersion: !coalesce };

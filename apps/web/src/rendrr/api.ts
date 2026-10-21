@@ -8,6 +8,19 @@ const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts"];
 const DRIVE_STEPS = ["Linking", "Making preview", ...PROC_STEPS];
 const LOCAL_STEPS = ["Making preview in your browser", "Uploading preview", ...PROC_STEPS];
 
+// Top bar categories: each groups a few style types (same list as the design).
+const CATEGORIES = [
+  { slug: "clipping", label: "Clipping", types: ["clipping", "listicle", "tier-ranking"], blurb: "Long video in, the best moments out. Silences gone, captions on." },
+  { slug: "talking-head", label: "Talking head", types: ["talking-head", "greenscreen", "split-screen"], blurb: "One person, one camera. Punchy cuts, zooms and bold captions." },
+  { slug: "ads", label: "Ads", types: ["cinematic", "before-after"], blurb: "Hooks in the first second. Built for paid placements." },
+  { slug: "brainrot", label: "Brainrot", types: ["brainrot", "split-screen"], blurb: "Stacked gameplay, fast captions, zero dead air." },
+  { slug: "ugc", label: "UGC", types: ["ugc-ad", "text-story"], blurb: "Phone-shot and honest. Light captions, quick pace." },
+  { slug: "podcast", label: "Podcast", types: ["podcast-clip"], blurb: "Clean clips from long talks. Speaker switches, lower thirds." },
+  { slug: "motion-graphics", label: "Motion graphics", types: ["motion-graphics", "slideshow"], blurb: "Kinetic type, shapes and slides that move with the voice." },
+  { slug: "documentary", label: "Documentary", types: ["documentary", "news"], blurb: "Slow, cinematic b-roll with calm captions and a story arc." },
+  { slug: "screen-tutorials", label: "Screen tutorials", types: ["tutorial"], blurb: "Screen recordings with zooms on the cursor and clear steps." },
+];
+
 // ---------------- caches the UI needs synchronously ----------------
 const versions: Record<string, number> = {};
 const videoMeta: Record<string, any> = {};
@@ -67,7 +80,7 @@ async function runRender(kind: "preview" | "final", projectId: string, onProgres
 
 // ---------------- the api ----------------
 export const api: any = {
-  demo, PROC_STEPS, DRIVE_STEPS, LOCAL_STEPS,
+  demo, PROC_STEPS, DRIVE_STEPS, LOCAL_STEPS, CATEGORIES,
 
   // ---- auth ----
   login: async (email: string, password: string) => {
@@ -83,7 +96,7 @@ export const api: any = {
   loginWithGoogle: async () => {
     const c = await clerk();
     try {
-      await c.client.signIn.authenticateWithRedirect({ strategy: "oauth_google", redirectUrl: "/sso-callback", redirectUrlComplete: "/home" });
+      await c.client.signIn.authenticateWithRedirect({ strategy: "oauth_google", redirectUrl: "/sso-callback", redirectUrlComplete: "/explore" });
     } catch (e) { throw clerkMsg(e, "Google login did not start. Try again."); }
     return new Promise(() => {}); // the page is leaving for Google
   },
@@ -206,9 +219,9 @@ export const api: any = {
   // ---- projects (assets inside folders) ----
   listProjects: async () => emptyIf(await get("/projects")),
   getProject: async (id: string) => { const p = await get(`/projects/${enc(id)}`); versions[id] = p.version; return p; },
-  createProject: async ({ videoId, styleId, name, folderId, cut }: any) => {
+  createProject: async ({ videoId, styleId, name, folderId, cut, aspect }: any) => {
     if (!videoId) throw fail("Pick footage first.");
-    const p = await post("/projects", { videoId, styleId, name: name || undefined, folderId: folderId || undefined, cut: Array.isArray(cut) ? cut : undefined });
+    const p = await post("/projects", { videoId, styleId, name: name || undefined, folderId: folderId || undefined, cut: Array.isArray(cut) ? cut : undefined, aspect: aspect || undefined });
     versions[p.id] = p.version;
     return p;
   },
@@ -234,7 +247,8 @@ export const api: any = {
     return () => { stopped = true; ctl.abort(); };
   },
 
-  // ---- styles ----
+  // ---- styles (open to everyone; a login adds your own styles) ----
+  getCategories: async () => CATEGORIES,
   listStyles: async () => emptyIf(await get("/styles")),
   getStyleFilters: () => get("/styles/filters"),
   getStyle: (id: string) => get(`/styles/${enc(id)}`),
@@ -272,6 +286,7 @@ export const api: any = {
     return done;
   },
   deleteAllFinals: () => post("/account/delete-finals"),
+  saveFinalToDrive: (renderId: string) => post(`/renders/${enc(renderId)}/save-to-drive`),
 
   // ---- reviews ----
   listReviews: async () => emptyIf(await get("/reviews")),
@@ -289,6 +304,10 @@ export const api: any = {
   },
   addReviewComment: (t: string, { time, text, projectId }: any) => post(`/public/reviews/${enc(t)}/comments`, { time, text, projectId }, { auth: false, headers: reviewHeaders(t) }),
   resolveComment: (commentId: string, resolved = true) => patch(`/comments/${enc(commentId)}`, { resolved }),
+  addProjectComment: (projectId: string, { time, text }: any) => {
+    if (!text?.trim()) throw fail("Write a comment first.");
+    return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: text.trim() });
+  },
   approveReview: (t: string) => post(`/public/reviews/${enc(t)}/approve`, {}, { auth: false, headers: reviewHeaders(t) }),
   requestChanges: (t: string, note: string) => post(`/public/reviews/${enc(t)}/changes`, { note }, { auth: false, headers: reviewHeaders(t) }),
 
@@ -298,6 +317,12 @@ export const api: any = {
   disconnect: (which: string) => post(`/connect/${enc(which)}/disconnect`),
   getAiActivity: async (projectId?: string) => emptyIf(await get("/ai/activity" + (projectId ? `?projectId=${enc(projectId)}` : ""))),
   undoAiAction: (id: string) => post(`/ai/activity/${enc(id)}/undo`),
+  getAiChat: (projectId: string) => get(`/projects/${enc(projectId)}/ai-chat`),
+  /** The editor's AI chat. Resolves with [your message, the AI's reply]; reply.changed means the edit changed. */
+  sendAiMessage: (projectId: string, text: string) => {
+    if (!text?.trim()) throw fail("Write what you want changed first.");
+    return post(`/projects/${enc(projectId)}/ai-chat`, { text: text.trim() });
+  },
 
   // ---- account ----
   getUsage: () => get("/account/usage"),
@@ -326,6 +351,8 @@ export const api: any = {
     return patch("/account/profile", p);
   },
   uploadLogo: (dataUrl: string | null) => post("/account/logo", { dataUrl }),
+  getBilling: () => get("/billing"),
+  updatePlan: (plan: string) => post("/billing/plan", { plan }),
   getSettings: () => get("/account/settings"),
   updateSettings: (p: any) => patch("/account/settings", p),
   search: async (q: string) => (q.trim() ? get(`/search?q=${enc(q.trim())}`) : []),

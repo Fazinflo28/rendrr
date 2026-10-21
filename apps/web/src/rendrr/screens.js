@@ -8,75 +8,97 @@ import {
 import { api } from "./api";
 const IS_PROD = process.env.NODE_ENV === "production";
 
-/* ---------- /login ---------- */
-function LoginPage() {
-  const { go } = useNav(); const { setUser } = useApp();
-  const [mode, setMode] = useState("login"); // login | signup | reset
+/* ---------- login: a centred modal over Explore (Higgsfield layout: showcase left, form right) ---------- */
+const SHOWCASE = [["s1", "TALKING HEAD", "Punchy cuts, big captions, zero dead air", "Talking"], ["s3", "LUXURY REEL", "Slow, cinematic, lets the footage breathe", "Luxury"], ["s6", "KINETIC TYPE", "Words that move with the voice", "Kinetic"], ["s17", "BRAINROT", "Stacked, fast, built for the scroll", "Brainrot"]];
+const SOCIAL_ICON = { google: "M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.4Z M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22Z M6.4 14a6 6 0 0 1 0-3.9V7.5H3.1a10 10 0 0 0 0 9L6.4 14Z M12 5.9c1.5 0 2.8.5 3.8 1.5l2.8-2.8A10 10 0 0 0 3.1 7.5L6.4 10c.8-2.3 3-4.1 5.6-4.1Z", apple: "M16.4 12.6c0-2.4 2-3.6 2.1-3.7-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9-.8 0-1.9-.9-3.2-.8-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.3 1.2 9.7.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.2-.8s1.9.8 3.2.8 2.1-1.2 2.9-2.4c.9-1.3 1.3-2.6 1.3-2.7 0 0-2.5-1-2.5-3.9ZM14 5.6c.7-.8 1.1-1.9 1-3-1 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1 2.9 1.1.1 2.2-.5 2.8-1.3Z", ms: "M3 3h8.5v8.5H3z M12.5 3H21v8.5h-8.5z M3 12.5h8.5V21H3z M12.5 12.5H21V21h-8.5z" };
+function LoginPage({ onClose, after, initialMode = "login" }) {
+  const { setUser } = useApp();
+  const [mode, setMode] = useState(initialMode); // login | signup | reset
   const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false); const [err, setErr] = useState(null); const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState(null); const [sent, setSent] = useState(false); const [slide, setSlide] = useState(0);
   const [code, setCode] = useState(""); const [newPw, setNewPw] = useState("");
-  const run = async (fn, done) => { setBusy(true); setErr(null); try { const u = await fn(); if (mode === "reset" && !done) setSent(true); else { setUser(u); go("/home"); } } catch (e) { setErr(e.message); } finally { setBusy(false); } };
+  const sq = useAsync(() => api.listStyles(), []);
+  useEffect(() => { const k = (e) => e.key === "Escape" && onClose?.(); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
+  useEffect(() => { const t = setInterval(() => setSlide((i) => (i + 1) % SHOWCASE.length), 4000); return () => clearInterval(t); }, []);
+  // Reset is two steps with Clerk: the emailed code, then the code with a new password (which also logs you in).
+  const run = async (fn, done) => { setBusy(true); setErr(null); try { const u = await fn(); if (mode === "reset" && !done) setSent(true); else { setUser(u); if (after) after(u); else onClose?.(); } } catch (e) { setErr(e.message); } finally { setBusy(false); } };
   const submit = (e) => { e.preventDefault(); if (mode === "reset") return sent ? run(() => api.completeReset(code, newPw), true) : run(() => api.sendReset(email)); run(() => (mode === "login" ? api.login(email, pw) : api.signup(name, email, pw))); };
-  const title = mode === "login" ? "Log in to Rendrr" : mode === "signup" ? "Create your Rendrr account" : "Reset your password";
-  return html`<div class="login">
-    <div class="silk a" aria-hidden="true" /><div class="silk b" aria-hidden="true" />
-    <button class="crumb home" onClick=${() => { setMode("login"); setErr(null); }}><${Icon} name="back" size="16" />Home</button>
-    <form onSubmit=${submit} novalidate>
-      <div class="logo" style="padding:0;margin:0 auto 20px;justify-content:center"><span class="mark" style="width:60px;height:60px;border-radius:18px"><${Icon} name="logo" size="28" /></span></div>
-      <h1 class="t-title" style="text-align:center;font-size:30px;line-height:38px">${title}</h1>
-      <p class="muted" style="text-align:center;margin-bottom:12px">${mode === "login" ? html`Don't have an account? <a href="#" onClick=${(e) => { e.preventDefault(); setMode("signup"); setErr(null); }}>Sign up</a>.` : html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); setSent(false); }}>Back to log in</a>`}</p>
-      ${mode !== "reset" && html`<${Btn} kind="secondary" type="button" id="google" disabled=${busy} onClick=${() => run(() => api.loginWithGoogle())}><svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.4Z M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22Z M6.4 14a6 6 0 0 1 0-3.9V7.5H3.1a10 10 0 0 0 0 9L6.4 14Z M12 5.9c1.5 0 2.8.5 3.8 1.5l2.8-2.8A10 10 0 0 0 3.1 7.5L6.4 10c.8-2.3 3-4.1 5.6-4.1Z"/></svg>${mode === "login" ? "Log in with Google" : "Sign up with Google"}<//>
-      <div class="or">or</div>`}
-      ${mode === "signup" && html`<${Field} label="Name" id="name"><input id="name" class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Ronnii K" /><//>`}
-      <${Field} label="Email" id="email"><input id="email" class="input" type="email" value=${email} onInput=${(e) => setEmail(e.target.value)} placeholder="alan.turing@example.com" autocomplete="email" /><//>
-      ${mode !== "reset" && html`<${Field} label="Password" id="password" hint=${mode === "login" ? html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("reset"); setErr(null); }}>Forgot password?</a>` : null}><input id="password" class="input" type="password" value=${pw} onInput=${(e) => setPw(e.target.value)} placeholder="••••••••" autocomplete="current-password" /><//>`}
-      ${err && html`<p role="alert" class="t-small" style="padding-left:16px">${err}</p>`}
-      ${sent && mode === "reset" && html`<div class="card flat"><b>Check your inbox.</b><p class="muted t-small">We sent a reset code to ${email}. Type it below with your new password.</p></div>
-      <${Field} label="Code" id="reset-code"><input id="reset-code" class="input" value=${code} onInput=${(e) => setCode(e.target.value)} placeholder="123456" autocomplete="one-time-code" inputmode="numeric" /><//>
-      <${Field} label="New password" id="new-password"><input id="new-password" class="input" type="password" value=${newPw} onInput=${(e) => setNewPw(e.target.value)} placeholder="••••••••" autocomplete="new-password" /><//>`}
-      <${Btn} type="submit" id="submit" disabled=${busy}>${busy ? "One moment…" : mode === "login" ? "Log in" : mode === "signup" ? "Sign up" : sent ? "Set new password" : "Send reset code"}<//>
-      <p class="t-small muted" style="text-align:center;margin-top:8px">By signing in, you agree to our <a href="#" onClick=${(e) => e.preventDefault()}>Terms</a> and <a href="#" onClick=${(e) => e.preventDefault()}>Privacy Policy</a>.</p>
-    </form>
+  const title = mode === "login" ? "Welcome back" : mode === "signup" ? "Welcome to Rendrr" : "Reset your password";
+  const social = (label, icon) => html`<${Btn} kind="secondary" type="button" id=${icon === "google" ? "google" : undefined} disabled=${busy} onClick=${() => run(() => api.loginWithGoogle())}><svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d=${SOCIAL_ICON[icon]} /></svg>${label}<//>`;
+  const sc = SHOWCASE[slide]; const st = sq.data?.find((x) => x.id === sc[0]);
+  return html`<div class="scrim login-scrim" onMouseDown=${(e) => e.target === e.currentTarget && onClose?.()}>
+    <div class="hmodal login" role="dialog" aria-modal="true" aria-label=${title}>
+      <div class="hshow" aria-hidden="true">
+        ${st && html`<${StyleVideo} key=${st.id} s=${st} ori="9:16" className="fill" />`}
+        <div class="hshade" />
+        <div class="htext"><span class="tag accent"><${Icon} name="film" size="12" /> 1080p export</span><h2>${sc[1]}</h2><p>${sc[2]}</p>
+          <div class="hdots">${SHOWCASE.map((x, i) => html`<button key=${x[0]} type="button" class=${i === slide ? "on" : ""} aria-label=${x[1]} onClick=${() => setSlide(i)}><i /><span>${x[3]}</span></button>`)}</div></div>
+      </div>
+      <form class="hform" onSubmit=${submit} novalidate>
+        <${Btn} kind="quiet" icon="x" id="login-close" aria-label="Close" type="button" onClick=${onClose} style="position:absolute;top:14px;right:14px;width:36px" />
+        <div class="logo" style="padding:0;margin:0 auto 8px;justify-content:center"><span class="mark" style="width:40px;height:40px;border-radius:12px"><${Icon} name="logo" size="20" /></span></div>
+        <h1 class="t-title" style="text-align:center;font-size:28px;line-height:34px">${title}</h1>
+        <p class="muted" style="text-align:center;margin-bottom:6px">${mode === "login" ? html`Log in and keep editing. New here? <a href="#" onClick=${(e) => { e.preventDefault(); setMode("signup"); setErr(null); }}>Sign up</a>.` : mode === "signup" ? html`Sign up and edit for free. <a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); }}>Back to log in</a>` : html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); setSent(false); }}>Back to log in</a>`}</p>
+        ${mode !== "reset" && html`
+          ${mode === "signup" && html`<div class="hpromo"><${Icon} name="spark" size="16" /> Sign up with work email and get 3 free renders</div>`}
+          ${social("Continue with Google", "google")}
+          <div class="or">or</div>`}
+        ${mode === "signup" && html`<${Field} label="Name" id="name"><input id="name" class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Ronnii K" /><//>`}
+        <${Field} label="Work email" id="email"><input id="email" class="input" type="email" value=${email} onInput=${(e) => setEmail(e.target.value)} placeholder="name@company.com" autocomplete="email" /><//>
+        ${mode !== "reset" && html`<${Field} label="Password" id="password" hint=${mode === "login" ? html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("reset"); setErr(null); }}>Forgot password?</a>` : null}><input id="password" class="input" type="password" value=${pw} onInput=${(e) => setPw(e.target.value)} placeholder="••••••••" autocomplete="current-password" /><//>`}
+        ${err && html`<p role="alert" class="t-small" style="padding-left:4px">${err}</p>`}
+        ${sent && mode === "reset" && html`<div class="card flat"><b>Check your inbox.</b><p class="muted t-small">We sent a reset code to ${email}. Type it below with your new password.</p></div>
+        <${Field} label="Code" id="reset-code"><input id="reset-code" class="input" value=${code} onInput=${(e) => setCode(e.target.value)} placeholder="123456" autocomplete="one-time-code" inputmode="numeric" /><//>
+        <${Field} label="New password" id="new-password"><input id="new-password" class="input" type="password" value=${newPw} onInput=${(e) => setNewPw(e.target.value)} placeholder="••••••••" autocomplete="new-password" /><//>`}
+        <${Btn} type="submit" id="submit" disabled=${busy}>${busy ? "One moment…" : mode === "reset" ? (sent ? "Set new password" : "Send reset code") : "Continue"}<//>
+        <p class="t-small muted" style="text-align:center;margin-top:4px">By continuing you agree to our <a href="#" onClick=${(e) => e.preventDefault()}>Terms</a> and <a href="#" onClick=${(e) => e.preventDefault()}>Privacy Policy</a>.</p>
+      </form>
+    </div>
   </div>`;
 }
 
-/* ---------- app shell: sidebar + top bar ---------- */
-const NAV = [["/home", "Home", "home"], ["/library", "Library", "library"], ["/projects", "Projects", "projects"], ["/styles", "Styles", "styles"], ["/connect", "Connect AI", "connect"], ["/usage", "Usage", "usage"], ["/settings", "Settings", "settings"]];
+/* ---------- app shell: one top bar (Higgsfield-style), no side rail ---------- */
+const TOP = [["/explore", "Explore"], ["/projects", "Projects"]];
+const MENU = [["/library", "Library", "library"], ["/usage", "Usage", "usage"], ["/billing", "Billing", "key"], ["/settings", "Settings", "settings"], ["/connect", "Connect AI", "connect"]];
 function Shell({ children }) {
-  const { route, go } = useNav(); const { user, usage, setUser, openAdd, addOpen, closeAdd } = useApp(); const toast = useToast();
-  const [q, setQ] = useState(""); const [hits, setHits] = useState(null); const [menu, setMenu] = useState(false);
+  const { route, go } = useNav(); const { user, usage, setUser, openAdd, addOpen, closeAdd, openLogin, requireUser } = useApp(); const toast = useToast();
+  const [q, setQ] = useState(""); const [hits, setHits] = useState(null); const [menu, setMenu] = useState(false); const [sOpen, setSOpen] = useState(false);
+  const cq = useAsync(() => api.getCategories(), []);
   useEffect(() => { if (!q.trim()) { setHits(null); return; } let on = true; api.search(q).then((r) => on && setHits(r)).catch(() => on && setHits([])); return () => { on = false; }; }, [q]);
-  useEffect(() => { const k = () => { setMenu(false); setHits(null); }; window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
+  useEffect(() => { const k = () => { setMenu(false); setHits(null); setSOpen(false); }; window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
   const setDemo = (m) => { api.demo.mode = m; toast(m === "ready" ? "Demo: normal data" : m === "empty" ? "Demo: empty states on" : "Demo: error states on"); go(route, true); };
+  const isOn = (p) => (p === "/explore" ? route === "/explore" || route === "/home" : route.startsWith(p));
   return html`<div class="shell">
-    <aside class="side">
-      <button class="logo" aria-label="Rendrr home" title="Rendrr" onClick=${() => go("/library")}><span class="mark"><${Icon} name="logo" /></span></button>
-      ${NAV.map(([p, l, i]) => html`<button key=${p} class=${"nav" + (route.startsWith(p) ? " on" : "")} data-tip=${l} aria-label=${l} onClick=${() => go(p)}><${Icon} name=${i} /></button>`)}
-      <div class="spacer" />
-      <button class="nav" data-tip="Keyboard shortcuts: ? in the editor" aria-label="Help"><${Icon} name="help" /></button>
-    </aside>
     <header class="top">
-      <div class="search" onClick=${(e) => e.stopPropagation()}>
-        <${Icon} name="search" /><input id="search" class="input sm" placeholder="Search footage, projects, styles" value=${q} onInput=${(e) => setQ(e.target.value)} aria-label="Search" />
-        ${hits && html`<div class="search-pop">${hits.length === 0 ? html`<p class="muted t-small" style="padding:8px 16px">Nothing matches "${q}"</p>` : hits.map((h) => html`<button key=${h.kind + h.id} onClick=${() => { go(h.path); setQ(""); }}><${Icon} name=${h.kind === "Footage" ? "film" : h.kind === "Project" ? "projects" : h.kind === "Edit" ? "scissors" : "styles"} size="16" />${h.name}<span class="kind">${h.kind}</span></button>`)}</div>`}
-      </div>
+      <button class="logo" aria-label="Rendrr home" title="Rendrr" onClick=${() => go("/explore")}><span class="mark"><${Icon} name="logo" /></span></button>
+      <nav class="topnav" aria-label="Main">
+        ${TOP.map(([p, l]) => html`<button key=${p} class=${"nav" + (isOn(p) ? " on" : "")} data-tip=${l} onClick=${() => go(p)}>${l}</button>`)}
+        <span class="navsep" aria-hidden="true" />
+        ${(cq.data || api.CATEGORIES).map((c) => html`<button key=${c.slug} class=${"nav" + (route === "/create/" + c.slug ? " on" : "")} data-tip=${c.label} data-cat=${c.slug} onClick=${() => go("/create/" + c.slug)}>${c.label}</button>`)}
+      </nav>
       <div class="grow" />
-      <${ThemeBtn} />
-      ${usage && html`<button class="storage" id="storage" title=${"Storage: " + usage.storageUsedGB + " GB of " + usage.storageTotalGB + " GB used"} onClick=${() => go("/usage")}><${Icon} name="layers" size="15" /><span>${(usage.storageTotalGB - usage.storageUsedGB).toFixed(1)} GB free</span><i class="sbar"><b style=${{ width: Math.round((usage.storageUsedGB / usage.storageTotalGB) * 100) + "%" }} /></i></button>`}
-      <${Btn} size="sm" icon="plus" id="upload" onClick=${openAdd}>Add footage<//>
-      <div style="position:relative" onClick=${(e) => e.stopPropagation()}>
-        <button class="avatar" id="profile" aria-label="Profile menu" onClick=${() => setMenu((m) => !m)}>${user?.photo ? html`<img src=${user.photo} alt="" />` : initials(user?.name)}</button>
-        ${menu && html`<div class="menu">
-          <div class="head">${user?.email}</div>
-          <button class="item" onClick=${() => { go("/settings"); setMenu(false); }}><${Icon} name="settings" />Settings</button>
-          ${!IS_PROD && html`<div class="sep" /><div class="head">Demo states</div>
-          ${[["ready", "Normal data"], ["empty", "Empty states"], ["error", "Error states"]].map(([m, l]) => html`<button key=${m} class=${"item" + (api.demo.mode === m ? " on" : "")} onClick=${() => { setDemo(m); setMenu(false); }}><${Icon} name=${api.demo.mode === m ? "check" : "more"} />${l}</button>`)}
-          <button class="item" id="fail-render" onClick=${() => { api.demo.failNextRender = true; toast("The next render will fail"); setMenu(false); }}><${Icon} name="alert" />Fail the next render</button>
-          <button class="item" id="fail-drive" onClick=${() => { api.demo.failNextDrive = true; toast("The next Drive fetch will fail"); setMenu(false); }}><${Icon} name="drive" />Fail next Drive fetch</button>`}
-          <div class="sep" />
-          <button class="item" id="logout" onClick=${async () => { await api.logout(); setUser(null); go("/login"); }}><${Icon} name="logout" />Log out</button>
-        </div>`}
+      <div class="search-wrap" onClick=${(e) => e.stopPropagation()}>
+        <button class=${"nav icon" + (sOpen ? " on" : "")} id="search-btn" aria-label="Search" onClick=${() => setSOpen((o) => !o)}><${Icon} name="search" size="18" /></button>
+        ${sOpen && html`<div class="search pop"><${Icon} name="search" /><input id="search" class="input sm" autoFocus placeholder="Search footage, projects, styles" value=${q} onInput=${(e) => setQ(e.target.value)} aria-label="Search" />
+          ${hits && html`<div class="search-pop">${hits.length === 0 ? html`<p class="muted t-small" style="padding:8px 16px">Nothing matches "${q}"</p>` : hits.map((h) => html`<button key=${h.kind + h.id} onClick=${() => { requireUser(() => go(h.path)); setQ(""); setSOpen(false); }}><${Icon} name=${h.kind === "Footage" ? "film" : h.kind === "Project" ? "projects" : h.kind === "Edit" ? "scissors" : "styles"} size="16" />${h.name}<span class="kind">${h.kind}</span></button>`)}</div>`}</div>`}
       </div>
+      ${user ? html`
+        ${usage && html`<button class="storage" id="storage" title=${"Storage: " + usage.storageUsedGB + " GB of " + usage.storageTotalGB + " GB used"} onClick=${() => go("/usage")}><${Icon} name="layers" size="15" /><span>${Math.round(usage.storageTotalGB - usage.storageUsedGB)} GB free</span><i class="sbar"><b style=${{ width: Math.round((usage.storageUsedGB / usage.storageTotalGB) * 100) + "%" }} /></i></button>`}
+        <${Btn} size="sm" icon="plus" id="upload" onClick=${openAdd}>Add footage<//>
+        <div style="position:relative" onClick=${(e) => e.stopPropagation()}>
+          <button class="avatar" id="profile" aria-label="Profile menu" onClick=${() => setMenu((m) => !m)}>${user?.photo ? html`<img src=${user.photo} alt="" />` : initials(user?.name)}</button>
+          ${menu && html`<div class="menu">
+            <div class="head">${user?.email}</div>
+            ${MENU.map(([p, l, i]) => html`<button key=${p} class=${"item" + (route.startsWith(p) ? " on" : "")} data-menu=${l} onClick=${() => { go(p); setMenu(false); }}><${Icon} name=${i} />${l}</button>`)}
+            ${!IS_PROD && html`<div class="sep" /><div class="head">Demo states</div>
+            ${[["ready", "Normal data"], ["empty", "Empty states"], ["error", "Error states"]].map(([m, l]) => html`<button key=${m} class=${"item" + (api.demo.mode === m ? " on" : "")} onClick=${() => { setDemo(m); setMenu(false); }}><${Icon} name=${api.demo.mode === m ? "check" : "more"} />${l}</button>`)}
+            <button class="item" id="fail-render" onClick=${() => { api.demo.failNextRender = true; toast("The next render will fail"); setMenu(false); }}><${Icon} name="alert" />Fail the next render</button>
+            <button class="item" id="fail-drive" onClick=${() => { api.demo.failNextDrive = true; toast("The next Drive fetch will fail"); setMenu(false); }}><${Icon} name="drive" />Fail next Drive fetch</button>`}
+            <div class="sep" />
+            <button class="item" id="logout" onClick=${async () => { await api.logout(); setUser(null); setMenu(false); go("/explore"); toast("Logged out"); }}><${Icon} name="logout" />Log out</button>
+          </div>`}
+        </div>`
+      : html`<${Btn} kind="secondary" size="sm" id="login-btn" onClick=${() => openLogin()}>Log in<//><${Btn} size="sm" id="signup-btn" onClick=${() => openLogin(null, "signup")}>Sign up<//>`}
     </header>
     <main class="main">${children}</main>
     ${addOpen && html`<${AddFootageModal} onClose=${closeAdd} />`}
@@ -108,7 +130,7 @@ function AddFootageModal({ onClose }) {
   const [tab, setTab] = useState("drive"); const [over, setOver] = useState(false); const fileRef = useRef();
   return html`<${Modal} title="Add footage" sub="Raw files never come to us. We only keep a light preview and your final exports." onClose=${onClose} wide>
     <div class="srcpick">
-      <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick videos from your Drive</span></span><span class="tag brand">Recommended</span></button>
+      <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick videos from your Drive</span></span><span class="tag accent">Recommended</span></button>
       <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="src-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>From your computer</b><span class="t-small muted">Pick files or drag and drop</span></span></button>
     </div>
     ${tab === "drive" ? html`<${DrivePicker} onAdd=${addFromDrive} />` : html`<div class="col" style="gap:12px">
@@ -118,6 +140,49 @@ function AddFootageModal({ onClose }) {
         <div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>Choose files<//><${Btn} kind="ghost" id="sample" onClick=${(e) => { e.stopPropagation(); addSample(); }}>Add sample footage<//></div></div>
       <div class="row" style="gap:8px"><${Icon} name="clock" size="14" /><span class="t-small muted">Keep this tab open while we prepare your preview.</span></div>
     </div>`}
+  <//>`;
+}
+
+/* ---------- Recreate: pick footage (Drive or computer) > pick a project > straight into the editor ---------- */
+function RecreateModal({ g, onClose }) {
+  const { go } = useNav(); const toast = useToast();
+  const [step, setStep] = useState("source"); const [tab, setTab] = useState("drive"); const [video, setVideo] = useState(null); const [busy, setBusy] = useState(false); const [over, setOver] = useState(false);
+  const [folder, setFolder] = useState(""); const [newName, setNewName] = useState(""); const fileRef = useRef();
+  const fq = useAsync(() => (step === "project" ? api.listFoldersLite() : Promise.resolve(null)), [step]);
+  useEffect(() => { if (fq.data?.length && !folder) setFolder(fq.data[0].id); }, [fq.data]);
+  const picked = (v) => { setVideo(v); setStep("project"); window.dispatchEvent(new Event("rendrr:library")); };
+  const fromDrive = async (ids) => { const out = await api.addFromDrive(ids.slice(0, 1)); picked(out[0]); };
+  const fromFiles = async (files) => { setBusy(true); try { const out = await api.addFromComputer(files ? [files[0]] : null); picked(out[0]); } catch (e) { toast(e.message, { icon: "alert" }); } finally { setBusy(false); } };
+  const create = async () => {
+    setBusy(true);
+    try { let fid = folder; if (fid === "new") { const f = await api.createFolder(newName); fid = f.id; }
+      const p = await api.createProject({ videoId: video.id, styleId: g.styleId, folderId: fid, name: "Recreate: " + g.title });
+      api.countRecreate(g.id); toast("Project created. Opening the editor.", { icon: "spark", tone: "brand" }); onClose(); go("/editor/" + p.id);
+    } catch (e) { toast(e.message); setBusy(false); }
+  };
+  return html`<${Modal} title="Recreate this video" sub=${"Same style (" + g.style.name + "), your own footage. The AI matches the cut."} onClose=${onClose} wide>
+    <div class="steps-row"><span class=${"stp" + (step === "source" ? " on" : " done")}>1. Footage</span><span class="stp-sep" /><span class=${"stp" + (step === "project" ? " on" : "")}>2. Project</span></div>
+    ${step === "source" ? html`
+      <div class="srcpick">
+        <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="rc-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick a video from your Drive</span></span><span class="tag accent">Recommended</span></button>
+        <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="rc-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>From your computer</b><span class="t-small muted">Pick a file or drag and drop</span></span></button>
+      </div>
+      ${tab === "drive" ? html`<${DrivePicker} single addLabel="Use this video" onAdd=${fromDrive} />` : html`<div class="col" style="gap:12px">
+        <input type="file" accept="video/*" ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) fromFiles(Array.from(fs)); e.target.value = ""; }} />
+        <div class=${"drop" + (over ? " over" : "")} id="rc-drop" style="padding:36px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); const fs = e.dataTransfer.files; fromFiles(fs?.length ? Array.from(fs) : null); }}>
+          <div class="ico"><${Icon} name="laptop" /></div><b class="t-heading">Drop a video here</b><p class="muted t-small">Files stay on your computer. We make a light preview in your browser.</p>
+          <div class="row"><${Btn} disabled=${busy} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>Choose a file<//><${Btn} kind="ghost" id="rc-sample" disabled=${busy} onClick=${(e) => { e.stopPropagation(); fromFiles(null); }}>${busy ? "Preparing…" : "Use sample footage"}<//></div></div>
+        <div class="row" style="gap:8px"><${Icon} name="clock" size="14" /><span class="t-small muted">Keep this tab open while we prepare your preview.</span></div>
+      </div>`}`
+    : html`
+      <div class="card flat row" style="gap:12px"><${Icon} name=${video.source === "drive" ? "drive" : "laptop"} size="18" /><div class="grow"><b class="t-label">${video.name}</b><p class="t-small muted">${video.source === "drive" ? "Linked from Google Drive" : "From your computer"} · preview is being made in the background</p></div><${Btn} kind="ghost" size="xs" onClick=${() => setStep("source")}>Change<//></div>
+      <div class="col" style="gap:8px"><span class="t-label">Which project should this go into?</span>
+        <${Async} q=${fq} skeleton=${html`<${Skeleton} rows=${3} card=${false} />`} whenEmpty=${null}>${(fs) => html`<div class="plist" id="rc-folders">
+          ${(fs || []).map((f) => html`<label key=${f.id} class=${"prow" + (folder === f.id ? " on" : "")}><input type="radio" name="rcf" value=${f.id} checked=${folder === f.id} onChange=${() => setFolder(f.id)} /><${Icon} name="projects" size="16" /><span class="grow">${f.name}</span></label>`)}
+          <label class=${"prow" + (folder === "new" ? " on" : "")}><input type="radio" name="rcf" value="new" checked=${folder === "new"} onChange=${() => setFolder("new")} /><${Icon} name="plus" size="16" /><span class="grow">New project</span></label>
+          ${folder === "new" && html`<input id="rc-newname" class="input" placeholder="Project name, like a client or a campaign" value=${newName} onInput=${(e) => setNewName(e.target.value)} autoFocus />`}
+        </div>`}<//></div>
+      <div class="row" style="justify-content:flex-end;gap:8px"><${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="rc-create" icon="spark" disabled=${busy || !folder || (folder === "new" && !newName.trim())} onClick=${create}>${busy ? "Creating…" : "Create and open editor"}<//></div>`}
   <//>`;
 }
 
@@ -137,7 +202,7 @@ function LibraryPage() {
   const dropProps = { onDragOver: (e) => { e.preventDefault(); setOver(true); }, onDragLeave: () => setOver(false), onDrop };
   const act = async (e, fn, msg) => { e.stopPropagation(); try { await fn(); if (msg) toast(msg); q.reload(); } catch (er) { toast(er.message); } };
   const filt = (v) => filter === "All" || (filter === "Ready" && v.status === "ready") || (filter === "In progress" && BUSY.includes(v.status)) || (filter === "Needs attention" && ATTN.includes(v.status));
-  return html`<div class="page" ...${dropProps}>
+  return html`<div class="page wide" ...${dropProps}>
     <div class="page-head"><div><h1 class="t-title">Library</h1><p class="muted">Raw files stay in your Drive or on your computer. We keep a light preview for 30 days.</p></div>
       <div class="row"><div class="search" style="width:240px"><${Icon} name="search" /><input class="input sm" placeholder="Find footage" value=${search} onInput=${(e) => setSearch(e.target.value)} aria-label="Find footage" /></div>
       <${Seg} size="sm" value=${filter} options=${["All", "Ready", "In progress", "Needs attention"]} onChange=${setFilter} /></div></div>
@@ -242,11 +307,10 @@ function ProjectsPage() {
   const create = async () => { setBusy(true); try { const f = await api.createFolder(name); setModal(false); setName(""); toast("Project created", { icon: "check", tone: "brand" }); go("/projects/" + f.id); } catch (e) { toast(e.message); } finally { setBusy(false); } };
   const del = async (f) => { try { await api.deleteFolder(f.id); q.setData((d) => d.filter((x) => x.id !== f.id)); toast("Project deleted"); } catch (e) { toast(e.message); } };
   const doRename = async () => { try { const f = await api.renameFolder(rename.id, rename.name); q.setData((d) => d.map((x) => (x.id === f.id ? { ...x, ...f } : x))); setRename(null); toast("Renamed", { icon: "check", tone: "brand" }); } catch (e) { toast(e.message); } };
-  return html`<div class="page">
+  return html`<div class="page wide">
     <div class="page-head"><div><h1 class="t-title">Projects</h1><p class="muted">One folder per client. Edits live inside.</p></div><${Btn} id="new-project" icon="plus" onClick=${() => setModal(true)}>New project<//></div>
-    <div class="row" style="gap:16px"><${Seg} size="sm" value=${view} options=${[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]} onChange=${setView} /><span class="t-small muted">Filtered by <b style="color:var(--ink)">Active projects</b></span><div class="row" style="gap:8px"><span class="t-small muted">Sorted by</span><${Seg} size="sm" value=${sort} options=${[{ value: "updated", label: "Recent" }, { value: "name", label: "Name" }]} onChange=${setSort} /></div></div>
     <${Async} q=${q} skeleton=${html`<${GridSkeleton} n=${6} />`} whenEmpty=${html`<${EmptyState} icon="projects" title="No projects yet" text="Make one folder per client, then add edits inside." action=${html`<${Btn} onClick=${() => setModal(true)}>New project<//>`} />`}>${(list) => { const sorted = [...list].sort((a, b) => sort === "name" ? a.name.localeCompare(b.name) : b.updated - a.updated); return view === "grid" ? html`
-      <div class="grid" style="grid-template-columns:repeat(5,1fr)">
+      <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr))">
         ${sorted.map((f) => html`<div key=${f.id} class="fcard" role="button" tabindex="0" data-folder=${f.id} onClick=${() => go("/projects/" + f.id)} onKeyDown=${(e) => e.key === "Enter" && go("/projects/" + f.id)}>
           <div class=${"cover c" + f.cover}><div class="ftxt"><b>${f.name}</b><span>${f.workspace}</span></div>${f.shares > 0 && html`<span class="gtag" style="position:absolute;top:10px;right:10px"><${Icon} name="link" size="12" />${f.shares}</span>`}</div>
           <div class="row between" style="padding:8px 12px 10px"><span class="t-small muted">Updated ${fmtAgo(f.updated)} · ${f.count} ${f.count === 1 ? "edit" : "edits"}</span>
@@ -273,22 +337,16 @@ function FolderPage({ id }) {
   const dur = (p) => (p.seconds ? fmtTime(p.seconds) : "—");
   return html`<${Async} q=${q} skeleton=${html`<div class="page"><${Skeleton} rows=${3} /><${GridSkeleton} n=${4} /></div>`}>${(f) => { const list = f.assets.filter((a) => a.name.toLowerCase().includes(search.toLowerCase())).sort((a, b) => sort === "name" ? a.name.localeCompare(b.name) : b.updated - a.updated); const size = f.assets.reduce((n, a) => n + parseInt(a.size || 0), 0); return html`
     <div class="folder">
-      <aside class="fside">
-        <div class="row" style="gap:12px;padding:4px 8px 16px"><div class=${"mini cover c" + f.cover} style="width:44px;height:44px;border-radius:12px" /><div class="grow" style="min-width:0"><b class="t-label" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.name}</b><span class="t-small muted">${f.members} ${f.members === 1 ? "member" : "members"}</span></div></div>
-        ${[["assets", "Assets", "film", f.assets.length], ["collections", "Collections", "projects", 0], ["deleted", "Recently deleted", "trash", deleted.length]].map(([k, l, i, n]) => html`<button key=${k} class=${"fnav" + (section === k ? " on" : "")} data-section=${k} onClick=${() => setSection(k)}><${Icon} name=${i} size="18" />${l}<span class="muted" style="margin-left:auto;font-size:12px">${n || ""}</span></button>`)}
-        <div class="divider" style="margin:16px 8px" />
-        <div class="row between" style="padding:0 8px 8px"><b class="t-small muted">Share links</b><${Btn} kind="quiet" size="xs" icon="plus" aria-label="New share link" onClick=${() => setShare({ folder: f })} /></div>
-        ${f.shares.length === 0 ? html`<p class="t-small muted" style="padding:0 8px">None yet. Share the folder or one video.</p>` : f.shares.map((r) => html`<button key=${r.token} class="fnav" onClick=${() => go("/review/" + r.token)}><div class=${"mini cover c" + f.cover} style="width:34px;height:24px;border-radius:6px" /><span class="grow" style="text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.folderId ? "Whole folder" : (f.assets.find((a) => a.id === r.projectId)?.name || "Video")}</span>${r.approved && html`<${Icon} name="check" size="14" />`}</button>`)}
-      </aside>
       <div class="fmain">
-        <div class="row" style="gap:12px;padding:0 0 16px"><button class="crumb" onClick=${() => go("/projects")}>All projects</button><span class="muted">/</span><b class="t-label">${f.name}</b><div class="grow" />
+        <div class="row" style="gap:12px;padding:0 0 12px"><div class=${"mini cover c" + f.cover} style="width:36px;height:36px;border-radius:10px" /><button class="crumb" onClick=${() => go("/projects")}>All projects</button><span class="muted">/</span><b class="t-label">${f.name}</b><span class="t-small muted">· ${f.members} ${f.members === 1 ? "member" : "members"}</span><div class="grow" />
           <div class="search" style="width:220px"><${Icon} name="search" /><input class="input sm" placeholder="Search this project" value=${search} onInput=${(e) => setSearch(e.target.value)} aria-label="Search this project" /></div>
           <${Btn} kind="secondary" size="sm" icon="plus" id="new-edit" onClick=${() => setNp(true)}>New edit<//>
           <${Btn} size="sm" icon="link" id="share-folder" onClick=${() => setShare({ folder: f })}>Share<//></div>
+        ${f.shares.length > 0 && html`<div class="row" style="gap:6px;padding:0 0 12px" id="share-links"><span class="t-small muted">Share links</span>${f.shares.map((r) => html`<button key=${r.token} class="linkchip" onClick=${() => go("/review/" + r.token)}><${Icon} name="link" size="12" />${r.folderId ? "Whole folder" : (f.assets.find((a) => a.id === r.projectId)?.name || "Video")}${r.approved && html`<${Icon} name="check" size="12" />`}</button>`)}</div>`}
         ${section === "assets" && html`<div class="col" style="gap:16px">
-          <div class="row" style="gap:12px"><${Seg} size="sm" value=${view} options=${[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]} onChange=${setView} /><div class="row" style="gap:8px"><span class="t-small muted">Sorted by</span><${Seg} size="sm" value=${sort} options=${[{ value: "updated", label: "Recent" }, { value: "name", label: "Name" }]} onChange=${setSort} /></div><div class="grow" /><span class="t-small muted">${f.assets.length} ${f.assets.length === 1 ? "asset" : "assets"} · ${size} MB</span></div>
+          <div class="row"><span class="t-small muted">${f.assets.length} ${f.assets.length === 1 ? "asset" : "assets"} · ${size} MB</span></div>
           ${sel.length > 0 && html`<div class="bulk"><span class="t-label">${sel.length} selected</span><${Btn} size="xs" icon="link" id="share-selected" onClick=${() => setShare({ folder: f, projectId: sel[0], many: sel.length })}>Share ${sel.length === 1 ? "video" : sel.length + " videos"}<//><${Btn} kind="ghost" size="xs" onClick=${() => setSel([])}>Clear<//></div>`}
-          ${list.length === 0 ? html`<${EmptyState} icon="scissors" title=${search ? "Nothing matches" : "No edits in this project yet"} text=${search ? "Try another name." : "Add footage from your library and the AI makes the first cut."} action=${!search && html`<${Btn} onClick=${() => setNp(true)}>New edit<//>`} />` : view === "grid" ? html`<div class="grid" style="grid-template-columns:repeat(4,1fr)">
+          ${list.length === 0 ? html`<${EmptyState} icon="scissors" title=${search ? "Nothing matches" : "No edits in this project yet"} text=${search ? "Try another name." : "Add footage from your library and the AI makes the first cut."} action=${!search && html`<${Btn} onClick=${() => setNp(true)}>New edit<//>`} />` : view === "grid" ? html`<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr))">
             ${list.map((p) => html`<div key=${p.id} class=${"acard" + (sel.includes(p.id) ? " sel" : "")} data-asset=${p.id} role="button" tabindex="0" onClick=${() => go("/editor/" + p.id)} onKeyDown=${(e) => e.key === "Enter" && go("/editor/" + p.id)}>
               <div class="athumb"><${StyleVideo} s=${p.style} ori=${p.aspect} /><button class=${"acheck" + (sel.includes(p.id) ? " on" : "")} aria-label="Select" aria-pressed=${sel.includes(p.id)} onClick=${(e) => toggleSel(e, p.id)}>${sel.includes(p.id) && html`<${Icon} name="check" size="12" />`}</button>
                 <div class="ainfo"><span><${Icon} name="comment" size="12" />${p.comments}</span><span class="mono">${dur(p)}</span></div></div>
@@ -337,14 +395,14 @@ function StyleVideo({ s, ori, className = "", style }) {
 }
 const StyleArt = ({ s }) => html`<div class="style-art"><${StyleVideo} s=${s} /></div>`;
 const ORI_LABEL = { "9:16": "Vertical", "16:9": "Horizontal", "1:1": "Square" };
-function StylesPage() {
-  return html`<div class="page">
-    <div class="page-head"><div><h1 class="t-title">Styles</h1><p class="muted">Style packs tell the AI how you like to cut. Previews loop like the real thing.</p></div></div>
-    <${StylePacks} />
-  </div>`;
+function StylesPage() { return html`<${CreatePage} cat="clipping" />`; }
+/* ---------- /create/:cat: a full-width wall of community videos in that category (like, recreate) ---------- */
+function CreatePage({ cat }) {
+  const cq = useAsync(() => api.getCategories(), []); const c = (cq.data || api.CATEGORIES).find((x) => x.slug === cat) || api.CATEGORIES[0];
+  return html`<${ExploreFeed} key=${c.slug} types=${c.types} title=${c.label} sub=${c.blurb} />`;
 }
-function StylePacks() {
-  const { go } = useNav(); const q = useAsync(() => api.listStyles(), []); const fq = useAsync(() => api.getStyleFilters(), []);
+function StylePacks({ fixedTypes, hideFilters, onPick, cols = 4, wall }) {
+  const { go } = useNav(); const { requireUser } = useApp(); const q = useAsync(() => api.listStyles(), []); const fq = useAsync(() => api.getStyleFilters(), []);
   const [open, setOpen] = useState(null); const [np, setNp] = useState(null);
   const [ori, setOri] = useState("All"); const [plat, setPlat] = useState("all"); const [types, setTypes] = useState([]); const [search, setSearch] = useState(""); const [mOri, setMOri] = useState(null);
   const types_ = fq.data?.types || []; const plats = fq.data?.platforms || [];
@@ -353,7 +411,7 @@ function StylePacks() {
   const clear = () => { setOri("All"); setPlat("all"); setTypes([]); setSearch(""); };
   const label = (t) => (types_.find(([k]) => k === t) || [])[1] || t;
   return html`<div class="col" style="gap:24px">
-    <div class="filters">
+    ${!hideFilters && html`<div class="filters">
       <div class="row wrap" style="gap:16px">
         <div class="search" style="width:240px"><${Icon} name="search" /><input id="style-search" class="input sm" placeholder="Find a style" value=${search} onInput=${(e) => setSearch(e.target.value)} aria-label="Find a style" /></div>
         <div class="row" style="gap:8px"><span class="t-small muted">Shape</span><${Seg} size="sm" value=${ori} options=${[{ value: "All", label: "All" }, { value: "9:16", label: "Vertical" }, { value: "16:9", label: "Horizontal" }, { value: "1:1", label: "Square" }]} onChange=${setOri} /></div>
@@ -364,12 +422,14 @@ function StylePacks() {
         <button class=${"chip sm " + (types.length === 0 ? "ink" : "neutral")} onClick=${() => setTypes([])}>All styles</button>
         ${types_.map(([k, l]) => html`<button key=${k} data-type=${k} class=${"chip sm " + (types.includes(k) ? "brand" : "neutral")} aria-pressed=${types.includes(k)} onClick=${() => toggleType(k)}>${types.includes(k) && html`<${Icon} name="check" />`}${l}</button>`)}
       </div>
-    </div>
+    </div>`}
     <${Async} q=${q} skeleton=${html`<${GridSkeleton} n=${6} />`} whenEmpty=${html`<${EmptyState} icon="styles" title="No styles yet" text="Style packs will show up here once your team adds them." />`}>${(list) => {
-      const shown = list.filter((s) => (ori === "All" || s.ori.includes(ori)) && (plat === "all" || s.platforms.includes(plat)) && (types.length === 0 || types.includes(s.type)) && (s.name + " " + s.vibe + " " + label(s.type)).toLowerCase().includes(search.toLowerCase()));
+      const shown = list.filter((s) => (!fixedTypes || fixedTypes.includes(s.type)) && (ori === "All" || s.ori.includes(ori)) && (plat === "all" || s.platforms.includes(plat)) && (types.length === 0 || types.includes(s.type)) && (s.name + " " + s.vibe + " " + label(s.type)).toLowerCase().includes(search.toLowerCase()));
       return html`<div class="col" style="gap:16px">
-        <span class="t-small muted" id="style-count">${shown.length} of ${list.length} styles</span>
-        ${shown.length === 0 ? html`<${EmptyState} icon="search" title="No style matches those filters" text="Try another shape or platform, or clear the filters." action=${html`<${Btn} kind="secondary" size="sm" onClick=${clear}>Clear filters<//>`} />` : html`<div class="grid" style="grid-template-columns:repeat(4,1fr)">
+        ${!fixedTypes && html`<span class="t-small muted" id="style-count">${shown.length} of ${list.length} styles</span>`}
+        ${shown.length === 0 ? html`<${EmptyState} icon="search" title="No style matches those filters" text="Try another shape or platform, or clear the filters." action=${html`<${Btn} kind="secondary" size="sm" onClick=${clear}>Clear filters<//>`} />` : wall ? html`<div class="masonry wall" id="style-wall">
+          ${shown.flatMap((s) => s.ori.map((o) => ({ s, o }))).sort((a, b) => (a.o === b.o ? 0 : a.o === "9:16" ? -1 : 1) * ((a.s.id + b.s.id).length % 2 ? 1 : -1)).map(({ s, o }) => html`<div key=${s.id + o} class="gcard" role="button" tabindex="0" data-id=${s.id} data-type=${s.type} data-ori=${o} aria-label=${s.name} onClick=${() => { setMOri(o); setOpen(s); }} onKeyDown=${(e) => e.key === "Enter" && setOpen(s)}><${StyleVideo} s=${s} ori=${o} className="fill" /><span class="wname">${s.name} · ${ORI_LABEL[o]}</span></div>`)}
+        </div>` : html`<div class="grid" style=${{ gridTemplateColumns: "repeat(" + cols + ",1fr)" }}>
           ${shown.map((s) => html`<div key=${s.id} class="card tight click" role="button" tabindex="0" data-id=${s.id} data-type=${s.type} onClick=${() => { setMOri(null); setOpen(s); }} onKeyDown=${(e) => e.key === "Enter" && setOpen(s)}>
             <${StyleVideo} s=${s} ori=${ori} className="card-sv" />
             <div style="padding:12px 8px 4px"><div class="row between"><b class="t-heading">${s.name}</b><${Chip} tone="neutral" size="sm">${label(s.type)}<//></div><p class="t-small muted" style="margin-top:2px">${s.vibe}</p>
@@ -377,7 +437,7 @@ function StylePacks() {
           </div>`)}
         </div>`}
       </div>`; }}<//>
-    ${open && html`<${Modal} title=${open.name} sub=${open.vibe} onClose=${() => setOpen(null)} wide footer=${html`<${Btn} kind="ghost" onClick=${() => setOpen(null)}>Close<//><${Btn} id="use-style" icon="spark" onClick=${() => { setNp(open.id); setOpen(null); }}>Use in a project<//>`}>
+    ${open && html`<${Modal} title=${open.name} sub=${open.vibe} onClose=${() => setOpen(null)} wide footer=${html`<${Btn} kind="ghost" onClick=${() => setOpen(null)}>Close<//><${Btn} id="use-style" icon="spark" onClick=${() => { const id = open.id; setOpen(null); if (onPick) onPick(id); else requireUser(() => setNp(id)); }}>${onPick ? "Use this style" : "Use in a project"}<//>`}>
       <div class="row between"><${Chip} tone="neutral" size="sm">${label(open.type)}<//><${Seg} size="sm" value=${mOri || open.ori[0]} options=${open.ori.map((o) => ({ value: o, label: ORI_LABEL[o] }))} onChange=${setMOri} /></div>
       <${StyleVideo} s=${open} ori=${mOri || open.ori[0]} className="modal-sv" />
       <div class="rules"><div class="r"><b>Cut pace</b>${open.cutPace}</div><div class="r"><b>Caption look</b>${open.captionRule}</div><div class="r"><b>Zoom rules</b>${open.zoomRules}</div><div class="r"><b>Music vibe</b>${open.musicVibe}</div></div>
@@ -390,38 +450,41 @@ function StylePacks() {
 
 /* ---------- /home: community gallery ---------- */
 const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n));
-function HomePage() {
-  const { go } = useNav(); const toast = useToast();
+function HomePage() { return html`<${ExploreFeed} />`; }
+function ExploreFeed({ types, embedded, title = "Made with Rendrr by the community", sub = "Take any edit, recreate it with your own footage, keep the style." }) {
+  const { go } = useNav(); const toast = useToast(); const { requireUser, user } = useApp();
   const q = useAsync(() => api.listGallery(), []); const fq = useAsync(() => api.getStyleFilters(), []);
   const [ori, setOri] = useState("All"); const [plat, setPlat] = useState("all"); const [sort, setSort] = useState("trending"); const [mine, setMine] = useState(false);
-  const [open, setOpen] = useState(null); const [publish, setPublish] = useState(false); const [recreate, setRecreate] = useState(null);
+  const [open, setOpen] = useState(null); const [publish, setPublish] = useState(false); const [recreate, setRecreate] = useState(null); const [limit, setLimit] = useState(60);
+  useEffect(() => { setLimit(60); }, [sort, mine, types]);
   const plats = fq.data?.platforms || []; const pl = (k) => (plats.find(([x]) => x === k) || [])[1] || k;
-  const like = async (e, g) => { e.stopPropagation(); try { const u = await api.likeGalleryItem(g.id); q.setData((d) => d.map((i) => (i.id === g.id ? { ...i, ...u } : i))); if (open?.id === g.id) setOpen((o) => ({ ...o, ...u })); } catch (er) { toast(er.message); } };
-  const startRecreate = (e, g) => { e?.stopPropagation(); if (!g.allowRecreate) { toast("The creator turned off recreate for this one."); return; } setOpen(null); setRecreate(g); };
+  const like = (e, g) => { e.stopPropagation(); requireUser(async () => { try { const u = await api.likeGalleryItem(g.id); q.setData((d) => d.map((i) => (i.id === g.id ? { ...i, ...u } : i))); if (open?.id === g.id) setOpen((o) => ({ ...o, ...u })); } catch (er) { toast(er.message); } }); };
+  const startRecreate = (e, g) => { e?.stopPropagation(); if (!g.allowRecreate) { toast("The creator turned off recreate for this one."); return; } requireUser(() => { setOpen(null); setRecreate(g); }); };
   const unpublish = async (g) => { try { await api.unpublishFromGallery(g.id); q.setData((d) => d.filter((i) => i.id !== g.id)); setOpen(null); toast("Removed from the gallery"); } catch (er) { toast(er.message); } };
-  return html`<div class="page wide">
-    <div class="page-head"><div><h1 class="t-title">Made with Rendrr by the community</h1><p class="muted">Take any edit, recreate it with your own footage, keep the style.</p></div>
-      <div class="row"><${Btn} kind=${mine ? "primary" : "secondary"} size="sm" icon="user" id="gallery-mine" aria-pressed=${mine} onClick=${() => setMine((m) => !m)}>My videos<//><${Btn} size="sm" icon="globe" id="publish-video" onClick=${() => setPublish(true)}>Publish a video<//></div></div>
-    <div class="row"><${Seg} size="sm" value=${sort} options=${[{ value: "trending", label: "Trending" }, { value: "newest", label: "Newest" }, { value: "recreated", label: "Most recreated" }]} onChange=${setSort} /></div>
+  const actions = html`<div class="row"><${Btn} kind=${mine ? "primary" : "secondary"} size="sm" icon="user" id="gallery-mine" aria-pressed=${mine} onClick=${() => requireUser(() => setMine((m) => !m))}>My videos<//><${Btn} size="sm" icon="globe" id="publish-video" onClick=${() => requireUser(() => setPublish(true))}>Publish a video<//></div>`;
+  const sortSeg = html`<${Dropdown} id="sort-dd" left value=${sort} options=${[{ value: "trending", label: "Trending" }, { value: "newest", label: "Newest" }, { value: "recreated", label: "Most recreated" }]} onChange=${setSort} />`;
+  return html`<div class=${embedded ? "col" : "page wide"} style=${embedded ? "gap:16px" : ""}>
+    ${embedded ? html`<div class="row between">${sortSeg}${actions}</div>` : html`<div class="page-head"><div><h1 class="t-title">${title}</h1><p class="muted">${sub}</p></div>${!types && actions}</div>
+    <div class="row">${sortSeg}</div>`}
     <${Async} q=${q} skeleton=${html`<${GridSkeleton} n=${8} />`} whenEmpty=${html`<${EmptyState} icon="globe" title="The gallery is empty" text="Be the first. Publish a finished project and others can recreate it." action=${html`<${Btn} onClick=${() => setPublish(true)}>Publish a video<//>`} />`}>${(list) => {
-      let shown = list.filter((g) => (ori === "All" || g.ori === ori) && (plat === "all" || g.platforms.includes(plat)) && (!mine || g.mine));
+      let shown = list.filter((g) => (!types || types.includes(g.style?.type)) && (ori === "All" || g.ori === ori) && (plat === "all" || g.platforms.includes(plat)) && (!mine || g.mine));
       shown = [...shown].sort((a, b) => sort === "newest" ? b.at - a.at : sort === "recreated" ? b.recreates - a.recreates : (b.likes * 3 + b.views / 100) - (a.likes * 3 + a.views / 100));
-      return html`<div class="col" style="gap:12px"><span class="t-small muted" id="gallery-count">${shown.length} videos</span>
-        ${shown.length === 0 ? html`<${EmptyState} icon="search" title="Nothing here yet" text=${mine ? "You have not published a video yet." : "Try another shape or platform."} action=${mine ? html`<${Btn} size="sm" onClick=${() => setPublish(true)}>Publish a video<//>` : null} />` : html`<div class="masonry">
-          ${shown.map((g) => html`<div key=${g.id} class="gcard" role="button" tabindex="0" data-g=${g.id} onClick=${() => setOpen(g)} onKeyDown=${(e) => e.key === "Enter" && setOpen(g)}>
+      const all = shown; shown = shown.slice(0, limit);
+      return html`<div class="col" style="gap:12px"><span class="t-small muted" id="gallery-count">${all.length} videos</span>
+        ${shown.length === 0 ? html`<${EmptyState} icon="search" title="Nothing here yet" text=${mine ? "You have not published a video yet." : "Try another shape or platform."} action=${mine ? html`<${Btn} size="sm" onClick=${() => setPublish(true)}>Publish a video<//>` : null} />` : html`<${Masonry} items=${shown} oriOf=${(g) => g.ori} render=${(g) => html`<div key=${g.id} class="gcard" role="button" tabindex="0" data-g=${g.id} onClick=${() => setOpen(g)} onKeyDown=${(e) => e.key === "Enter" && setOpen(g)}>
             <${StyleVideo} s=${g.style} ori=${g.ori} className="fill" />
-            <div class="gtop"><span class="gauthor" title=${g.title}><span class="gava">${initials(g.author)}</span><b>${g.mine ? "You" : g.author}</b></span><span class="gtag" title=${g.style.name}><${Icon} name="styles" size="11" /></span></div>
+            <div class="gtop"><span class="gauthor" title=${g.title}><span class="gava">${initials(g.author)}</span><b>${g.mine && user ? "You" : g.author}</b></span><span class="gtag" title=${g.style.name}><${Icon} name="styles" size="11" /></span></div>
             <div class="gbot"><button class=${"glike" + (g.liked ? " on" : "")} aria-pressed=${g.liked} aria-label="Like" onClick=${(e) => like(e, g)}><${Icon} name="heart" size="14" />${fmtK(g.likes)}</button>
               <button class="grec" data-recreate=${g.id} onClick=${(e) => startRecreate(e, g)}><${Icon} name="refresh" size="14" />Recreate</button></div>
-          </div>`)}
-        </div>`}
+          </div>`} />`}
+        ${all.length > shown.length && html`<div class="row" style="justify-content:center;padding:8px 0"><${Btn} kind="secondary" id="show-more" onClick=${() => setLimit((l) => l + 60)}>Show more (${all.length - shown.length} left)<//></div>`}
       </div>`; }}<//>
     ${open && html`<${Modal} title=${open.title} sub=${open.author + " · " + fmtAgo(open.at)} onClose=${() => setOpen(null)} wide footer=${html`${open.mine && html`<${Btn} kind="ghost" onClick=${() => unpublish(open)}>Remove from gallery<//>`}<${Btn} kind="secondary" icon="heart" onClick=${(e) => like(e, open)}>${open.liked ? "Liked" : "Like"} · ${fmtK(open.likes)}<//><${Btn} id="recreate-open" icon="refresh" disabled=${!open.allowRecreate} onClick=${(e) => startRecreate(e, open)}>Recreate this<//>`}>
       <${StyleVideo} s=${open.style} ori=${open.ori} className="modal-sv" />
       <div class="four" style="gap:12px">${[["Style", open.style.name], ["Shape", ORI_LABEL[open.ori]], ["Recreated", fmtK(open.recreates) + " times"], ["Best on", open.platforms.map(pl).join(", ")]].map(([k, v]) => html`<div key=${k} class="card flat tight"><div class="t-small muted">${k}</div><b class="t-label">${v}</b></div>`)}</div>
       ${!open.allowRecreate && html`<p class="t-small muted">The creator turned off recreate for this video.</p>`}
     <//>`}
-    ${recreate && html`<${NewProjectModal} styleId=${recreate.styleId} defaultName=${"Recreate: " + recreate.title} title="Recreate this video" sub=${"Same style (" + recreate.style.name + "), your own footage. The AI matches the cut."} onClose=${() => setRecreate(null)} onCreated=${(p) => { api.countRecreate(recreate.id); setRecreate(null); go("/editor/" + p.id); }} />`}
+    ${recreate && html`<${RecreateModal} g=${recreate} onClose=${() => setRecreate(null)} />`}
     ${publish && html`<${PublishModal} plats=${plats} onClose=${() => setPublish(false)} onPublished=${(g) => { q.setData((d) => [g, ...(d || [])]); setPublish(false); setMine(true); }} />`}
   </div>`;
 }
@@ -505,7 +568,7 @@ function ClientReviewPage({ token }) {
         <${Btn} type="submit" disabled=${pwBusy}>${pwBusy ? "Checking…" : "Watch the video"}<//>
       </form></div>` : html`
       <div class="rv-top"><div class="row" style="gap:16px">${r.showLogo && r.logo ? html`<img src=${r.logo} alt="Logo" style="height:36px;max-width:140px;object-fit:contain" />` : html`<div class="logo" style="padding:0;margin:0"><span class="mark" style="background:var(--ink);color:var(--bg)"><${Icon} name="logo" /></span>${r.showLogo ? r.brand : "Review"}</div>`}<span class="muted">${r.folder ? r.folder.name : r.project.name}</span></div>
-        <div class="row"><${ThemeBtn} /><${Seg} size="sm" value=${version} options=${Array.from({ length: r.version }).map((_, i) => ({ value: i + 1, label: "v" + (i + 1) }))} onChange=${setVer} />${r.allowDownload && html`<${Btn} kind="secondary" size="sm" icon="download" onClick=${() => (clip?.download ? window.open(clip.download, "_blank", "noopener") : toast("This version is still rendering. Try again in a minute."))}>Download<//>`}${backBtn}</div></div>
+        <div class="row"><${Seg} size="sm" value=${version} options=${Array.from({ length: r.version }).map((_, i) => ({ value: i + 1, label: "v" + (i + 1) }))} onChange=${setVer} />${r.allowDownload && html`<${Btn} kind="secondary" size="sm" icon="download" onClick=${() => (clip?.download ? window.open(clip.download, "_blank", "noopener") : toast("This version is still rendering. Try again in a minute."))}>Download<//>`}${backBtn}</div></div>
       ${r.folder && html`<div class="row wrap" style="gap:8px;padding:0 32px 16px" id="rv-items">${r.items.map((it) => html`<button key=${it.id} class=${"chip sm " + ((pick || r.items[0].id) === it.id ? "ink" : "neutral")} data-item=${it.id} onClick=${() => { setPick(it.id); pb.seek(0); }}>${it.name}</button>`)}</div>`}
       <div class="rv-body">
         <div class="col" style="gap:16px">
@@ -599,7 +662,7 @@ function Heatmap({ days }) {
 
 /* ---------- /settings ---------- */
 function SettingsPage() {
-  const toast = useToast(); const { go } = useNav(); const { user, setUser, theme, setTheme } = useApp();
+  const toast = useToast(); const { go } = useNav(); const { user, setUser } = useApp();
   const q = useAsync(() => api.getSettings(), []);
   const [name, setName] = useState(user?.name || ""); const [email, setEmail] = useState(user?.email || ""); const [busy, setBusy] = useState(false);
   const photoRef = useRef(); const logoRef = useRef();
@@ -618,7 +681,6 @@ function SettingsPage() {
           <${Field} label="Name" id="st-name"><input id="st-name" class="input" value=${name} onInput=${(e) => setName(e.target.value)} /><//>
           <${Field} label="Email" id="st-email"><input id="st-email" class="input" type="email" value=${email} onInput=${(e) => setEmail(e.target.value)} /><//>
           <div class="row" style="justify-content:flex-end"><${Btn} id="save-profile" disabled=${busy} onClick=${save}>${busy ? "Saving…" : "Save"}<//></div></div>
-        <div class="card col" style="gap:16px"><b class="t-heading">Appearance</b><div class="row between"><p class="muted t-small">Soft off-white, or pure black.</p><${Seg} value=${theme} options=${[{ value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} onChange=${setTheme} /></div></div>
       </div>
       <div class="col" style="gap:24px">
         <div class="card col" style="gap:16px"><b class="t-heading">Brand</b><p class="muted t-small">Your logo shows at the top of client review pages.</p>
@@ -637,7 +699,25 @@ function SettingsPage() {
     </div>
   </div>`;
 }
+
+/* ---------- /billing ---------- */
+// Payments are not switched on yet (Stripe is stubbed): switching plans works, there is no card and no invoices.
+function BillingPage() {
+  const toast = useToast(); const { refreshUsage } = useApp(); const q = useAsync(() => api.getBilling(), []); const [busy, setBusy] = useState(false);
+  const pick = async (name) => { setBusy(true); try { const b = await api.updatePlan(name); q.setData(b); refreshUsage(); toast("Plan changed to " + name, { icon: "check", tone: "brand" }); } catch (e) { toast(e.message); } finally { setBusy(false); } };
+  return html`<div class="page">
+    <div class="page-head"><div><h1 class="t-title">Billing</h1><p class="muted">Your plan, your card, your invoices.</p></div></div>
+    <${Async} q=${q} skeleton=${html`<${Skeleton} rows=${4} />`}>${(b) => html`
+      <div class="three">${b.plans.map((p) => html`<div key=${p.name} class=${"card col" + (b.plan === p.name ? " plan-on" : "")} style="gap:8px" data-plan=${p.name}><div class="row between"><b class="t-heading">${p.name}</b>${b.plan === p.name && html`<span class="tag accent">Current</span>`}</div><span class="t-title" style="font-size:28px">${p.price}<span class="t-small muted" style="font-weight:400"> / month</span></span><p class="t-small muted">${p.note}</p>${b.plan !== p.name && html`<${Btn} kind="secondary" size="sm" disabled=${busy} onClick=${() => pick(p.name)}>Switch to ${p.name}<//>`}</div>`)}</div>
+      <div class="two" style="align-items:start">
+        <div class="card col" style="gap:12px" id="payment-card"><b class="t-heading">Payment method</b>${b.card ? html`<div class="row between"><div class="row" style="gap:12px"><div class="ico sm"><${Icon} name="key" size="18" /></div><div><b class="t-label">${b.card.brand} ending ${b.card.last4}</b><p class="t-small muted">Expires ${b.card.exp} · renews ${b.renew}</p></div></div></div>` : html`<p class="t-small muted">No card on file. Payments are not switched on yet, so every plan is free for now.</p>`}</div>
+        <div class="card col" style="gap:8px" id="invoices"><b class="t-heading">Invoices</b>${b.invoices.length ? b.invoices.map((inv) => html`<div key=${inv.id} class="row between" style="padding:8px 0;border-top:1px solid var(--hair)"><span class="t-label">${inv.id}</span><span class="t-small muted">${inv.date}</span><span class="t-small">${inv.amount}</span><${Chip} tone="neutral" size="sm">${inv.status}<//>${inv.url && html`<${Btn} kind="ghost" size="xs" icon="download" onClick=${() => window.open(inv.url, "_blank", "noopener")}>PDF<//>`}</div>`) : html`<p class="t-small muted">No invoices yet.</p>`}</div>
+      </div>`}<//>
+  </div>`;
+}
+
 export {
   LoginPage, Shell, SourceBadge, DrivePicker, AddFootageModal, LibraryPage, FootagePage, NewProjectModal, ProjectsPage, FolderPage,
-  StyleVideo, StyleArt, StylesPage, StylePacks, HomePage, PublishModal, CreateLinkModal, ClientReviewPage, ConnectPage, UsagePage, Heatmap, SettingsPage,
+  StyleVideo, StyleArt, StylesPage, StylePacks, HomePage, CreatePage, ExploreFeed, PublishModal, CreateLinkModal, ClientReviewPage, ConnectPage, UsagePage, Heatmap,
+  BillingPage, SettingsPage,
 };

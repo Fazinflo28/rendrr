@@ -206,14 +206,6 @@ export default async function reviews(app: FastifyInstance) {
       return { ok: true };
     });
 
-    a.get("/gallery", async (req) => {
-      const me = req.user!.id;
-      const items = await prisma.galleryItem.findMany({ orderBy: { createdAt: "desc" }, take: 200 });
-      const likes = new Set((await prisma.galleryLike.findMany({ where: { userId: me, galleryItemId: { in: items.map((i) => i.id) } } })).map((l) => l.galleryItemId));
-      const styles = new Map((await prisma.style.findMany()).map((s) => [s.id, s]));
-      return items.filter((g) => styles.has(g.styleId)).map((g) => galleryOut(g, me, likes.has(g.id), styles.get(g.styleId)));
-    });
-
     a.post("/gallery", async (req) => {
       const me = req.user!;
       const input = PublishInput.parse(req.body);

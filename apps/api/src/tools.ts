@@ -12,11 +12,12 @@ import { createReviewLink } from "./routes/reviews";
 import { framesFor } from "./services/frames";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
-type Ctx = { userId: string; ai: "claude" | "chatgpt" | null; aiName?: string };
+export type ToolCtx = { userId: string; ai: "claude" | "chatgpt" | null; aiName?: string; via?: "chat" };
+type Ctx = ToolCtx;
 
 const MAX_CHARS = 24_000; // ~6k tokens
 export const clip = (s: string) => (s.length > MAX_CHARS ? s.slice(0, MAX_CHARS) + "\n…(cut to stay short; ask for a narrower range)" : s);
-const actorFor = (c: Ctx, toolName: string, input: unknown): ChangeActor => ({ kind: c.ai === "chatgpt" ? "chatgpt" : "claude", userId: c.userId, ai: c.aiName, toolName, input });
+const actorFor = (c: Ctx, toolName: string, input: unknown): ChangeActor => ({ kind: c.ai === "chatgpt" ? "chatgpt" : "claude", userId: c.userId, ai: c.aiName, via: c.via, toolName, input });
 
 async function ownedVideo(userId: string, id: string) {
   const v = await prisma.video.findUnique({ where: { id }, include: { analysis: true } });
@@ -145,8 +146,14 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async get_comments(c, i) {
     const p = await getOwnedProject(c.userId, i.projectId);
     const cs = await prisma.reviewComment.findMany({ where: { review: { OR: [{ projectId: p.id }, { folderId: p.folderId }] }, OR: [{ projectId: null }, { projectId: p.id }] }, orderBy: { createdAt: "asc" }, take: 200 });
+    const notes = await prisma.projectComment.findMany({ where: { projectId: p.id }, orderBy: { createdAt: "asc" }, take: 200 });
     const short = (t: string) => (t.length > 600 ? t.slice(0, 600) + "…" : t).replace(/\s+/g, " ");
-    return { text: cs.length ? "Client comments (comment id | time in the rendered video | text | resolved):\n" + cs.map((x) => `${x.id} | ${fmtClock(x.time)} | ${short(x.text)} | ${x.resolved ? "resolved" : "open"}`).join("\n") + "\nComment times are OUTPUT times of the version the client watched." : "No client comments on this edit." };
+    const row = (x: { id: string; time: number; text: string; resolved: boolean }) => `${x.id} | ${fmtClock(x.time)} | ${short(x.text)} | ${x.resolved ? "resolved" : "open"}`;
+    const parts = [
+      cs.length ? "Client comments (comment id | time in the rendered video | text | resolved):\n" + cs.map(row).join("\n") + "\nClient comment times are OUTPUT times of the version the client watched." : "No client comments on this edit.",
+      notes.length ? "The user's own notes in the editor (comment id | time in the edited video | text | resolved):\n" + notes.map(row).join("\n") : "",
+    ];
+    return { text: parts.filter(Boolean).join("\n\n") };
   },
 
   async get_preview_frames(c, i) {
@@ -244,9 +251,14 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
   async resolve_comment(c, i) {
     const cm = await prisma.reviewComment.findUnique({ where: { id: i.commentId }, include: { review: true } });
-    if (!cm || cm.review.userId !== c.userId) throw notFound("That comment does not exist.");
-    await prisma.reviewComment.update({ where: { id: cm.id }, data: { resolved: true } });
-    return { text: `Resolved: "${cm.text.slice(0, 120)}"` };
+    if (cm && cm.review.userId === c.userId) {
+      await prisma.reviewComment.update({ where: { id: cm.id }, data: { resolved: true } });
+      return { text: `Resolved: "${cm.text.slice(0, 120)}"` };
+    }
+    const note = await prisma.projectComment.findUnique({ where: { id: i.commentId } });
+    if (!note || note.userId !== c.userId) throw notFound("That comment does not exist.");
+    await prisma.projectComment.update({ where: { id: note.id }, data: { resolved: true } });
+    return { text: `Resolved: "${note.text.slice(0, 120)}"` };
   },
 };
 

@@ -1,6 +1,6 @@
 // Database rows -> the exact shapes ui/rendrr-ui.html's fake api returned. Signed URLs only, never raw keys.
 import { signGet } from "@rendrr/core";
-import type { AiAction, Folder, GalleryItem, Project, Review, ReviewComment, Style, User, Video } from "@rendrr/db";
+import type { AiAction, Folder, GalleryItem, Project, ProjectComment, Review, ReviewComment, Style, User, Video } from "@rendrr/db";
 import { DAY_MS, DRIVE_STEPS, fmtShortDate, fmtSize, LOCAL_STEPS } from "@rendrr/shared";
 
 const ms = (d: Date | null | undefined) => (d ? d.getTime() : null);
@@ -44,6 +44,11 @@ export function projectOut(p: Project) {
 
 export function commentOut(c: ReviewComment) {
   return { id: c.id, time: c.time, text: c.text, author: c.author, resolved: c.resolved, at: c.createdAt.getTime(), projectId: c.projectId ?? undefined };
+}
+
+/** The user's own note in the editor; same shape as a client comment, plus `mine`. */
+export function noteOut(n: ProjectComment, author: string) {
+  return { id: n.id, time: n.time, text: n.text, author: author || "You", mine: true, resolved: n.resolved, at: n.createdAt.getTime(), projectId: n.projectId };
 }
 
 export function activityOut(a: AiAction, project?: Project | null) {

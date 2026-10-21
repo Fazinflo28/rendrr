@@ -45,6 +45,13 @@ export function processTimeoutMs(sourceSeconds: number): number {
   return Math.max(10 * 60_000, Math.round(Math.max(0, Number(sourceSeconds) || 0) * 600));
 }
 
+// Plans on the Billing page. Payments are not switched on (Stripe is stubbed): a plan is a label plus its storage figure.
+export const PLANS = [
+  { name: "Free", price: "$0", note: "3 renders a month, 720p", storageGB: 10 },
+  { name: "Pro", price: "$29", note: "Unlimited renders, 1080p, 100 GB", storageGB: 100 },
+  { name: "Studio", price: "$79", note: "4K, 1 TB, team seats", storageGB: 1000 },
+] as const;
+
 export const DAY_MS = 86_400_000;
 export const PREVIEW_RETENTION_DAYS = 30;
 export const TEMP_ORIGINAL_HOURS = 24;

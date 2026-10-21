@@ -4,6 +4,7 @@ import { ensureBucketCors, env, redis, safeEqual, toFriendly } from "@rendrr/cor
 import { prisma } from "@rendrr/db";
 import Fastify from "fastify";
 import account from "./routes/account";
+import explore from "./routes/explore";
 import internal from "./routes/internal";
 import library from "./routes/library";
 import projects from "./routes/projects";
@@ -92,6 +93,7 @@ export async function buildServer() {
   backfillOutputSeconds().catch(() => {});
 
   await app.register(account);
+  await app.register(explore);
   await app.register(library);
   await app.register(projects);
   await app.register(render);

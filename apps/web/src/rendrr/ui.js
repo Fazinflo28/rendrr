@@ -80,6 +80,25 @@ function Icon({ name, size }) {
 
 const Btn = ({ kind = "primary", size = "", icon, children, className = "", ...rest }) => html`<button class=${["btn", kind, size, icon && !children ? "icon" : "", className].join(" ")} ...${rest}>${icon && html`<${Icon} name=${icon} />`}${children}</button>`;
 const Toggle = ({ on, onChange, id, label }) => html`<button id=${id} role="switch" aria-checked=${!!on} aria-label=${label} class=${"toggle" + (on ? " on" : "")} onClick=${() => onChange(!on)} />`;
+// JS masonry: fills every column edge to edge (shortest column first), unlike CSS columns which leave trailing columns empty.
+const ORI_H = { "9:16": 16 / 9, "16:9": 9 / 16, "1:1": 1 };
+function Masonry({ items, render, oriOf, colWidth = 230, gap = 6 }) {
+  const ref = useRef(); const [cols, setCols] = useState(5);
+  useEffect(() => { const el = ref.current; if (!el) return; const calc = () => setCols(Math.max(2, Math.floor((el.clientWidth + gap) / (colWidth + gap)))); calc(); const ro = new ResizeObserver(calc); ro.observe(el); return () => ro.disconnect(); }, [colWidth, gap]);
+  const buckets = Array.from({ length: cols }, () => ({ h: 0, items: [] }));
+  for (const it of items) { const b = buckets.reduce((a, c) => (c.h < a.h ? c : a)); b.items.push(it); b.h += (ORI_H[oriOf(it)] || 1) + gap / colWidth; }
+  return html`<div class="jm" ref=${ref} style=${{ gap: gap + "px" }}>${buckets.map((b, i) => html`<div key=${i} class="jm-col" style=${{ gap: gap + "px" }}>${b.items.map(render)}</div>`)}</div>`;
+}
+// A small dropdown: a secondary button that opens a menu of options. Closes on outside click or Escape.
+function Dropdown({ value, options, onChange, id, size = "sm", icon, left }) {
+  const [open, setOpen] = useState(false); const ref = useRef();
+  useEffect(() => { if (!open) return; const k = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); }; const esc = (e) => e.key === "Escape" && setOpen(false); window.addEventListener("mousedown", k); window.addEventListener("keydown", esc); return () => { window.removeEventListener("mousedown", k); window.removeEventListener("keydown", esc); }; }, [open]);
+  const cur = options.find((o) => o.value === value) || options[0];
+  return html`<div class="dd" ref=${ref}>
+    <button class=${"btn secondary " + size} id=${id} aria-haspopup="menu" aria-expanded=${open} onClick=${() => setOpen((o) => !o)}>${icon && html`<${Icon} name=${icon} size="14" />`}${cur?.label}<${Icon} name="down" size="14" /></button>
+    ${open && html`<div class=${"menu dd-menu" + (left ? " left" : "")} role="menu">${options.map((o) => html`<button key=${o.value} class=${"item" + (o.value === value ? " on" : "")} role="menuitem" data-value=${o.value} onClick=${() => { onChange(o.value); setOpen(false); }}>${o.value === value ? html`<${Icon} name="check" />` : html`<span style="width:16px" />`}${o.label}</button>`)}</div>`}
+  </div>`;
+}
 const Seg = ({ value, options, onChange, size = "" }) => html`<div class=${"seg " + size} role="tablist">${options.map((o) => { const v = typeof o === "string" ? o : o.value; const l = typeof o === "string" ? o : o.label; return html`<button key=${v} role="tab" aria-selected=${value === v} class=${value === v ? "on" : ""} onClick=${() => onChange(v)}>${l}</button>`; })}</div>`;
 const Chip = ({ tone = "brand", size = "", children, ...rest }) => html`<span class=${"chip " + tone + " " + size} ...${rest}>${children}</span>`;
 const Field = ({ label, hint, children, id }) => html`<div class="field">${label && html`<label for=${id}>${label}</label>`}${children}${hint && html`<span class="hint">${hint}</span>`}</div>`;
@@ -244,8 +263,9 @@ const AppCtx = createContext({});
 const useApp = () => useContext(AppCtx);
 
 // Light by default. The switch sets data-theme and remembers it in this browser.
-const readTheme = () => { try { return localStorage.getItem("rendrr-theme") === "dark" ? "dark" : "light"; } catch { return "light"; } };
-const applyTheme = (t) => { document.documentElement.dataset.theme = t; try { localStorage.setItem("rendrr-theme", t); } catch {} };
+// Dark only. The old light theme is gone; these stay so nothing else has to change.
+const readTheme = () => "dark";
+const applyTheme = () => { document.documentElement.dataset.theme = "dark"; };
 const ThemeBtn = ({ compact }) => { const { theme, setTheme } = useApp(); const dark = theme === "dark"; if (compact) return html`<${Btn} kind="quiet" icon=${dark ? "sun" : "moon"} id="theme-switch" aria-label=${dark ? "Switch to light mode" : "Switch to dark mode"} title=${dark ? "Light mode" : "Dark mode"} onClick=${() => setTheme(dark ? "light" : "dark")} />`; return html`<button class=${"mode" + (dark ? " dark" : "")} id="theme-switch" role="switch" aria-checked=${dark} aria-label=${dark ? "Switch to light mode" : "Switch to dark mode"} title=${dark ? "Light mode" : "Dark mode"} onClick=${() => setTheme(dark ? "light" : "dark")}><i><${Icon} name=${dark ? "moon" : "sun"} /></i></button>`; };
 
 // Copies text; falls back to selecting it when the clipboard is blocked.

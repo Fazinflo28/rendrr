@@ -16,6 +16,23 @@ function useHistory(initial) {
 }
 const TRACKS = [["v3", "V3"], ["v2", "V2"], ["v1", "V1"], ["a1", "A1"], ["a2", "A2"], ["a3", "A3"]];
 const TRACK_HINT = { v1: "Main cut", v2: "B-roll, effects", v3: "Titles", a1: "Dialogue", a2: "Music", a3: "Sound FX" };
+// The style, broken down like a recipe. Keys muted, values plain, nested with two spaces.
+const styleCode = (st, S) => [
+  "style: " + st.name,
+  "type: " + st.type,
+  "shape: " + (S?.aspect || st.ori[0]),
+  "cuts:",
+  "  pace: " + st.cutPace,
+  "zooms: " + st.zoomRules,
+  "captions:",
+  "  look: " + (S?.captionLook || st.captionLook),
+  "  rule: " + st.captionRule,
+  "  on: " + (S?.captionsOn === false ? "false" : "true"),
+  "music: " + st.musicVibe,
+  "export:",
+  "  shapes: " + st.ori.join(", "),
+  "  best_on: " + st.platforms.join(", "),
+].join("\n");
 const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "Pause"], ["L", "Forward 5 seconds"], ["S", "Split at playhead"], ["Delete", "Cut selected words or clip"], ["Cmd Z", "Undo"], ["Cmd Shift Z", "Redo"], ["?", "Show shortcuts"]];
 
 function EditorPage({ id }) {
@@ -23,10 +40,13 @@ function EditorPage({ id }) {
   const { go } = useNav();
   // When your AI changes this edit, load its new version (the editor remounts on the new version).
   useEffect(() => api.watchProject(id, (m) => { if (m && m.by !== "user") q.reload(); }), [id]);
-  return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version} project=${p} reload=${q.reload} />`}<//>`;
+  // The AI chat lives here, not in EditorInner: the AI's own changes remount EditorInner while it is still replying.
+  const [chat, setChat] = useState(null); const [thinking, setThinking] = useState(false);
+  useEffect(() => { setChat(null); setThinking(false); }, [id]);
+  return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version} project=${p} reload=${q.reload} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])), thinking, setThinking }} />`}<//>`;
 }
 
-function EditorInner({ project, reload }) {
+function EditorInner({ project, reload, ai }) {
   const { go } = useNav(); const toast = useToast(); const { refreshUsage } = useApp();
   const sq = useAsync(() => api.listStyles(), []);
   const tl = project.timeline; const words = useMemo(() => project.transcript.flatMap((l) => l.words), [project]);
@@ -38,9 +58,10 @@ function EditorInner({ project, reload }) {
   useEffect(() => { const k = () => setVerMenu(false); window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
   const [zoom, setZoom] = useState(36);
   const [render, setRender] = useState(null);
+  const [autoPrev, setAutoPrev] = useState("Preview up to date");
   const [share, setShare] = useState(false); const [help, setHelp] = useState(false);
   const [viewVer, setViewVer] = useState(null);
-  const [activity, setActivity] = useState(project.activity); const [comments, setComments] = useState(project.comments);
+  const [comments, setComments] = useState(project.comments);
   const [saved, setSaved] = useState("Saved");
   const [status, setStatus] = useState(project.status);
   const cutSet = useMemo(() => new Set(S.cut), [S.cut]);
@@ -53,7 +74,8 @@ function EditorInner({ project, reload }) {
 
   // Autosave after each change.
   const first = useRef(true);
-  useEffect(() => { if (first.current) { first.current = false; return; } setSaved("Saving…"); const t = setTimeout(() => api.updateProject(project.id, { name: S.name, styleId: S.styleId, aspect: S.aspect, timeline: { ...tl, cut: S.cut, tracks: S.tracks, captionsOn: S.captionsOn, captionLook: S.captionLook, captionText: S.captionText } }).then(() => setSaved("Saved")).catch((e) => { if (e.code === "stale") { toast(e.message, { icon: "spark" }); reload(); } else setSaved("Not saved"); }), 600); return () => clearTimeout(t); }, [S]);
+  // The player is the preview: it plays the edit straight from the timeline, so it is up to date once the change is saved.
+  useEffect(() => { if (first.current) { first.current = false; return; } setSaved("Saving…"); setAutoPrev("Preview updating…"); const t = setTimeout(() => api.updateProject(project.id, { name: S.name, styleId: S.styleId, aspect: S.aspect, timeline: { ...tl, cut: S.cut, tracks: S.tracks, captionsOn: S.captionsOn, captionLook: S.captionLook, captionText: S.captionText } }).then(() => { setSaved("Saved"); setAutoPrev("Preview up to date"); }).catch((e) => { if (e.code === "stale") { toast(e.message, { icon: "spark" }); reload(); } else { setSaved("Not saved"); setAutoPrev("Preview not saved"); } }), 600); return () => clearTimeout(t); }, [S]);
 
   // Derived playback bits.
   const line = project.transcript.filter((l) => l.start <= pb.time).pop();
@@ -99,7 +121,7 @@ function EditorInner({ project, reload }) {
       const fn = kind === "preview" ? api.renderPreview : api.renderFinal;
       const result = await fn(project.id, (p) => setRender((r) => r && { ...r, progress: p }));
       setRender((r) => ({ ...r, status: "done", result })); setStatus(kind === "preview" ? "Preview ready" : "Final ready"); refreshUsage();
-      setActivity((a) => [{ id: "a" + Date.now(), ai: "Rendrr", text: "rendered " + kind, at: Date.now() }, ...a]);
+      setChat((c) => [...c, { id: "r" + Date.now(), role: "ai", ai: "Rendrr", text: "Final rendered.", workflow: result.steps || ["Encoded 1080p", "Cleaned up raw file"], at: Date.now() }]);
     } catch (e) {
       // Local footage: full quality needs the original once. Ask for it, then run the final.
       if (e.code === "need-original") { setRender({ kind, status: "original", hasFile: api.hasLocalFile(project.videoId), error: null, progress: { step: 0, steps: [], percent: 0 } }); return; }
@@ -135,7 +157,15 @@ function EditorInner({ project, reload }) {
   const canvasW = Math.max(900, px(dur) + 40);
   const ticks = []; for (let t = 0; t <= dur; t += zoom < 30 ? 5 : zoom < 60 ? 2 : 1) ticks.push(t);
 
-  const undoAi = async (a) => { try { await api.undoAiAction(a.id); setActivity((x) => x.filter((i) => i.id !== a.id)); toast("Undone: " + a.text, { icon: "undo" }); reload(); } catch (e) { toast(e.message); } };
+  const { chat, setChat, thinking, setThinking } = ai; const [aiDraft, setAiDraft] = useState("");
+  // The AI edits on the server; the editor reloads the edit afterwards so the timeline shows its changes.
+  const sendAi = async () => { const text = aiDraft.trim(); if (!text || thinking) return; setAiDraft(""); setChat((c) => [...c, { id: "tmp" + Date.now(), role: "user", text, at: Date.now() }]); setThinking(true);
+    try { const [u, a] = await api.sendAiMessage(project.id, text); setChat((c) => [...c.filter((m) => !String(m.id).startsWith("tmp")), u, a]); if (a.changed) reload(); toast(a.ai + ": " + (a.workflow?.length ? a.workflow.length + (a.workflow.length === 1 ? " step" : " steps") + " done" : "replied"), { icon: "spark", tone: "brand" }); }
+    catch (e) { setChat((c) => c.filter((m) => !String(m.id).startsWith("tmp"))); setAiDraft(text); toast(e.message); } finally { setThinking(false); } };
+  useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, thinking, rtab]);
+  useEffect(() => { const el = document.getElementById("comment-list"); if (el) el.scrollTop = el.scrollHeight; }, [comments.length, rtab]);
+  const [draft, setDraft] = useState(""); const [posting, setPosting] = useState(false);
+  const postComment = async () => { if (!draft.trim()) return; setPosting(true); try { const c = await api.addProjectComment(project.id, { time: pb.time, text: draft }); setComments((x) => [...x, c].sort((a, b) => a.time - b.time)); setDraft(""); toast("Comment added at " + fmtTime(c.time), { icon: "comment" }); } catch (e) { toast(e.message); } finally { setPosting(false); } };
   const resolve = async (c) => { try { const u = await api.resolveComment(c.id, !c.resolved); setComments((x) => x.map((i) => (i.id === c.id ? { ...i, resolved: u.resolved } : i))); } catch (e) { toast(e.message); } };
 
   return html`<div class="editor">
@@ -148,7 +178,7 @@ function EditorInner({ project, reload }) {
       </div>
       <span class="t-small muted" id="saved" title=${saved} style="display:inline-flex;align-items:center;gap:4px;opacity:.7">${saved === "Saved" ? "" : saved}</span>
       <div class="grow" />
-      <${Btn} kind="secondary" size="sm" id="render-preview" icon="play" onClick=${() => startRender("preview")}>Render preview<//>
+      <span class="t-small muted" id="auto-preview" title="The player shows every change as you make it. Render a preview to see it with captions, zooms and music burned in.">${autoPrev}</span>
       <${Btn} kind="secondary" size="sm" id="render-final" icon="film" onClick=${() => startRender("final")}>Render final<//>
       <${Btn} size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share for review<//>
     </div>
@@ -195,31 +225,51 @@ function EditorInner({ project, reload }) {
           ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
           ${selWords().length > 0 && html`<div class="selpop" id="cut-pop"><span class="t-small">${selWords().length} ${selWords().length === 1 ? "word" : "words"}</span><${Btn} size="xs" icon="scissors" id="cut-selected" onClick=${() => { cutWords(selWords()); setWsel(null); }}>Remove from video<//><${Btn} kind="quiet" size="xs" icon="play" aria-label="Play selection" onClick=${() => { const ids = selWords(); const w = words.find((x) => x.id === ids[0]); if (w) { pb.seek(w.t); pb.setPlaying(true); } }} /><${Btn} kind="quiet" size="xs" icon="x" aria-label="Clear selection" onClick=${() => setWsel(null)} /></div>`}
         </div>`}
-        ${rtab === "ai" && html`<div class="pb" style="padding-top:16px"><div class="col" style="gap:12px">
-          <p class="t-small muted">What your connected AI did on this project. Undo anything.</p>
-          ${activity.length === 0 ? html`<div class="state" style="padding:32px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="spark" /></div><b class="t-label">No AI activity yet</b><p class="t-small">Ask Claude or ChatGPT to edit this project.</p></div>` : html`<div class="list">${activity.map((a) => html`<div key=${a.id} class="li" data-ai=${a.id}><${Chip} tone="neutral" size="sm">${a.ai}<//><div class="grow"><div class="t">${a.text}</div><div class="sub">${fmtAgo(a.at)}</div></div><${Btn} kind="ghost" size="xs" class="act" icon="undo" onClick=${() => undoAi(a)}>Undo<//></div>`)}</div>`}
-        </div></div>`}
-        ${rtab === "comments" && html`<div class="pb" style="padding-top:16px"><div class="col" style="gap:12px">
-          ${comments.length === 0 ? html`<div class="state" style="padding:32px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="comment" /></div><b class="t-label">No client comments</b><p class="t-small">Share a review link and comments land here.</p><${Btn} size="sm" kind="secondary" onClick=${() => setShare(true)}>Share for review<//></div>` : html`<div class="list">${comments.map((c) => html`<div key=${c.id} class=${"li click" + (c.resolved ? " done" : "")} data-comment=${c.id} onClick=${() => c.time > 0 && pb.seek(c.time)}>${c.time > 0 && html`<${Chip} tone="brand" size="sm" class="mono">${fmtTime(c.time)}<//>`}<div class="grow"><div class="t">${c.text}</div><div class="sub">${c.author} · ${fmtAgo(c.at)}</div></div><${Btn} kind=${c.resolved ? "quiet" : "ghost"} size="xs" class="act" icon=${c.resolved ? "refresh" : "check"} onClick=${(e) => { e.stopPropagation(); resolve(c); }}>${c.resolved ? "Reopen" : "Resolve"}<//></div>`)}</div>`}
-        </div></div>`}
+        ${rtab === "ai" && html`<div class="pb cmts" style="padding-top:12px">
+          <div class="col" style="gap:10px;flex:1;min-height:0;overflow:auto" id="ai-thread">
+            ${chat.length === 0 ? html`<div class="state" style="padding:28px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="spark" /></div><b class="t-label">Tell the AI what to change</b><p class="t-small">It edits the timeline and shows you every step it took.</p></div>`
+            : chat.map((m) => html`<div key=${m.id} class=${"msg " + m.role} data-msg=${m.id}>
+                ${m.role === "ai" && html`<span class="who"><${Icon} name="spark" size="12" /> ${m.ai}</span>`}
+                <p>${m.text}</p>
+                ${m.workflow && html`<div class="wf"><span class="t-small muted">Workflow</span>${m.workflow.map((w, i) => html`<div key=${i} class="wf-step"><span class="n">${i + 1}</span>${w}</div>`)}</div>`}
+                <span class="t-small muted when">${fmtAgo(m.at)}</span>
+              </div>`)}
+            ${thinking && html`<div class="msg ai" aria-live="polite"><span class="who"><${Icon} name="spark" size="12" /> Claude</span><p class="muted">Working on it<span class="dots">…</span></p></div>`}
+          </div>
+          <form class="cbox" onSubmit=${(e) => { e.preventDefault(); sendAi(); }}>
+            <input id="ai-input" class="input sm grow" placeholder="Ask for a change, like: add zooms on the strong lines" value=${aiDraft} onInput=${(e) => setAiDraft(e.target.value)} />
+            <${Btn} size="sm" type="submit" id="ai-send" icon="spark" disabled=${!aiDraft.trim() || thinking}>Send<//>
+          </form>
+        </div>`}
+        ${rtab === "comments" && html`<div class="pb cmts" style="padding-top:12px">
+          <div class="col" style="gap:8px;flex:1;min-height:0;overflow:auto" id="comment-list">
+            ${comments.length === 0 ? html`<div class="state" style="padding:28px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="comment" /></div><b class="t-label">No comments yet</b><p class="t-small">Leave a note at any moment of the video. Clients can too, from a review link.</p></div>`
+            : comments.map((c) => html`<div key=${c.id} class=${"cmt" + (c.resolved ? " done" : "")} data-comment=${c.id}>
+                <span class="gava" style="width:26px;height:26px;font-size:10px">${initials(c.author)}</span>
+                <div class="grow" style="min-width:0"><div class="row" style="gap:8px"><b class="t-label">${c.author}${c.mine ? " (you)" : ""}</b><span class="t-small muted">${fmtAgo(c.at)}</span><div class="grow" /><${Btn} kind="quiet" size="xs" class="act" icon=${c.resolved ? "refresh" : "check"} aria-label=${c.resolved ? "Reopen" : "Resolve"} onClick=${() => resolve(c)} /></div>
+                  <p class="t-small" style="margin-top:2px">${c.time > 0 && html`<button class="tc" onClick=${() => pb.seek(c.time)}>${fmtTime(c.time)}</button>`}${c.text}</p></div>
+              </div>`)}
+          </div>
+          <form class="cbox" onSubmit=${(e) => { e.preventDefault(); postComment(); }}>
+            <button type="button" class="tc big" title="Comment at this moment" onClick=${() => pb.setPlaying(false)}>${fmtTime(pb.time)}</button>
+            <input id="comment-input" class="input sm grow" placeholder="Leave a comment at this moment…" value=${draft} onInput=${(e) => setDraft(e.target.value)} onFocus=${() => pb.setPlaying(false)} />
+            <${Btn} size="sm" type="submit" id="comment-post" disabled=${!draft.trim() || posting}>${posting ? "…" : "Post"}<//>
+          </form>
+        </div>`}
         ${rtab === "style" && html`<div class="pb" style="padding-top:16px">
-          ${rtab === "style" && html`<div class="col" style="gap:16px">
-            ${style && html`<div><${StyleArt} s=${style} /><b class="t-heading">${style.name}</b><p class="t-small muted">${style.vibe}</p></div>
-            <div class="list"><div class="li"><div><div class="sub">Cut pace</div><div class="t">${style.cutPace}</div></div></div><div class="li"><div><div class="sub">Zooms</div><div class="t">${style.zoomRules}</div></div></div><div class="li"><div><div class="sub">Music</div><div class="t">${style.musicVibe}</div></div></div></div>`}
-            <div class="row between"><div><b class="t-label">Captions</b><p class="t-small muted">${S.captionsOn ? "Showing on the video" : "Hidden"}</p></div><${Toggle} id="captions-on" on=${S.captionsOn} onChange=${(v) => H.commit((s) => ({ ...s, captionsOn: v }))} label="Captions" /></div>
-            <div><b class="t-label">Caption look</b><div class="look" style="margin-top:8px">${["clean", "bold", "outline"].map((k) => html`<button key=${k} data-look=${k} class=${S.captionLook === k ? "on" : ""} onClick=${() => H.commit((s) => ({ ...s, captionLook: k }))}><span class=${k}>Aa</span></button>`)}</div></div>
-            <details><summary class="t-label" style="cursor:pointer">Edit caption text</summary><div class="col" style="gap:8px;margin-top:8px">${project.transcript.map((l) => html`<div key=${l.id} class="capline"><span class="ts mono t-small muted" style="width:40px">${fmtTime(l.start)}</span><input class="input sm" aria-label=${"Caption at " + fmtTime(l.start)} value=${S.captionText[l.id]} onFocus=${() => pb.seek(l.start)} onInput=${(e) => H.replace((s) => ({ ...s, captionText: { ...s.captionText, [l.id]: e.target.value } }))} onBlur=${(e) => { if (e.target.value !== tl.captionText[l.id]) H.commitFrom({ ...S, captionText: tl.captionText }); }} /></div>`)}</div></details>
-            <div><b class="t-label">Switch style</b><div class="list" style="margin-top:8px">${(sq.data || []).map((s) => html`<button key=${s.id} class=${"li click" + (s.id === S.styleId ? " on" : "")} data-style=${s.id} onClick=${() => { H.commit((x) => ({ ...x, styleId: s.id, captionLook: s.captionLook })); toast("Style: " + s.name, { icon: "styles" }); }}><div class="mini"><${Art} art=${s.art} /></div><div class="grow"><div class="t" style="font-weight:500">${s.name}</div><div class="sub">${s.vibe}</div></div>${s.id === S.styleId && html`<${Icon} name="check" size="16" />`}</button>`)}</div></div>
+          ${style && html`<div class="col" style="gap:12px">
+            <${StyleArt} s=${style} />
+            <pre class="code" id="style-code">${styleCode(style, S).split("\n").map((ln, i) => { const m = ln.match(/^(\s*)([a-z_]+):(.*)$/); return html`<div key=${i}>${m ? html`${m[1]}<span class="k">${m[2]}:</span>${m[3]}` : ln}</div>`; })}</pre>
           </div>`}
         </div>`}
       </div>
     </div>
 
-    ${render && html`<${Modal} title=${render.kind === "preview" ? "Rendering preview" : "Rendering final"} sub=${render.status === "running" ? (render.kind === "preview" ? "Fast and low quality, just to check." : project.video?.source === "drive" ? "Full quality. We fetch the raw file from your Drive, then delete it." : "Full quality. This one takes a little longer.") : null} onClose=${render.status !== "running" ? () => setRender(null) : undefined}>
+    ${render && html`<${Modal} title="Rendering final" sub=${render.status === "running" ? (project.video?.source === "drive" ? "Full quality. We fetch the raw file from your Drive, then delete it." : "Full quality. This one takes a little longer.") : null} onClose=${render.status !== "running" ? () => setRender(null) : undefined}>
       ${render.status === "running" && html`<div class="col" style="gap:16px"><div class="bar big"><i style=${{ width: render.progress.percent + "%" }} /></div><div class="row between"><span class="t-small muted" id="render-step">${render.progress.steps[render.progress.step] || "Starting…"}</span><span class="t-small mono muted">${render.progress.percent}%</span></div>
         <div class="steps">${render.progress.steps.map((s, i) => html`<div key=${s} class=${"step" + (i < render.progress.step ? " done" : i === render.progress.step ? " now" : "")}><span class="ck">${i < render.progress.step && html`<${Icon} name="check" />`}</span>${s}</div>`)}</div></div>`}
-      ${render.status === "done" && html`<div class="state" style="padding:24px 0;box-shadow:none;background:none"><div class="ico"><${Icon} name="check" /></div><h3 class="t-heading" id="render-done">${render.kind === "preview" ? "Preview is ready" : "Final is ready"}</h3><p id="render-note">${render.kind === "preview" ? "540p, quick check only" : render.result.note + " · 1080p · " + render.result.size}</p>
-        <div class="row">${render.kind === "final" ? html`<${Btn} icon="download" id="download" onClick=${() => { if (render.result.downloadUrl) { window.open(render.result.downloadUrl, "_blank", "noopener"); toast("Download started", { icon: "download", tone: "brand" }); } }}>Download ${render.result.fileName || "final"}<//>` : html`<${Btn} icon="play" onClick=${() => { setRender(null); pb.setPlaying(false); setWatch({ url: render.result.url, seconds: render.result.seconds, version: render.result.version }); setTimeout(() => wpb.setPlaying(true), 50); }}>Watch preview<//>`}<${Btn} kind="ghost" onClick=${() => setRender(null)}>Close<//></div></div>`}
+      ${render.status === "done" && html`<div class="state" style="padding:24px 0;box-shadow:none;background:none"><div class="ico"><${Icon} name="check" /></div><h3 class="t-heading" id="render-done">Final is ready</h3><p id="render-note">${render.result.note + " · 1080p · " + render.result.size}</p>
+        <div class="row"><${Btn} icon="laptop" id="download" onClick=${() => { if (render.result.downloadUrl) { window.open(render.result.downloadUrl, "_blank", "noopener"); toast("Saving " + (render.result.fileName || "the final") + " to this computer", { icon: "download", tone: "brand" }); } }}>Save to this computer<//><${Btn} kind="secondary" icon="drive" id="save-drive" onClick=${async () => { try { const r = await api.saveFinalToDrive(render.result.renderId); toast(r.message, { icon: "drive", tone: "brand" }); } catch (e) { toast(e.message); } }}>Save to Google Drive<//><${Btn} kind="ghost" onClick=${() => setRender(null)}>Close<//></div></div>`}
       ${render.status === "error" && html`<div class="state" role="alert" style="padding:24px 0;box-shadow:none;background:none"><div class="ico err"><${Icon} name="alert" /></div><h3 class="t-heading" id="render-error">${render.code === "drive" ? "Drive file out of reach" : "Render did not finish"}</h3><p>${render.error}</p><div class="row">${render.code === "drive" && html`<${Btn} id="render-reconnect" icon="drive" onClick=${reconnectDrive}>Reconnect<//>`}<${Btn} kind=${render.code === "drive" ? "secondary" : "primary"} id="render-retry" icon="refresh" onClick=${() => startRender(render.kind)}>Try again<//><${Btn} kind="ghost" onClick=${() => setRender(null)}>Close<//></div></div>`}
       ${render.status === "original" && html`<div class="col" style="gap:16px" id="need-original"><div class="card flat row" style="gap:12px;align-items:flex-start"><${Icon} name="laptop" size="18" /><div><b class="t-label">Full quality needs your original file once.</b><p class="t-small muted">We delete it within 24 hours of the export. Your preview copy stays.</p></div></div>
         ${project.video && html`<p class="t-small muted">Looking for <b style="color:var(--ink)">${project.video.originalName}</b> · ${project.video.size}</p>`}

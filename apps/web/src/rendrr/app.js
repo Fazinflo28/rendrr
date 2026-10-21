@@ -1,26 +1,27 @@
 /* ===================== app: routes + root ===================== */
-// Ported from ui/rendrr-ui.html (app script). The route is the real URL (Next.js); `go` pushes it.
-// A Clerk session on load skips /login. The phone scaling runs in an effect instead of at load.
+// Ported from ui/rendrr-ui-v2.html (app script). The route is the real URL (Next.js); `go` pushes it.
+// Screen paths:
+//   /explore (public)  /create/:cat (public, actions gated)  /styles (public)  /library  /library/:id  /projects  /projects/:id
+//   /editor/:id  /review/:token  /connect  /usage  /billing  /settings
+//   Login is a modal over Explore (Higgsfield-style): browse free, act after logging in. /login opens that modal.
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx } from "./ui";
-import { LoginPage, HomePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, UsagePage, SettingsPage, Shell } from "./screens";
+import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, UsagePage, BillingPage, SettingsPage, Shell } from "./screens";
 import { EditorPage } from "./editor";
 import { api } from "./api";
-
-// Screen paths:
-//   /login  /home  /library  /library/:id  /projects  /projects/:id  /editor/:id  /styles  /review/:token  /connect  /usage  /settings
 const ROUTES = [
-  [/^\/login$/, () => html`<${LoginPage} />`, { bare: true }],
-  [/^\/home$/, () => html`<${HomePage} />`],
+  [/^\/(explore|home)?$/, () => html`<${HomePage} />`, { pub: true }],
+  [/^\/create\/([^/]+)$/, (m) => html`<${CreatePage} cat=${m[1]} />`, { pub: true }],
+  [/^\/styles$/, () => html`<${StylesPage} />`, { pub: true }],
   [/^\/library$/, () => html`<${LibraryPage} />`],
   [/^\/library\/([^/]+)$/, (m) => html`<${FootagePage} id=${m[1]} />`],
   [/^\/projects$/, () => html`<${ProjectsPage} />`],
   [/^\/projects\/([^/]+)$/, (m) => html`<${FolderPage} id=${m[1]} />`],
   [/^\/editor\/([^/]+)$/, (m) => html`<${EditorPage} id=${m[1]} />`, { full: true }],
-  [/^\/styles$/, () => html`<${StylesPage} />`],
   [/^\/review\/([^/]+)$/, (m) => html`<${ClientReviewPage} token=${m[1]} />`, { bare: true }],
   [/^\/connect$/, () => html`<${ConnectPage} />`],
   [/^\/usage$/, () => html`<${UsagePage} />`],
+  [/^\/billing$/, () => html`<${BillingPage} />`],
   [/^\/settings$/, () => html`<${SettingsPage} />`],
   [/^\/sso-callback$/, () => null, { bare: true }], // Clerk finishes Google sign-in here (src/app/sso-callback)
   [/^\/drive-done$/, () => html`<${DriveDone} />`, { bare: true }],
@@ -47,7 +48,11 @@ function DriveDone() {
 function App() {
   const pathname = usePathname() || "/";
   const router = useRouter();
-  const route = pathname;
+  const route = pathname === "/" || pathname === "/login" ? "/explore" : pathname;
+  // Login modal: `after` runs once the user is in (the action they tried, or the page they wanted).
+  const [login, setLogin] = useState(null); // null | { after, mode }
+  const openLogin = useCallback((after, mode) => setLogin({ after: after || null, mode: mode || "login" }), []);
+  const closeLogin = useCallback(() => setLogin(null), []);
   const [nonce, setNonce] = useState(0);
   const [user, setUser] = useState(null);
   const [auth, setAuth] = useState("checking"); // checking | in | out
@@ -70,7 +75,7 @@ function App() {
     })();
     return () => { on = false; };
   }, [pathname, !!user]);
-  useEffect(() => { if (pathname === "/" && auth !== "checking") router.replace(user ? "/home" : "/login"); else if (pathname === "/login" && user) router.replace("/home"); }, [pathname, auth, user]);
+  useEffect(() => { if (pathname === "/login" && user) router.replace("/explore"); }, [pathname, user]);
   const setTheme = (t) => { setThemeState(t); applyTheme(t); };
   // Upload from the top bar or the library: always lands in /library and finishes on its own.
   const [addOpen, setAddOpen] = useState(false);
@@ -87,24 +92,30 @@ function App() {
   const addFromDrive = useCallback(async (ids) => { try { const out = await api.addFromDrive(ids); setAddOpen(false); go("/library"); toast(out.length + (out.length === 1 ? " video" : " videos") + " linked from Drive", { icon: "drive", tone: "brand" }); ping(); } catch (e) { toast(e.message, { icon: "alert" }); } }, [go]);
   const addSample = useCallback(() => startUpload(null), [startUpload]);
 
-  const match = ROUTES.find(([re]) => re.test(route)) || ROUTES[1];
+  const match = ROUTES.find(([re]) => re.test(route)) || ROUTES[0];
   const m = route.match(match[0]) || []; const opts = match[2] || {};
-  const guarded = !user && !opts.bare;
-  useEffect(() => { if (guarded && auth === "out") router.replace("/login"); }, [guarded, auth]);
-  const page = guarded || pathname === "/" ? null : match[1](m);
-  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addSample, addFromDrive, theme, setTheme, addOpen, openAdd: () => setAddOpen(true), closeAdd: () => setAddOpen(false) };
+  // Logged out on a private page: show Explore underneath and ask to log in; after login, the page they wanted appears.
+  const guarded = !user && !opts.bare && !opts.pub;
+  useEffect(() => { if (guarded && auth === "out") setLogin({ after: null, mode: "login", leave: true }); }, [guarded, auth]);
+  useEffect(() => { if (pathname === "/login" && auth === "out") setLogin({ after: null, mode: "login" }); }, [pathname, auth]);
+  const requireUser = useCallback((fn) => { if (user) fn(); else setLogin({ after: () => setTimeout(fn, 0), mode: "login" }); }, [user]);
+  const page = guarded ? (auth === "checking" ? null : html`<${HomePage} />`) : match[1](m);
+  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addSample, addFromDrive, theme, setTheme, addOpen, openAdd: () => requireUser(() => setAddOpen(true)), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser };
+  // Closing the login on a private page goes back to Explore.
+  const onCloseLogin = () => { const leave = login?.leave; setLogin(null); if (leave || pathname === "/login") go("/explore"); };
   return html`<${NavCtx.Provider} value=${{ route, go }}><${AppCtx.Provider} value=${ctx}>
-    ${guarded || !page ? null : opts.bare || opts.full ? page : html`<${Shell} key=${nonce}>${page}<//>`}
+    ${!page ? null : !guarded && (opts.bare || opts.full) ? page : html`<${Shell} key=${nonce}>${page}<//>`}
+    ${login && !user && html`<${LoginPage} key=${login.mode} initialMode=${login.mode} onClose=${onCloseLogin} after=${(u) => { const f = login.after; setLogin(null); if (pathname === "/login") go("/explore"); if (f) f(u); }} />`}
   <//><//>`;
 }
 
 // Desktop-only layout (1280px). On a narrower screen (a phone), scale the whole app down to fit so it can still be viewed and tapped.
 function fitToScreen() {
-  const root = document.getElementById("root"); const DESIGN = 1280;
+  const root = document.getElementById("root"); const DESIGN = 1280, ZOOM = .8; // #root renders at 80%, so it needs 1024 real px
   if (!root) return () => {};
   const fit = () => {
     const w = window.innerWidth, hgt = window.innerHeight;
-    if (w < DESIGN) { const k = w / DESIGN; root.style.transform = "scale(" + k + ")"; root.style.transformOrigin = "0 0"; root.style.width = DESIGN + "px"; root.style.height = Math.round(hgt / k) + "px"; document.documentElement.classList.add("scaled"); }
+    if (w < DESIGN * ZOOM) { const k = w / (DESIGN * ZOOM); root.style.transform = "scale(" + k + ")"; root.style.transformOrigin = "0 0"; root.style.width = DESIGN + "px"; root.style.height = Math.round(hgt / (k * ZOOM)) + "px"; document.documentElement.classList.add("scaled"); }
     else { root.style.transform = ""; root.style.width = ""; root.style.height = ""; document.documentElement.classList.remove("scaled"); }
   };
   fit(); window.addEventListener("resize", fit); window.visualViewport?.addEventListener("resize", fit);

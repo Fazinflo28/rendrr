@@ -1,10 +1,10 @@
-import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, notFound, readRender, renderChannel, signPart } from "@rendrr/core";
+import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, drive, features, notFound, readRender, renderChannel, signGet, signPart } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { OriginalCompleteInput, OriginalUploadInput, PREFIX, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { getOwnedProject } from "../services/projects";
-import { renderStatus, startRender } from "../services/render";
+import { renderResult, renderStatus, startRender } from "../services/render";
 import { listen, openSse } from "../live";
 
 export default async function render(app: FastifyInstance) {
@@ -23,6 +23,19 @@ export default async function render(app: FastifyInstance) {
   }
 
   app.get("/renders/:id", async (req) => renderStatus(await ownedRender(req.user!.id, (req.params as { id: string }).id)));
+
+  // "Save to Google Drive" on a finished final: copies the file into the user's Drive.
+  app.post("/renders/:id/save-to-drive", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req) => {
+    const userId = req.user!.id;
+    const r = await ownedRender(userId, (req.params as { id: string }).id);
+    if (r.kind !== "final" || r.status !== "done" || !r.outputKey) throw new AppError("Render the final first, then save it.", 409);
+    if (!features().drive) throw new AppError("Saving to Google Drive is not switched on yet (the server needs Google keys). Use Save to this computer for now.", 409, "drive-off");
+    const conn = await prisma.driveConnection.findUnique({ where: { userId } });
+    if (!conn || conn.stub) throw new AppError("Connect Google Drive first (Library > Add footage > Google Drive), then save again.", 409, "drive");
+    const res = await renderResult(r);
+    const f = await drive.uploadToDrive(userId, res.fileName, { url: await signGet(r.outputKey, 3600), size: Number(r.sizeBytes), type: "video/mp4" });
+    return { ok: true, fileId: f.id, link: f.webViewLink ?? null, message: `Saved to your Google Drive as "${res.fileName}".` };
+  });
 
   // Live progress: { step, steps, percent } exactly as the render modal expects, then done or failed.
   app.get("/renders/:id/events", async (req, reply) => {

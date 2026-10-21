@@ -102,3 +102,20 @@ export async function getFile(userId: string, fileId: string, stub: boolean): Pr
 export async function mediaRequest(userId: string, fileId: string) {
   return { url: `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, headers: { authorization: "Bearer " + (await accessTokenFor(userId)) } };
 }
+
+/** Copies a finished file into the user's Drive (drive.file scope: Rendrr only sees files it made). Streams, no temp file. */
+export async function uploadToDrive(userId: string, name: string, src: { url: string; size: number; type: string }) {
+  const t = await accessTokenFor(userId);
+  const init = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,webViewLink", {
+    method: "POST",
+    headers: { authorization: "Bearer " + t, "content-type": "application/json; charset=UTF-8", "x-upload-content-type": src.type, "x-upload-content-length": String(src.size) },
+    body: JSON.stringify({ name, mimeType: src.type }),
+  });
+  const session = init.headers.get("location");
+  if (!init.ok || !session) throw new AppError(init.status === 403 ? "Google Drive did not allow the upload. Connect Google Drive again so Rendrr can save files there." : "We could not reach Google Drive. Try again in a moment.", 502, "drive");
+  const file = await fetch(src.url);
+  if (!file.ok || !file.body) throw new AppError("The final file could not be read. Render the final again.", 502);
+  const put = await fetch(session, { method: "PUT", headers: { "content-type": src.type, "content-length": String(src.size) }, body: file.body, duplex: "half" } as RequestInit & { duplex: "half" });
+  if (!put.ok) throw new AppError("The upload to Google Drive stopped part way. Try again.", 502, "drive");
+  return (await put.json()) as { id: string; webViewLink?: string };
+}
