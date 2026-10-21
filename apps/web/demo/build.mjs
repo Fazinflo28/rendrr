@@ -41,7 +41,7 @@ const html = `<title>Rendrr</title>
 <style>
 ${css}
 #app { height: 100%; }
-#demo-note { position: fixed; left: max(12px, env(safe-area-inset-left, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px)); transition: opacity .4s; max-width: calc(100vw - 24px); z-index: 70; display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 999px; background: var(--raised); color: var(--muted); font: 12px/16px var(--font); box-shadow: var(--shadow-pop); }
+#demo-note { position: fixed; left: max(12px, env(safe-area-inset-left, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px)); transition: opacity .4s; max-width: calc(100vw - 24px); z-index: 30; display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border-radius: 999px; background: var(--raised); color: var(--muted); font: 12px/16px var(--font); box-shadow: var(--shadow-pop); }
 #demo-note b { color: var(--ink); font-weight: 500; }
 #demo-note button { width: 22px; height: 22px; border-radius: 50%; color: var(--muted); }
 #demo-note button:hover { background: var(--hair-strong); color: var(--ink); }
