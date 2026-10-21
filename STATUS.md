@@ -124,6 +124,15 @@ Three reviews (API, worker/render, web app) plus tests in the real Docker images
 
 ## Known limits (not blocking a test)
 
+From the new design itself (kept as designed):
+- It is a desktop layout. On a phone or a narrow window the whole page is shrunk to fit, so text gets small.
+- `/styles` opens the Clipping wall; style packs are picked when you make an edit.
+- There is no "Render preview" button: the player shows every change live, and "Render final" makes the video. (The AI connector can still render previews.)
+- The dark look is the only theme.
+- The plan cards and the sign-up box mention render limits, 4K and seats. None of that is enforced yet (no payments).
+
+From before:
+
 - The web app runs on Railway, not Vercel: the Vercel connector here may read projects but not create them. Moving later is described in [DECISIONS.md](DECISIONS.md).
 - Login says whether an email has an account (friendlier messages; fine for a private app, change before a public launch).
 - One worker renders one video at a time (`CONCURRENCY_RENDER`); raise it or add replicas when more people use it.
