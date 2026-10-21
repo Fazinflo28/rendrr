@@ -1,0 +1,4 @@
+public/ffmpeg/
+.env.local
+tsconfig.tsbuildinfo
+next-env.d.ts
