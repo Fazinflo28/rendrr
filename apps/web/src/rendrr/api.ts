@@ -116,7 +116,12 @@ export const api: any = {
   getVideo: async (id: string) => remember(await get(`/videos/${enc(id)}`)),
   retryVideo: async (id: string) => {
     const v = remember(await post(`/videos/${enc(id)}/retry`));
-    if (v.source === "local" && !v.sample && v.status === "previewing") localJobs.start(v.id);
+    if (v.source === "local" && !v.sample && v.status === "previewing") {
+      // The browser has to make the preview again: it needs the file in this tab (asks with a picker).
+      try { await localJobs.ensureFile(v.id, v.originalName); }
+      catch (e) { await post(`/videos/${enc(v.id)}/local/progress`, { status: "paused" }).catch(() => {}); throw e; }
+      localJobs.start(v.id);
+    }
     return v;
   },
   removeVideo: (id: string) => del(`/videos/${enc(id)}`),
