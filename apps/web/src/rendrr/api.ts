@@ -261,6 +261,8 @@ export const api: any = {
     if (v.originalName && (f.name !== v.originalName || (v.originalSize && f.size !== v.originalSize))) {
       throw fail("That is not the same file. We need '" + v.originalName + "'" + (v.originalSize ? " (" + (v.originalSize / 1e6).toFixed(0) + " MB)" : "") + ".");
     }
+    // Keep the picked file in this tab: the next export uploads it without asking again.
+    if (file) localJobs.hold(p.videoId, f);
     const steps = ["Uploading original"];
     onProgress?.({ step: 0, steps, percent: 0 });
     const up = await post(`/projects/${enc(projectId)}/original`, { name: f.name, size: f.size });
