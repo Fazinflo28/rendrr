@@ -5,6 +5,7 @@ import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { videoOut } from "../serialize";
+import { purgeProjectFiles } from "../services/projects";
 
 const ART = ["c", "d", "e", "f", "a", "b"];
 const randomArt = () => ART[Math.floor(Math.random() * ART.length)];
@@ -22,21 +23,40 @@ async function driveConn(userId: string) {
   return c;
 }
 
+// OAuth state: who started the flow, which web page to report back to, when. Signed, valid 15 minutes.
 const stateSecret = () => env().ENCRYPTION_KEY || env().CLERK_SECRET_KEY || "dev";
-const signState = (userId: string) => { const n = Date.now().toString(36); return `${userId}.${n}.${createHmac("sha256", stateSecret()).update(userId + n).digest("base64url").slice(0, 22)}`; };
-const readState = (s: string) => { const [u, n, sig] = s.split("."); return u && n && sig === createHmac("sha256", stateSecret()).update(u + n).digest("base64url").slice(0, 22) && Date.now() - parseInt(n, 36) < 15 * 60_000 ? u : null; };
+const stateSig = (body: string) => createHmac("sha256", stateSecret()).update(body).digest("base64url").slice(0, 22);
+const signState = (userId: string, origin: string) => {
+  const body = `${userId}.${Date.now().toString(36)}.${Buffer.from(origin).toString("base64url")}`;
+  return `${body}.${stateSig(body)}`;
+};
+const readState = (s: string) => {
+  const parts = s.split(".");
+  if (parts.length !== 4) return null;
+  const [u, n, o, sig] = parts;
+  if (sig !== stateSig(`${u}.${n}.${o}`) || Date.now() - parseInt(n, 36) > 15 * 60_000) return null;
+  return { userId: u, origin: Buffer.from(o, "base64url").toString("utf8") };
+};
+const webOrigin = (req: { headers: Record<string, unknown> }) => {
+  const o = String(req.headers.origin || env().PUBLIC_WEB_URL || "").replace(/\/$/, "");
+  return /^https?:\/\/[a-z0-9.:-]+$/i.test(o) ? o : "";
+};
 
 export default async function library(app: FastifyInstance) {
-  // Google redirects here after consent. Public: the signed state says who it is for.
+  // Google redirects the popup here after consent. This page does not finish the connection itself: it hands the
+  // code to the Rendrr tab that opened it (or, without one, to the web app's /drive-done page), which finishes it with
+  // the user's own login (POST /drive/complete). A consent link sent by someone else can never attach your Drive to
+  // their account: the account that finishes must be the one that started.
   app.get("/drive/callback", async (req, reply) => {
     const q = req.query as { code?: string; state?: string; error?: string };
-    const page = (msg: string) => reply.type("text/html").send(`<!doctype html><meta charset=utf8><title>Rendrr</title><body style="font:15px system-ui;padding:40px;background:#f7f7f8"><p>${msg}</p><script>try{window.opener&&window.opener.postMessage({rendrrDrive:true},"*")}catch(e){};setTimeout(()=>window.close(),1200)</script>`);
-    const userId = q.state ? readState(q.state) : null;
-    if (q.error || !q.code || !userId) return page("Google Drive was not connected. You can close this window and try again.");
-    const t = await drive.exchangeCode(q.code);
-    if (!t.refreshToken) return page("Google did not give Rendrr lasting access. Remove Rendrr from your Google account's connected apps, then connect again.");
-    await prisma.driveConnection.upsert({ where: { userId }, create: { userId, googleEmail: t.email, refreshToken: encrypt(t.refreshToken), scopes: t.scope, stub: false }, update: { googleEmail: t.email, refreshToken: encrypt(t.refreshToken), scopes: t.scope, stub: false, connectedAt: new Date() } });
-    return page("Google Drive connected. You can close this window.");
+    const st = q.state ? readState(q.state) : null;
+    const page = (body: string) => reply.type("text/html").header("cache-control", "no-store").header("referrer-policy", "no-referrer")
+      .send(`<!doctype html><meta charset=utf8><title>Rendrr</title><body style="font:15px system-ui;padding:40px;background:#f7f7f8">${body}`);
+    if (q.error || !q.code || !q.state || !st?.origin) return page("<p>Google Drive was not connected. You can close this window and try again.</p>");
+    const msg = JSON.stringify({ rendrrDrive: true, code: q.code, state: q.state }).replace(/</g, "\\u003c");
+    const origin = JSON.stringify(st.origin);
+    const done = JSON.stringify(`${st.origin}/drive-done?code=${encodeURIComponent(q.code)}&state=${encodeURIComponent(q.state)}`);
+    return page(`<p>Finishing in Rendrr…</p><script>try{if(window.opener&&!window.opener.closed){window.opener.postMessage(${msg},${origin});setTimeout(function(){window.close()},800)}else{location.replace(${done})}}catch(e){location.replace(${done})}</script>`);
   });
 
   app.register(async (a) => {
@@ -90,6 +110,7 @@ export default async function library(app: FastifyInstance) {
       if (used) throw new AppError(`This footage is used by ${used} ${used === 1 ? "edit" : "edits"}. Delete ${used === 1 ? "it" : "them"} first.`, 409, "in-use");
       const an = await prisma.footageAnalysis.findUnique({ where: { videoId: v.id } });
       await deleteObjects([v.proxyKey, v.audioKey, v.thumbKey, ...(((an?.keyFrames as { key: string }[]) || []).map((k) => k.key))]);
+      await purgeProjectFiles({ videoId: v.id, deletedAt: { not: null } });
       await prisma.project.deleteMany({ where: { videoId: v.id, deletedAt: { not: null } } });
       await prisma.video.delete({ where: { id: v.id } });
       return { ok: true };
@@ -144,7 +165,8 @@ export default async function library(app: FastifyInstance) {
     });
 
     a.post("/videos/pause", async (req) => {
-      const ids = ((req.body as { ids?: string[] })?.ids || []).slice(0, 50);
+      const raw = (req.body as { ids?: unknown })?.ids;
+      const ids = (Array.isArray(raw) ? raw : []).filter((x): x is string => typeof x === "string").slice(0, 50);
       await prisma.video.updateMany({ where: { id: { in: ids }, userId: req.user!.id, status: { in: ["previewing", "uploading"] }, sample: false }, data: { status: "paused" } });
       return { ok: true };
     });
@@ -207,10 +229,27 @@ export default async function library(app: FastifyInstance) {
     });
     a.post("/drive/connect", async (req) => {
       const userId = req.user!.id;
-      if (features().drive) return { connected: false, authUrl: drive.authUrl(signState(userId)) };
+      if (features().drive) {
+        const origin = webOrigin(req);
+        if (!origin) throw new AppError("Open Rendrr from its own address to connect Google Drive.", 400, "drive");
+        return { connected: false, authUrl: drive.authUrl(signState(userId, origin)) };
+      }
       // TODO(key): GOOGLE_CLIENT_ID/SECRET unset, so this connects the fake Drive with sample files.
       const c = await prisma.driveConnection.upsert({ where: { userId }, create: { userId, googleEmail: req.user!.email || "demo@drive", refreshToken: "", scopes: "stub", stub: true }, update: {} });
       return { connected: true, email: c.googleEmail, stub: true };
+    });
+    // Second half of the Google consent: only the Rendrr account that started it can finish it.
+    a.post("/drive/complete", async (req) => {
+      const { code, state } = (req.body || {}) as { code?: unknown; state?: unknown };
+      const st = typeof state === "string" ? readState(state) : null;
+      if (typeof code !== "string" || !code || !st) throw new AppError("Google Drive was not connected. Try again.", 400, "drive");
+      if (st.userId !== req.user!.id) throw new AppError("This Google Drive link was started from a different Rendrr account. Connect again from your own Rendrr.", 403, "drive");
+      const userId = req.user!.id;
+      const t = await drive.exchangeCode(code).catch(() => null);
+      if (!t) throw new AppError("Google Drive was not connected. Try again.", 400, "drive");
+      if (!t.refreshToken) throw new AppError("Google did not give Rendrr lasting access. Remove Rendrr from your Google account's connected apps, then connect again.", 400, "drive");
+      const c = await prisma.driveConnection.upsert({ where: { userId }, create: { userId, googleEmail: t.email, refreshToken: encrypt(t.refreshToken), scopes: t.scope, stub: false }, update: { googleEmail: t.email, refreshToken: encrypt(t.refreshToken), scopes: t.scope, stub: false, connectedAt: new Date() } });
+      return { connected: true, email: c.googleEmail, stub: false };
     });
     a.post("/drive/disconnect", async (req) => {
       await prisma.driveConnection.deleteMany({ where: { userId: req.user!.id } });

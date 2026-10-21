@@ -41,6 +41,30 @@ describe("cut maths (same as the UI's cutRegions)", () => {
 });
 
 describe("ops", () => {
+  it("splits the same clip twice with unique ids", () => {
+    let s = snap();
+    const first = s.timeline.tracks.v1[0];
+    const mid = (first.start + first.end) / 2;
+    s = applyOp(s, { op: "split_clip", track: "v1", clipId: first.id, at: mid }, ctx).snap;
+    s = applyOp(s, { op: "split_clip", track: "v1", clipId: first.id, at: (first.start + mid) / 2 }, ctx).snap;
+    const ids = s.timeline.tracks.v1.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.length).toBe(snap().timeline.tracks.v1.length + 2);
+  });
+  it("audio clips only ever point at built-in tracks", () => {
+    const s0 = snap();
+    const s = applyOp(s0, { op: "set_clips", track: "a2", clips: [
+      { id: "m1", start: 0, end: 5, label: "x", assetKey: "audio/someone-else/video.m4a" },
+      { id: "m2", start: 5, end: 9, label: "y", trackId: "m_lofi", assetKey: "proxies/someone-else/v.mp4" },
+    ] } as never, ctx).snap;
+    const [a, b] = s.timeline.tracks.a2 as { assetKey?: string; trackId?: string }[];
+    expect(a.assetKey).toBeUndefined();
+    expect(b.assetKey).toBe("assets/music/m_lofi.m4a");
+    const fx = applyOp(s, { op: "set_clips", track: "a3", clips: [{ id: "x1", start: 1, end: 2, label: "w", sfxId: "sfx_whoosh" }] } as never, ctx).snap;
+    expect((fx.timeline.tracks.a3[0] as { assetKey?: string }).assetKey).toBe("assets/sfx/sfx_whoosh.m4a");
+    const plan = planRender({ kind: "preview", snapshot: fx, transcript: tr, source: { width: 1280, height: 720, fps: 30, seconds: 40, hasAudio: true } } as never);
+    expect(plan.audio.map((x) => x.assetKey).sort()).toEqual(["assets/music/m_lofi.m4a", "assets/sfx/sfx_whoosh.m4a"]);
+  });
   it("builds a valid first timeline", () => {
     const t = buildInitialTimeline(tr, 40, "bold");
     expect(TimelineSchema.safeParse(t).success).toBe(true);

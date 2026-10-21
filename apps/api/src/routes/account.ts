@@ -113,11 +113,12 @@ export default async function account(app: FastifyInstance) {
         await clerk().users.updateUser(u.clerkId, { firstName: first, lastName: rest.join(" ") || undefined }).catch(() => {});
       }
       if (patch.email && patch.email.toLowerCase() !== u.email.toLowerCase()) {
-        try {
-          await clerk().emailAddresses.createEmailAddress({ userId: u.clerkId, emailAddress: patch.email.toLowerCase(), verified: true, primary: true });
-        } catch (e) {
-          throw new AppError(clerkError(e) || "We could not change your email. It may already be used by another account.", 400);
-        }
+        // The browser proves the new address first (Clerk emails a code, the web app makes it primary).
+        // Here we only copy it once Clerk says it is verified and primary, so nobody can claim an address they do not own.
+        const cu = await clerk().users.getUser(u.clerkId);
+        const primary = cu.emailAddresses.find((x) => x.id === cu.primaryEmailAddressId);
+        const ok = primary && primary.emailAddress.toLowerCase() === patch.email.toLowerCase() && primary.verification?.status === "verified";
+        if (!ok) throw new AppError("Confirm the new email with the code we send to it first.", 400, "email-unverified");
         data.email = patch.email.toLowerCase();
       }
       if (patch.photo !== undefined) {

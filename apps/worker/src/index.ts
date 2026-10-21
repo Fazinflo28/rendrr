@@ -22,7 +22,7 @@ const videoFailed = async (job: Job, message: string) => {
 const videoUser = async (job: Job) => (await prisma.video.findUnique({ where: { id: (job.data as { videoId: string }).videoId }, select: { userId: true } }))?.userId ?? null;
 const renderUser = async (job: Job) => (await prisma.render.findUnique({ where: { id: (job.data as { renderId: string }).renderId }, select: { userId: true } }))?.userId ?? null;
 
-const conc = (name: string, d: number) => Number(process.env[`CONCURRENCY_${name.toUpperCase()}`] || d);
+const conc = (name: string, d: number) => Math.max(1, Math.floor(Number(process.env[`CONCURRENCY_${name.toUpperCase()}`]) || d));
 const workers = [
   new Worker(QUEUES.proxy.name, guarded("proxy", QUEUES.proxy.timeoutMs, "Making the preview", proxyJob, videoFailed, videoUser), { connection: newRedis(), concurrency: conc("proxy", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.analyze.name, guarded("analyze", QUEUES.analyze.timeoutMs, "Processing", analyzeJob, videoFailed, videoUser), { connection: newRedis(), concurrency: conc("analyze", 2), lockDuration: 60_000 }),

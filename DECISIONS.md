@@ -61,3 +61,40 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 ## Clerk
 
 - DCR, CIMD and default scopes (`openid profile email`) were enabled through Clerk's Backend API (`PATCH /v1/instance/oauth_application_settings`).
+
+## Later decisions (made while building)
+
+### Hosting
+- **The web app runs on Railway (`web` service) for now.** The Vercel connector in this session may read projects but is not allowed to create one (403). Moving to Vercel later: create a project with root directory `apps/web`, set `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, add the Vercel URL to the API's `WEB_ORIGINS` and `PUBLIC_WEB_URL`.
+- **Railway deploys from GitHub** (Dockerfile per service: `apps/{api,worker,mcp,web}/Dockerfile`, build context = repo root). The Railway GitHub app needs access to the `rendrr` repo.
+- The API runs database migrations and the seed on every start (both idempotent).
+- Servers listen on IPv6 (`::`) for Railway's private network and fall back to IPv4 where IPv6 is missing.
+
+### Login
+- **Email + password login is checked by the API** (Clerk Backend API `verifyPassword`), then the browser signs in with a one-time Clerk **sign-in ticket**. This keeps the UI's own login form and avoids Clerk's extra "new device" email code for password logins. Login is rate limited (10/min per IP). Sign up creates the Clerk user server side (no email code); `SIGNUP_ALLOWLIST` can restrict who may sign up.
+- Google login uses Clerk's OAuth redirect (`/sso-callback`). Password reset uses Clerk's email code (the reset card gained a code + new password step).
+- A Rendrr user row (and a first folder "My edits") is created the first time a Clerk user calls the API, from the web app or from an AI.
+
+### AI connector (MCP)
+- One URL for everyone: `https://mcp-production-7fa0.up.railway.app/mcp`. Clerk is the OAuth authorization server (dynamic client registration and CIMD on, PKCE required); the MCP server only verifies Clerk OAuth access tokens and serves the protected-resource metadata.
+- **Stateless Streamable HTTP**: a fresh MCP server object per request. Survives restarts and needs no sticky sessions.
+- **Which AI is calling**: the `clientInfo.name` from `initialize` (cached per user + OAuth client), else the Clerk OAuth application name, else the User-Agent. Names containing "openai/chatgpt/gpt" count as ChatGPT; everything else counts as Claude in the database's `createdBy` (the activity feed shows the real client name).
+- Tool results are short text plus at most 5 images (frames are fetched by the MCP server and sent as base64 so the AI can see them). Transcripts are sentence level unless `detail: "words"`; responses are capped at about 6k tokens with paging by `from`/`to`.
+- Long tools (`render_preview` 60 s, `render_final` 180 s, `create_graphic` 90 s) send MCP progress notifications every 5 s so clients do not time out, then fall back to `get_render`.
+- **Logging**: every tool call is logged as a `usage_events` row (`kind = mcp_tool`, tool, AI name, duration, ok/error). Every write also creates an `ai_actions` row through `applyTimelineChange` (read-only calls are not put in `ai_actions`, which feeds the undoable activity list).
+- Rate limit: 120 tool calls per minute per user (in memory, one MCP instance).
+- Turning an AI off on the Connect page marks it revoked; its tool calls are refused until "Test connection" turns it back on.
+- Extra tool beyond the brief: none. Music tracks and sound effects are listed by `list_graphics` so the AI can pick them.
+
+### Media and graphics
+- B-roll in finals uses the b-roll footage's 720p preview copy (fetching every b-roll original from Drive would make finals slow and fragile).
+- Graphics (templates and custom) are recorded in headless Chromium with a virtual clock: CSS animations are seeked to each frame, `requestAnimationFrame`/`Date.now`/`performance.now` follow the recording clock, and `window.renderFrame(t)` is called if the code defines it. No network (all requests except `data:` are blocked and DNS is mapped to nowhere), 256 MB JS heap, one renderer process, 60 s kill switch. Large, long graphics are captured at 12–20 fps and played back at 30 fps to stay inside the limit. Templates are drawn at up to 720p and scaled to the output size.
+- Template renders are cached in storage by a hash of everything that changes the picture.
+- `get_preview_frames` takes frames at exact output times through a small `frames` queue on the worker (the API has no FFmpeg).
+- Built-in sample footage is processed by the worker like Drive footage but shows the local steps in the UI, and keeps its original in storage so finals work without asking for a file.
+- The fake Drive (no Google keys) lists the UI's demo folders, backed by the built-in samples.
+
+### Storage
+- One private bucket with prefixes (`proxies/`, `audio/`, `frames/`, `previews/`, `finals/`, `temp-raw/`, `graphics/`, `brand/`, `assets/`, `samples/`). Retention is enforced by the worker's daily cleanup at 03:15 UTC (Railway Buckets have no lifecycle rules), plus deleting the temp original right after a successful final.
+- The API sets the bucket's CORS rule at startup so browsers can upload preview copies and originals straight to storage.
+- Brand photos and logos are uploaded as data URLs by the UI, stored in the bucket and served by signed URLs.

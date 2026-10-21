@@ -1,6 +1,6 @@
-import { abortMultipart, deleteObject, deleteObjects } from "@rendrr/core";
+import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, listPrefix } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { DAY_MS, PREVIEW_RETENTION_DAYS, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
+import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
 import { ensureAssets } from "../lib/assets";
 import type { Ctx } from "../lib/job";
 
@@ -30,6 +30,18 @@ export async function cleanup() {
     await deleteObject(o.key).catch(() => {});
     await prisma.tempOriginal.delete({ where: { id: o.id } });
     out.tempOriginals++;
+  }
+
+  // Raw originals are never kept longer than promised, even when their database row is already gone
+  // (folder or footage deleted): sweep the prefix itself, and abort uploads that never finished.
+  const rawCutoff = new Date(now.getTime() - (TEMP_ORIGINAL_HOURS + 1) * 3600_000);
+  try {
+    const stale = (await listPrefix(PREFIX.tempRaw, 5000)).filter((o) => o.lastModified < rawCutoff).map((o) => o.key);
+    await deleteObjects(stale);
+    out.tempOriginals += stale.length;
+    out.tempOriginals += await abortStaleMultipart(PREFIX.tempRaw, rawCutoff);
+  } catch (e) {
+    console.warn("[cleanup] temp-raw sweep:", (e as Error).message);
   }
 
   const oldPreviews = await prisma.render.findMany({ where: { kind: "preview", outputKey: { not: null }, createdAt: { lt: new Date(now.getTime() - PREVIEW_RETENTION_DAYS * DAY_MS) } } });

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { catalogMusic, catalogSfx } from "./catalog";
 import { ASPECTS, CAPTION_LOOKS } from "./constants";
 
 // The shared timeline. Same shape as timelineFor() in ui/rendrr-ui.html.
@@ -94,13 +95,22 @@ export function timelineProblems(t: Timeline): string[] {
   return out;
 }
 
-/** Sorts clips, clamps them to the footage length and rounds times to 1/100 s. */
+/** Music and sound effect clips get their storage key from the catalog; an unknown track keeps no key (silent). */
+function canonicalAudio(name: TrackName, c: Clip): Clip {
+  if (name !== "a2" && name !== "a3") return c;
+  const { assetKey: _ignored, ...rest } = c as Clip & { assetKey?: string };
+  const hit = name === "a2" ? catalogMusic(c as A2Clip) : catalogSfx(c as A3Clip);
+  if (!hit) return rest;
+  return name === "a2" ? { ...rest, trackId: hit.id, assetKey: hit.key } : { ...rest, sfxId: hit.id, assetKey: hit.key };
+}
+
+/** Sorts clips, clamps them to the footage length, rounds times to 1/100 s and fixes audio keys. */
 export function normalizeTimeline(t: Timeline): Timeline {
   const r = (n: number) => Math.round(n * 100) / 100;
   const tracks = {} as Tracks;
   for (const name of TRACK_NAMES) {
     (tracks as Record<string, Clip[]>)[name] = [...t.tracks[name]]
-      .map((c) => ({ ...c, start: r(Math.max(0, Math.min(c.start, t.duration))), end: r(Math.max(0, Math.min(c.end, t.duration))) }))
+      .map((c) => canonicalAudio(name, { ...c, start: r(Math.max(0, Math.min(c.start, t.duration))), end: r(Math.max(0, Math.min(c.end, t.duration))) }))
       .filter((c) => c.end > c.start)
       .sort((a, b) => a.start - b.start || a.end - b.end);
   }

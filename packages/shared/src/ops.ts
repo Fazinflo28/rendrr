@@ -364,8 +364,12 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
     case "split_clip": {
       const c = findClip(tl, op.track, op.clipId);
       if (!(op.at > c.start + 0.05 && op.at < c.end - 0.05)) throw new EditError(`Split time ${op.at}s must be inside the clip (${c.start}s to ${c.end}s).`);
-      const clips = (tl.tracks[op.track] as Clip[]).flatMap((x) => (x.id !== c.id ? [x] : [{ ...x, end: r2(op.at) }, { ...x, id: x.id + "b", start: r2(op.at), label: x.label + " (2)" }]));
-      return { snap: { ...snap, timeline: withTracks(tl, op.track, clips) }, summary: `split ${c.label || c.id} at ${fmtClock(op.at)}` };
+      const ids = new Set((tl.tracks[op.track] as Clip[]).map((x) => x.id));
+      let newId = rid(op.track + "_");
+      while (ids.has(newId)) newId = rid(op.track + "_");
+      const label2 = /\(2\)$/.test(c.label) ? c.label : (c.label ? c.label + " (2)" : "");
+      const clips = (tl.tracks[op.track] as Clip[]).flatMap((x) => (x.id !== c.id ? [x] : [{ ...x, end: r2(op.at) }, { ...x, id: newId, start: r2(op.at), label: label2 }]));
+      return { snap: { ...snap, timeline: withTracks(tl, op.track, clips) }, summary: `split ${c.label || c.id} at ${fmtClock(op.at)} (second half is clip ${newId})` };
     }
     case "trim_clip": {
       const c = findClip(tl, op.track, op.clipId);

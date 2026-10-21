@@ -132,18 +132,28 @@ export const api: any = {
     const r = await post("/drive/connect");
     if (!r.authUrl) return r;
     // Real Google consent in a popup; the API's callback page tells us when it is done.
+    // The popup hands the Google code back here and we finish with our own login (see /drive/complete).
+    // Without a popup the whole tab goes to Google and comes back to /drive-done, which finishes it.
     const w = window.open(r.authUrl, "rendrr-drive", "width=520,height=680");
     if (!w) { window.location.href = r.authUrl; return new Promise(() => {}); }
+    const apiOrigin = new URL(BASE).origin;
+    let finishing: Promise<unknown> | null = null;
     await new Promise<void>((resolve) => {
       const done = () => { window.removeEventListener("message", onMsg); clearInterval(t); resolve(); };
-      const onMsg = (e: MessageEvent) => { if (e.data && e.data.rendrrDrive) done(); };
+      const onMsg = (e: MessageEvent) => {
+        if (e.origin !== apiOrigin || !e.data || !e.data.rendrrDrive) return;
+        if (e.data.code && e.data.state) finishing = post("/drive/complete", { code: e.data.code, state: e.data.state });
+        done();
+      };
       window.addEventListener("message", onMsg);
       const t = setInterval(() => { if (w.closed) done(); }, 500);
     });
+    if (finishing) await finishing;
     const s = await api.getDriveStatus();
     if (!s.connected) throw fail("Google Drive was not connected. Try again.", "drive");
     return s;
   },
+  completeDrive: (code: string, state: string) => post("/drive/complete", { code, state }),
   disconnectDrive: () => post("/drive/disconnect"),
   listDriveFiles: (folderId = "root") => get(`/drive/files?folderId=${enc(folderId)}`),
   addFromDrive: async (fileIds: string[]) => (await post("/videos/drive", { fileIds })).map(remember),
@@ -291,7 +301,28 @@ export const api: any = {
   getUsage: () => get("/account/usage"),
   getUsageHistory: () => get("/account/usage/history"),
   getProfile: () => get("/account/profile"),
-  updateProfile: (p: any) => patch("/account/profile", p),
+  // A new email is confirmed with Clerk first (it emails a code); the server only accepts a verified, primary address.
+  updateProfile: async (p: any) => {
+    const want = typeof p?.email === "string" ? p.email.trim().toLowerCase() : "";
+    const c = want ? await clerk() : null;
+    const u = c?.user;
+    if (u && want && u.primaryEmailAddress?.emailAddress?.toLowerCase() !== want) {
+      try {
+        let ea = u.emailAddresses.find((x: any) => x.emailAddress.toLowerCase() === want) || (await u.createEmailAddress({ email: want }));
+        if (ea.verification?.status !== "verified") {
+          await ea.prepareVerification({ strategy: "email_code" });
+          const code = window.prompt(`We sent a 6-digit code to ${want}. Enter it to confirm your new email.`);
+          if (!code || !code.trim()) throw fail("Email not changed. Save again and enter the code we send.", "email-unverified");
+          ea = await ea.attemptVerification({ code: code.trim() });
+        }
+        await u.update({ primaryEmailAddressId: ea.id });
+      } catch (e: any) {
+        if (e?.friendly) throw e;
+        throw fail(e?.errors?.[0]?.longMessage || e?.errors?.[0]?.message || "We could not change your email. Try again.", "email");
+      }
+    }
+    return patch("/account/profile", p);
+  },
   uploadLogo: (dataUrl: string | null) => post("/account/logo", { dataUrl }),
   getSettings: () => get("/account/settings"),
   updateSettings: (p: any) => patch("/account/settings", p),

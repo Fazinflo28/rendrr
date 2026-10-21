@@ -1,6 +1,7 @@
 // Timeline -> FFmpeg. The one place that decides what a render looks like.
 // planRender() is pure: it turns a snapshot + transcript into an ordered plan in OUTPUT time.
 // ffmpegArgs() turns a plan + local file paths into one FFmpeg command (a single pass: fast and lossless between steps).
+import { catalogMusic, catalogSfx } from "./catalog";
 import type { Aspect, CaptionLook } from "./constants";
 import { cutRegions, keptRanges, makeTimeMap, mergeRanges, subtractRanges, type Range } from "./ops";
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip } from "./timeline";
@@ -189,16 +190,19 @@ export function planRender(input: PlanInput): RenderPlan {
     if (sp) graphics.push({ clipId: c.id, ...sp, sourceStart: 0, graphicId: c.graphicId });
   }
   const audio: AudioOp[] = [];
+  // Keys come from the catalog only (see catalogMusic), whatever the stored clip says.
   for (const c of tl.tracks.a2 as A2Clip[]) {
-    if (!c.assetKey) continue;
+    const track = catalogMusic(c);
+    if (!track) continue;
     const sp = span(c.start, c.end);
-    if (sp) audio.push({ clipId: c.id, ...sp, gainDb: c.gainDb ?? -18, assetKey: c.assetKey, kind: "music" });
+    if (sp) audio.push({ clipId: c.id, ...sp, gainDb: c.gainDb ?? -18, assetKey: track.key, kind: "music" });
   }
   for (const c of tl.tracks.a3 as A3Clip[]) {
-    if (!c.assetKey) continue;
+    const sfx = catalogSfx(c);
+    if (!sfx) continue;
     const start = toOut(c.start);
     if (start >= total) continue;
-    audio.push({ clipId: c.id, start, end: r3(Math.min(total, start + Math.max(0.1, c.end - c.start))), gainDb: c.gainDb ?? -6, assetKey: c.assetKey, kind: "sfx" });
+    audio.push({ clipId: c.id, start, end: r3(Math.min(total, start + Math.max(0.1, c.end - c.start))), gainDb: c.gainDb ?? -6, assetKey: sfx.key, kind: "sfx" });
   }
   // Dialogue plays only where an A1 clip covers it.
   const a1 = mergeRanges(tl.tracks.a1.map((c) => ({ start: c.start, end: c.end })));

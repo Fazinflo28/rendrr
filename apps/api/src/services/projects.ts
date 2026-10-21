@@ -1,4 +1,4 @@
-import { AppError, applyTimelineChange, notFound, signGet } from "@rendrr/core";
+import { abortMultipart, AppError, applyTimelineChange, deleteObjects, notFound, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
 import { allWords, aspectFor, buildInitialTimeline, DEFAULT_STYLE_ID, outputDuration, type Snapshot, type Transcript } from "@rendrr/shared";
 import { activityOut, commentOut, folderOut, projectOut, styleOut, videoOut } from "../serialize";
@@ -87,4 +87,15 @@ export async function projectFull(userId: string, id: string) {
     previewVersion: preview?.version ?? null,
     finalUrl: final?.outputKey ? await signGet(final.outputKey, 6 * 3600) : null,
   };
+}
+
+/** Deletes the stored files of these edits (renders, frames, raw originals) before their rows are removed. */
+export async function purgeProjectFiles(where: Prisma.ProjectWhereInput) {
+  const ids = (await prisma.project.findMany({ where, select: { id: true } })).map((p) => p.id);
+  if (!ids.length) return;
+  const renders = await prisma.render.findMany({ where: { projectId: { in: ids } }, select: { outputKey: true, framesKeys: true } });
+  await deleteObjects(renders.flatMap((r) => [r.outputKey, ...((r.framesKeys as string[]) || [])]));
+  const originals = await prisma.tempOriginal.findMany({ where: { projectId: { in: ids } } });
+  for (const o of originals) if (!o.completed && o.uploadId) await abortMultipart(o.key, o.uploadId);
+  await deleteObjects(originals.map((o) => o.key));
 }

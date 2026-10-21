@@ -22,15 +22,19 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   if (kind === "final" && video.status === "missing") {
     throw new AppError("We could not reach your Drive file. Reconnect it and try again.", 409, "drive");
   }
-  const running = await prisma.render.findFirst({ where: { projectId, kind, status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - (kind === "final" ? FINAL_TIMEOUT_MS : PREVIEW_TIMEOUT_MS) - 60_000) } } });
-  if (running) return running;
-
   const version = opts.version ?? (await sealLatestVersion(projectId));
   const exists = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   if (!exists) throw new AppError(`Version ${version} does not exist.`, 400);
+  // Asking again while the same version is already rendering joins that render.
+  const running = await prisma.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - (kind === "final" ? FINAL_TIMEOUT_MS : PREVIEW_TIMEOUT_MS) - 60_000) } } });
+  if (running) return running;
+
   const steps = stepsFor(kind, video.source, video.sample);
   const r = await prisma.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality: kind === "final" ? "1080p" : "540p" } });
-  if (version === p.currentVersion) await prisma.project.update({ where: { id: projectId }, data: { status: "Rendering" } });
+  // Review states (In review, Changes requested, Approved) stay put while rendering; the render has its own progress.
+  // A finished final still moves the edit to "Final ready", as in the UI.
+  const reviewState = ["In review", "Changes requested", "Approved"].includes(p.status);
+  if (version === p.currentVersion && !reviewState) await prisma.project.update({ where: { id: projectId }, data: { status: "Rendering" } });
   await publishRender(r.id, { status: "queued", step: 0, steps, percent: 0 });
   await enqueue<RenderJob>("render", { renderId: r.id }, { jobId: r.id });
   return r;

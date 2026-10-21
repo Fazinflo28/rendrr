@@ -1,6 +1,6 @@
 import {
   AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObjectCommand, CreateMultipartUploadCommand,
-  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command,
+  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListMultipartUploadsCommand, ListObjectsV2Command,
   PutBucketCorsCommand, PutObjectCommand, S3Client, UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -18,7 +18,7 @@ export function s3(): S3Client {
   const e = env();
   client = new S3Client({
     endpoint: e.S3_ENDPOINT,
-    region: e.S3_REGION === "auto" ? "us-east-1" : e.S3_REGION,
+    region: e.S3_REGION || "auto", // R2 and Railway Buckets expect "auto"; AWS and MinIO take a real region
     forcePathStyle: e.S3_FORCE_PATH_STYLE === "true",
     credentials: { accessKeyId: e.S3_ACCESS_KEY_ID, secretAccessKey: e.S3_SECRET_ACCESS_KEY },
     requestChecksumCalculation: "WHEN_REQUIRED",
@@ -112,6 +112,20 @@ export async function completeMultipart(key: string, uploadId: string, parts: { 
 }
 export async function abortMultipart(key: string, uploadId: string) {
   try { await s3().send(new AbortMultipartUploadCommand({ Bucket: Bucket(), Key: key, UploadId: uploadId })); } catch { /* already gone */ }
+}
+/** Aborts unfinished browser uploads under a prefix that started before `before` (their parts cost storage). */
+export async function abortStaleMultipart(prefix: string, before: Date): Promise<number> {
+  let n = 0;
+  let keyMarker: string | undefined, idMarker: string | undefined;
+  do {
+    const r = await s3().send(new ListMultipartUploadsCommand({ Bucket: Bucket(), Prefix: prefix, KeyMarker: keyMarker, UploadIdMarker: idMarker }));
+    for (const u of r.Uploads || []) {
+      if (u.Key && u.UploadId && u.Initiated && u.Initiated < before) { await abortMultipart(u.Key, u.UploadId); n++; }
+    }
+    keyMarker = r.IsTruncated ? r.NextKeyMarker : undefined;
+    idMarker = r.IsTruncated ? r.NextUploadIdMarker : undefined;
+  } while (keyMarker);
+  return n;
 }
 
 export function contentTypeFor(key: string): string {

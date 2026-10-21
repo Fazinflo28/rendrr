@@ -118,9 +118,15 @@ export async function restoreVersion(projectId: string, v: number, actor: Change
   return applyTimelineChange(projectId, { op: "restore_snapshot", snapshot: snap, note: note || `restored version ${v}` }, actor);
 }
 
-/** Seals the newest version so the next autosave starts a new one (after a render or a share). */
+/**
+ * Seals the newest version so the next autosave starts a new one (after a render or a share).
+ * Takes the same row lock as applyTimelineChange, so an autosave can never change a version after it was sealed.
+ */
 export async function sealLatestVersion(projectId: string) {
-  const latest = await prisma.projectVersion.findFirst({ where: { projectId }, orderBy: { v: "desc" } });
-  if (latest && !latest.sealed) await prisma.projectVersion.update({ where: { id: latest.id }, data: { sealed: true } });
-  return latest?.v ?? 1;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT 1 FROM "Project" WHERE id = ${projectId} FOR UPDATE`;
+    const latest = await tx.projectVersion.findFirst({ where: { projectId }, orderBy: { v: "desc" } });
+    if (latest && !latest.sealed) await tx.projectVersion.update({ where: { id: latest.id }, data: { sealed: true } });
+    return latest?.v ?? 1;
+  }, { timeout: 10_000, maxWait: 10_000 });
 }

@@ -17,3 +17,4 @@ assets-out/
 
 # agent worktrees
 .claude/worktrees/
+.mcp-token

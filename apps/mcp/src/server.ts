@@ -1,7 +1,8 @@
 // Rendrr MCP server: one URL for everyone, OAuth login through Clerk (DCR/CIMD), Streamable HTTP.
 // Every tool call is forwarded to the API server with the Clerk user it verified; the API does the work.
-import { clerkClient, clerkMiddleware } from "@clerk/express";
-import { authServerMetadataHandlerClerk, mcpAuthClerk, protectedResourceHandlerClerk } from "@clerk/mcp-tools/express";
+import { clerkClient, clerkMiddleware, getAuth } from "@clerk/express";
+import { authServerMetadataHandlerClerk, protectedResourceHandlerClerk } from "@clerk/mcp-tools/express";
+import { verifyClerkToken } from "@clerk/mcp-tools/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -153,7 +154,26 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
 }
 setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.some((t) => now - t < 60_000)) hits.delete(k); }, 60_000).unref();
 
-app.post("/mcp", mcpAuthClerk, rateLimit, async (req, res) => {
+// Same checks as Clerk's mcpAuthClerk, but every failure is a 401. (mcpAuthClerk does not await its own work, so a
+// malformed "Authorization: Bearer" header became an unhandled rejection that stopped the whole server.)
+function requireAuth(req: Request, res: Response, next: NextFunction) {
+  const deny = () => {
+    res.status(401).set({ "WWW-Authenticate": `Bearer resource_metadata=${req.protocol}://${req.get("host")}/.well-known/oauth-protected-resource${req.originalUrl}` }).json({ error: "Unauthorized" });
+  };
+  try {
+    const m = /^Bearer ([A-Za-z0-9._~+/=-]+)$/.exec(String(req.headers.authorization || ""));
+    if (!m) return deny();
+    const info = verifyClerkToken(getAuth(req, { acceptsToken: "oauth_token" }), m[1]);
+    if (!info) return deny();
+    (req as Request & { auth?: AuthInfo }).auth = info;
+    next();
+  } catch (e) {
+    console.error("[mcp] auth check failed:", (e as Error).message);
+    deny();
+  }
+}
+
+app.post("/mcp", requireAuth, rateLimit, async (req, res) => {
   try {
     const w = await who(req);
     if (!w.clerkId) { res.status(401).json({ error: "Unauthorized" }); return; }
@@ -170,6 +190,9 @@ app.post("/mcp", mcpAuthClerk, rateLimit, async (req, res) => {
 // Stateless server: no server-initiated streams or sessions to delete.
 app.get("/mcp", (_req, res) => { res.status(405).set("Allow", "POST").json({ jsonrpc: "2.0", error: { code: -32000, message: "Use POST." }, id: null }); });
 app.delete("/mcp", (_req, res) => { res.status(405).set("Allow", "POST").end(); });
+
+// A stray promise must never take the connector down for everyone.
+process.on("unhandledRejection", (e) => console.error("[mcp] unhandled rejection:", (e as Error)?.message || e));
 
 const port = Number(process.env.PORT || 4100);
 const host = process.env.HOST || "::";
