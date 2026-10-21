@@ -68,7 +68,7 @@ function Shell({ children }) {
   useEffect(() => { const k = () => { setMenu(false); setHits(null); setSOpen(false); }; window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
   const setDemo = (m) => { api.demo.mode = m; toast(m === "ready" ? "Demo: normal data" : m === "empty" ? "Demo: empty states on" : "Demo: error states on"); go(route, true); };
   const isOn = (p) => (p === "/explore" ? route === "/explore" || route === "/home" : route.startsWith(p));
-  return html`<div class="shell">
+  return html`<div class=${"shell" + (user ? " in" : "")}>
     <header class="top">
       <button class="logo" aria-label="Rendrr home" title="Rendrr" onClick=${() => go("/explore")}><span class="mark"><${Icon} name="logo" /></span></button>
       <nav class="topnav" aria-label="Main">
@@ -101,6 +101,11 @@ function Shell({ children }) {
       : html`<${Btn} kind="secondary" size="sm" id="login-btn" onClick=${() => openLogin()}>Log in<//><${Btn} size="sm" id="signup-btn" onClick=${() => openLogin(null, "signup")}>Sign up<//>`}
     </header>
     <main class="main">${children}</main>
+    ${user && html`<nav class="mnav" aria-label="Main">
+      ${[["/explore", "Explore", "home"], ["/projects", "Projects", "projects"], [null, "Add", "plus"], ["/library", "Library", "library"], ["/settings", "Account", "user"]].map(([p, l, i]) => p
+        ? html`<button key=${l} class=${"mtab" + (isOn(p) || (p === "/settings" && ["/usage", "/billing", "/connect"].some((x) => route.startsWith(x))) ? " on" : "")} data-mtab=${l} onClick=${() => go(p)}><${Icon} name=${i} size="20" /><span>${l}</span></button>`
+        : html`<button key=${l} class="mtab add" data-mtab="Add" aria-label="Add footage" onClick=${openAdd}><i><${Icon} name="plus" size="20" /></i></button>`)}
+    </nav>`}
     ${addOpen && html`<${AddFootageModal} onClose=${closeAdd} />`}
   </div>`;
 }
@@ -586,7 +591,7 @@ function ClientReviewPage({ token }) {
       ${r.folder && html`<div class="row wrap" style="gap:8px;padding:0 32px 16px" id="rv-items">${r.items.map((it) => html`<button key=${it.id} class=${"chip sm " + ((pick || r.items[0].id) === it.id ? "ink" : "neutral")} data-item=${it.id} onClick=${() => { setPick(it.id); pb.seek(0); }}>${it.name}</button>`)}</div>`}
       <div class="rv-body">
         <div class="col" style="gap:16px">
-          <div style="height:68vh;display:flex;justify-content:center">${!clip ? html`<div class="state" style="width:100%"><div class="ico"><${Icon} name="clock" /></div><h3 class="t-heading">Rendering the preview…</h3><p>Refresh in a minute.</p><${Btn} kind="secondary" size="sm" icon="refresh" onClick=${q.reload}>Refresh<//></div>` : html`<${Player} key=${itemId + ":" + version} style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} src=${clip.url} onVideoError=${refreshMedia} aspect=${(r.folder ? (r.items.find((it) => it.id === pick) || r.items[0]).aspect : r.project.aspect)} marks=${r.comments.filter((c) => c.time > 0 && (!r.folder || !c.projectId || c.projectId === itemId))} onMark=${(c) => pb.seek(c.time)} onClickVideo=${openCompose}>
+          <div class="rv-stage" style="height:68vh;display:flex;justify-content:center">${!clip ? html`<div class="state" style="width:100%"><div class="ico"><${Icon} name="clock" /></div><h3 class="t-heading">Rendering the preview…</h3><p>Refresh in a minute.</p><${Btn} kind="secondary" size="sm" icon="refresh" onClick=${q.reload}>Refresh<//></div>` : html`<${Player} key=${itemId + ":" + version} style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} src=${clip.url} onVideoError=${refreshMedia} aspect=${(r.folder ? (r.items.find((it) => it.id === pick) || r.items[0]).aspect : r.project.aspect)} marks=${r.comments.filter((c) => c.time > 0 && (!r.folder || !c.projectId || c.projectId === itemId))} onMark=${(c) => pb.seek(c.time)} onClickVideo=${openCompose}>
             ${compose !== null && html`<div class="compose" onClick=${(e) => e.stopPropagation()}><${Chip} tone="neutral" size="sm" class="mono">${fmtTime(compose)}<//><input id="rv-comment" class="input sm" autoFocus placeholder="What should change here?" value=${text} onInput=${(e) => setText(e.target.value)} onKeyDown=${(e) => e.key === "Enter" && send()} /><${Btn} size="sm" id="rv-send" disabled=${busy === "comment"} onClick=${send}>Add<//><${Btn} kind="quiet" size="sm" icon="x" aria-label="Cancel" onClick=${() => setCompose(null)} /></div>`}
           <//>`}</div>
           <p class="t-small muted" style="text-align:center">Click anywhere on the video to leave a comment at that second.</p>

@@ -116,20 +116,7 @@ function App() {
   <//><//>`;
 }
 
-// Desktop-only layout (1280px). On a narrower screen (a phone), scale the whole app down to fit so it can still be viewed and tapped.
-function fitToScreen() {
-  const root = document.getElementById("root"); const DESIGN = 1280, ZOOM = .8; // #root renders at 80%, so it needs 1024 real px
-  if (!root) return () => {};
-  const fit = () => {
-    const w = window.innerWidth, hgt = window.innerHeight;
-    if (w < DESIGN * ZOOM) { const k = w / (DESIGN * ZOOM); root.style.transform = "scale(" + k + ")"; root.style.transformOrigin = "0 0"; root.style.width = DESIGN + "px"; root.style.height = Math.round(hgt / (k * ZOOM)) + "px"; document.documentElement.classList.add("scaled"); }
-    else { root.style.transform = ""; root.style.width = ""; root.style.height = ""; document.documentElement.classList.remove("scaled"); }
-  };
-  fit(); window.addEventListener("resize", fit); window.visualViewport?.addEventListener("resize", fit);
-  return () => { window.removeEventListener("resize", fit); window.visualViewport?.removeEventListener("resize", fit); };
-}
-
+// Desktop (1024px and wider) renders the 1280px design at 80%. Narrower screens get the phone layout (styles.css, "Phone and tablet").
 export function Root() {
-  useEffect(() => fitToScreen(), []);
   return html`<div id="root"><${ToastHost}><${App} /><//></div>`;
 }
