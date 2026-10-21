@@ -34,6 +34,7 @@ Checked tonight on a full local copy of the system (Postgres, Redis, S3-compatib
 - Rendering: 540p previews in about 6–12 s and 1080p finals in about 13–17 s for a 30 s edit; captions in three looks, zooms, b-roll, graphics with transparency, music ducked under speech, sound effects.
 - Reviews: password, expiry, download on/off, comments at a time, approve, request changes, folder reviews.
 - Daily cleanup at 03:15 UTC (expired preview copies, raw originals after 24 h, old preview renders, stuck jobs).
+- **Every screen clicked through in a real browser** against the real API and worker (about 290 checks): login and sign-up, gallery, library (sample, fake Drive, your computer, retry, resume, rebuild), footage page, project folders, the editor (cuts, captions, zooms, music, renders, versions, AI undo, local export), the client review page, Connect AI, Usage, Settings (including email change with the emailed code), search and menus.
 - 22 unit tests for the timeline maths and the render plan.
 
 ## 3. What is stubbed, and the key that turns each one on
@@ -69,6 +70,9 @@ To try the AI: in Claude, Settings → Connectors → Add custom connector → `
 | Changing your email asks for the 6-digit code Clerk emails to the new address | Otherwise anyone could claim an address they do not own |
 | New `/drive-done` page (only seen if the Google popup is blocked) | Finishes the Drive connection safely in your own logged-in tab |
 | Demo state switches (profile menu) only exist in development builds | They fake errors; real users should never see them |
+| The share dialog preselects the newest version | It preselected v1, which on the real backend is the raw footage |
+| Retry on footage from your computer asks for the file again | The browser forgets the file after a reload; without it Retry hung |
+| The client review page makes a preview for a version that was never rendered | Otherwise picking that version showed "Rendering…" forever |
 
 Everything else is the UI from `ui/rendrr-ui.html`, wired to the real API.
 
@@ -100,3 +104,6 @@ Three reviews (API, worker/render, web app) plus tests in the real Docker images
 - The web app runs on Railway, not Vercel: the Vercel connector here may read projects but not create them. Moving later is described in [DECISIONS.md](DECISIONS.md).
 - Login says whether an email has an account (friendlier messages; fine for a private app, change before a public launch).
 - One worker renders one video at a time (`CONCURRENCY_RENDER`); raise it or add replicas when more people use it.
+- Very heavily cut long edits (thousands of cuts on footage over 10 minutes) render slowly; normal edits (a few hundred cuts) are fine.
+- The original design has no button to delete footage or to remove a profile photo, so there is none.
+- A style found through the search box opens the Styles page, not that style.
