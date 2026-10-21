@@ -1,0 +1,27 @@
+{
+  "name": "@rendrr/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "predev": "node scripts/copy-ffmpeg.mjs",
+    "prebuild": "node scripts/copy-ffmpeg.mjs",
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "7.9.18",
+    "@ffmpeg/ffmpeg": "0.12.15",
+    "htm": "3.1.1",
+    "next": "15.5.28",
+    "react": "19.2.9",
+    "react-dom": "19.2.9"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}
