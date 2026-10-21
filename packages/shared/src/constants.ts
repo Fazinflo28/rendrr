@@ -35,6 +35,16 @@ export const QUEUES = {
 export const PREVIEW_TIMEOUT_MS = 3 * 60_000;
 export const FINAL_TIMEOUT_MS = 15 * 60_000;
 
+/** Render limits grow with the footage: the brief's 3 and 15 minutes hold footage up to 10 minutes long. */
+export function renderTimeoutMs(kind: "preview" | "final", sourceSeconds: number): number {
+  const s = Math.max(0, Number(sourceSeconds) || 0);
+  return kind === "preview" ? Math.max(PREVIEW_TIMEOUT_MS, Math.round(s * 300)) : Math.max(FINAL_TIMEOUT_MS, Math.round(s * 1500));
+}
+/** Preview copy and analysis limits: 10 minutes, or more for footage longer than about 17 minutes. */
+export function processTimeoutMs(sourceSeconds: number): number {
+  return Math.max(10 * 60_000, Math.round(Math.max(0, Number(sourceSeconds) || 0) * 600));
+}
+
 export const DAY_MS = 86_400_000;
 export const PREVIEW_RETENTION_DAYS = 30;
 export const TEMP_ORIGINAL_HOURS = 24;

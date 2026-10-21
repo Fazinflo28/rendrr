@@ -2,6 +2,8 @@
 // exact frame time, so they render the same every time. Params are escaped; colours are validated.
 type P = Record<string, unknown>;
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+// A string for inline <script>: JSON, with "<" escaped so text like "</script>" cannot end the script early.
+const js = (s: unknown) => JSON.stringify(String(s ?? "")).replace(/</g, "\\u003c");
 const col = (s: unknown, d: string) => (typeof s === "string" && /^#[0-9a-fA-F]{6}$/.test(s) ? s : d);
 const num = (s: unknown, d: number) => (typeof s === "number" && isFinite(s) ? s : typeof s === "string" && s.trim() !== "" && isFinite(Number(s)) ? Number(s) : d);
 
@@ -40,7 +42,7 @@ export function templateHtml(id: string, params: P, w: number, h: number, dur: n
 .v{color:${c};font-weight:800;font-size:${m * 0.16}px;letter-spacing:-0.03em;font-variant-numeric:tabular-nums;text-shadow:0 ${m * 0.006}px ${m * 0.03}px rgba(0,0,0,.45)}
 .l{color:${c};opacity:.85;font-weight:600;font-size:${m * 0.04}px}`,
         `<div class="wrap" id="w"><div class="v" id="v"></div>${params.label ? `<div class="l">${esc(params.label)}</div>` : ""}</div>`,
-        `const from=${from},to=${to},dur=${dur},dec=${Math.min(4, dec)},pre=${JSON.stringify(String(params.prefix ?? ""))},suf=${JSON.stringify(String(params.suffix ?? ""))};
+        `const from=${from},to=${to},dur=${dur},dec=${Math.min(4, dec)},pre=${js(params.prefix)},suf=${js(params.suffix)};
 window.renderFrame=function(t){const p=Math.min(1,t/(dur*0.7));const e=1-Math.pow(1-p,3);const v=from+(to-from)*e;
 document.getElementById('v').textContent=pre+v.toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec})+suf;
 const o=t<0.25?t/0.25:t>dur-0.35?Math.max(0,(dur-t)/0.35):1;document.getElementById('w').style.opacity=o;};window.renderFrame(0);`);

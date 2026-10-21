@@ -65,7 +65,9 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   const browser = await puppeteer.launch({
     executablePath: chromiumPath(), headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--mute-audio", "--no-first-run", "--disable-extensions", "--disable-background-networking",
-      "--proxy-server=127.0.0.1:9", "--proxy-bypass-list=<-loopback>", "--host-resolver-rules=MAP * ~NOTFOUND", "--js-flags=--max-old-space-size=256", "--renderer-process-limit=1"],
+      "--proxy-server=127.0.0.1:9", "--proxy-bypass-list=<-loopback>", "--host-resolver-rules=MAP * ~NOTFOUND",
+      "--webrtc-ip-handling-policy=disable_non_proxied_udp", // WebRTC would otherwise send UDP around the proxy
+      "--js-flags=--max-old-space-size=256", "--renderer-process-limit=1"],
   });
   const kill = setTimeout(() => { browser.process()?.kill("SIGKILL"); }, GRAPHIC_LIMITS.killMs);
   const abort = () => browser.process()?.kill("SIGKILL");
@@ -117,9 +119,11 @@ async function brandLogoDataUrl(userId: string): Promise<string | null> {
  * The transparent WebM for one V3 graphic clip. Templates are drawn at the output size with the clip's params
  * (cached in storage by a hash of everything that changes the picture). Custom graphics use their stored render.
  */
-export async function renderGraphicClip(clip: V3Clip, o: { width: number; height: number; dir: string; userId: string; signal?: AbortSignal }): Promise<string | null> {
+export async function renderGraphicClip(clip: V3Clip, o: { width: number; height: number; dir: string; userId: string; signal?: AbortSignal; durationSec?: number }): Promise<string | null> {
   const id = clip.graphicId!;
-  const dur = Math.min(GRAPHIC_LIMITS.maxSeconds, Math.max(0.5, clip.end - clip.start));
+  // Drawn for as long as it is on screen in the edit (cut words inside the clip make that shorter), so its
+  // ending animation is never cut off.
+  const dur = Math.min(GRAPHIC_LIMITS.maxSeconds, Math.max(0.5, o.durationSec ?? clip.end - clip.start));
   const local = join(o.dir, `graphic-${clip.id}.webm`);
   const tpl = GRAPHIC_TEMPLATES.find((t) => t.id === id);
   if (tpl) {

@@ -1,6 +1,6 @@
 import { AppError, deleteObjects, drive, enqueue, env, features, headObject, notFound, signGet, signPut, type ProxyJob, type AnalyzeJob, encrypt } from "@rendrr/core";
 import { prisma, type Video } from "@rendrr/db";
-import { DriveAddInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, ReconnectInput, fmtSize, orientationOf, type Transcript } from "@rendrr/shared";
+import { DAY_MS, DriveAddInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, fmtSize, orientationOf, type Transcript } from "@rendrr/shared";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
@@ -196,6 +196,7 @@ export default async function library(app: FastifyInstance) {
       const u = await prisma.video.update({ where: { id: v.id }, data: {
         proxyKey, audioKey, seconds: b.seconds, width: b.width, height: b.height, fps: b.fps ?? 30, orientation: orientationOf(b.width, b.height),
         previewSizeBytes: BigInt(ph.size + ah.size), status: "processing", step: 0, progress: null, error: null,
+        previewExpiresAt: new Date(Date.now() + PREVIEW_RETENTION_DAYS * DAY_MS), // a fresh copy gets the full 30 days
       } });
       await enqueue<AnalyzeJob>("analyze", { videoId: v.id });
       return videoOut(u);

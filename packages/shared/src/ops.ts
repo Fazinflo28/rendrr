@@ -72,7 +72,8 @@ export function cutRegions(words: Word[], cutSet: Set<string>): Range[] {
   const r: Range[] = [];
   words.forEach((w, i) => {
     if (!cutSet.has(w.id)) return;
-    const end = words[i + 1] ? words[i + 1].t : w.t + 0.35;
+    // The last word has no next word: cut to its own end (at least 0.35 s, as in the UI).
+    const end = words[i + 1] ? words[i + 1].t : Math.max(w.t + 0.35, w.end || 0);
     const last = r[r.length - 1];
     if (last && Math.abs(last.end - w.t) < 0.01) last.end = end;
     else r.push({ start: w.t, end });

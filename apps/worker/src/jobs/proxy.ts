@@ -1,6 +1,6 @@
 import { drive, enqueue, signGet, uploadFile, type AnalyzeJob, type ProxyJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { orientationOf, PREFIX } from "@rendrr/shared";
+import { DAY_MS, orientationOf, PREFIX, PREVIEW_RETENTION_DAYS } from "@rendrr/shared";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { frameAt, JobError, probe, run } from "../lib/ffmpeg";
@@ -88,6 +88,7 @@ export async function proxyJob(ctx: Ctx) {
   await prisma.video.update({ where: { id: v.id }, data: {
     proxyKey: `${PREFIX.proxies}${base}.mp4`, audioKey: `${PREFIX.audio}${base}.m4a`, thumbKey: saved[0]?.key ?? null,
     previewSizeBytes: BigInt(proxySize + audioSize + framesSize), status: "processing", step: 0, progress: null,
+    previewExpiresAt: new Date(Date.now() + PREVIEW_RETENTION_DAYS * DAY_MS), // a fresh copy gets the full 30 days
     sizeBytes: v.sizeBytes || BigInt(info.sizeBytes || 0),
   } });
   await enqueue<AnalyzeJob>("analyze", { videoId: v.id });

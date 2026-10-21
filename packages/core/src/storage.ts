@@ -23,6 +23,9 @@ export function s3(): S3Client {
     credentials: { accessKeyId: e.S3_ACCESS_KEY_ID, secretAccessKey: e.S3_SECRET_ACCESS_KEY },
     requestChecksumCalculation: "WHEN_REQUIRED",
     responseChecksumValidation: "WHEN_REQUIRED",
+    // A stalled connection fails (and is retried by the SDK) instead of hanging a job: 10 s to connect,
+    // 2 minutes without any data.
+    requestHandler: { connectionTimeout: 10_000, requestTimeout: 120_000 },
   });
   return client;
 }

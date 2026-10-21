@@ -44,7 +44,7 @@ function EditorInner({ project, reload }) {
   const [saved, setSaved] = useState("Saved");
   const [status, setStatus] = useState(project.status);
   const cutSet = useMemo(() => new Set(S.cut), [S.cut]);
-  const cutRegions = useMemo(() => { const r = []; words.forEach((w, i) => { if (!cutSet.has(w.id)) return; const end = words[i + 1] ? words[i + 1].t : w.t + 0.35; const last = r[r.length - 1]; if (last && Math.abs(last.end - w.t) < 0.01) last.end = end; else r.push({ start: w.t, end }); }); return r; }, [cutSet, words]);
+  const cutRegions = useMemo(() => { const r = []; words.forEach((w, i) => { if (!cutSet.has(w.id)) return; const end = words[i + 1] ? words[i + 1].t : Math.max(w.t + 0.35, w.end || 0); const last = r[r.length - 1]; if (last && Math.abs(last.end - w.t) < 0.01) last.end = end; else r.push({ start: w.t, end }); }); return r; }, [cutSet, words]);
   const pb = usePlayback(dur, { cuts: cutRegions });
   // "Watch preview": the rendered file plays in the same player, without the live overlays.
   const [watch, setWatch] = useState(null);

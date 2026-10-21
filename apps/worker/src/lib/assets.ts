@@ -1,17 +1,32 @@
 import { downloadFile, headObject, uploadFile } from "@rendrr/core";
-import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./ffmpeg";
 
-// Music, sound effects and b-roll proxies are reused across renders: keep a local copy.
+// Built-in music and sound effects are reused across renders: keep a local copy. A file only enters the cache
+// once it is complete (downloaded to a temp name, size checked against storage, then renamed), so an interrupted
+// download can never poison it, and two renders never write the same file.
 const CACHE = join(tmpdir(), "rendrr-asset-cache");
+const pending = new Map<string, Promise<string>>();
 export async function cachedAsset(key: string, copyTo?: string): Promise<string> {
-  await mkdir(CACHE, { recursive: true });
   const local = join(CACHE, key.replace(/[^\w.\-]+/g, "_"));
-  const have = await stat(local).then((s) => s.size > 0).catch(() => false);
-  if (!have) await downloadFile(key, local);
+  let p = pending.get(local);
+  if (!p) {
+    p = (async () => {
+      await mkdir(CACHE, { recursive: true });
+      if (await stat(local).then((s) => s.size > 0).catch(() => false)) return local;
+      const head = await headObject(key);
+      const tmp = `${local}.${process.pid}.${Date.now()}.part`;
+      const got = await downloadFile(key, tmp);
+      if (head && got !== head.size) { await rm(tmp, { force: true }); throw new Error(`incomplete download of ${key}`); }
+      await rename(tmp, local);
+      return local;
+    })().finally(() => pending.delete(local));
+    pending.set(local, p);
+  }
+  await p;
   if (copyTo) { await copyFile(local, copyTo); return copyTo; }
   return local;
 }

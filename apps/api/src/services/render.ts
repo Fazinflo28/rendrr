@@ -1,6 +1,6 @@
 import { AppError, enqueue, publishRender, readRender, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
-import { FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, PREVIEW_TIMEOUT_MS, FINAL_TIMEOUT_MS } from "@rendrr/shared";
+import { FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, renderTimeoutMs } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
 
 export function stepsFor(kind: "preview" | "final", source: string, sample: boolean): string[] {
@@ -26,7 +26,7 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   const exists = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   if (!exists) throw new AppError(`Version ${version} does not exist.`, 400);
   // Asking again while the same version is already rendering joins that render.
-  const running = await prisma.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - (kind === "final" ? FINAL_TIMEOUT_MS : PREVIEW_TIMEOUT_MS) - 60_000) } } });
+  const running = await prisma.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - renderTimeoutMs(kind, video.seconds) - 60_000) } } });
   if (running) return running;
 
   const steps = stepsFor(kind, video.source, video.sample);

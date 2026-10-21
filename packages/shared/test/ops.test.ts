@@ -40,6 +40,28 @@ describe("cut maths (same as the UI's cutRegions)", () => {
   });
 });
 
+describe("render plan timing", () => {
+  it("keeps every part on the 30 fps frame grid", () => {
+    const s = snap();
+    s.timeline.cut = words.filter((_, i) => i % 3 === 1).map((w) => w.id);
+    const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source: { width: 1280, height: 720, fps: 25, seconds: 40, hasAudio: true } });
+    for (const k of plan.kept) {
+      expect(Math.abs(k.start * 30 - Math.round(k.start * 30))).toBeLessThan(1e-6);
+      expect(Math.abs(k.end * 30 - Math.round(k.end * 30))).toBeLessThan(1e-6);
+    }
+    expect(Math.abs(plan.outputSeconds * 30 - Math.round(plan.outputSeconds * 30))).toBeLessThan(0.05);
+  });
+  it("spreads a rewritten caption line over distinct times", () => {
+    const s = snap();
+    const line = tr[1];
+    s.timeline.captionText = { [line.id]: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen" };
+    s.timeline.cut = line.words.slice(1).map((w) => w.id); // only one word of the line is left
+    const plan = planRender({ kind: "preview", snapshot: s, transcript: [line], source: { width: 1280, height: 720, fps: 30, seconds: 40, hasAudio: true }, captionRules: { wordsAtOnce: 3 } });
+    const shown = plan.captions.map((c) => c.text).join(" ");
+    expect(shown.split(" ").length).toBe(14);
+  });
+});
+
 describe("ops", () => {
   it("splits the same clip twice with unique ids", () => {
     let s = snap();

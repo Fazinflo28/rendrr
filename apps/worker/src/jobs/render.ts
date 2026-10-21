@@ -1,6 +1,6 @@
 import { deleteObject, downloadFile, drive, publishRender, signGet, uploadFile, usage, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { PREFIX, PREVIEW_TIMEOUT_MS, StyleRulesSchema, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { PREFIX, renderTimeoutMs, StyleRulesSchema, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { ffmpegArgs, planRender, RenderPlanError, type PlanFiles } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
@@ -30,7 +30,7 @@ export async function renderJob(ctx: Ctx) {
   const ac = new AbortController();
   ctx.signal.addEventListener("abort", () => ac.abort(), { once: true });
   let previewTimedOut = false;
-  const pt = kind === "preview" ? setTimeout(() => { previewTimedOut = true; ac.abort(); }, PREVIEW_TIMEOUT_MS) : null;
+  const pt = kind === "preview" ? setTimeout(() => { previewTimedOut = true; ac.abort(); }, renderTimeoutMs("preview", video.seconds)) : null;
   const signal = ac.signal;
 
   const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)) });
@@ -83,14 +83,17 @@ export async function renderJob(ctx: Ctx) {
     const brollVideos = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId: video.userId, proxyKey: { not: null } } }) : [];
     const graphicClips = (snapshot.timeline.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId);
     const files: PlanFiles = { source: src, output: join(ctx.dir, "out.mp4"), assPath: join(ctx.dir, "captions.ass"), fontsDir: FONTS_DIR, broll: {}, graphics: {}, audio: {} };
-    const sourceInfo = { width: info.width, height: info.height, fps: info.fps, seconds: info.seconds || video.seconds, hasAudio: info.hasAudio };
+    const sourceInfo = { width: info.width, height: info.height, fps: info.fps, seconds: info.seconds || video.seconds, hasAudio: info.hasAudio, hdr: !!info.hdr };
 
     // A first plan tells us the output size, so graphics can be drawn at the right resolution.
     const first = planRender({ kind, snapshot, transcript, source: sourceInfo, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])) });
     const graphicsReady: Record<string, boolean> = {};
-    for (const c of graphicClips) {
+    // Only graphics that are still in the edit, each drawn for the time it is on screen.
+    for (const sp of first.graphics) {
+      const c = graphicClips.find((x) => x.id === sp.clipId);
+      if (!c) continue;
       try {
-        const path = await renderGraphicClip(c, { width: first.width, height: first.height, dir: ctx.dir, userId: video.userId, signal });
+        const path = await renderGraphicClip(c, { width: first.width, height: first.height, dir: ctx.dir, userId: video.userId, signal, durationSec: sp.end - sp.start });
         if (path) { files.graphics![c.id] = path; graphicsReady[c.id] = true; }
       } catch (e) {
         if (signal.aborted) throw e;
@@ -101,7 +104,7 @@ export async function renderJob(ctx: Ctx) {
       brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])), graphicsReady });
     for (const b of plan.broll) {
       const bv = brollVideos.find((x) => x.id === b.videoId);
-      if (bv?.proxyKey) files.broll![b.clipId] = await cachedAsset(bv.proxyKey, join(ctx.dir, `broll-${b.clipId}.mp4`));
+      if (bv?.proxyKey) { const p = join(ctx.dir, `broll-${b.clipId}.mp4`); await downloadFile(bv.proxyKey, p); files.broll![b.clipId] = p; }
     }
     for (const a of plan.audio) {
       // Built-in music and sound effects only (the plan takes keys from the catalog; this is a second lock).

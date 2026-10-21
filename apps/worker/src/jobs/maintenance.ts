@@ -1,6 +1,6 @@
 import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, listPrefix } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
+import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderTimeoutMs, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
 import { ensureAssets } from "../lib/assets";
 import type { Ctx } from "../lib/job";
 
@@ -51,12 +51,30 @@ export async function cleanup() {
     out.previewRenders++;
   }
 
+  // Stuck work. A running render is judged against its own limit (it grows with the footage); a queued one only
+  // after six hours, since it may simply be waiting behind others.
   const hourAgo = new Date(now.getTime() - 3600_000);
-  const stuck = await prisma.render.updateMany({ where: { status: { in: ["queued", "running"] }, createdAt: { lt: hourAgo } }, data: { status: "failed", error: "Render did not finish. Nothing was lost. Try again.", finishedAt: now } });
-  out.stuckRenders = stuck.count;
-  await prisma.project.updateMany({ where: { status: "Rendering", updatedAt: { lt: hourAgo } }, data: { status: "Draft" } });
-  const stuckV = await prisma.video.updateMany({ where: { status: { in: ["linking", "preview", "processing"] }, updatedAt: { lt: hourAgo } }, data: { status: "failed", error: "Processing stopped before it finished. Press Retry." } });
-  out.stuckVideos = stuckV.count;
+  const active = await prisma.render.findMany({ where: { status: { in: ["queued", "running"] } }, select: { id: true, kind: true, status: true, createdAt: true, startedAt: true, project: { select: { video: { select: { seconds: true } } } } } });
+  const dead = active.filter((r) => r.status === "running"
+    ? now.getTime() - (r.startedAt ?? r.createdAt).getTime() > renderTimeoutMs(r.kind === "preview" ? "preview" : "final", r.project.video.seconds) + 15 * 60_000
+    : now.getTime() - r.createdAt.getTime() > 6 * 3600_000);
+  if (dead.length) await prisma.render.updateMany({ where: { id: { in: dead.map((r) => r.id) } }, data: { status: "failed", error: "Render did not finish. Nothing was lost. Try again.", finishedAt: now } });
+  out.stuckRenders = dead.length;
+  // Edits left on "Rendering" with nothing rendering: back to what their finished renders say.
+  for (const p of await prisma.project.findMany({ where: { status: "Rendering", updatedAt: { lt: hourAgo } }, select: { id: true } })) {
+    if (await prisma.render.count({ where: { projectId: p.id, status: { in: ["queued", "running"] } } })) continue;
+    const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done" }, select: { kind: true } });
+    await prisma.project.update({ where: { id: p.id }, data: { status: done.some((x) => x.kind === "final") ? "Final ready" : done.length ? "Preview ready" : "Draft" } });
+  }
+  // Footage: server-side steps that stopped fail with Retry; a browser-side preview whose tab went away is paused
+  // (Resume continues it). Long footage gets longer before it counts as stuck.
+  const stuckVideos = await prisma.video.findMany({ where: { status: { in: ["linking", "preview", "previewing", "uploading", "processing"] }, updatedAt: { lt: hourAgo } }, select: { id: true, status: true, source: true, sample: true, seconds: true, updatedAt: true } });
+  for (const v of stuckVideos) {
+    if (now.getTime() - v.updatedAt.getTime() < 2 * processTimeoutMs(v.seconds) + 30 * 60_000) continue;
+    const browserSide = v.source === "local" && !v.sample && (v.status === "previewing" || v.status === "uploading");
+    await prisma.video.update({ where: { id: v.id }, data: browserSide ? { status: "paused" } : { status: "failed", error: "Processing stopped before it finished. Press Retry." } });
+    out.stuckVideos++;
+  }
   return out;
 }
 

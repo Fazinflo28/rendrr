@@ -50,7 +50,7 @@ mkpic "$T/a.png" 1280 720 30 32 48;  mkpic "$T/b.png" 1280 720 48 30 32
 mkpic "$T/pa.png" 720 1280 30 32 48; mkpic "$T/pb.png" 720 1280 48 30 32
 mkvideo() { # $1 out $2 picA $3 picB $4 w $5 h
   $FF -loop 1 -framerate 30 -i "$2" -loop 1 -framerate 30 -i "$3" -i "$T/speech.wav" -filter_complex \
-    "[0:v][1:v]overlay=enable='between(t,15,28)'[bg];[bg]crop=w=iw-40:h=ih-24:x='20+18*sin(t*1.3)':y='12+6*sin(t*0.7)',scale=$4:$5,format=yuv420p[v]" \
+    "[0:v][1:v]overlay=enable='between(t,15,28)'[bg];[bg]crop=w=iw-40:h=ih-24:x='20+18*sin(t*1.3)':y='12+6*sin(t*0.7)',scale=$4:$5,setsar=1,format=yuv420p[v]" \
     -map "[v]" -map 2:a -t "$DUR" -c:v libx264 -preset veryfast -crf 23 -r 30 -c:a aac -b:a 128k -ac 2 -movflags +faststart "$1"
 }
 mkvideo "$OUT/samples/sample-talking-head.mp4" "$T/a.png" "$T/b.png" 1280 720

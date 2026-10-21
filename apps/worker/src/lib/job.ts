@@ -12,18 +12,24 @@ export type Ctx = { signal: AbortSignal; dir: string; job: Job; isLastAttempt: b
  * and a log row for start / finish / fail with the duration. Friendly errors that retrying cannot fix
  * stop the retries.
  */
-export function guarded<T>(queue: string, timeoutMs: number, what: string, fn: (ctx: Ctx) => Promise<T>, onFinalFail: (job: Job, message: string, code?: string) => Promise<void>, userIdOf?: (job: Job) => Promise<string | null>) {
+export function guarded<T>(queue: string, timeoutMs: number | ((job: Job) => Promise<number>), what: string, fn: (ctx: Ctx) => Promise<T>, onFinalFail: (job: Job, message: string, code?: string) => Promise<void>, userIdOf?: (job: Job) => Promise<string | null>) {
   return async (job: Job): Promise<T> => {
     const started = Date.now();
     const ac = new AbortController();
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; ac.abort(); }, timeoutMs);
+    const limit = typeof timeoutMs === "number" ? timeoutMs : await timeoutMs(job).catch(() => 15 * 60_000);
+    // The limit wins even when some step ignores the abort signal (a stalled download, a database call):
+    // the job fails on time, the temp folder is removed and the queue moves on.
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; ac.abort(); reject(new Error(`${queue} job over its ${Math.round(limit / 1000)} s limit`)); }, limit); });
     const dir = await mkdtemp(join(tmpdir(), `rendrr-${queue}-`));
     const userId = userIdOf ? await userIdOf(job).catch(() => null) : null;
     const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
     await logJob({ queue, jobId: String(job.id), name: job.name, event: "start", userId, meta: { attempt: job.attemptsMade + 1 } });
     try {
-      const r = await fn({ signal: ac.signal, dir, job, isLastAttempt });
+      const work = fn({ signal: ac.signal, dir, job, isLastAttempt });
+      work.catch(() => {}); // if the limit wins, a late failure must not become an unhandled rejection
+      const r = await Promise.race([work, expired]);
       await logJob({ queue, jobId: String(job.id), name: job.name, event: "finish", userId, durationMs: Date.now() - started });
       return r;
     } catch (e) {

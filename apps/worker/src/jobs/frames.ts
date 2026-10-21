@@ -20,5 +20,11 @@ export async function framesJob(ctx: Ctx): Promise<string[]> {
     await uploadFile(key, p, "image/jpeg");
     out.push(key);
   }
+  // Recorded with the render's other frames (after the first five check frames), so cleanup and deletes remove them.
+  if (out.length) {
+    const fresh = await prisma.render.findUnique({ where: { id: r.id }, select: { framesKeys: true } });
+    const have = (fresh?.framesKeys as string[]) || [];
+    await prisma.render.update({ where: { id: r.id }, data: { framesKeys: Array.from(new Set([...have, ...out])) } });
+  }
   return out;
 }

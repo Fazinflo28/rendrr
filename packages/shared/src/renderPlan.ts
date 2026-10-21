@@ -8,7 +8,7 @@ import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 
 export type RenderKind = "preview" | "final";
-export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean };
+export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean };
 export type CaptionRules = { wordsAtOnce: number; upper: boolean; maxLines: number };
 
 export type PlanInput = {
@@ -51,6 +51,7 @@ export class RenderPlanError extends Error {
 }
 
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
+const FPS = 30;
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
 export function outputSize(aspect: Aspect, kind: RenderKind) {
@@ -78,13 +79,21 @@ function captionTokens(lineWords: Word[], text: string, cut: Set<string>, inKept
     // Same number of words: keep each word's own timing (typo fixes, punctuation, casing).
     return lineWords.map((w, i) => ({ text: tokens[i], t: w.t, end: w.end })).filter((_, i) => !cut.has(lineWords[i].id) && inKept(lineWords[i].t));
   }
-  // Rewritten line: spread the new words across the words that are still in the video.
+  // Rewritten line: spread the new words evenly over the words that are still in the video. A position p in
+  // "kept word" units maps to a time inside that word, so more new words than old ones still get distinct times.
   const kept = lineWords.filter((w) => !cut.has(w.id) && inKept(w.t));
   if (!kept.length) return [];
+  const n = kept.length, m = tokens.length;
+  const at = (p: number) => {
+    if (p >= n) return kept[n - 1].end;
+    const k = kept[Math.floor(p)], f = p - Math.floor(p);
+    return k.t + f * Math.max(0, k.end - k.t);
+  };
   return tokens.map((tok, i) => {
-    const a = kept[Math.min(kept.length - 1, Math.floor((i * kept.length) / tokens.length))];
-    const b = kept[Math.min(kept.length - 1, Math.floor(((i + 1) * kept.length) / tokens.length) - 1)] || a;
-    return { text: tok, t: a.t, end: Math.max(b.end, a.t + 0.1) };
+    const t = at((i * n) / m);
+    const p2 = ((i + 1) * n) / m;
+    const end = Number.isInteger(p2) ? kept[Math.min(n, p2) - 1].end : at(p2);
+    return { text: tok, t, end: Math.max(end, t + 0.05) };
   });
 }
 
@@ -100,9 +109,14 @@ export function captionEvents(input: PlanInput, kept: Range[], toOutput: (s: num
     if (visible && !visible.has(line.id)) continue;
     const text = tl.captionText[line.id] ?? line.words.map((w) => w.text).join(" ");
     const toks = captionTokens(line.words, text, cut, inKept);
-    for (let i = 0; i < toks.length; i += rules.wordsAtOnce) {
-      const chunk = toks.slice(i, i + rules.wordsAtOnce);
-      const next = toks[i + rules.wordsAtOnce];
+    if (!toks.length) continue;
+    // A rewritten line with many more words than time shows them in bigger groups (each group on screen for at
+    // least 0.3 s) instead of flashing some and dropping others.
+    const perWord = Math.max(0.001, toOutput(toks[toks.length - 1].end) - toOutput(toks[0].t)) / toks.length;
+    const step = Math.max(rules.wordsAtOnce, Math.ceil(0.3 / perWord));
+    for (let i = 0; i < toks.length; i += step) {
+      const chunk = toks.slice(i, i + step);
+      const next = toks[i + step];
       const start = toOutput(chunk[0].t);
       let end = next ? toOutput(next.t) : toOutput(chunk[chunk.length - 1].end) + 0.25;
       end = Math.min(end, total);
@@ -124,7 +138,11 @@ const assTime = (s: number) => {
   const h = Math.floor(cs / 360000), m = Math.floor((cs % 360000) / 6000), sec = Math.floor((cs % 6000) / 100), c = cs % 100;
   return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}.${String(c).padStart(2, "0")}`;
 };
-const assEscape = (s: string) => s.replace(/\\/g, "\uFF3C").replace(/\{/g, "\uFF5B").replace(/\}/g, "\uFF5D").replace(/\r?\n/g, "\\N");
+// libass's own escapes, so the text shows as typed with any font: "\{" "\}" for braces, and a word joiner after a
+// backslash so it can never start an override code. Very long words (links) are broken up so they wrap.
+const assEscape = (s: string) => s
+  .split(/\s+/).map((w) => (w.length > 22 ? w.match(/.{1,18}/g)!.join(" ") : w)).join(" ")
+  .replace(/\\/g, "\\\u2060").replace(/\{/g, "\\{").replace(/\}/g, "\\}").replace(/\r?\n/g, "\\N");
 
 /** ASS subtitles with the UI's three caption looks: clean (dark box), bold (white pill, black caps), outline. */
 export function buildAss(events: CaptionEvent[], look: CaptionLook, width: number, height: number): string {
@@ -158,8 +176,13 @@ export function planRender(input: PlanInput): RenderPlan {
   const { snapshot, transcript, kind } = input;
   const tl = snapshot.timeline;
   const words = allWords(transcript);
-  // Footage beyond the real file length cannot be rendered.
-  const kept = subtractRanges(keptRanges(tl, words), [{ start: input.source.seconds, end: 1e9 }]);
+  // Footage beyond the real file length cannot be rendered. Every kept part starts and ends on a frame of the
+  // 30 fps output, so the picture and the sound of each part are exactly as long as the plan says (no drift
+  // at each cut, and captions, zooms and music stay on the footage).
+  const f30 = (x: number) => Math.round(x * FPS) / FPS;
+  const kept = mergeRanges(subtractRanges(keptRanges(tl, words), [{ start: input.source.seconds, end: 1e9 }])
+    .map((k) => ({ start: f30(k.start), end: Math.min(f30(k.end), Math.floor(input.source.seconds * FPS) / FPS) }))
+    .filter((k) => k.end - k.start >= 1 / FPS - 1e-9));
   if (!kept.length) throw new RenderPlanError("Nothing is left to render. Every part of the video is cut. Restore some words or clips, then try again.");
   const map = makeTimeMap(kept);
   const total = r3(map.total);
@@ -243,6 +266,7 @@ export type PlanFiles = {
 
 const q = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "'\\''").replace(/:/g, "\\:")}'`;
 const n3 = (x: number) => x.toFixed(3);
+const n6 = (x: number) => x.toFixed(6);
 
 export function zoomExpr(zooms: ZoomOp[]): string {
   if (!zooms.length) return "1";
@@ -269,29 +293,38 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     srcAudio = `${idx++}:a`;
   }
 
-  // 1. Cut: split the source and keep each part, then join them back together.
+  // 1. Cut: put the source on a 30 fps grid, split it, keep each part, then join them back together.
+  // Kept parts start and end on frames (planRender), so each part is a whole number of frames in both streams.
+  // After fps=30 the video time base is 1/30 s and trim rounds its times to the nearest frame, so small float
+  // errors can never take or drop a boundary frame. Audio trims are sample-exact.
   const N = plan.kept.length;
+  const vt = (k: Range) => `trim=start=${n6(k.start)}:end=${n6(k.end)},setpts=PTS-STARTPTS`;
+  const at = (k: Range) => `atrim=start=${n6(k.start)}:end=${n6(k.end)},asetpts=PTS-STARTPTS`;
   if (N === 1) {
-    g.push(`[${srcIdx}:v]trim=start=${n3(plan.kept[0].start)}:end=${n3(plan.kept[0].end)},setpts=PTS-STARTPTS[v0]`);
-    g.push(`[${srcAudio}]atrim=start=${n3(plan.kept[0].start)}:end=${n3(plan.kept[0].end)},asetpts=PTS-STARTPTS[a0]`);
+    g.push(`[${srcIdx}:v]fps=${FPS},${vt(plan.kept[0])}[v0]`);
+    g.push(`[${srcAudio}]aresample=48000,${at(plan.kept[0])}[a0]`);
   } else {
-    g.push(`[${srcIdx}:v]split=${N}${plan.kept.map((_, i) => `[sv${i}]`).join("")}`);
-    g.push(`[${srcAudio}]asplit=${N}${plan.kept.map((_, i) => `[sa${i}]`).join("")}`);
+    g.push(`[${srcIdx}:v]fps=${FPS},split=${N}${plan.kept.map((_, i) => `[sv${i}]`).join("")}`);
+    g.push(`[${srcAudio}]aresample=48000,asplit=${N}${plan.kept.map((_, i) => `[sa${i}]`).join("")}`);
     plan.kept.forEach((k, i) => {
-      g.push(`[sv${i}]trim=start=${n3(k.start)}:end=${n3(k.end)},setpts=PTS-STARTPTS[v${i}]`);
-      g.push(`[sa${i}]atrim=start=${n3(k.start)}:end=${n3(k.end)},asetpts=PTS-STARTPTS[a${i}]`);
+      g.push(`[sv${i}]${vt(k)}[v${i}]`);
+      g.push(`[sa${i}]${at(k)}[a${i}]`);
     });
   }
   g.push(`${plan.kept.map((_, i) => `[v${i}][a${i}]`).join("")}concat=n=${N}:v=1:a=1[vcat][acat]`);
 
-  // 2. Fit to the output shape (fill and centre-crop), constant 30 fps.
-  g.push(`[vcat]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1[vfit]`);
+  // 2. Fit to the output shape (fill and centre-crop), constant 30 fps. HDR originals are tone-mapped to SDR
+  // BT.709 exactly like the preview copy, so the final looks like the preview that was approved.
+  const tone = source.hdr ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "";
+  g.push(`[vcat]${tone}fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1[vfit]`);
   let v = "vfit";
 
   // 3. Zooms: scale per frame, crop back to size.
   if (plan.zooms.length) {
     const z = zoomExpr(plan.zooms);
-    g.push(`[${v}]scale=w='2*trunc(iw*(${z})/2)':h='2*trunc(ih*(${z})/2)':eval=frame,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4[vzoom]`);
+    // crop's iw/ih are fixed when the filter starts, so the offsets are computed from the zoom itself
+    // (centred across, 40% down, the same framing as the fit step).
+    g.push(`[${v}]scale=w='2*trunc(${W}*(${z})/2)':h='2*trunc(${H}*(${z})/2)':eval=frame,crop=${W}:${H}:x='(2*trunc(${W}*(${z})/2)-${W})/2':y='(2*trunc(${H}*(${z})/2)-${H})*0.4'[vzoom]`);
     v = "vzoom";
   }
 
@@ -337,7 +370,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       inputs.push("-stream_loop", "-1", "-i", files.audio![m.clipId]);
       const mi = idx++;
       const d = Math.max(0.1, m.end - m.start);
-      g.push(`[${mi}:a]atrim=0:${n3(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,afade=t=in:d=${n3(Math.min(0.6, d / 4))},afade=t=out:st=${n3(Math.max(0, d - 1.2))}:d=${n3(Math.min(1.2, d / 4))},volume=${m.gainDb}dB,adelay=delays=${Math.round(m.start * 1000)}:all=1[mu${i}]`);
+      g.push(`[${mi}:a]atrim=0:${n3(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,afade=t=in:d=${n3(Math.min(0.6, d / 4))},afade=t=out:st=${n3(Math.max(0, d - Math.min(1.2, d / 4)))}:d=${n3(Math.min(1.2, d / 4))},volume=${m.gainDb}dB,adelay=delays=${Math.round(m.start * 1000)}:all=1[mu${i}]`);
     });
     let bus = "[mu0]";
     if (music.length > 1) { g.push(`${music.map((_, i) => `[mu${i}]`).join("")}amix=inputs=${music.length}:normalize=0[mubus]`); bus = "[mubus]"; }
@@ -349,7 +382,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   sfx.forEach((s, i) => {
     inputs.push("-i", files.audio![s.clipId]);
     const si = idx++;
-    g.push(`[${si}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${s.gainDb}dB,adelay=delays=${Math.round(s.start * 1000)}:all=1[fx${i}]`);
+    g.push(`[${si}:a]atrim=0:${n3(Math.max(0.1, s.end - s.start))},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${s.gainDb}dB,adelay=delays=${Math.round(s.start * 1000)}:all=1[fx${i}]`);
     mixIn.push(`[fx${i}]`);
   });
   if (mixIn.length > 1) g.push(`${mixIn.join("")}amix=inputs=${mixIn.length}:normalize=0:duration=first,alimiter=limit=0.95[aout]`);
@@ -363,6 +396,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     "-map", "[vout]", "-map", "[aout]",
     "-c:v", "libx264", "-preset", preview ? "ultrafast" : "veryfast", "-crf", preview ? "28" : "20",
     "-pix_fmt", "yuv420p", "-r", "30", "-g", "60",
+    "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
     "-c:a", "aac", "-b:a", preview ? "96k" : "192k", "-ar", "48000",
     "-t", n3(plan.outputSeconds),
     "-movflags", "+faststart",

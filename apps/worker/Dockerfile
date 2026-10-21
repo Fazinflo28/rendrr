@@ -1,7 +1,7 @@
 # Rendrr worker: FFmpeg, Python + PySceneDetect, headless Chromium for graphics. Build context: repository root.
 FROM node:22-trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg python3 python3-venv chromium fonts-inter fonts-dejavu-core fonts-noto-color-emoji \
+      ffmpeg python3 python3-venv chromium fonts-inter fonts-dejavu-core fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
       ca-certificates openssl bash \
     && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir scenedetect==0.7.2 opencv-python-headless==5.0.0.93 numpy==2.5.3
