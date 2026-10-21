@@ -98,3 +98,15 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 - One private bucket with prefixes (`proxies/`, `audio/`, `frames/`, `previews/`, `finals/`, `temp-raw/`, `graphics/`, `brand/`, `assets/`, `samples/`). Retention is enforced by the worker's daily cleanup at 03:15 UTC (Railway Buckets have no lifecycle rules), plus deleting the temp original right after a successful final.
 - The API sets the bucket's CORS rule at startup so browsers can upload preview copies and originals straight to storage.
 - Brand photos and logos are uploaded as data URLs by the UI, stored in the bucket and served by signed URLs.
+
+### Hardening after the overnight review
+- **Region**: the Railway workspace default put every service and both databases in Singapore. All were moved to **US East** (`us-east4-eqdc4a`) next to the bucket (`iad`) before any data existed.
+- **Music and sound effects come only from the built-in catalog.** A clip names a `trackId` (A2) or `sfxId` (A3); the storage key is always looked up from the catalog, in the timeline normaliser, in the render plan and again in the worker. A key sent by a client or an AI is never used.
+- **Frame-exact cuts**: every kept part starts and ends on a frame of the 30 fps output, and the source is put on that grid before cutting. Picture and sound of each part are then exactly as long as the plan says, so nothing drifts at cuts.
+- **Time limits grow with the footage**: the brief's 3 min (preview) and 15 min (final) cover footage up to 10 minutes; longer footage gets 0.3 s (preview) and 1.5 s (final) per second of footage. Preview copies and analysis: 10 minutes or 0.6 s per second of footage. The limit always wins, even over a stalled download.
+- **Rate limits** key on Railway's `X-Real-IP` (the edge sets it); `X-Forwarded-For` is not trusted. The MCP server is keyed per user only when its shared secret is valid. Review passwords: 10 guesses a minute.
+- **Live updates** (editor and render progress) share one Redis subscriber connection per API process.
+- **Google Drive connect** finishes with the user's own login: the callback page hands the code to the tab that opened it (or to `/drive-done`), which calls `POST /drive/complete`; the signed state must name the same account.
+- **Email change** is confirmed with Clerk's emailed code in the browser; the API only copies an address Clerk reports as verified and primary.
+- **Review links** stop working when their edit is deleted, can be revoked (`DELETE /reviews/:token`), and the public payload carries no internal ids.
+- **Review states survive renders**: "In review", "Changes requested" and "Approved" are kept while rendering; a finished final still moves the edit to "Final ready".
