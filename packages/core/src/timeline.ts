@@ -19,7 +19,7 @@ export type ChangeActor = {
   toolName?: string;         // MCP tool or UI action name
   input?: unknown;           // tool input, stored on ai_actions
 };
-export type ChangeResult = { projectId: string; version: number; summary: string; snapshot: Snapshot; createdVersion: boolean };
+export type ChangeResult = { projectId: string; version: number; summary: string; snapshot: Snapshot; createdVersion: boolean; unchanged?: boolean };
 
 const COALESCE_MS = 10 * 60_000;
 const isAi = (k: Actor) => k === "claude" || k === "chatgpt";
@@ -55,6 +55,14 @@ export function snapshotOf(p: { timeline: unknown; name: string; aspect: string;
   return { timeline: TimelineSchema.parse(p.timeline) as Timeline, name: p.name, aspect: p.aspect as Snapshot["aspect"], styleId: p.styleId };
 }
 
+/** Key order does not matter (Postgres JSON reorders keys); everything else must match. */
+function stable(v: unknown): string {
+  if (Array.isArray(v)) return "[" + v.map(stable).join(",") + "]";
+  if (v && typeof v === "object") return "{" + Object.keys(v).filter((k) => (v as Record<string, unknown>)[k] !== undefined).sort().map((k) => JSON.stringify(k) + ":" + stable((v as Record<string, unknown>)[k])).join(",") + "}";
+  return JSON.stringify(v) ?? "null";
+}
+const sameSnapshot = (a: Snapshot, b: Snapshot) => stable(a) === stable(b);
+
 export async function applyTimelineChange(projectId: string, change: Op, actor: ChangeActor, opts: { baseVersion?: number } = {}): Promise<ChangeResult> {
   const result = await prisma.$transaction(async (tx) => {
     // Lock the project row so two writers (the editor and an AI) never interleave.
@@ -78,6 +86,9 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
       if (e instanceof EditError) throw new AppError(e.message, 400, "invalid-edit");
       throw e;
     }
+
+    // Nothing changed (an AI op with nothing to do, or an autosave of what is already saved): no new version.
+    if (sameSnapshot(out.snap, snapshotOf(p))) return { projectId, version: p.currentVersion, summary: out.summary, snapshot: out.snap, createdVersion: false, unchanged: true };
 
     const latest = await tx.projectVersion.findFirst({ where: { projectId }, orderBy: { v: "desc" } });
     const prevV = p.currentVersion;
@@ -105,7 +116,7 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
     return { projectId, version: v, summary: out.summary, snapshot: out.snap, createdVersion: !coalesce };
   }, { timeout: 20_000, maxWait: 10_000 });
 
-  if (actor.kind !== "user" || result.createdVersion) {
+  if (!result.unchanged && (actor.kind !== "user" || result.createdVersion)) {
     await publishProject(projectId, { version: result.version, by: actor.kind, text: result.summary }).catch(() => {});
   }
   return result;

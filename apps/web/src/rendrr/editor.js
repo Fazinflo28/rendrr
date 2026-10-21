@@ -1,7 +1,7 @@
 /* ===================== /editor/:id ===================== */
 // Ported from ui/rendrr-ui.html (editor script). Changes: real footage in the player, live reload when an AI
 // edits, autosave conflicts, real undo/restore, the rendered preview plays in the player, real downloads.
-import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, Art, useNav, useApp } from "./ui";
+import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, Art, useNav, useApp } from "./ui";
 import { StyleArt, CreateLinkModal } from "./screens";
 import { api } from "./api";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
@@ -42,11 +42,12 @@ function EditorPage({ id }) {
   useEffect(() => api.watchProject(id, (m) => { if (m && m.by !== "user") q.reload(); }), [id]);
   // The AI chat lives here, not in EditorInner: the AI's own changes remount EditorInner while it is still replying.
   const [chat, setChat] = useState(null); const [thinking, setThinking] = useState(false);
-  useEffect(() => { setChat(null); setThinking(false); }, [id]);
-  return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version} project=${p} reload=${q.reload} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])), thinking, setThinking }} />`}<//>`;
+  const keep = useRef({ tab: "comments", time: 0 }); // the open tab and the playhead survive that remount too
+  useEffect(() => { setChat(null); setThinking(false); keep.current = { tab: "comments", time: 0 }; }, [id]);
+  return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version} project=${p} reload=${q.reload} keep=${keep} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])), thinking, setThinking }} />`}<//>`;
 }
 
-function EditorInner({ project, reload, ai }) {
+function EditorInner({ project, reload, ai, keep }) {
   const { go } = useNav(); const toast = useToast(); const { refreshUsage } = useApp();
   const sq = useAsync(() => api.listStyles(), []);
   const tl = project.timeline; const words = useMemo(() => project.transcript.flatMap((l) => l.words), [project]);
@@ -54,7 +55,7 @@ function EditorInner({ project, reload, ai }) {
   const S = H.state; const dur = tl.duration;
   const [sel, setSel] = useState(null); // {track,id}
   const [wsel, setWsel] = useState(null); // {a,b} word indexes
-  const [rtab, setRtab] = useState("comments"); const [verMenu, setVerMenu] = useState(false);
+  const [rtab, setRtabNow] = useState(keep.current.tab); const setRtab = (t) => { keep.current.tab = t; setRtabNow(t); }; const [verMenu, setVerMenu] = useState(false);
   useEffect(() => { const k = () => setVerMenu(false); window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
   const [zoom, setZoom] = useState(36);
   const [render, setRender] = useState(null);
@@ -67,6 +68,8 @@ function EditorInner({ project, reload, ai }) {
   const cutSet = useMemo(() => new Set(S.cut), [S.cut]);
   const cutRegions = useMemo(() => { const r = []; words.forEach((w, i) => { if (!cutSet.has(w.id)) return; const end = words[i + 1] ? words[i + 1].t : Math.max(w.t + 0.35, w.end || 0); const last = r[r.length - 1]; if (last && Math.abs(last.end - w.t) < 0.01) last.end = end; else r.push({ start: w.t, end }); }); return r; }, [cutSet, words]);
   const pb = usePlayback(dur, { cuts: cutRegions });
+  useEffect(() => { if (keep.current.time > 0) pb.seek(Math.min(keep.current.time, dur)); }, []);
+  useEffect(() => { keep.current.time = pb.time; }, [pb.time]);
   // "Watch preview": the rendered file plays in the same player, without the live overlays.
   const [watch, setWatch] = useState(null);
   const wpb = usePlayback(watch?.seconds || 1);
@@ -178,7 +181,7 @@ function EditorInner({ project, reload, ai }) {
       </div>
       <span class="t-small muted" id="saved" title=${saved} style="display:inline-flex;align-items:center;gap:4px;opacity:.7">${saved === "Saved" ? "" : saved}</span>
       <div class="grow" />
-      <span class="t-small muted" id="auto-preview" title="The player shows every change as you make it. Render a preview to see it with captions, zooms and music burned in.">${autoPrev}</span>
+      <span class="t-small muted" id="auto-preview" title="The player shows every change as you make it. Captions, zooms and music are burned in when you render the final.">${autoPrev}</span>
       <${Btn} kind="secondary" size="sm" id="render-final" icon="film" onClick=${() => startRender("final")}>Render final<//>
       <${Btn} size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share for review<//>
     </div>

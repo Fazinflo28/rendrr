@@ -562,6 +562,8 @@ tr td:last-child { border-top-right-radius: var(--r-sm); border-bottom-right-rad
 /* ---------- project folders (greyscale covers) ---------- */
 .fcard { background: var(--surface); border-radius: var(--r-md); box-shadow: var(--shadow-card); overflow: visible; cursor: pointer; transition: transform .2s var(--ease), box-shadow .2s var(--ease); text-align: left; padding: 0; width: 100%; }
 .fcard:hover { transform: translateY(-2px); box-shadow: var(--shadow-pop); }
+/* A card with its menu open sits above the next row, so the menu items stay clickable. */
+.fcard:has(.menu), .acard:has(.menu) { position: relative; z-index: 20; }
 .fcard.new { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 240px; color: var(--muted); background: linear-gradient(180deg, var(--surface), var(--bg)); }
 .fcard.new .ico { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; background: var(--raised); box-shadow: 0 0 0 1px var(--hair); color: var(--ink); }
 .cover { position: relative; aspect-ratio: 1 / 1; overflow: hidden; background: #1a1a1e; border-radius: var(--r-md) var(--r-md) 0 0; }

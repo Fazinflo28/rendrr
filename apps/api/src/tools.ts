@@ -31,6 +31,7 @@ async function edit(c: Ctx, name: string, projectId: string, op: Op, input: unkn
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { video: { include: { analysis: true } } } });
   const tr = (p.video.analysis?.transcript as unknown as Transcript) || [];
   const out = outputDuration(r.snapshot.timeline, allWords(tr));
+  if (r.unchanged) return { text: `Nothing to change: ${r.summary}.\nStill version ${r.version}.`, data: { version: r.version } };
   return { text: `Done: ${r.summary}.\nNow version ${r.version}. Output length ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s footage. Render a preview to check it.`, data: { version: r.version } };
 }
 

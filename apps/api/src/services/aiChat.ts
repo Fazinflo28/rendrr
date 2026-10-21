@@ -80,6 +80,7 @@ const TOOL_SPECS = CHAT_TOOLS.map(toolSchema);
 function stepLine(title: string, write: boolean | undefined, text: string) {
   const first = text.split("\n")[0].trim();
   if (write && first.startsWith("Done: ")) return cap(first.slice(6).replace(/\.$/, ""));
+  if (write && first.startsWith("Nothing to change: ")) return cap(first.slice(19).replace(/\.$/, ""));
   if (write) return cap(first.replace(/\.$/, "")).slice(0, 200);
   return title;
 }

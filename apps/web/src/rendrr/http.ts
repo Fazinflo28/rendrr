@@ -27,8 +27,10 @@ export async function clerk(): Promise<any> {
   }
   throw fail("Login did not load. Refresh the page and try again.", "auth-load");
 }
+// Public pages ask for data straight away; wait for Clerk to load first so a logged-in user is sent as logged in.
 export async function token(): Promise<string | null> {
-  const c = (window as any).Clerk;
+  let c = (window as any).Clerk;
+  if (!c?.loaded) { try { c = await clerk(); } catch { return null; } }
   if (!c?.session) return null;
   try { return await c.session.getToken(); } catch { return null; }
 }

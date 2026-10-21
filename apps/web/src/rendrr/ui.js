@@ -177,7 +177,7 @@ function usePlayback(duration, { cuts = [] } = {}) {
   const attach = useCallback((el) => { ref.current.video = el; }, []);
   return { time, playing, setPlaying, seek, attach, toggle: () => setPlaying((p) => (ref.current.time >= duration ? (seek(0), true) : !p)) };
 }
-const QUALITIES = ["Auto", "1080p", "720p", "480p"];
+const QUALITIES = ["Auto", "720p", "480p"];
 // Draws the current fake frame to a canvas so a snapshot is a real image.
 function drawFrame({ aspect, time, caption, captionLook, zoom }) {
   const W = aspect === "9:16" ? 720 : 1280, H = aspect === "9:16" ? 1280 : aspect === "1:1" ? 1280 : 720;
@@ -211,7 +211,7 @@ function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect
   useEffect(() => { const el = videoRef.current; if (!el || !src) return; if (pb.playing) { if (Math.abs(el.currentTime - pb.time) > 0.3) el.currentTime = pb.time; el.play().catch(() => pb.setPlaying(false)); } else el.pause(); }, [pb.playing, src]);
   useEffect(() => { const el = videoRef.current; if (!el || !src || pb.playing) return; if (Math.abs(el.currentTime - pb.time) > 0.04) { try { el.currentTime = pb.time; } catch {} } }, [pb.time, src]);
   const [quality, setQuality] = useState("Auto"); const [qMenu, setQMenu] = useState(false); const [switching, setSwitching] = useState(false); const [snap, setSnap] = useState(null);
-  const effective = quality === "Auto" ? "1080p" : quality;
+  const effective = quality === "Auto" ? "720p" : quality; // the player streams the 720p preview copy; finals are 1080p
   const pickQuality = (q) => { setQMenu(false); if (q === quality) return; setSwitching(true); setQuality(q); setTimeout(() => setSwitching(false), 650); };
   const takeSnapshot = (e) => { e?.stopPropagation(); pb.setPlaying(false); try { let url; try { url = src && videoRef.current ? drawVideoFrame(videoRef.current, { caption, captionLook, zoom, aspect }) : null; } catch { url = null; } url ||= drawFrame({ aspect, time: pb.time, caption, captionLook, zoom }); setSnap({ url, time: pb.time }); onSnapshot?.({ url, time: pb.time }); } catch (err) { toast("Could not take a snapshot: " + err.message); } };
   const copySnap = async () => { try { const blob = await (await fetch(snap.url)).blob(); await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); toast("Snapshot copied", { icon: "check", tone: "brand" }); } catch { toast("Copy is blocked here. Right click the image to save it.", { ms: 4000 }); } };
@@ -220,7 +220,7 @@ function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect
   const seekFromEvent = (e) => { const r = scrubRef.current.getBoundingClientRect(); pb.seek(((e.clientX - r.left) / r.width) * duration); };
   const onScrubDown = (e) => { seekFromEvent(e); const mv = (ev) => seekFromEvent(ev); const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); }; window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up); };
   const fit = style && style.height === "100%";
-  return html`<div class=${"pwrap" + (fit ? " fit" : "")} onClick=${() => qMenu && setQMenu(false)}><div class=${"player q" + effective.replace("p", "")} style=${{ aspectRatio: ar, ...(fit ? {} : style) }}>
+  return html`<div class=${"pwrap" + (fit ? " fit" : "")} onClick=${() => qMenu && setQMenu(false)}><div class=${"player q" + (quality === "Auto" ? "auto" : effective.replace("p", ""))} style=${{ aspectRatio: ar, ...(fit ? {} : style) }}>
     <div class="screen" onClick=${(e) => onClickVideo?.(e)} data-testid="screen">
       ${src ? html`<video ref=${videoRef} src=${src} playsInline preload="auto" onLoadedMetadata=${(e) => { const el = e.currentTarget; if (Math.abs(el.currentTime - pb.time) > 0.1) { try { el.currentTime = pb.time; } catch {} } if (pb.playing) el.play().catch(() => pb.setPlaying(false)); }} onError=${() => onVideoError?.()} style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: videoFit, objectPosition: "50% 40%", background: "#000", transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: "transform .4s cubic-bezier(.2,.8,.2,1)" }} />` : html`<div class="scene" style=${{ transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: "transform .4s cubic-bezier(.2,.8,.2,1)" }}>
         <div class="head" style=${{ transform: `translateX(calc(-50% + ${Math.sin(pb.time * 1.3) * 6}px))` }} />
@@ -247,7 +247,7 @@ function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect
       </div>
       <button class="pctl icon" id="snapshot" aria-label="Take a snapshot" title="Snapshot this frame" onClick=${takeSnapshot}><${Icon} name="image" /></button>
     </div>`}
-    ${snap && html`<${Modal} title=${"Snapshot at " + fmtTime(snap.time, true)} sub="A still of this exact frame." onClose=${() => setSnap(null)} wide footer=${html`<${Btn} kind="ghost" onClick=${() => setSnap(null)}>Close<//><${Btn} kind="secondary" icon="copy" id="snap-copy" onClick=${copySnap}>Copy image<//><${Btn} icon="check" id="snap-keep" onClick=${() => { toast("Saved to key frames", { icon: "check", tone: "brand" }); setSnap(null); }}>Save to key frames<//>`}>
+    ${snap && html`<${Modal} title=${"Snapshot at " + fmtTime(snap.time, true)} sub="A still of this exact frame." onClose=${() => setSnap(null)} wide footer=${html`<${Btn} kind="ghost" onClick=${() => setSnap(null)}>Close<//><${Btn} kind="secondary" icon="copy" id="snap-copy" onClick=${copySnap}>Copy image<//><${Btn} icon="download" id="snap-keep" onClick=${() => { const a = document.createElement("a"); a.href = snap.url; a.download = "frame-" + fmtTime(snap.time, true).replace(/[^0-9]+/g, "-") + ".png"; a.click(); toast("Frame saved to this computer", { icon: "check", tone: "brand" }); setSnap(null); }}>Save image<//>`}>
       <img id="snap-img" src=${snap.url} alt=${"Snapshot at " + fmtTime(snap.time)} style=${{ width: "100%", maxHeight: "60vh", objectFit: "contain", borderRadius: "var(--r-sm)", background: "#000" }} />
     <//>`}
   </div>`;
@@ -275,5 +275,5 @@ export {
   h, html, fmtTime, fmtLen, fmtAgo, initials, Icon, ICONS, Btn, Toggle, Seg, Chip, Field, StatusChip,
   ToastCtx, ToastHost, useToast, Modal, useAsync, Skeleton, GridSkeleton, EmptyState, ErrorState, Async,
   usePlayback, QUALITIES, drawFrame, Player, Art, Thumb, OriIcon, readTheme, applyTheme, ThemeBtn, copyText,
-  NavCtx, useNav, AppCtx, useApp,
+  Masonry, Dropdown, NavCtx, useNav, AppCtx, useApp,
 };

@@ -3,7 +3,7 @@
 import {
   useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtLen, fmtAgo, initials, Icon, Btn, Toggle, Seg, Chip, Field, StatusChip,
   useToast, Modal, useAsync, Skeleton, GridSkeleton, EmptyState, ErrorState, Async, usePlayback, Player, Art, Thumb, OriIcon, ThemeBtn, copyText,
-  useNav, useApp,
+  Masonry, Dropdown, useNav, useApp,
 } from "./ui";
 import { api } from "./api";
 const IS_PROD = process.env.NODE_ENV === "production";
@@ -150,15 +150,29 @@ function RecreateModal({ g, onClose }) {
   const [folder, setFolder] = useState(""); const [newName, setNewName] = useState(""); const fileRef = useRef();
   const fq = useAsync(() => (step === "project" ? api.listFoldersLite() : Promise.resolve(null)), [step]);
   useEffect(() => { if (fq.data?.length && !folder) setFolder(fq.data[0].id); }, [fq.data]);
+  const alive = useRef(true); useEffect(() => () => { alive.current = false; }, []);
+  const madeFolder = useRef(null); const [wait, setWait] = useState(null);
   const picked = (v) => { setVideo(v); setStep("project"); window.dispatchEvent(new Event("rendrr:library")); };
+  // An edit needs ready footage (transcript, silences): wait here while it is prepared, then open the editor.
+  const whenReady = async () => {
+    for (;;) {
+      const v = await api.getVideo(video.id);
+      if (v.status === "ready") return v;
+      if (["failed", "missing", "expired"].includes(v.status)) throw new Error(v.error || '"' + v.name + '" could not be prepared. Pick another video.');
+      if (!alive.current) throw new Error("stopped");
+      setWait(v.stepName || "Preparing your footage");
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  };
   const fromDrive = async (ids) => { const out = await api.addFromDrive(ids.slice(0, 1)); picked(out[0]); };
   const fromFiles = async (files) => { setBusy(true); try { const out = await api.addFromComputer(files ? [files[0]] : null); picked(out[0]); } catch (e) { toast(e.message, { icon: "alert" }); } finally { setBusy(false); } };
   const create = async () => {
     setBusy(true);
-    try { let fid = folder; if (fid === "new") { const f = await api.createFolder(newName); fid = f.id; }
+    try { let fid = folder; if (fid === "new") fid = madeFolder.current || (madeFolder.current = (await api.createFolder(newName)).id);
+      await whenReady(); setWait(null);
       const p = await api.createProject({ videoId: video.id, styleId: g.styleId, folderId: fid, name: "Recreate: " + g.title });
       api.countRecreate(g.id); toast("Project created. Opening the editor.", { icon: "spark", tone: "brand" }); onClose(); go("/editor/" + p.id);
-    } catch (e) { toast(e.message); setBusy(false); }
+    } catch (e) { if (alive.current) { toast(e.message); setBusy(false); setWait(null); } }
   };
   return html`<${Modal} title="Recreate this video" sub=${"Same style (" + g.style.name + "), your own footage. The AI matches the cut."} onClose=${onClose} wide>
     <div class="steps-row"><span class=${"stp" + (step === "source" ? " on" : " done")}>1. Footage</span><span class="stp-sep" /><span class=${"stp" + (step === "project" ? " on" : "")}>2. Project</span></div>
@@ -175,14 +189,14 @@ function RecreateModal({ g, onClose }) {
         <div class="row" style="gap:8px"><${Icon} name="clock" size="14" /><span class="t-small muted">Keep this tab open while we prepare your preview.</span></div>
       </div>`}`
     : html`
-      <div class="card flat row" style="gap:12px"><${Icon} name=${video.source === "drive" ? "drive" : "laptop"} size="18" /><div class="grow"><b class="t-label">${video.name}</b><p class="t-small muted">${video.source === "drive" ? "Linked from Google Drive" : "From your computer"} · preview is being made in the background</p></div><${Btn} kind="ghost" size="xs" onClick=${() => setStep("source")}>Change<//></div>
+      <div class="card flat row" style="gap:12px"><${Icon} name=${video.source === "drive" ? "drive" : "laptop"} size="18" /><div class="grow"><b class="t-label">${video.name}</b><p class="t-small muted">${video.source === "drive" ? "Linked from Google Drive" : "From your computer"} · ${wait ? wait + ". The editor opens when it is ready." : "preview is being made in the background"}</p></div><${Btn} kind="ghost" size="xs" onClick=${() => setStep("source")}>Change<//></div>
       <div class="col" style="gap:8px"><span class="t-label">Which project should this go into?</span>
         <${Async} q=${fq} skeleton=${html`<${Skeleton} rows=${3} card=${false} />`} whenEmpty=${null}>${(fs) => html`<div class="plist" id="rc-folders">
           ${(fs || []).map((f) => html`<label key=${f.id} class=${"prow" + (folder === f.id ? " on" : "")}><input type="radio" name="rcf" value=${f.id} checked=${folder === f.id} onChange=${() => setFolder(f.id)} /><${Icon} name="projects" size="16" /><span class="grow">${f.name}</span></label>`)}
           <label class=${"prow" + (folder === "new" ? " on" : "")}><input type="radio" name="rcf" value="new" checked=${folder === "new"} onChange=${() => setFolder("new")} /><${Icon} name="plus" size="16" /><span class="grow">New project</span></label>
           ${folder === "new" && html`<input id="rc-newname" class="input" placeholder="Project name, like a client or a campaign" value=${newName} onInput=${(e) => setNewName(e.target.value)} autoFocus />`}
         </div>`}<//></div>
-      <div class="row" style="justify-content:flex-end;gap:8px"><${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="rc-create" icon="spark" disabled=${busy || !folder || (folder === "new" && !newName.trim())} onClick=${create}>${busy ? "Creating…" : "Create and open editor"}<//></div>`}
+      <div class="row" style="justify-content:flex-end;gap:8px"><${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="rc-create" icon="spark" disabled=${busy || !folder || (folder === "new" && !newName.trim())} onClick=${create}>${busy ? (wait ? "Waiting for footage…" : "Creating…") : "Create and open editor"}<//></div>`}
   <//>`;
 }
 
@@ -327,7 +341,7 @@ function ProjectsPage() {
 
 /* ---------- /projects/:id (folder: assets, collections, share links) ---------- */
 function FolderPage({ id }) {
-  const { go } = useNav(); const toast = useToast(); const q = useAsync(() => api.getFolder(id), [id]);
+  const { go } = useNav(); const toast = useToast(); const { user } = useApp(); const q = useAsync(() => api.getFolder(id), [id]);
   const [section, setSection] = useState("assets"); const [view, setView] = useState("grid"); const [search, setSearch] = useState(""); const [sort, setSort] = useState("updated");
   const [sel, setSel] = useState([]); const [share, setShare] = useState(null); const [np, setNp] = useState(false); const [menu, setMenu] = useState(null); const [deleted, setDeleted] = useState([]);
   useEffect(() => { const k = () => setMenu(null); window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
@@ -352,7 +366,7 @@ function FolderPage({ id }) {
                 <div class="ainfo"><span><${Icon} name="comment" size="12" />${p.comments}</span><span class="mono">${dur(p)}</span></div></div>
               <div style="padding:12px 14px 14px" class="col" ><div class="row between"><b class="t-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.name}</b><div style="position:relative" onClick=${(e) => e.stopPropagation()}><${Btn} kind="quiet" size="xs" icon="more" aria-label="More" onClick=${() => setMenu(menu === p.id ? null : p.id)} />
                 ${menu === p.id && html`<div class="menu" style="top:30px"><button class="item" onClick=${() => { setShare({ folder: f, projectId: p.id }); setMenu(null); }}><${Icon} name="link" />Share this video</button><button class="item" onClick=${() => { go("/editor/" + p.id); }}><${Icon} name="scissors" />Open in editor</button><button class="item" onClick=${() => { del(p); setMenu(null); }}><${Icon} name="trash" />Delete</button></div>`}</div></div>
-                <span class="t-small muted">Fazinflo · ${fmtAgo(p.updated)} · ${p.style?.name}</span>
+                <span class="t-small muted">${user?.name || "You"} · ${fmtAgo(p.updated)} · ${p.style?.name}</span>
                 <select class="input sm astatus" aria-label="Status" value=${p.status} onClick=${(e) => e.stopPropagation()} onChange=${(e) => setStatus(p, e.target.value)}>${["Draft", "Rendering", "Preview ready", "In review", "Changes requested", "Approved", "Final ready"].map((st) => html`<option key=${st} value=${st}>${st}</option>`)}</select></div>
             </div>`)}
           </div>` : html`<div class="card tight"><table><thead><tr><th></th><th>Name</th><th>Style</th><th>Status</th><th>Comments</th><th>Length</th><th>Updated</th><th></th></tr></thead><tbody>${list.map((p) => html`<tr key=${p.id} class="click" data-asset=${p.id} onClick=${() => go("/editor/" + p.id)}><td onClick=${(e) => e.stopPropagation()}><button class=${"acheck static" + (sel.includes(p.id) ? " on" : "")} aria-label="Select" onClick=${(e) => toggleSel(e, p.id)}>${sel.includes(p.id) && html`<${Icon} name="check" size="12" />`}</button></td><td><b class="t-label">${p.name}</b></td><td class="muted">${p.style?.name}</td><td><${StatusChip} status=${p.status} /></td><td class="muted mono">${p.comments}</td><td class="muted mono">${dur(p)}</td><td class="muted">${fmtAgo(p.updated)}</td><td onClick=${(e) => e.stopPropagation()}><${Btn} kind="ghost" size="xs" icon="link" onClick=${() => setShare({ folder: f, projectId: p.id })}>Share<//></td></tr>`)}</tbody></table></div>`}
@@ -620,10 +634,10 @@ function ConnectPage() {
 
 /* ---------- /usage ---------- */
 function UsagePage() {
-  const toast = useToast(); const q = useAsync(() => api.getUsage(), []);
+  const toast = useToast(); const { go } = useNav(); const q = useAsync(() => api.getUsage(), []);
   const hq = useAsync(() => api.getUsageHistory(), []);
   return html`<div class="page">
-    <div class="page-head"><div><h1 class="t-title">Usage</h1><p class="muted">What you rendered this month, and how much room is left.</p></div><${Btn} kind="secondary" id="manage-plan" onClick=${() => toast("Plan settings open in billing (demo)")}>Manage plan<//></div>
+    <div class="page-head"><div><h1 class="t-title">Usage</h1><p class="muted">What you rendered this month, and how much room is left.</p></div><${Btn} kind="secondary" id="manage-plan" onClick=${() => go("/billing")}>Manage plan<//></div>
     <${Async} q=${q} skeleton=${html`<div class="three">${[1, 2, 3].map((i) => html`<div key=${i} class="card"><div class="skeleton" style="height:56px;width:60%" /></div>`)}</div>`}>${(u) => html`
       <div class="three">
         <div class="card stat"><span class="big" id="minutes-big">${u.renderMinutes}</span><span class="lbl">Render minutes this month</span></div>
@@ -706,7 +720,7 @@ function BillingPage() {
   const toast = useToast(); const { refreshUsage } = useApp(); const q = useAsync(() => api.getBilling(), []); const [busy, setBusy] = useState(false);
   const pick = async (name) => { setBusy(true); try { const b = await api.updatePlan(name); q.setData(b); refreshUsage(); toast("Plan changed to " + name, { icon: "check", tone: "brand" }); } catch (e) { toast(e.message); } finally { setBusy(false); } };
   return html`<div class="page">
-    <div class="page-head"><div><h1 class="t-title">Billing</h1><p class="muted">Your plan, your card, your invoices.</p></div></div>
+    <div class="page-head"><div><h1 class="t-title">Billing</h1><p class="muted">Your plan, your card, your invoices. Payments and plan limits are not switched on yet.</p></div></div>
     <${Async} q=${q} skeleton=${html`<${Skeleton} rows=${4} />`}>${(b) => html`
       <div class="three">${b.plans.map((p) => html`<div key=${p.name} class=${"card col" + (b.plan === p.name ? " plan-on" : "")} style="gap:8px" data-plan=${p.name}><div class="row between"><b class="t-heading">${p.name}</b>${b.plan === p.name && html`<span class="tag accent">Current</span>`}</div><span class="t-title" style="font-size:28px">${p.price}<span class="t-small muted" style="font-weight:400"> / month</span></span><p class="t-small muted">${p.note}</p>${b.plan !== p.name && html`<${Btn} kind="secondary" size="sm" disabled=${busy} onClick=${() => pick(p.name)}>Switch to ${p.name}<//>`}</div>`)}</div>
       <div class="two" style="align-items:start">

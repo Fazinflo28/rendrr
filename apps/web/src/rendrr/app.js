@@ -5,7 +5,7 @@
 //   /editor/:id  /review/:token  /connect  /usage  /billing  /settings
 //   Login is a modal over Explore (Higgsfield-style): browse free, act after logging in. /login opens that modal.
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx } from "./ui";
+import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, useNav } from "./ui";
 import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, UsagePage, BillingPage, SettingsPage, Shell } from "./screens";
 import { EditorPage } from "./editor";
 import { api } from "./api";
@@ -26,6 +26,13 @@ const ROUTES = [
   [/^\/sso-callback$/, () => null, { bare: true }], // Clerk finishes Google sign-in here (src/app/sso-callback)
   [/^\/drive-done$/, () => html`<${DriveDone} />`, { bare: true }],
 ];
+
+// Any other address: say so instead of quietly showing Explore.
+function NotFound() {
+  const { go } = useNav();
+  return html`<div class="page"><${EmptyState} icon="search" title="That page does not exist" text="The link may be old or mistyped." action=${html`<${Btn} onClick=${() => go("/explore")}>Go to Explore<//>`} /></div>`;
+}
+const NOT_FOUND = [/^/, () => html`<${NotFound} />`, { pub: true }];
 
 // Google Drive consent without a popup comes back here; finish it with this browser's own login.
 function DriveDone() {
@@ -92,7 +99,7 @@ function App() {
   const addFromDrive = useCallback(async (ids) => { try { const out = await api.addFromDrive(ids); setAddOpen(false); go("/library"); toast(out.length + (out.length === 1 ? " video" : " videos") + " linked from Drive", { icon: "drive", tone: "brand" }); ping(); } catch (e) { toast(e.message, { icon: "alert" }); } }, [go]);
   const addSample = useCallback(() => startUpload(null), [startUpload]);
 
-  const match = ROUTES.find(([re]) => re.test(route)) || ROUTES[0];
+  const match = ROUTES.find(([re]) => re.test(route)) || NOT_FOUND;
   const m = route.match(match[0]) || []; const opts = match[2] || {};
   // Logged out on a private page: show Explore underneath and ask to log in; after login, the page they wanted appears.
   const guarded = !user && !opts.bare && !opts.pub;
