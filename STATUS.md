@@ -30,10 +30,10 @@ Checked tonight on a full local copy of the system (Postgres, Redis, S3-compatib
 - **AI connector**: log in like Claude does (dynamic client registration, PKCE, Clerk login, consent screen), then every main tool: list and read footage, apply a style, cut silences, add zooms, music, graphics, captions, render a preview and look at its frames, make a custom animated graphic, create a review link, read comments, undo.
 - Footage: built-in sample, local files (preview copy made in the browser, original uploaded once for a full-quality export), Drive (fake Drive until Google keys exist).
 - Editing: every change goes through one function with version history, AI changes are undoable, the editor pulls AI changes in live and refuses to overwrite them.
-- Rendering: 540p previews in about 6–12 s and 1080p finals in about 13–16 s for a 30 s edit; captions in three looks, zooms, b-roll, graphics with transparency, music ducked under speech, sound effects.
+- Rendering: 540p previews in about 6–12 s and 1080p finals in about 13–17 s for a 30 s edit; captions in three looks, zooms, b-roll, graphics with transparency, music ducked under speech, sound effects.
 - Reviews: password, expiry, download on/off, comments at a time, approve, request changes, folder reviews.
 - Daily cleanup at 03:15 UTC (expired preview copies, raw originals after 24 h, old preview renders, stuck jobs).
-- 20 unit tests for the timeline maths and the render plan.
+- 22 unit tests for the timeline maths and the render plan.
 
 ## 3. What is stubbed, and the key that turns each one on
 
@@ -85,6 +85,13 @@ Three reviews (API, worker/render, web app) plus tests in the real Docker images
 - Email change marked any address as verified; the Drive connect link could be used to attach someone's Drive to another account.
 - Deleting a folder or footage left raw files in storage.
 - All four Railway services and the databases were in Singapore while the file bucket is in US East; moved to US East.
+- Picture and sound drifted later with every cut (about 1 s on a long edit) and the end was cut off. Cuts are now frame-exact: 0 ms drift on a 167-cut test.
+- Zooms zoomed into the top-left corner instead of the face. Now centred.
+- Finals from HDR phone footage came out washed out. Now they match the preview.
+- Captions: some characters showed as empty boxes, Chinese/Japanese/Korean had no font, rewritten caption lines lost most of their words.
+- Graphics lost their ending animation when words inside them were cut.
+- A stalled download could block the render queue forever; time limits now also grow with long footage.
+- Smaller: short music clips went silent early, cutting the last word left its tail, the graphics sandbox could send network traffic through WebRTC, frames taken for the AI were never deleted.
 
 ## Known limits (not blocking a test)
 
