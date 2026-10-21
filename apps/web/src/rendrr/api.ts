@@ -116,7 +116,12 @@ export const api: any = {
   getVideo: async (id: string) => remember(await get(`/videos/${enc(id)}`)),
   retryVideo: async (id: string) => {
     const v = remember(await post(`/videos/${enc(id)}/retry`));
-    if (v.source === "local" && !v.sample && v.status === "previewing") localJobs.start(v.id);
+    if (v.source === "local" && !v.sample && v.status === "previewing") {
+      // The browser has to make the preview again: it needs the file in this tab (asks with a picker).
+      try { await localJobs.ensureFile(v.id, v.originalName); }
+      catch (e) { await post(`/videos/${enc(v.id)}/local/progress`, { status: "paused" }).catch(() => {}); throw e; }
+      localJobs.start(v.id);
+    }
     return v;
   },
   removeVideo: (id: string) => del(`/videos/${enc(id)}`),
@@ -256,6 +261,8 @@ export const api: any = {
     if (v.originalName && (f.name !== v.originalName || (v.originalSize && f.size !== v.originalSize))) {
       throw fail("That is not the same file. We need '" + v.originalName + "'" + (v.originalSize ? " (" + (v.originalSize / 1e6).toFixed(0) + " MB)" : "") + ".");
     }
+    // Keep the picked file in this tab: the next export uploads it without asking again.
+    if (file) localJobs.hold(p.videoId, f);
     const steps = ["Uploading original"];
     onProgress?.({ step: 0, steps, percent: 0 });
     const up = await post(`/projects/${enc(projectId)}/original`, { name: f.name, size: f.size });

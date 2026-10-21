@@ -183,17 +183,14 @@ async function run(videoId: string) {
   }
 }
 
+// The plain file input works in every browser. (Dropped files still give us a handle that survives reloads.)
 function pickFile(): Promise<{ file: File; handle?: any }> {
-  const w = window as any;
-  if (typeof w.showOpenFilePicker === "function") {
-    return w.showOpenFilePicker({ types: [{ description: "Video", accept: { "video/*": [".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"] } }] })
-      .then(async ([h]: any[]) => ({ file: await h.getFile(), handle: h }))
-      .catch(() => { throw fail("Pick the original file to continue.", "need-original"); });
-  }
   return new Promise((resolve, reject) => {
     const i = document.createElement("input");
     i.type = "file"; i.accept = "video/*"; i.style.display = "none";
-    i.onchange = () => { const f = i.files?.[0]; i.remove(); f ? resolve({ file: f }) : reject(fail("Pick the original file to continue.", "need-original")); };
+    const done = (f?: File) => { i.remove(); f ? resolve({ file: f }) : reject(fail("Pick the original file to continue.", "need-original")); };
+    i.onchange = () => done(i.files?.[0]);
+    i.addEventListener("cancel", () => done());
     document.body.appendChild(i);
     i.click();
   });
