@@ -26,6 +26,7 @@ If you prefer to do it yourself in the Railway dashboard: for each of `api`, `wo
 
 Checked tonight on a full local copy of the system (Postgres, Redis, S3-compatible storage, real Clerk login, real AssemblyAI), and again **from the exact Docker images Railway will build**:
 
+- **First start on an empty database and empty bucket** (what Railway will do): migrations, seed, built-in media generation and the full smoke test all pass from the Docker images.
 - **Smoke test: 17/17 steps pass** (log in → add footage → transcript, silences, scene cuts, key frames → create an edit with a style → AI edits → autosave → preview render with live progress → 1080p final → password review link → client comment → resolve → approve → usage).
 - **AI connector**: log in like Claude does (dynamic client registration, PKCE, Clerk login, consent screen), then every main tool: list and read footage, apply a style, cut silences, add zooms, music, graphics, captions, render a preview and look at its frames, make a custom animated graphic, create a review link, read comments, undo.
 - Footage: built-in sample, local files (preview copy made in the browser, original uploaded once for a full-quality export), Drive (fake Drive until Google keys exist).
@@ -91,6 +92,7 @@ Three reviews (API, worker/render, web app) plus tests in the real Docker images
 - Captions: some characters showed as empty boxes, Chinese/Japanese/Korean had no font, rewritten caption lines lost most of their words.
 - Graphics lost their ending animation when words inside them were cut.
 - A stalled download could block the render queue forever; time limits now also grow with long footage.
+- On a first start the built-in sample footage was generated without speech (about 10 KB). Fixed and checked inside the worker image.
 - Smaller: short music clips went silent early, cutting the last word left its tail, the graphics sandbox could send network traffic through WebRTC, frames taken for the AI were never deleted.
 
 ## Known limits (not blocking a test)
