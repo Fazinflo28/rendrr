@@ -32,30 +32,51 @@ async function reviewContext(r: Review) {
 /** Short-lived video links for a review page. Final first, then preview. Never raw keys. */
 async function reviewMedia(r: Review, projects: Project[]) {
   const out: Record<string, { latest: unknown; versions: Record<number, unknown> }> = {};
+  if (!projects.length) return out;
+  // One query for every finished render of these projects, newest first; the first hit per version wins.
+  const renders = await prisma.render.findMany({
+    where: { projectId: { in: projects.map((p) => p.id) }, status: "done", outputKey: { not: null } },
+    orderBy: { createdAt: "desc" },
+    select: { projectId: true, version: true, kind: true, quality: true, outputKey: true, framesKeys: true, seconds: true },
+  });
+  const pending = new Set((await prisma.render.findMany({ where: { projectId: { in: projects.map((p) => p.id) }, status: { in: ["queued", "running"] } }, select: { projectId: true } })).map((x) => x.projectId));
   for (const p of projects) {
-    const versions: Record<number, unknown> = {};
     const top = r.projectId ? r.version : p.currentVersion;
-    for (let v = 1; v <= top; v++) {
-      const rr = (await latestRender(p.id, "final", v)) || (await latestRender(p.id, "preview", v));
-      if (!rr?.outputKey) continue;
+    const best = new Map<number, (typeof renders)[number]>();
+    for (const rr of renders) {
+      if (rr.projectId !== p.id || rr.version > top) continue;
+      const have = best.get(rr.version);
+      if (!have || (have.kind !== "final" && rr.kind === "final")) best.set(rr.version, rr);
+    }
+    const versions: Record<number, unknown> = {};
+    for (const [v, rr] of [...best.entries()].sort((a, b) => a[0] - b[0])) {
       versions[v] = {
-        url: await signGet(rr.outputKey, REVIEW_SIGNED_URL_SECONDS), kind: rr.kind, quality: rr.quality,
+        url: await signGet(rr.outputKey!, REVIEW_SIGNED_URL_SECONDS), kind: rr.kind, quality: rr.quality,
         poster: (rr.framesKeys as string[])?.[0] ? await signGet((rr.framesKeys as string[])[0], REVIEW_SIGNED_URL_SECONDS) : null,
-        download: r.allowDownload ? await signGet(rr.outputKey, REVIEW_SIGNED_URL_SECONDS, { download: `${p.name.replace(/[^\w\- ]+/g, "")} v${v}.mp4` }) : null,
+        download: r.allowDownload ? await signGet(rr.outputKey!, REVIEW_SIGNED_URL_SECONDS, { download: `${p.name.replace(/[^\w\- ]+/g, "")} v${v}.mp4` }) : null,
         seconds: rr.seconds,
       };
     }
     const latestV = Math.max(0, ...Object.keys(versions).map(Number));
-    const pending = await prisma.render.count({ where: { projectId: p.id, status: { in: ["queued", "running"] } } });
-    out[p.id] = { latest: latestV ? versions[latestV] : null, versions, ...(pending ? { rendering: true } : {}) };
+    out[p.id] = { latest: latestV ? versions[latestV] : null, versions, ...(pending.has(p.id) ? { rendering: true } : {}) };
   }
   return out;
+}
+
+/** The public page never needs internal ids beyond the project's own. */
+function publicShape<T extends { project?: unknown; items?: unknown[] }>(o: T): T {
+  const strip = (p: unknown) => {
+    if (!p || typeof p !== "object") return p;
+    const { videoId: _v, folderId: _f, ...rest } = p as Record<string, unknown>;
+    return rest;
+  };
+  return { ...o, project: strip(o.project), items: (o.items || []).map(strip) };
 }
 
 async function fullReview(r: Review & { comments: ReviewComment[] }, plain?: string | null) {
   const ctx = await reviewContext(r);
   const base = await reviewOut(r, ctx, plain);
-  return { ...base, logo: r.showLogo ? base.logo : null, media: await reviewMedia(r, ctx.project ? [ctx.project] : ctx.items) };
+  return publicShape({ ...base, logo: r.showLogo ? base.logo : null, media: await reviewMedia(r, ctx.project ? [ctx.project] : ctx.items) });
 }
 
 async function setStatus(r: Review, status: string) {
@@ -105,7 +126,10 @@ export async function createReviewLink(userId: string, raw: unknown) {
 
 async function publicReview(tok: string) {
   const r = await prisma.review.findUnique({ where: { token: tok }, include: { comments: true } });
-  if (!r || (r.expiresAt && r.expiresAt.getTime() < Date.now())) throw notFound("This review link does not exist or has expired.");
+  const gone = () => notFound("This review link does not exist or has expired.");
+  if (!r || (r.expiresAt && r.expiresAt.getTime() < Date.now())) throw gone();
+  // A deleted edit stops being shared, even though its review row is kept for the owner's history.
+  if (r.projectId && !(await prisma.project.count({ where: { id: r.projectId, deletedAt: null } }))) throw gone();
   return r;
 }
 
@@ -128,7 +152,8 @@ export default async function reviews(app: FastifyInstance) {
       const ctx = await reviewContext(r);
       return reviewMedia(r, ctx.project ? [ctx.project] : ctx.items);
     });
-    pub.post("/public/reviews/:token/unlock", async (req) => {
+    // Password guesses: 10 a minute per address (the rest of the review page allows 90).
+    pub.post("/public/reviews/:token/unlock", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req) => {
       const r = await publicReview((req.params as { token: string }).token);
       const { password } = ReviewPasswordInput.parse(req.body);
       if (r.passwordHash && !checkPassword(password, r.passwordHash)) throw new AppError("That password is not right.", 401, "bad-password");
@@ -170,6 +195,12 @@ export default async function reviews(app: FastifyInstance) {
       return Promise.all(rs.map(async (r) => reviewOut(r, await reviewContext(r))));
     });
     a.post("/reviews", async (req) => createReviewLink(req.user!.id, req.body));
+    a.delete("/reviews/:token", async (req) => {
+      const r = await prisma.review.findUnique({ where: { token: (req.params as { token: string }).token } });
+      if (!r || r.userId !== req.user!.id) throw notFound("That review link is already gone.");
+      await prisma.review.delete({ where: { token: r.token } });
+      return { ok: true };
+    });
 
     a.get("/gallery", async (req) => {
       const me = req.user!.id;
@@ -209,6 +240,7 @@ export default async function reviews(app: FastifyInstance) {
       const g = await prisma.galleryItem.findUnique({ where: { id: (req.params as { id: string }).id } });
       if (!g || g.userId !== req.user!.id) throw notFound("That video is not in the gallery any more.");
       await prisma.galleryItem.delete({ where: { id: g.id } });
+      await prisma.reference.deleteMany({ where: { id: g.id, userId: g.userId } });
       return { ok: true };
     });
 

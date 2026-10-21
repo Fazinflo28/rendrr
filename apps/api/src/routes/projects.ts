@@ -1,23 +1,13 @@
-import { AppError, applyTimelineChange, deleteObjects, newRedis, notFound, projectChannel, restoreVersion } from "@rendrr/core";
+import { AppError, applyTimelineChange, notFound, projectChannel, restoreVersion } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import { CreateFolderInput, CreateProjectInput, PLATFORMS, RenameFolderInput, STYLE_TYPES, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
+import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, projectOut, styleOut } from "../serialize";
-import { createProject, getOwnedProject, listProjects, projectFull } from "../services/projects";
+import { createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles } from "../services/projects";
 
 /** Server-sent events on a raw response. Keeps CORS headers that Fastify already set. */
-export function openSse(req: FastifyRequest, reply: FastifyReply) {
-  const headers = { ...(reply.getHeaders() as Record<string, string>), "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" };
-  reply.hijack();
-  reply.raw.writeHead(200, headers);
-  const send = (event: string, data: unknown) => { if (!reply.raw.writableEnded) reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
-  const ping = setInterval(() => { if (!reply.raw.writableEnded) reply.raw.write(": ping\n\n"); }, 15_000);
-  const close = () => { clearInterval(ping); if (!reply.raw.writableEnded) reply.raw.end(); };
-  req.raw.on("close", () => clearInterval(ping));
-  return { send, close, onClose: (fn: () => void) => req.raw.on("close", fn) };
-}
-
 export default async function projects(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
 
@@ -67,8 +57,7 @@ export default async function projects(app: FastifyInstance) {
   app.delete("/folders/:id", async (req) => {
     const f = await prisma.folder.findUnique({ where: { id: (req.params as { id: string }).id } });
     if (!f || f.userId !== req.user!.id) throw notFound("That project folder is gone.");
-    const renders = await prisma.render.findMany({ where: { project: { folderId: f.id } }, select: { outputKey: true, framesKeys: true } });
-    await deleteObjects(renders.flatMap((r) => [r.outputKey, ...((r.framesKeys as string[]) || [])]));
+    await purgeProjectFiles({ folderId: f.id });
     await prisma.folder.delete({ where: { id: f.id } });
     return { ok: true };
   });
@@ -126,6 +115,7 @@ export default async function projects(app: FastifyInstance) {
   app.get("/projects/:id/versions/:v", async (req) => {
     const { id, v } = req.params as { id: string; v: string };
     await getOwnedProject(req.user!.id, id);
+    if (!/^\d{1,9}$/.test(v)) throw notFound(`Version ${v.slice(0, 20)} does not exist.`);
     const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId: id, v: Number(v) } } });
     if (!ver) throw notFound(`Version ${v} does not exist.`);
     return { v: ver.v, note: ver.note, at: ver.updatedAt.getTime(), snapshot: ver.timeline };
@@ -134,6 +124,7 @@ export default async function projects(app: FastifyInstance) {
   app.post("/projects/:id/versions/:v/restore", async (req) => {
     const { id, v } = req.params as { id: string; v: string };
     await getOwnedProject(req.user!.id, id);
+    if (!/^\d{1,9}$/.test(v)) throw notFound(`Version ${v.slice(0, 20)} does not exist.`);
     const r = await restoreVersion(id, Number(v), { kind: "user", userId: req.user!.id }, `Restored V${v}`);
     return { ok: true, version: r.version };
   });
@@ -142,11 +133,9 @@ export default async function projects(app: FastifyInstance) {
   app.get("/projects/:id/events", async (req, reply) => {
     const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
     const s = openSse(req, reply);
-    const sub = newRedis();
-    await sub.subscribe(projectChannel(p.id));
-    sub.on("message", (_c, msg) => s.send("change", JSON.parse(msg)));
+    if (s.isClosed()) return;
+    s.onClose(await listen(projectChannel(p.id), (msg) => s.send("change", JSON.parse(msg))));
     s.send("hello", { version: p.currentVersion });
-    s.onClose(() => { sub.disconnect(); });
   });
 
   // ---------------- AI activity ----------------

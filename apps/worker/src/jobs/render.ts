@@ -103,7 +103,11 @@ export async function renderJob(ctx: Ctx) {
       const bv = brollVideos.find((x) => x.id === b.videoId);
       if (bv?.proxyKey) files.broll![b.clipId] = await cachedAsset(bv.proxyKey, join(ctx.dir, `broll-${b.clipId}.mp4`));
     }
-    for (const a of plan.audio) files.audio![a.clipId] = await cachedAsset(a.assetKey);
+    for (const a of plan.audio) {
+      // Built-in music and sound effects only (the plan takes keys from the catalog; this is a second lock).
+      if (!a.assetKey.startsWith(PREFIX.assets)) throw new JobError("This edit uses a sound that is not in the library. Remove it and try again.", "bad-audio", false);
+      files.audio![a.clipId] = await cachedAsset(a.assetKey);
+    }
     if (plan.ass) await writeFile(files.assPath!, plan.ass);
     const { args, filterGraph } = ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || undefined });
     const graphPath = join(ctx.dir, "graph.txt");
@@ -174,7 +178,12 @@ export async function renderFailed(renderId: string, message: string, code?: str
   if (!r) return;
   await prisma.render.update({ where: { id: r.id }, data: { status: "failed", error: message, errorCode: code ?? null, finishedAt: new Date() } });
   const p = await prisma.project.findUnique({ where: { id: r.projectId } });
-  if (p && p.status === "Rendering") await prisma.project.update({ where: { id: p.id }, data: { status: r.kind === "final" ? "Preview ready" : "Draft" } });
+  if (p && p.status === "Rendering") {
+    // Back to what the edit had before this render: the best finished render decides.
+    const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done" }, select: { kind: true } });
+    const status = done.some((x) => x.kind === "final") ? "Final ready" : done.length || r.kind === "final" ? "Preview ready" : "Draft";
+    await prisma.project.update({ where: { id: p.id }, data: { status } });
+  }
   await publishRender(r.id, { status: "failed", step: 0, steps: (r.steps as string[]) || [], percent: 0, error: message, code });
 }
 

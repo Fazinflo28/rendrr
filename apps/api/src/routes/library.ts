@@ -5,6 +5,7 @@ import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { videoOut } from "../serialize";
+import { purgeProjectFiles } from "../services/projects";
 
 const ART = ["c", "d", "e", "f", "a", "b"];
 const randomArt = () => ART[Math.floor(Math.random() * ART.length)];
@@ -90,6 +91,7 @@ export default async function library(app: FastifyInstance) {
       if (used) throw new AppError(`This footage is used by ${used} ${used === 1 ? "edit" : "edits"}. Delete ${used === 1 ? "it" : "them"} first.`, 409, "in-use");
       const an = await prisma.footageAnalysis.findUnique({ where: { videoId: v.id } });
       await deleteObjects([v.proxyKey, v.audioKey, v.thumbKey, ...(((an?.keyFrames as { key: string }[]) || []).map((k) => k.key))]);
+      await purgeProjectFiles({ videoId: v.id, deletedAt: { not: null } });
       await prisma.project.deleteMany({ where: { videoId: v.id, deletedAt: { not: null } } });
       await prisma.video.delete({ where: { id: v.id } });
       return { ok: true };
@@ -144,7 +146,8 @@ export default async function library(app: FastifyInstance) {
     });
 
     a.post("/videos/pause", async (req) => {
-      const ids = ((req.body as { ids?: string[] })?.ids || []).slice(0, 50);
+      const raw = (req.body as { ids?: unknown })?.ids;
+      const ids = (Array.isArray(raw) ? raw : []).filter((x): x is string => typeof x === "string").slice(0, 50);
       await prisma.video.updateMany({ where: { id: { in: ids }, userId: req.user!.id, status: { in: ["previewing", "uploading"] }, sample: false }, data: { status: "paused" } });
       return { ok: true };
     });

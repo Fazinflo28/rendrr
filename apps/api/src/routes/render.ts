@@ -1,11 +1,11 @@
-import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, newRedis, notFound, readRender, renderChannel, signPart } from "@rendrr/core";
+import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, notFound, readRender, renderChannel, signPart } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { OriginalCompleteInput, OriginalUploadInput, PREFIX, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { getOwnedProject } from "../services/projects";
 import { renderStatus, startRender } from "../services/render";
-import { openSse } from "./projects";
+import { listen, openSse } from "../live";
 
 export default async function render(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
@@ -35,21 +35,22 @@ export default async function render(app: FastifyInstance) {
       s.close();
     };
     if (r.status === "done" || r.status === "failed") return finish();
-    const sub = newRedis();
+    if (s.isClosed()) return;
     let ended = false;
-    const end = () => { if (!ended) { ended = true; sub.disconnect(); } };
-    s.onClose(end);
-    await sub.subscribe(renderChannel(r.id));
-    const cur = await readRender(r.id);
-    if (cur) s.send("progress", { step: cur.step, steps: cur.steps, percent: cur.percent });
-    sub.on("message", async (_c, msg) => {
+    let stop = () => {};
+    const end = async () => { if (ended) return; ended = true; stop(); await finish(); };
+    stop = await listen(renderChannel(r.id), (msg) => {
       const p = JSON.parse(msg) as { status: string; step: number; steps: string[]; percent: number };
-      if (p.status === "done" || p.status === "failed") { end(); await finish(); return; }
+      if (p.status === "done" || p.status === "failed") { void end(); return; }
       s.send("progress", { step: p.step, steps: p.steps, percent: p.percent });
     });
+    s.onClose(() => stop());
+    if (ended) stop();
+    const cur = await readRender(r.id);
+    if (cur) s.send("progress", { step: cur.step, steps: cur.steps, percent: cur.percent });
     // A job that already finished between the first read and the subscribe.
     const again = await prisma.render.findUniqueOrThrow({ where: { id: r.id } });
-    if (again.status === "done" || again.status === "failed") { end(); await finish(); }
+    if (again.status === "done" || again.status === "failed") await end();
   });
 
   // ---------------- local footage: the original once, for a full-quality export ----------------

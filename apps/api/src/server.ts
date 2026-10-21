@@ -1,6 +1,6 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import { ensureBucketCors, env, redis, toFriendly } from "@rendrr/core";
+import { ensureBucketCors, env, redis, safeEqual, toFriendly } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import Fastify from "fastify";
 import account from "./routes/account";
@@ -15,7 +15,16 @@ export async function buildServer() {
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL || "info", redact: ["req.headers.authorization", "req.headers['x-internal-secret']", "req.headers['x-review-key']"] },
     bodyLimit: 6 * 1024 * 1024,
-    trustProxy: true,
+    // Client IPs come from Railway's X-Real-IP (see clientIp); X-Forwarded-For is never trusted, so nobody can pick their own IP.
+    trustProxy: false,
+  });
+
+  // JSON bodies; an empty body with a JSON content type (curl, some clients on DELETE) counts as {} instead of a 400.
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
+    const text = typeof body === "string" ? body : body.toString("utf8");
+    if (!text.trim()) return done(null, {});
+    try { done(null, JSON.parse(text)); } catch { done(Object.assign(new Error("Bad JSON"), { statusCode: 400 }), undefined); }
   });
 
   const origins = new Set([e.PUBLIC_WEB_URL, ...(e.WEB_ORIGINS || "").split(",")].map((s) => s.trim().replace(/\/$/, "")).filter(Boolean));
@@ -29,14 +38,28 @@ export async function buildServer() {
     allowedHeaders: ["authorization", "content-type", "x-review-key"],
     maxAge: 600,
   });
-  // Per IP. Review pages and login are public, so they get their own tighter limits.
+  // Review pages are public, so they get a tighter limit. This hook must be added before the rate limit
+  // plugin's own onRoute hook, which reads route.config when each route is registered.
+  app.addHook("onRoute", (route) => {
+    const cfg = (route.config || {}) as { rateLimit?: unknown };
+    if (route.url.startsWith("/public/") && !cfg.rateLimit) route.config = { ...cfg, rateLimit: { max: 90, timeWindow: "1 minute" } } as never;
+  });
+  // Per IP. The MCP server (one IP for every AI user) is keyed per user, but only when its secret is valid.
+  // On Railway the edge sets X-Real-IP to the caller's address; elsewhere the socket address is used.
+  const onRailway = !!process.env.RAILWAY_ENVIRONMENT_ID;
+  const clientIp = (req: { headers: Record<string, unknown>; ip: string }) => {
+    const real = req.headers["x-real-ip"];
+    return onRailway && typeof real === "string" && real ? real : req.ip;
+  };
+  const internalSecret = e.INTERNAL_API_SECRET;
   await app.register(rateLimit, {
     global: true, max: 600, timeWindow: "1 minute",
-    keyGenerator: (req) => (req.headers["x-internal-secret"] ? "internal:" + String(req.headers["x-rendrr-clerk-id"] || "") : req.ip),
+    keyGenerator: (req) => {
+      const s = req.headers["x-internal-secret"];
+      if (internalSecret && typeof s === "string" && safeEqual(s, internalSecret)) return "internal:" + String(req.headers["x-rendrr-clerk-id"] || "");
+      return clientIp(req);
+    },
     errorResponseBuilder: () => ({ statusCode: 429, error: { message: "Too many requests. Wait a minute and try again.", code: "rate-limit" } }),
-  });
-  app.addHook("onRoute", (route) => {
-    if (route.url.startsWith("/public/")) route.config = { ...(route.config as object), rateLimit: { max: 90, timeWindow: "1 minute" } } as never;
   });
 
   app.setErrorHandler((err: Error & { statusCode?: number; friendly?: boolean }, req, reply) => {

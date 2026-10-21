@@ -15,7 +15,7 @@ export type ToolOut = { text: string; images?: string[]; data?: unknown };
 type Ctx = { userId: string; ai: "claude" | "chatgpt" | null; aiName?: string };
 
 const MAX_CHARS = 24_000; // ~6k tokens
-const clip = (s: string) => (s.length > MAX_CHARS ? s.slice(0, MAX_CHARS) + "\n…(cut to stay short; ask for a narrower range)" : s);
+export const clip = (s: string) => (s.length > MAX_CHARS ? s.slice(0, MAX_CHARS) + "\n…(cut to stay short; ask for a narrower range)" : s);
 const actorFor = (c: Ctx, toolName: string, input: unknown): ChangeActor => ({ kind: c.ai === "chatgpt" ? "chatgpt" : "claude", userId: c.userId, ai: c.aiName, toolName, input });
 
 async function ownedVideo(userId: string, id: string) {
@@ -113,8 +113,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   async get_reference(c, i) {
-    const r = await prisma.reference.findUnique({ where: { id: i.referenceId } });
-    const g = r ? null : await prisma.galleryItem.findUnique({ where: { id: i.referenceId } });
+    // Your own references, or a gallery video whose author allows recreating it.
+    const g0 = await prisma.galleryItem.findUnique({ where: { id: i.referenceId } });
+    const shared = !!g0 && (g0.userId === c.userId || g0.allowRecreate);
+    const r0 = await prisma.reference.findUnique({ where: { id: i.referenceId } });
+    const r = r0 && (r0.userId === c.userId || shared) ? r0 : null;
+    const g = r ? null : shared ? g0 : null;
     if (!r && !g) throw notFound("That reference does not exist.");
     const recipe = r?.recipe ?? g!.recipe;
     const frames: string[] = [];
@@ -134,14 +138,15 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       "Custom graphics (id | name | status | seconds | size):",
       ...(custom.length ? custom.map((g) => `${g.id} | ${g.name} | ${g.status}${g.error ? " (" + g.error + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}`) : ["none yet (create_graphic)"]),
       "Music for add_music (trackId | name | mood): " + MUSIC_TRACKS.map((m) => `${m.id} | ${m.name} | ${m.mood}`).join("; "),
-      "Sound effects (put on a3 with set_clips, field sfxId): " + SFX.map((s) => `${s.id} (${s.name}, ${s.seconds}s, assetKey ${s.key})`).join("; "),
+      "Sound effects (put on a3 with set_clips: {id, start, end, label, sfxId}): " + SFX.map((s) => `${s.id} (${s.name}, ${s.seconds}s)`).join("; "),
     ].join("\n") };
   },
 
   async get_comments(c, i) {
     const p = await getOwnedProject(c.userId, i.projectId);
-    const cs = await prisma.reviewComment.findMany({ where: { review: { OR: [{ projectId: p.id }, { folderId: p.folderId }] }, OR: [{ projectId: null }, { projectId: p.id }] }, orderBy: { createdAt: "asc" } });
-    return { text: cs.length ? "Client comments (comment id | time in the rendered video | text | resolved):\n" + cs.map((x) => `${x.id} | ${fmtClock(x.time)} | ${x.text} | ${x.resolved ? "resolved" : "open"}`).join("\n") + "\nComment times are OUTPUT times of the version the client watched." : "No client comments on this edit." };
+    const cs = await prisma.reviewComment.findMany({ where: { review: { OR: [{ projectId: p.id }, { folderId: p.folderId }] }, OR: [{ projectId: null }, { projectId: p.id }] }, orderBy: { createdAt: "asc" }, take: 200 });
+    const short = (t: string) => (t.length > 600 ? t.slice(0, 600) + "…" : t).replace(/\s+/g, " ");
+    return { text: cs.length ? "Client comments (comment id | time in the rendered video | text | resolved):\n" + cs.map((x) => `${x.id} | ${fmtClock(x.time)} | ${short(x.text)} | ${x.resolved ? "resolved" : "open"}`).join("\n") + "\nComment times are OUTPUT times of the version the client watched." : "No client comments on this edit." };
   },
 
   async get_preview_frames(c, i) {

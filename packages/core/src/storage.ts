@@ -1,6 +1,6 @@
 import {
   AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObjectCommand, CreateMultipartUploadCommand,
-  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command,
+  DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListMultipartUploadsCommand, ListObjectsV2Command,
   PutBucketCorsCommand, PutObjectCommand, S3Client, UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -112,6 +112,20 @@ export async function completeMultipart(key: string, uploadId: string, parts: { 
 }
 export async function abortMultipart(key: string, uploadId: string) {
   try { await s3().send(new AbortMultipartUploadCommand({ Bucket: Bucket(), Key: key, UploadId: uploadId })); } catch { /* already gone */ }
+}
+/** Aborts unfinished browser uploads under a prefix that started before `before` (their parts cost storage). */
+export async function abortStaleMultipart(prefix: string, before: Date): Promise<number> {
+  let n = 0;
+  let keyMarker: string | undefined, idMarker: string | undefined;
+  do {
+    const r = await s3().send(new ListMultipartUploadsCommand({ Bucket: Bucket(), Prefix: prefix, KeyMarker: keyMarker, UploadIdMarker: idMarker }));
+    for (const u of r.Uploads || []) {
+      if (u.Key && u.UploadId && u.Initiated && u.Initiated < before) { await abortMultipart(u.Key, u.UploadId); n++; }
+    }
+    keyMarker = r.IsTruncated ? r.NextKeyMarker : undefined;
+    idMarker = r.IsTruncated ? r.NextUploadIdMarker : undefined;
+  } while (keyMarker);
+  return n;
 }
 
 export function contentTypeFor(key: string): string {

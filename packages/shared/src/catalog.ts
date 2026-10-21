@@ -21,6 +21,17 @@ export const SFX: Sfx[] = [
   { id: "sfx_hit", name: "Hit", seconds: 0.6 },
 ].map((s) => ({ ...s, key: PREFIX.assets + "sfx/" + s.id + ".m4a" }));
 
+/**
+ * Audio clips may only play built-in tracks. The storage key always comes from this catalog (by trackId / sfxId),
+ * never from what a client or an AI sent, so nobody can point a clip at another user's files.
+ */
+export function catalogMusic(c: { trackId?: string; assetKey?: string }): MusicTrack | undefined {
+  return MUSIC_TRACKS.find((m) => m.id === c.trackId) || MUSIC_TRACKS.find((m) => m.key === c.assetKey);
+}
+export function catalogSfx(c: { sfxId?: string; assetKey?: string }): Sfx | undefined {
+  return SFX.find((x) => x.id === c.sfxId) || SFX.find((x) => x.key === c.assetKey);
+}
+
 export function findMusic(trackIdOrMood: string): MusicTrack | undefined {
   const s = trackIdOrMood.toLowerCase().trim();
   return MUSIC_TRACKS.find((t) => t.id === s || t.name.toLowerCase() === s) || MUSIC_TRACKS.find((t) => t.mood === s) ||
