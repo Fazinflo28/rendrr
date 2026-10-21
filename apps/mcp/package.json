@@ -1,0 +1,21 @@
+{
+  "name": "@rendrr/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --env-file=../../.env src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@clerk/express": "2.1.81",
+    "@clerk/mcp-tools": "0.6.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@rendrr/shared": "workspace:*",
+    "express": "5.3.0",
+    "tsx": "4.23.15",
+    "zod": "3.25.76"
+  },
+  "devDependencies": { "@types/express": "5.0.3" }
+}

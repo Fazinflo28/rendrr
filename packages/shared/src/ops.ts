@@ -190,7 +190,7 @@ function removeRangeFromTrack(clips: Clip[], a: number, b: number): Clip[] {
   for (const c of clips) {
     if (b <= c.start || a >= c.end) { out.push(c); continue; }
     if (a - c.start >= 0.15) out.push({ ...c, end: r2(a) });
-    if (c.end - b >= 0.15) out.push({ ...c, id: c.id + "_" + Math.random().toString(36).slice(2, 5), start: r2(b) });
+    if (c.end - b >= 0.15) out.push({ ...c, id: c.id.split("_")[0] + "_" + Math.random().toString(36).slice(2, 6), start: r2(b) });
   }
   return out;
 }
@@ -342,19 +342,20 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
       const ranges = mergeRanges([...pauses, ...fromAudio]);
       let v1 = tl.tracks.v1, a1 = tl.tracks.a1;
       let removed = 0, n = 0;
+      const done: Range[] = [];
       for (const g of ranges) {
         const before = v1.reduce((a, c) => a + c.end - c.start, 0);
         v1 = removeRangeFromTrack(v1, g.start, g.end);
         a1 = removeRangeFromTrack(a1, g.start, g.end);
         const diff = before - v1.reduce((a, c) => a + c.end - c.start, 0);
-        if (diff > 0.01) { removed += diff; n++; }
+        if (diff > 0.01) { removed += diff; n++; done.push(g); }
       }
-      const summary = n === 1 ? `cut ${fmtClock(ranges[0].start)} to ${fmtClock(ranges[0].end)} (silence)` : `cut ${n} silences over ${op.overSeconds}s (${removed.toFixed(1)}s total)`;
+      const summary = n === 0 ? `no pauses over ${op.overSeconds}s left to cut` : n === 1 ? `cut ${fmtClock(done[0].start)} to ${fmtClock(done[0].end)} (silence, ${removed.toFixed(1)}s)` : `cut ${n} silences over ${op.overSeconds}s (${removed.toFixed(1)}s total)`;
       return { snap: { ...snap, timeline: { ...tl, tracks: { ...tl.tracks, v1, a1 } } }, summary, count: n };
     }
     case "remove_fillers": {
       const ids = words.filter((w) => w.filler && !tl.cut.includes(w.id)).map((w) => w.id);
-      return { snap: { ...snap, timeline: { ...tl, cut: [...tl.cut, ...ids] } }, summary: `removed ${ids.length} filler ${ids.length === 1 ? "word" : "words"}`, count: ids.length };
+      return { snap: { ...snap, timeline: { ...tl, cut: [...tl.cut, ...ids] } }, summary: ids.length ? `removed ${ids.length} filler ${ids.length === 1 ? "word" : "words"}` : "no filler words left to remove", count: ids.length };
     }
     case "set_clips": {
       const clips = op.clips.map((c, i) => ({ ...c, id: c.id || rid(op.track + "_" + i) }));

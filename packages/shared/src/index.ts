@@ -6,3 +6,4 @@ export * from "./catalog";
 export * from "./ops";
 export * from "./format";
 export * from "./schemas";
+export * from "./mcpTools";

@@ -5,6 +5,7 @@ import { Worker, type Job } from "bullmq";
 import { createServer } from "node:http";
 import { analyzeJob } from "./jobs/analyze";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
+import { framesJob } from "./jobs/frames";
 import { maintenanceJob } from "./jobs/maintenance";
 import { proxyJob } from "./jobs/proxy";
 import { renderFailed, renderJob } from "./jobs/render";
@@ -27,6 +28,7 @@ const workers = [
   new Worker(QUEUES.analyze.name, guarded("analyze", QUEUES.analyze.timeoutMs, "Processing", analyzeJob, videoFailed, videoUser), { connection: newRedis(), concurrency: conc("analyze", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.render.name, guarded("render", QUEUES.render.timeoutMs, "The render", renderJob, (job, msg, code) => renderFailed((job.data as { renderId: string }).renderId, msg, code), renderUser), { connection: newRedis(), concurrency: conc("render", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.graphic.name, guarded("graphic", QUEUES.graphic.timeoutMs, "The graphic", graphicJob, (job, msg) => graphicFailed((job.data as { graphicId: string }).graphicId, msg)), { connection: newRedis(), concurrency: conc("graphic", 1), lockDuration: 60_000 }),
+  new Worker(QUEUES.frames.name, guarded("frames", QUEUES.frames.timeoutMs, "Taking frames", framesJob, async () => {}), { connection: newRedis(), concurrency: conc("frames", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),
 ];
 for (const w of workers) w.on("error", (e) => console.error(`[${w.name}] worker error:`, e.message));

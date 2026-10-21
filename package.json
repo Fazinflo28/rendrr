@@ -1,8 +1,11 @@
 {
   "name": "rendrr",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@10.28.0",
-  "engines": { "node": ">=20.9.0" },
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "scripts": {
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
@@ -17,12 +20,20 @@
     "smoke": "tsx scripts/smoke.ts"
   },
   "devDependencies": {
-    "turbo": "2.11.10",
-    "typescript": "5.9.3",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@types/node": "22.15.30",
     "tsx": "4.23.15",
-    "@types/node": "22.15.30"
+    "turbo": "2.11.10",
+    "typescript": "5.9.3"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@prisma/client", "@prisma/engines", "prisma", "esbuild", "sharp", "puppeteer"]
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma",
+      "esbuild",
+      "sharp",
+      "puppeteer"
+    ]
   }
 }

@@ -30,6 +30,7 @@ export const QUEUES = {
   render: { name: "render", timeoutMs: 15 * 60_000, attempts: 1 },
   graphic: { name: "graphic", timeoutMs: 2 * 60_000, attempts: 3 },
   maintenance: { name: "maintenance", timeoutMs: 10 * 60_000, attempts: 1 },
+  frames: { name: "frames", timeoutMs: 60_000, attempts: 1 },
 } as const;
 export const PREVIEW_TIMEOUT_MS = 3 * 60_000;
 export const FINAL_TIMEOUT_MS = 15 * 60_000;

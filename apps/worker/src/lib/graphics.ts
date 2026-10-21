@@ -39,6 +39,14 @@ const CLOCK = `(() => {
 const wrap = (code: string, w: number, h: number) =>
   /<html|<body/i.test(code) ? code : `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;width:${w}px;height:${h}px;overflow:hidden;background:transparent;font-family:Inter,system-ui,sans-serif}</style></head><body>${code}</body></html>`;
 
+/** The virtual clock must run before any of the page's own scripts, so it goes first in <head>. */
+function withClock(html: string) {
+  const tag = `<script>${CLOCK}</script>`;
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (m) => m + tag);
+  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (m) => m + "<head>" + tag + "</head>");
+  return tag + html;
+}
+
 /**
  * Records HTML into a transparent WebM in a locked headless Chromium: no network (every request except
  * data: is blocked), a memory cap, max 15 s at max 1080x1920, and a 60 s kill switch.
@@ -48,7 +56,10 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   const w = Math.round(o.width / 2) * 2, h = Math.round(o.height / 2) * 2;
   if (Math.max(w, h) > GRAPHIC_LIMITS.maxLong || Math.min(w, h) > GRAPHIC_LIMITS.maxShort) throw new JobError("Graphics can be 1080x1920 at most.", "too-big", false);
   const dur = Math.min(GRAPHIC_LIMITS.maxSeconds, Math.max(0.5, o.durationSec));
-  const frames = Math.max(1, Math.round(dur * GRAPHIC_LIMITS.fps));
+  // Big, long graphics are captured at fewer frames per second (played back at 30) to stay inside the 60 s limit.
+  const px = w * h;
+  const fps = px > 1.2e6 ? (dur > 6 ? 12 : 20) : px > 5e5 ? (dur > 8 ? 20 : 30) : 30;
+  const frames = Math.max(1, Math.round(dur * fps));
   const fdir = join(o.dir, "frames-" + Math.random().toString(36).slice(2, 7));
   await mkdir(fdir, { recursive: true });
   const browser = await puppeteer.launch({
@@ -66,18 +77,17 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
     await page.setRequestInterception(true);
     page.on("request", (req) => { const u = req.url(); if (u.startsWith("data:") || u === "about:blank") req.continue(); else req.abort("blockedbyclient"); });
     page.on("pageerror", (e) => errors.push(String((e as Error).message || e).slice(0, 300)));
-    await page.evaluateOnNewDocument(CLOCK);
-    await page.setContent(wrap(html, w, h), { waitUntil: "load", timeout: 15_000 });
+    await page.setContent(withClock(wrap(html, w, h)), { waitUntil: "load", timeout: 15_000 });
     await page.evaluate(() => (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready);
     const cdp = await page.createCDPSession();
     if (o.transparent) await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
     for (let i = 0; i < frames; i++) {
       if (o.signal?.aborted) throw new JobError("Stopped.");
-      await page.evaluate((t) => (window as unknown as { __rendrrAdvance: (t: number) => void }).__rendrrAdvance(t), i / GRAPHIC_LIMITS.fps);
+      await page.evaluate((t) => (window as unknown as { __rendrrAdvance: (t: number) => void }).__rendrrAdvance(t), i / fps);
       const shot = await cdp.send("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, captureBeyondViewport: false });
       await writeFile(join(fdir, `f${String(i).padStart(5, "0")}.png`), Buffer.from(shot.data, "base64"));
     }
-    if (errors.length) throw new JobError(`The graphic code threw an error: ${errors[0]}`, "code-error", false);
+    if (errors.length) throw new JobError(`The graphic code threw an error: ${errors[0]}${/fetch|network|load/i.test(errors[0]) ? " (graphics have no internet access: inline images and fonts as data: URLs)" : ""}`, "code-error", false);
   } catch (e) {
     if (e instanceof JobError) throw e;
     if (o.signal?.aborted) throw new JobError("Stopped.");
@@ -88,10 +98,10 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
     await browser.close().catch(() => browser.process()?.kill("SIGKILL"));
   }
   const out = join(o.dir, `g-${Math.random().toString(36).slice(2, 7)}.webm`);
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-framerate", String(GRAPHIC_LIMITS.fps), "-i", join(fdir, "f%05d.png"),
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-framerate", String(fps), "-i", join(fdir, "f%05d.png"), "-r", String(GRAPHIC_LIMITS.fps),
     "-c:v", "libvpx-vp9", "-pix_fmt", o.transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "32", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0", out], { signal: o.signal });
   const pick = [0, Math.floor(frames / 3), Math.floor((2 * frames) / 3), frames - 1].map((i) => join(fdir, `f${String(Math.min(frames - 1, i)).padStart(5, "0")}.png`));
-  return { path: out, checkFrames: pick, seconds: frames / GRAPHIC_LIMITS.fps, width: w, height: h };
+  return { path: out, checkFrames: pick, seconds: frames / fps, width: w, height: h };
 }
 
 async function brandLogoDataUrl(userId: string): Promise<string | null> {
@@ -113,8 +123,8 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
   const local = join(o.dir, `graphic-${clip.id}.webm`);
   const tpl = GRAPHIC_TEMPLATES.find((t) => t.id === id);
   if (tpl) {
-    // Fit inside the 1080x1920 graphics limit, keeping the output's shape (the overlay scales it back up).
-    const k = Math.min(1, GRAPHIC_LIMITS.maxLong / Math.max(o.width, o.height), GRAPHIC_LIMITS.maxShort / Math.min(o.width, o.height));
+    // Drawn at up to 720p (short side), keeping the output's shape; the overlay scales it to the output size.
+    const k = Math.min(1, 1280 / Math.max(o.width, o.height), 720 / Math.min(o.width, o.height));
     const w = Math.round(o.width * k), h = Math.round(o.height * k);
     const logo = id === "gt_logo_reveal" ? await brandLogoDataUrl(o.userId) : null;
     const html = templateHtml(id, clip.params || {}, w, h, dur, logo);

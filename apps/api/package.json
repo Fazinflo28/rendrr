@@ -17,6 +17,7 @@
     "@rendrr/shared": "workspace:*",
     "fastify": "5.12.7",
     "zod": "3.25.76",
-    "tsx": "4.23.15"
+    "tsx": "4.23.15",
+    "bullmq": "5.81.5"
   }
 }
