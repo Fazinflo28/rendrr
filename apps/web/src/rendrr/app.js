@@ -23,7 +23,26 @@ const ROUTES = [
   [/^\/usage$/, () => html`<${UsagePage} />`],
   [/^\/settings$/, () => html`<${SettingsPage} />`],
   [/^\/sso-callback$/, () => null, { bare: true }], // Clerk finishes Google sign-in here (src/app/sso-callback)
+  [/^\/drive-done$/, () => html`<${DriveDone} />`, { bare: true }],
 ];
+
+// Google Drive consent without a popup comes back here; finish it with this browser's own login.
+function DriveDone() {
+  const [msg, setMsg] = useState("Connecting Google Drive…");
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    (async () => {
+      try {
+        if (!(await api.hasSession())) throw new Error("Log in to Rendrr first, then connect Google Drive again.");
+        await api.completeDrive(q.get("code") || "", q.get("state") || "");
+        setMsg("Google Drive connected.");
+        if (window.opener) setTimeout(() => window.close(), 800);
+        else setTimeout(() => window.location.replace("/library"), 800);
+      } catch (e) { setMsg(e.message || "Google Drive was not connected. Try again."); }
+    })();
+  }, []);
+  return html`<div style="font:15px system-ui;padding:40px"><p>${msg}</p></div>`;
+}
 
 function App() {
   const pathname = usePathname() || "/";
