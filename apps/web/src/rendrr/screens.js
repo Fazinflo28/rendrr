@@ -457,7 +457,7 @@ function CreatePage({ cat }) {
   return html`<${ExploreFeed} key=${c.slug} types=${c.types} title=${c.label} sub=${c.blurb} />`;
 }
 function StylePacks({ fixedTypes, hideFilters, onPick, cols = 4, wall }) {
-  const { go } = useNav(); const { requireUser } = useApp(); const q = useAsync(() => api.listStyles(), []); const fq = useAsync(() => api.getStyleFilters(), []);
+  const { go } = useNav(); const { requireUser } = useApp(); const toast = useToast(); const q = useAsync(() => api.listStyles(), []); const fq = useAsync(() => api.getStyleFilters(), []);
   const [open, setOpen] = useState(null); const [np, setNp] = useState(null);
   const [ori, setOri] = useState("All"); const [plat, setPlat] = useState("all"); const [types, setTypes] = useState([]); const [search, setSearch] = useState(""); const [mOri, setMOri] = useState(null);
   const types_ = fq.data?.types || []; const plats = fq.data?.platforms || [];
@@ -492,7 +492,7 @@ function StylePacks({ fixedTypes, hideFilters, onPick, cols = 4, wall }) {
           </div>`)}
         </div>`}
       </div>`; }}<//>
-    ${open && html`<${Modal} title=${open.name} sub=${open.vibe} onClose=${() => setOpen(null)} wide footer=${html`<${Btn} kind="ghost" onClick=${() => setOpen(null)}>Close<//><${Btn} id="use-style" icon="spark" onClick=${() => { const id = open.id; setOpen(null); if (onPick) onPick(id); else requireUser(() => setNp(id)); }}>${onPick ? "Use this style" : "Use in a project"}<//>`}>
+    ${open && html`<${Modal} title=${open.name} sub=${open.vibe} onClose=${() => setOpen(null)} wide footer=${html`${open.mine && html`<${Btn} kind="ghost" id="delete-style" onClick=${async () => { try { await api.deleteStyle(open.id); setOpen(null); q.reload(); toast("Style deleted"); } catch (e) { toast(e.message); } }}>Delete style<//>`}<${Btn} kind="ghost" onClick=${() => setOpen(null)}>Close<//><${Btn} id="use-style" icon="spark" onClick=${() => { const id = open.id; setOpen(null); if (onPick) onPick(id); else requireUser(() => setNp(id)); }}>${onPick ? "Use this style" : "Use in a project"}<//>`}>
       <div class="row between"><${Chip} tone="neutral" size="sm">${label(open.type)}<//><${Seg} size="sm" value=${mOri || open.ori[0]} options=${open.ori.map((o) => ({ value: o, label: ORI_LABEL[o] }))} onChange=${setMOri} /></div>
       <${StyleVideo} s=${open} ori=${mOri || open.ori[0]} className="modal-sv" />
       <div class="rules"><div class="r"><b>Cut pace</b>${open.cutPace}</div><div class="r"><b>Caption look</b>${open.captionRule}</div><div class="r"><b>Zoom rules</b>${open.zoomRules}</div><div class="r"><b>Music vibe</b>${open.musicVibe}</div></div>
@@ -656,13 +656,14 @@ function ConnectPage() {
     <${Async} q=${q} skeleton=${html`<${Skeleton} rows=${5} />`}>${(c) => { const on = c[tab] === "connected"; return html`
       <div class="two" style="align-items:start">
         <div class="col" style="gap:24px">
-          <div class="card col" style="gap:16px"><b class="t-heading">Your connector URL</b><div class="copybox" id="mcp-url"><code>${c.url}</code><${Btn} size="sm" icon="copy" id="copy-url" onClick=${() => copyText(c.url, toast)}>Copy<//></div><p class="t-small muted" id="connect-email">Your AI will ask you to log in to Rendrr the first time. Log in with ${user?.email ? html`<b style="color:var(--ink)">${user.email}</b>` : "the email you use here"}, the same account as this page, or your AI will see an empty library.</p></div>
+          <div class="card col" style="gap:16px"><b class="t-heading">Your connector URL</b><div class="copybox" id="mcp-url"><code>${c.url}</code><${Btn} size="sm" icon="copy" id="copy-url" onClick=${() => copyText(c.url, toast)}>Copy<//></div><p class="t-small muted" id="connect-email">Your AI will ask you to log in to Rendrr the first time. Log in with ${user?.email ? html`<b style="color:var(--ink)">${user.email}</b>` : "the email you use here"}, the same account as this page. If your AI then sees an empty library, use Link another login below.</p></div>
           <div class="card col" style="gap:16px">
             <div class="row between"><${Seg} value=${tab} options=${[{ value: "claude", label: "Claude" }, { value: "chatgpt", label: "ChatGPT" }]} onChange=${setTab} />
               <${Chip} tone=${on ? "brand" : "neutral"} id="conn-status"><i class=${"dot " + (on ? "brand" : "")} />${on ? "Connected" : "Not connected"}<//></div>
             <div class="col" style="gap:16px">${steps[tab].map((s, i) => html`<div key=${i} class="step-card"><div class="n">${i + 1}</div><p>${s}</p></div>`)}</div>
             <div class="row">${on ? html`<${Btn} kind="secondary" size="sm" disabled=${busy} onClick=${disc}>Disconnect<//>` : html`<${Btn} size="sm" id="test-conn" icon="zap" disabled=${busy} onClick=${test}>${busy ? "Checking…" : "Test connection"}<//>`}</div>
           </div>
+          <${LoginsCard} />
         </div>
         <div class="col" style="gap:24px">
           <div class="card col" style="gap:12px"><b class="t-heading">What your AI can do</b><div class="list">${c.tools.map(([t, d]) => html`<div key=${t} class="li"><div class="step-card" style="gap:12px"><div class="n" style="width:28px;height:28px"><${Icon} name="check" size="14" /></div><div><div class="t" style="font-weight:500">${t}</div><div class="sub">${d}</div></div></div></div>`)}</div></div>
@@ -671,6 +672,22 @@ function ConnectPage() {
           </div>
         </div>
       </div>`; }}<//>
+  </div>`;
+}
+
+/** Logins that open this account, and a code to link another one (an AI that logged in with a different Google account). */
+function LoginsCard() {
+  const toast = useToast(); const lq = useAsync(() => api.getLogins(), []);
+  const [code, setCode] = useState(null); const [busy, setBusy] = useState(false);
+  const getCode = async () => { setBusy(true); try { setCode(await api.createLinkCode()); } catch (e) { toast(e.message); } finally { setBusy(false); } };
+  const unlink = async (l) => { try { lq.setData(await api.unlinkLogin(l.id)); toast("That login no longer opens this account"); } catch (e) { toast(e.message); } };
+  const ask = code && `Link my Rendrr account with code ${code.code}`;
+  return html`<div class="card col" style="gap:12px" id="logins-card">
+    <b class="t-heading">Link another login</b>
+    <p class="t-small muted">Your AI shows an empty library? It logged in with a different account than this page. Get a code and tell your AI to link it; that login then opens this account.</p>
+    <${Async} q=${lq} skeleton=${html`<${Skeleton} card=${false} rows=${2} />`}>${(d) => html`<div class="list">${d.logins.map((l) => html`<div key=${l.id} class="li" data-login=${l.id}><div class="grow"><div class="t">${l.email || "Login without an email"}</div><div class="sub">${l.main ? "Main login" : "Linked login"}${l.id === d.current ? " · this browser" : ""}</div></div>${!l.main && html`<${Btn} kind="quiet" size="xs" onClick=${() => unlink(l)}>Remove<//>`}</div>`)}</div>`}<//>
+    ${code ? html`<div class="copybox" id="link-code"><code>${ask}</code><${Btn} size="sm" icon="copy" onClick=${() => copyText(ask, toast)}>Copy<//></div><p class="t-small muted">Paste it to your AI. The code works once, for ${code.expiresInMinutes} minutes.</p>`
+      : html`<div class="row"><${Btn} size="sm" kind="secondary" id="get-link-code" disabled=${busy} onClick=${getCode}>${busy ? "Making a code…" : "Get a link code"}<//></div>`}
   </div>`;
 }
 

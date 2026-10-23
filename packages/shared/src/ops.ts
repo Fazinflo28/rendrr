@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { findMusic, MUSIC_TRACKS, SFX } from "./catalog";
 import type { Aspect } from "./constants";
-import type { StyleRules } from "./styles";
+import { mergeRules, StyleRulesPatchSchema, type StyleRules } from "./styles";
 import {
   AspectSchema, CaptionLookSchema, ClipSchema, SnapshotSchema, TimelineSchema, TrackNameSchema,
   normalizeTimeline, timelineProblems,
@@ -16,8 +16,8 @@ import { allWords, type Line, type Silence, type Transcript, type Word } from ".
 // ---------------------------------------------------------------------------------------------
 
 const t = z.number().finite().min(0).max(24 * 3600);
-export const OpSchema = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("replace"), timeline: TimelineSchema, name: z.string().max(200).optional(), aspect: AspectSchema.optional(), styleId: z.string().max(80).optional() }),
+// The ops that change an edit step by step. An AI sends a list of them in one go (the `batch` op).
+const EDIT_OPS = [
   z.object({ op: z.literal("cut_words"), wordIds: z.array(z.string().max(40)).max(50_000).optional(), from: t.optional(), to: t.optional() }),
   z.object({ op: z.literal("restore_words"), wordIds: z.array(z.string().max(40)).max(50_000) }),
   z.object({ op: z.literal("cut_silences"), overSeconds: z.number().min(0.1).max(30) }),
@@ -34,8 +34,16 @@ export const OpSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), label: z.string().max(200).optional() }),
   z.object({ op: z.literal("set_aspect"), aspect: AspectSchema }),
   z.object({ op: z.literal("rename"), name: z.string().min(1).max(200) }),
-  z.object({ op: z.literal("apply_style"), styleId: z.string().max(80) }),
+  z.object({ op: z.literal("apply_style"), styleId: z.string().max(80), overrides: StyleRulesPatchSchema.optional() }),
+] as const;
+export const EditOpSchema = z.discriminatedUnion("op", [...EDIT_OPS]);
+export const EDIT_OP_NAMES = EDIT_OPS.map((o) => o.shape.op.value) as [EditOp["op"], ...EditOp["op"][]];
+export type EditOp = z.infer<typeof EditOpSchema>;
+export const OpSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("replace"), timeline: TimelineSchema, name: z.string().max(200).optional(), aspect: AspectSchema.optional(), styleId: z.string().max(80).optional() }),
+  ...EDIT_OPS,
   z.object({ op: z.literal("restore_snapshot"), snapshot: SnapshotSchema, note: z.string().max(300) }),
+  z.object({ op: z.literal("batch"), ops: z.array(EditOpSchema).min(1).max(50) }),
 ]);
 export type Op = z.infer<typeof OpSchema>;
 
@@ -284,6 +292,20 @@ function applyStyleRules(snap: Snapshot, style: StyleLite, ctx: EditContext): { 
     }
   } else if (z.mode === "slowPush" && kept.length) {
     for (const k of kept) if (k.end - k.start > 1.5) zooms.push(zoomClip(k.start, k.end, z.scale, "push", true));
+  } else if (z.mode === "count" && map.total > 0) {
+    // Exactly `count` zooms on sentence starts, picked evenly across the edit (evenly spaced moments without speech).
+    const n = z.count ?? 3, hold = z.holdSec ?? 1.6;
+    const starts: { at: number; end: number }[] = [];
+    let lastAt = -99;
+    for (const l of linesOutsideCuts(ctx.transcript, tl)) {
+      if (map.toOutput(l.start) - lastAt < 1.5) continue;
+      starts.push({ at: l.start, end: Math.min(l.end, l.start + hold) });
+      lastAt = map.toOutput(l.start);
+    }
+    const picks = starts.length >= n
+      ? Array.from({ length: n }, (_, k) => starts[Math.min(starts.length - 1, Math.floor(((k + 0.5) * starts.length) / n))])
+      : Array.from({ length: n }, (_, k) => { const o = (map.total * (k + 0.5)) / n; return { at: map.toSource(o), end: map.toSource(Math.min(map.total, o + hold)) }; });
+    for (const p of picks) if (p.end - p.at > 0.2) zooms.push(zoomClip(p.at, p.end, z.scale, "punch", true));
   }
   if (zooms.length) did.push(`added ${zooms.length} ${zooms.length === 1 ? "zoom" : "zooms"}`);
   const sfx = rules.sfxOnZoom ? SFX.find((s) => s.id === rules.sfxOnZoom) : undefined;
@@ -428,10 +450,26 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
     case "apply_style": {
       const style = ctx.getStyle(op.styleId);
       if (!style) throw new EditError("That style does not exist. Use list_styles to see the ids.");
-      return applyStyleRules(snap, style, ctx);
+      return applyStyleRules(snap, op.overrides ? { ...style, rules: mergeRules(style.rules, op.overrides) } : style, ctx);
     }
     case "restore_snapshot":
       return { snap: op.snapshot, summary: op.note };
+    case "batch": {
+      // One version for the whole list; the first edit that cannot be made stops it, so nothing half-done is saved.
+      let cur = snap;
+      const did: string[] = [];
+      op.ops.forEach((o, i) => {
+        try {
+          const r = applyOpInner(cur, o, ctx);
+          cur = r.snap;
+          did.push(r.summary);
+        } catch (e) {
+          if (e instanceof EditError && op.ops.length > 1) throw new EditError(`Edit ${i + 1} (${o.op}): ${e.message} Nothing was changed.`);
+          throw e;
+        }
+      });
+      return { snap: cur, summary: did.join("; ") };
+    }
   }
 }
 

@@ -62,7 +62,6 @@ export const CreateReviewInput = z.object({
 });
 export const ReviewCommentInput = z.object({ time: z.number().min(0).max(24 * 3600), text: z.string().trim().min(1, "Write a comment first.").max(2000, "That comment is too long.") });
 export const ProjectCommentInput = ReviewCommentInput;
-export const AiChatInput = z.object({ text: z.string().trim().min(1, "Write what you want changed first.").max(4000, "That message is too long. Keep it under 4000 characters.") });
 export const PlanInput = z.object({ plan: z.enum(["Free", "Pro", "Studio"], { errorMap: () => ({ message: "Pick Free, Pro or Studio." }) }) });
 export const ReviewPasswordInput = z.object({ password: z.string().max(100) });
 export const RequestChangesInput = z.object({ note: z.string().max(4000).optional().nullable() });

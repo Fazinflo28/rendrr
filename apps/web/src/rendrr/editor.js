@@ -40,11 +40,13 @@ function EditorPage({ id }) {
   const { go } = useNav();
   // When your AI changes this edit, load its new version (the editor remounts on the new version).
   useEffect(() => api.watchProject(id, (m) => { if (m && m.by !== "user") q.reload(); }), [id]);
-  // The AI chat lives here, not in EditorInner: the AI's own changes remount EditorInner while it is still replying.
-  const [chat, setChat] = useState(null); const [thinking, setThinking] = useState(false);
+  // The AI tab's messages live here, not in EditorInner: an AI's change remounts EditorInner on the new version.
+  const [chat, setChat] = useState(null);
   const keep = useRef({ tab: "comments", time: 0 }); // the open tab and the playhead survive that remount too
-  useEffect(() => { setChat(null); setThinking(false); keep.current = { tab: "comments", time: 0 }; }, [id]);
-  return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version} project=${p} reload=${q.reload} keep=${keep} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])), thinking, setThinking }} />`}<//>`;
+  useEffect(() => { setChat(null); keep.current = { tab: "comments", time: 0 }; }, [id]);
+  // A new version from the AI brings its new messages with it.
+  useEffect(() => { if (q.data?.aiChat) setChat(null); }, [q.data?.version]);
+  return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version} project=${p} reload=${q.reload} keep=${keep} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])) }} />`}<//>`;
 }
 
 function EditorInner({ project, reload, ai, keep }) {
@@ -160,12 +162,8 @@ function EditorInner({ project, reload, ai, keep }) {
   const canvasW = Math.max(900, px(dur) + 40);
   const ticks = []; for (let t = 0; t <= dur; t += zoom < 30 ? 5 : zoom < 60 ? 2 : 1) ticks.push(t);
 
-  const { chat, setChat, thinking, setThinking } = ai; const [aiDraft, setAiDraft] = useState("");
-  // The AI edits on the server; the editor reloads the edit afterwards so the timeline shows its changes.
-  const sendAi = async () => { const text = aiDraft.trim(); if (!text || thinking) return; setAiDraft(""); setChat((c) => [...c, { id: "tmp" + Date.now(), role: "user", text, at: Date.now() }]); setThinking(true);
-    try { const [u, a] = await api.sendAiMessage(project.id, text); setChat((c) => [...c.filter((m) => !String(m.id).startsWith("tmp")), u, a]); if (a.changed) reload(); toast(a.ai + ": " + (a.workflow?.length ? a.workflow.length + (a.workflow.length === 1 ? " step" : " steps") + " done" : "replied"), { icon: "spark", tone: "brand" }); }
-    catch (e) { setChat((c) => c.filter((m) => !String(m.id).startsWith("tmp"))); setAiDraft(text); toast(e.message); } finally { setThinking(false); } };
-  useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, thinking, rtab]);
+  const { chat, setChat } = ai;
+  useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, rtab]);
   useEffect(() => { const el = document.getElementById("comment-list"); if (el) el.scrollTop = el.scrollHeight; }, [comments.length, rtab]);
   const [draft, setDraft] = useState(""); const [posting, setPosting] = useState(false);
   const postComment = async () => { if (!draft.trim()) return; setPosting(true); try { const c = await api.addProjectComment(project.id, { time: pb.time, text: draft }); setComments((x) => [...x, c].sort((a, b) => a.time - b.time)); setDraft(""); toast("Comment added at " + fmtTime(c.time), { icon: "comment" }); } catch (e) { toast(e.message); } finally { setPosting(false); } };
@@ -230,19 +228,15 @@ function EditorInner({ project, reload, ai, keep }) {
         </div>`}
         ${rtab === "ai" && html`<div class="pb cmts" style="padding-top:12px">
           <div class="col" style="gap:10px;flex:1;min-height:0;overflow:auto" id="ai-thread">
-            ${chat.length === 0 ? html`<div class="state" style="padding:28px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="spark" /></div><b class="t-label">Tell the AI what to change</b><p class="t-small">It edits the timeline and shows you every step it took.</p></div>`
+            ${chat.length === 0 ? html`<div class="state" style="padding:28px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="spark" /></div><b class="t-label">What your AI did shows here</b><p class="t-small">When Claude or ChatGPT edits this video through the connector, every step and its notes to you appear here.</p></div>`
             : chat.map((m) => html`<div key=${m.id} class=${"msg " + m.role} data-msg=${m.id}>
                 ${m.role === "ai" && html`<span class="who"><${Icon} name="spark" size="12" /> ${m.ai}</span>`}
                 <p>${m.text}</p>
                 ${m.workflow && html`<div class="wf"><span class="t-small muted">Workflow</span>${m.workflow.map((w, i) => html`<div key=${i} class="wf-step"><span class="n">${i + 1}</span>${w}</div>`)}</div>`}
                 <span class="t-small muted when">${fmtAgo(m.at)}</span>
               </div>`)}
-            ${thinking && html`<div class="msg ai" aria-live="polite"><span class="who"><${Icon} name="spark" size="12" /> Claude</span><p class="muted">Working on it<span class="dots">…</span></p></div>`}
           </div>
-          <form class="cbox" onSubmit=${(e) => { e.preventDefault(); sendAi(); }}>
-            <input id="ai-input" class="input sm grow" placeholder="Ask for a change, like: add zooms on the strong lines" value=${aiDraft} onInput=${(e) => setAiDraft(e.target.value)} />
-            <${Btn} size="sm" type="submit" id="ai-send" icon="spark" disabled=${!aiDraft.trim() || thinking}>Send<//>
-          </form>
+          <p class="t-small muted" style="margin:0">Ask for changes in Claude or ChatGPT. This tab only shows what they did.</p>
         </div>`}
         ${rtab === "comments" && html`<div class="pb cmts" style="padding-top:12px">
           <div class="col" style="gap:8px;flex:1;min-height:0;overflow:auto" id="comment-list">

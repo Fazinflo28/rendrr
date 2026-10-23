@@ -42,6 +42,11 @@ export async function breakdownVideo(ctx: Ctx, v: Video, an: Pick<FootageAnalysi
     bytes += await uploadFile(key, join(out, s.file), "image/jpeg");
     sheetKeys.push(key);
   }
+  let overviewKey: string | null = null;
+  if (measured.overview) {
+    overviewKey = `${base}${measured.overview.file}`;
+    bytes += await uploadFile(overviewKey, join(out, measured.overview.file), "image/jpeg");
+  }
 
   // Key frames and thumbnail for videos that have none yet (added from a computer).
   let keyFrames = (an.keyFrames as { t: number; key: string }[]) || [];
@@ -67,6 +72,7 @@ export async function breakdownVideo(ctx: Ctx, v: Video, an: Pick<FootageAnalysi
     sceneCuts: cuts,
     measured,
     sheetKeys,
+    overviewKey,
   });
   await prisma.footageAnalysis.update({ where: { videoId: v.id }, data: { breakdown: breakdown as unknown as Prisma.InputJsonValue, keyFrames: keyFrames as unknown as Prisma.InputJsonValue } });
   await prisma.video.update({ where: { id: v.id }, data: { thumbKey, previewSizeBytes: { increment: BigInt(bytes) } } });
@@ -85,10 +91,16 @@ export async function breakdownJob(ctx: Ctx) {
   await breakdownVideo(ctx, v, v.analysis, proxy, audio);
 }
 
-/** Queues a breakdown for every ready video that has none (at most once a day each). Returns how many. */
+/**
+ * Queues a breakdown for every ready video that has none, or whose breakdown was made before overview sheets existed
+ * (at most once a day each). Returns how many.
+ */
 export async function queueMissingBreakdowns(): Promise<number> {
   const missing = await prisma.video.findMany({ where: { status: "ready", proxyKey: { not: null }, analysis: { is: { breakdown: { equals: Prisma.DbNull } } } }, select: { id: true }, take: 200, orderBy: { createdAt: "desc" } });
+  const made = await prisma.footageAnalysis.findMany({ where: { breakdown: { not: Prisma.DbNull }, video: { status: "ready", proxyKey: { not: null } } }, select: { videoId: true, breakdown: true }, take: 500 });
+  const noOverview = made.filter((a) => { const f = (a.breakdown as { frames?: { sheets?: unknown[]; overview?: unknown } } | null)?.frames; return !!f && f.overview === undefined && (f.sheets?.length ?? 0) > 1; }).map((a) => ({ id: a.videoId }));
   const day = new Date().toISOString().slice(0, 10);
-  for (const v of missing) await enqueue<BreakdownJob>("breakdown", { videoId: v.id }, { jobId: `breakdown-${v.id}-${day}` }).catch(() => {});
-  return missing.length;
+  const all = [...missing, ...noOverview];
+  for (const v of all) await enqueue<BreakdownJob>("breakdown", { videoId: v.id }, { jobId: `breakdown-${v.id}-${day}` }).catch(() => {});
+  return all.length;
 }

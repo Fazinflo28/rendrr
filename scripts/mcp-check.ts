@@ -30,18 +30,16 @@ say("get_style s1", await call("get_style", { styleId: "s1" }));
 const created = say("create_project", await call("create_project", { videoId: vid, styleId: "s1", name: "MCP check" }));
 const pid = /\(([a-z0-9]{20,})\)/.exec(created)?.[1];
 if (!pid) process.exit(1);
-say("apply_style", await call("apply_style", { projectId: pid, styleId: "s1" }));
-say("cut_silences", await call("cut_silences", { projectId: pid, overSeconds: 0.3 }));
-say("remove_fillers", await call("remove_fillers", { projectId: pid }));
-say("cut_words 0-2s", await call("cut_words", { projectId: pid, from: 0, to: 2 }));
-say("add_zoom", await call("add_zoom", { projectId: pid, start: 5, end: 7, scale: 1.2 }));
-say("add_music", await call("add_music", { projectId: pid, mood: "lofi", gainDb: -20 }));
-say("set_captions", await call("set_captions", { projectId: pid, on: true, look: "outline" }));
-say("edit_caption", await call("edit_caption", { projectId: pid, lineId: "l0", text: "So the thing NOBODY tells you about starting an agency" }));
-say("add_graphic", await call("add_graphic", { projectId: pid, graphicId: "gt_lower_third", start: 1, end: 5, params: { name: "Ronnii K", role: "Founder" } }));
+say("apply_edits", await call("apply_edits", { projectId: pid, note: "First pass from the MCP check.", edits: [
+  { op: "apply_style", styleId: "s1", overrides: { zoom: { mode: "count", count: 2 } } },
+  { op: "cut_silences", overSeconds: 0.3 }, { op: "remove_fillers" }, { op: "cut_words", from: 0, to: 2 },
+  { op: "add_zoom", start: 5, end: 7, scale: 1.2 }, { op: "add_music", trackId: "lofi", gainDb: -20 },
+  { op: "set_captions", on: true, look: "outline" }, { op: "edit_caption", lineId: "l0", text: "So the thing NOBODY tells you about starting an agency" },
+  { op: "add_graphic", graphicId: "gt_lower_third", start: 1, end: 5, params: { name: "Ronnii K", role: "Founder" } },
+] }));
 say("get_project", await call("get_project", { projectId: pid }));
 say("undo", await call("undo", { projectId: pid }));
-say("bad input", await call("trim_clip", { projectId: pid, track: "v1", clipId: "nope", start: 1, end: 2 }));
+say("bad input", await call("apply_edits", { projectId: pid, edits: [{ op: "remove_fillers" }, { op: "trim_clip", track: "v1", clipId: "nope", start: 1, end: 2 }] }));
 say("list_graphics", await call("list_graphics"));
 say("get_comments", await call("get_comments", { projectId: pid }));
 if (render) {

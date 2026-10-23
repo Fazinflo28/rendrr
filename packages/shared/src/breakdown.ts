@@ -13,6 +13,8 @@ export type Measured = {
   size: [number, number];
   samples: VisualSample[];
   sheets: { file: string; times: number[]; cols: number; rows: number; tile: [number, number] }[];
+  /** One sheet of 16 frames spread over the whole video (only when the video has more than one sheet). */
+  overview?: { file: string; times: number[]; cols: number; rows: number; tile: [number, number] } | null;
   loudness: number[];
   tempo: { bpm: number; confidence: number; beats: number[] } | null;
 };
@@ -33,7 +35,7 @@ export type Breakdown = {
   hook: { sec: number; says: string; shots: number };
   shots: Shot[];
   audio: { loudnessDb: number[]; avgDb: number | null; beat: { bpm: number; confidence: number; beats: number[] } | null; musicLikely: boolean };
-  frames: { interval: number; count: number; sheets: Sheet[] };
+  frames: { interval: number; count: number; sheets: Sheet[]; overview?: Sheet | null };
 };
 
 export const BEAT_CONFIDENCE = 0.5; // below this the audio has no steady beat
@@ -72,6 +74,7 @@ export function buildBreakdown(input: {
   sceneCuts: number[];
   measured: Measured;
   sheetKeys: string[]; // storage keys, in the same order as measured.sheets
+  overviewKey?: string | null;
 }): Breakdown {
   const { video, transcript, silences, measured } = input;
   const dur = Math.max(0.01, video.seconds);
@@ -107,6 +110,8 @@ export function buildBreakdown(input: {
   // Music: a steady beat, or sound that stays loud while nobody speaks.
   const noSpeechLoud = loud.filter((d, sec) => d > -30 && !words.some((w) => w.t >= sec && w.t < sec + 1)).length;
   const sheets: Sheet[] = measured.sheets.map((s, i) => ({ key: input.sheetKeys[i], from: s.times[0] ?? 0, to: s.times[s.times.length - 1] ?? 0, times: s.times, cols: s.cols, rows: s.rows }));
+  const ov = measured.overview;
+  const overview: Sheet | null = ov && input.overviewKey ? { key: input.overviewKey, from: ov.times[0] ?? 0, to: ov.times[ov.times.length - 1] ?? 0, times: ov.times, cols: ov.cols, rows: ov.rows } : sheets.length === 1 ? sheets[0] : null;
 
   return {
     v: 1,
@@ -121,7 +126,7 @@ export function buildBreakdown(input: {
     hook: { sec: r1(hookSec), says: quote(words.filter((w) => w.t < hookSec).map((w) => w.text).join(" "), 20), shots: shots.filter((s) => s.start < hookSec).length },
     shots,
     audio: { loudnessDb: loud, avgDb: heard.length ? r1(avg(heard)) : null, beat, musicLikely: !!beat || noSpeechLoud >= Math.max(3, dur * 0.2) },
-    frames: { interval: measured.interval, count: measured.samples.length, sheets },
+    frames: { interval: measured.interval, count: measured.samples.length, sheets, overview },
   };
 }
 
@@ -142,7 +147,7 @@ export function breakdownAsText(b: Breakdown, opts: { from?: number; to?: number
     ...(shots.length > max ? [`… ${shots.length - max} more shots: ask with from/to`] : []),
     `AUDIO avg=${b.audio.avgDb != null ? b.audio.avgDb + "dB" : "silent"} ${b.audio.beat ? `beat=${b.audio.beat.bpm}bpm (confidence ${b.audio.beat.confidence}), first beats ${b.audio.beat.beats.slice(0, 8).map((t) => t.toFixed(2)).join(" ")}` : "no steady beat"} | music ${b.audio.musicLikely ? "likely" : "unlikely"}`,
     `LOUDNESS dB per second from 0s: ${b.audio.loudnessDb.slice(0, 240).map((d) => Math.round(d)).join(" ")}${b.audio.loudnessDb.length > 240 ? " …" : ""}`,
-    `FRAMES ${b.frames.count} frames (every ${b.frames.interval}s plus the middle of every shot) on ${b.frames.sheets.length} contact sheet${b.frames.sheets.length === 1 ? "" : "s"}, time printed on each tile: ${b.frames.sheets.map((s, i) => `sheet ${i + 1} ${fmtT(s.from)}-${fmtT(s.to)}`).join(", ")}`,
+    `FRAMES ${b.frames.count} frames (every ${b.frames.interval}s plus the middle of every shot) on ${b.frames.sheets.length} contact sheet${b.frames.sheets.length === 1 ? "" : "s"} of 16, time printed on each tile`,
   ];
   return lines.join("\n");
 }

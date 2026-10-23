@@ -7,7 +7,7 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { frameAt, JobError, probe, run } from "../lib/ffmpeg";
+import { frameAt, JobError, loudnessOf, probe, run } from "../lib/ffmpeg";
 import { cachedAsset } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { throttle, type Ctx } from "../lib/job";
@@ -140,6 +140,8 @@ export async function renderJob(ctx: Ctx) {
     const prefix = kind === "final" ? PREFIX.finals : PREFIX.previews;
     const base = `${prefix}${video.userId}/${project.id}/${r.id}`;
     const outInfo = await probe(files.output, { signal });
+    // Measured once here so the AI's after-render check can read it as text.
+    const loudness = outInfo.hasAudio ? await loudnessOf(files.output, signal).catch(() => null) : null;
     const size = await uploadFile(`${base}.mp4`, files.output, "video/mp4");
     await send(i, 0.6);
     const framesKeys: string[] = [];
@@ -156,7 +158,7 @@ export async function renderJob(ctx: Ctx) {
     }
     await prisma.render.update({ where: { id: r.id }, data: {
       status: "done", outputKey: `${base}.mp4`, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.kept.length, width: plan.width, height: plan.height } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.kept.length, width: plan.width, height: plan.height, loudness } as unknown as Prisma.InputJsonValue,
     } });
     const fresh = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     await prisma.project.update({ where: { id: project.id }, data: {

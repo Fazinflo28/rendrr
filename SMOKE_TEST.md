@@ -11,20 +11,21 @@ One command checks the whole product end to end and prints **PASS** or **FAIL** 
 5. Checks the **breakdown**: shots, pacing, beat, and that a contact sheet loads
 6. Creates a project folder
 7. Creates an edit with style **Bold Talking Head** (the style's rules run as the first pass)
-8. AI tools, through the same path the MCP server uses: `get_footage` (breakdown text + contact sheets), `get_frames` (two exact moments), `apply_style` (Fast UGC Ad) and `cut_silences`
+8. AI tools, through the same path the MCP server uses: `get_footage` (breakdown text + one overview image), `get_frames` (two exact moments), and one `apply_edits` call (Fast UGC Ad with exactly 2 zooms, silences, fillers, bold captions, music) whose note and steps must show in the editor's AI tab
 9. Editor autosave (timeline replace with version check)
 10. Renders a **preview** and follows the live progress stream (the same one the editor's progress bar uses), then checks the file plays
-11. Renders the **final** (1080p) and checks size and length
-12. Creates a password-protected **review link**
-13. Opens it as the client (locked, then unlocked with the password), checks the video link
-14. Client adds a comment at 0:04
-15. Editor resolves the comment
-16. Client approves (project status becomes Approved)
-17. Adds a **reference video** and waits until it is read like footage
-18. AI: `list_references` finds it, `get_reference` returns its breakdown and sheets
-19. Deletes the reference and checks its contact sheets are gone
-20. Usage page numbers
-21. Cleans up: deletes the test folder (its edits, renders and review links go with it) and the footage
+11. AI: `get_render` on that preview returns the text check (pauses, fillers, captions, zooms, music, loudness) and no images
+12. Renders the **final** (1080p) and checks size and length
+13. Creates a password-protected **review link**
+14. Opens it as the client (locked, then unlocked with the password), checks the video link
+15. Client adds a comment at 0:04
+16. Editor resolves the comment
+17. Client approves (project status becomes Approved)
+18. Adds a **reference video** and waits until it is read like footage
+19. AI: `list_footage` (kind reference) finds it, `get_footage` reads it once, `save_style` saves its rules, and a second `get_footage` answers in one line with that style (the test style is then deleted)
+20. Deletes the reference and checks its contact sheets are gone
+21. Usage page numbers
+22. Cleans up: deletes the test folder (its edits, renders and review links go with it) and the footage
 
 The AI steps need `INTERNAL_API_SECRET`; without it the test has 19 steps. The test uses the API's built-in sample footage (`POST /videos/sample`), which the web app no longer offers.
 
@@ -50,7 +51,7 @@ Against a local stack (`pnpm dev:api`, `pnpm dev:worker`, with Postgres, Redis a
 set -a; . ./.env; set +a; pnpm smoke
 ```
 
-Expected output ends with `17/17 steps passed. PASS`. It takes about one minute: most of it is transcription and the final render.
+Expected output ends with `24/24 steps passed. PASS`. It takes about one minute: most of it is transcription and the final render.
 
 ## Test the AI connector (MCP)
 
@@ -61,7 +62,7 @@ claude mcp add --transport http rendrr https://mcp-production-7fa0.up.railway.ap
 claude            # then type /mcp, pick rendrr, and log in when the browser opens
 ```
 
-Then ask: *"List my footage in Rendrr, apply the Bold Talking Head style to the sample, cut silences, render a preview and show me the frames."*
+Then ask: *"List my footage in Rendrr, edit my latest video in the Bold Talking Head style with 2 zooms, render a preview and tell me what the check says."*
 
 **With Claude.ai**: Settings → Connectors → Add custom connector → paste `https://mcp-production-7fa0.up.railway.app/mcp`, name it Rendrr. Clerk asks you to log in and press **Allow** once.
 
@@ -79,5 +80,6 @@ The test user is `smoke+clerk_test@rendrr.dev` / `Rendrr-Smoke-Test-2026!` (Cler
 ## Unit tests
 
 ```bash
-pnpm --filter @rendrr/shared test     # timeline operations and the render plan
+pnpm --filter @rendrr/shared test     # timeline operations, apply_edits, style overrides, the after-render check, fillers, the render plan
+pnpm --filter @rendrr/api test        # several logins, one account (needs DATABASE_URL and REDIS_URL, e.g. the local .env)
 ```

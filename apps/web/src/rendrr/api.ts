@@ -319,12 +319,15 @@ export const api: any = {
   disconnect: (which: string) => post(`/connect/${enc(which)}/disconnect`),
   getAiActivity: async (projectId?: string) => emptyIf(await get("/ai/activity" + (projectId ? `?projectId=${enc(projectId)}` : ""))),
   undoAiAction: (id: string) => post(`/ai/activity/${enc(id)}/undo`),
+  /** The editor's AI tab (read only): what a connected AI did to this edit, with its notes. */
   getAiChat: (projectId: string) => get(`/projects/${enc(projectId)}/ai-chat`),
-  /** The editor's AI chat. Resolves with [your message, the AI's reply]; reply.changed means the edit changed. */
-  sendAiMessage: (projectId: string, text: string) => {
-    if (!text?.trim()) throw fail("Write what you want changed first.");
-    return post(`/projects/${enc(projectId)}/ai-chat`, { text: text.trim() });
-  },
+  /** Logins that open this account: { logins: [{ id, email, main }], current }. */
+  getLogins: () => get("/account/logins"),
+  /** A 6-letter code (15 minutes) the user gives their AI, which calls link_account with it. */
+  createLinkCode: () => post("/account/link-code"),
+  unlinkLogin: (clerkId: string) => del(`/account/logins/${enc(clerkId)}`),
+  /** Deletes a style the user or their AI saved (built-in styles cannot be deleted). */
+  deleteStyle: (id: string) => del(`/styles/${enc(id)}`),
 
   // ---- account ----
   getUsage: () => get("/account/usage"),

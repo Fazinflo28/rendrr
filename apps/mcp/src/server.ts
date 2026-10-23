@@ -70,7 +70,7 @@ async function imageContent(urls: string[] = []) {
 
 function buildServer(w: Who) {
   const server = new McpServer({ name: "rendrr", version: "1.0.0", title: "Rendrr" }, {
-    instructions: "Rendrr edits video. You decide the edit with small instructions; Rendrr renders. Rendrr has already turned every video (footage and reference videos) into text and frames: get_footage returns its breakdown and contact sheets, get_frames any exact moment, get_reference a reference video to copy the style of. Start with list_footage and read rendrr://how-to-edit. All clip times are seconds in the ORIGINAL footage.",
+    instructions: "Rendrr edits video: you decide, Rendrr measures, applies exactly what you send and renders. get_footage reads any video as text plus one overview image; apply_edits makes all changes in one call; render_preview returns a text check. Times are seconds in the ORIGINAL footage. Guide: rendrr://how-to-edit.",
   });
 
   for (const def of MCP_TOOLS) {
@@ -99,23 +99,21 @@ function buildServer(w: Who) {
     const r = await callApi(w, "/internal/resources/styles", undefined, "GET");
     return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: r.ok ? r.json.text : "Could not load the styles right now." }] };
   });
-  server.registerResource("how-to-edit", "rendrr://how-to-edit", { title: "How to edit with Rendrr", description: "A short guide: read footage, read style, plan the hook, cut, caption, render a preview, check frames, fix, hand off.", mimeType: "text/markdown" }, async (uri) => ({
+  server.registerResource("how-to-edit", "rendrr://how-to-edit", { title: "How to edit with Rendrr", description: "A short guide: read, style, edit in one call, check, hand off.", mimeType: "text/markdown" }, async (uri) => ({
     contents: [{ uri: uri.href, mimeType: "text/markdown", text: HOW_TO_EDIT }],
   }));
 
   server.registerPrompt("edit-footage", {
     title: "Edit footage",
-    description: "Walk through a first pass of an edit: read the footage and style, plan the hook, cut, caption, render a preview and check it.",
+    description: "A first pass of an edit: read the footage and style, cut, caption, render a preview and check it.",
     argsSchema: { videoId: z.string().describe("Footage id from list_footage"), styleId: z.string().describe("Style id from list_styles, for example s1") },
   }, ({ videoId, styleId }) => ({
     messages: [{ role: "user", content: { type: "text", text:
       `Edit my footage ${videoId} in style ${styleId} with Rendrr.\n\n` +
-      `1. get_footage("${videoId}") and get_style("${styleId}"). Tell me in two lines what the video is about and what the strongest hook is.\n` +
-      `2. create_project with videoId ${videoId} and styleId ${styleId}, then apply_style.\n` +
-      `3. Cut so the first 3 seconds are the hook. Remove rambling with cut_words (use detail "words" for word ids). Keep sentences whole.\n` +
-      `4. Fix any caption wording with edit_caption. Add zooms on the key lines.\n` +
-      `5. render_preview, then get_preview_frames. Check framing, captions and the opening. Fix and render again if needed.\n` +
-      `6. Give me the preview link and a short list of what you did. Ask before rendering the final.\n\nGuide: rendrr://how-to-edit` } }],
+      `1. get_footage("${videoId}") and get_style("${styleId}"). Tell me in two lines what the video is about and the strongest hook.\n` +
+      `2. create_project, then one apply_edits call: apply_style ${styleId}, the cuts that put the hook in the first 3 seconds (cut_words with ids from detail "words"), caption fixes and zooms on the key lines. Keep sentences whole. Add a short note.\n` +
+      `3. render_preview and read its check. Fix with another apply_edits if it shows pauses, fillers or missing captions.\n` +
+      `4. Tell me what you did. Ask before rendering the final.\n\nGuide: rendrr://how-to-edit` } }],
   }));
   return server;
 }

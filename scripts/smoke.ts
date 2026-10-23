@@ -141,19 +141,24 @@ async function main() {
   if (!project) return finish();
 
   if (INTERNAL) {
-    await step("AI: read the footage as text + contact sheets (get_footage)", async () => {
+    await step("AI: read the footage as text + one overview image (get_footage)", async () => {
       const r = await tool("get_footage", { videoId: video.id });
       if (!/PACING shots=/.test(r.text) || !/SHOTS/.test(r.text) || !/TRANSCRIPT/.test(r.text)) throw new Error("breakdown text missing");
-      if (!r.images?.length) throw new Error("no contact sheets attached");
-      return [r, `${String(r.text).length} chars, ${r.images.length} sheets attached`];
+      if ((r.images || []).length !== 1) throw new Error(`${(r.images || []).length} images attached, expected the one overview`);
+      return [r, `${String(r.text).length} chars, 1 image attached`];
     });
     await step("AI: look at exact moments (get_frames)", async () => {
       const r = await tool("get_frames", { videoId: video.id, times: [2, 20.5] });
       if ((r.images || []).length !== 2) throw new Error(`${(r.images || []).length} frames came back`);
       return [r, String(r.text).split("\n")[0]];
     });
-    await step("AI: apply style (via the MCP tool path)", async () => { const r = await tool("apply_style", { projectId: project.id, styleId: "s4" }); return [r, String(r.text).split("\n")[0]]; });
-    await step("AI: cut silences over 0.5s", async () => { const r = await tool("cut_silences", { projectId: project.id, overSeconds: 0.5 }); return [r, String(r.text).split("\n")[0]]; });
+    await step("AI: edit in one call (apply_edits: style with 2 zooms, silences, fillers, captions, music)", async () => {
+      const r = await tool("apply_edits", { projectId: project.id, note: "Smoke test edit.", edits: [{ op: "apply_style", styleId: "s4", overrides: { zoom: { mode: "count", count: 2 } } }, { op: "cut_silences", overSeconds: 0.5 }, { op: "remove_fillers" }, { op: "set_captions", on: true, look: "bold" }, { op: "add_music", trackId: "upbeat" }] });
+      if (!/^Done \(v\d+/.test(r.text)) throw new Error(r.text);
+      const chat = await api(`/projects/${project.id}/ai-chat`);
+      if (!chat.some((m: any) => m.text === "Smoke test edit." && m.workflow?.length >= 5)) throw new Error("the note and steps are not in the AI tab");
+      return [r, String(r.text).slice(0, 120)];
+    });
   }
 
   await step("Editor autosave (timeline replace)", async () => {
@@ -169,6 +174,13 @@ async function main() {
     const pr = ffprobeUrl(d.result.url);
     return [d, `${d.result.quality}, ${d.result.size}, ${Number(pr.format.duration).toFixed(1)}s, steps: ${d.steps.join(" > ")}`];
   });
+  if (preview && INTERNAL) {
+    await step("AI: text check of the preview, no images (get_render)", async () => {
+      const r = await tool("get_render", { renderId: preview.result.renderId });
+      if (!/CHECK /.test(r.text) || !/Flags: /.test(r.text) || r.images?.length) throw new Error("no text check: " + String(r.text).slice(0, 200));
+      return [r, String(r.text).split("\n").find((l) => l.startsWith("Flags")) || ""];
+    });
+  }
 
   await step("Render final (1080p)", async () => {
     const s = await api(`/projects/${project.id}/renders`, { method: "POST", json: { kind: "final" } });
@@ -214,12 +226,16 @@ async function main() {
     return [v, `${v.id}, ${v.breakdown.shots.length} shots, ${v.breakdown.sheets.length} sheets`];
   });
   if (ref && INTERNAL) {
-    await step("AI: find and read the reference (list_references, get_reference)", async () => {
-      const l = await tool("list_references", {});
+    await step("AI: read the reference once, save its style, then reuse it (list_footage, get_footage, save_style)", async () => {
+      const l = await tool("list_footage", { kind: "reference" });
       if (!String(l.text).includes(ref.id)) throw new Error("reference not listed");
-      const r = await tool("get_reference", { referenceId: ref.id });
-      if (!/VIDEO REFERENCE/.test(r.text) || !r.images?.length) throw new Error("reference breakdown or sheets missing");
-      return [r, `${r.images.length} sheets, ${String(r.text).length} chars`];
+      const r = await tool("get_footage", { videoId: ref.id });
+      if (!/VIDEO REFERENCE/.test(r.text) || !r.images?.length) throw new Error("reference breakdown or overview missing");
+      const saved = await tool("save_style", { name: "Smoke reference style", fromVideoId: ref.id, rules: { cutSilencesOver: 0.3, captions: { look: "bold" }, zoom: { mode: "count", count: 3, scale: 1.12 } } });
+      const again = await tool("get_footage", { videoId: ref.id });
+      if (!/was read before/.test(again.text) || again.images?.length) throw new Error("second read was not the short version");
+      await api(`/styles/${saved.data.styleId}`, { method: "DELETE" });
+      return [r, `first read ${String(r.text).length} chars + 1 image, second read ${String(again.text).length} chars; ${String(saved.text).slice(0, 40)}`];
     });
   }
   if (ref) await step("Delete the reference (its frames go with it)", async () => { await api(`/videos/${ref.id}`, { method: "DELETE" }); const left = await fetch(ref.breakdown.sheets[0].url); if (left.ok) throw new Error("contact sheet still there"); return [true, `sheet now HTTP ${left.status}`]; });

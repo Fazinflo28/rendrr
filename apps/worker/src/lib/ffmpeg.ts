@@ -73,6 +73,14 @@ export async function silences(input: string, signal?: AbortSignal): Promise<{ s
   return out;
 }
 
+/** Loudness of a finished file (EBU R128): integrated LUFS and true peak in dB. Nulls when it cannot be measured. */
+export async function loudnessOf(input: string, signal?: AbortSignal): Promise<{ lufs: number | null; peakDb: number | null }> {
+  const { stderr } = await runCapture("ffmpeg", ["-hide_banner", "-nostdin", "-nostats", "-i", input, "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], signal);
+  const summary = stderr.slice(stderr.lastIndexOf("Summary:"));
+  const num = (re: RegExp) => { const m = re.exec(summary); const n = m ? Number(m[1]) : NaN; return Number.isFinite(n) ? Math.round(n * 10) / 10 : null; };
+  return { lufs: num(/I:\s+(-?[\d.]+) LUFS/), peakDb: num(/Peak:\s+(-?[\d.]+) dBFS/) };
+}
+
 /** Like run(), but keeps the whole stderr (silencedetect writes its findings there). */
 function runCapture(cmd: string, args: string[], signal?: AbortSignal): Promise<{ stderr: string }> {
   return new Promise((resolve, reject) => {

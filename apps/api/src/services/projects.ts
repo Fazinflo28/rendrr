@@ -1,6 +1,6 @@
 import { abortMultipart, AppError, applyTimelineChange, deleteObjects, notFound, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, aspectFor, buildInitialTimeline, DEFAULT_STYLE_ID, outputDuration, type Snapshot, type Transcript } from "@rendrr/shared";
+import { allWords, aspectFor, buildInitialTimeline, DEFAULT_STYLE_ID, outputDuration, refreshFillers, type Snapshot, type Transcript } from "@rendrr/shared";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
 export async function defaultFolderId(userId: string, name?: string): Promise<string> {
@@ -117,4 +117,15 @@ export async function backfillOutputSeconds() {
     } catch { /* a broken old timeline keeps showing no length */ }
   }
   return ps.length;
+}
+
+/** Transcripts made before a filler rule changed (for example "umm") get their filler marks again (at start). */
+export async function refreshFillerFlags() {
+  const as = await prisma.footageAnalysis.findMany({ select: { videoId: true, transcript: true }, take: 2000 });
+  let n = 0;
+  for (const a of as) {
+    const next = refreshFillers((a.transcript as unknown as Transcript) || []);
+    if (next) { await prisma.footageAnalysis.update({ where: { videoId: a.videoId }, data: { transcript: next as unknown as Prisma.InputJsonValue } }); n++; }
+  }
+  return n;
 }

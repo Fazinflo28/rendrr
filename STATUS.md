@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 23 October 2026 (UTC). Live on Railway with the new design (V2). New: every video is broken down into text and frames for the AI, and reference videos.
+Last updated: 23 October 2026 (UTC). Live on Railway with the new design (V2). New today: the AI connector uses about two thirds fewer tokens per edit (one call for all changes, one overview image instead of four, a text check after each render), Rendrr runs no AI of its own, and your connector login is linked to your account.
 
 ## 1. Links
 
@@ -28,10 +28,34 @@ Rendrr does the seeing and rendering; Claude only does the thinking. Right after
 - **Breakdown ("video code")**: every shot with its times, light, colour, motion, loudness and what is said; pacing (cuts per minute, words per minute, speech and silence share); the hook (first 3 seconds); loudness per second; the music beat. Claude reads it as a few lines of text.
 - **Contact sheets**: frames every 0.5 to 5 seconds plus one in the middle of every shot, 16 to an image, with the time printed on each frame. A 40-second clip is 3 images.
 - **Exact moments**: Claude can ask for any frame (`get_frames`), and Rendrr takes it from the preview copy.
-- **Reference videos**: in Library › Add footage, switch on "Add as a reference" for a video whose style to copy. The Library has a References filter, and any video can be switched on its page. Claude finds references with `list_references` and reads them with `get_reference`.
-- **Where Claude gets it**: the connector's `get_footage` and `get_reference` return the breakdown with its contact sheets. The editor's AI chat has the same tools, and now receives the images too.
+- **Reference videos**: in Library › Add footage, switch on "Add as a reference" for a video whose style to copy. The Library has a References filter, and any video can be switched on its page. Claude finds references with `list_footage` (kind reference), reads one once with `get_footage`, and saves what it learned as a style (`save_style`); after that, reading the reference again returns that style in one line.
+- **Where Claude gets it**: the connector's `get_footage` returns the breakdown as text plus one **overview image** (16 frames across the whole video). The other contact sheets and exact frames come only when Claude asks.
 - **Where you see it**: every footage page has a **What Claude sees** section with the pacing, a shot strip, the contact sheets (click a frame to jump there) and the video code, plus Copy as text.
 - Videos added before this got their breakdown automatically when the worker started. Videos added from a computer now also get key frames and a thumbnail; before, they had none.
+
+## The AI connector: fewer tokens, no AI inside Rendrr (23 October)
+
+Measured on the same 32-second test video and the same edit ("cut silences over 0.4s, remove fillers, bold captions, 2 zooms, upbeat music, render a preview, check it, render the final"), on a local copy of the stack:
+
+| | Before | Now |
+|---|---|---|
+| Tool calls | 12 | 6 |
+| Tool replies (text) | ≈1,850 tokens | ≈1,300 tokens |
+| Images | 17 (≈9,780 tokens) | 1 (≈1,260 tokens) |
+| Tool list, sent once per conversation | 38 tools, ≈6,150 tokens | 22 tools, ≈3,500 tokens |
+| New tokens per edit | ≈17,800 | ≈6,100 (about 66% less) |
+
+- **`apply_edits`**: every change in one call, saved as one version (undo reverts them together; if one change is wrong nothing is saved and the reply says which). It replaces 17 single-step tools. A short note from Claude goes to the editor's AI tab with the steps.
+- **`get_footage`**: text plus one overview image by default; `pictures: "sheets"` (with a time range) or `get_frames` when Claude needs to see more; `pictures: "none"` for text only.
+- **`render_preview`**: returns a text check instead of frames: length, pauses and fillers left, caption coverage, zooms, b-roll, graphics, music, cuts (and very short pieces), and the file's loudness (measured by the worker). `get_preview_frames` only when Claude wants to look. Finals come back without frames.
+- **Styles from rules**: `apply_style` takes overrides (for example exactly 2 zooms), and `save_style` saves Claude's own rules, including ones taken from a reference video, so a reference is read once.
+- **Shorter replies**: no repeated "render a preview" line, no long signed links (a link to the edit in Rendrr instead), lists 20 at a time, graphics params as one line each.
+- **No AI inside Rendrr**: the editor's built-in Claude chat and the Anthropic key setting are gone. Speech-to-text (AssemblyAI) stays: it turns speech into timed words.
+- **Fillers**: "umm", "uhh", "erm" and "hmm" now count as fillers (the audit found an "umm" left in a preview); stored transcripts were re-marked at start.
+
+### Your connector login
+
+Your Claude connector signed in with a Google login Rendrr had not seen, so it got a new empty account; your edits are in your website account. Rendrr now lets one account have several logins: the deploy links that Google login to the account that holds "IMG_0033 edit" and removes the empty one (only if still empty). For anyone else: Connect AI › **Link another login** gives a code; tell your AI "Link my Rendrr account with code …" and it calls `link_account`.
 
 ## New design (V2)
 
@@ -39,7 +63,7 @@ The web app now uses `ui/rendrr-ui-v2.html`, wired to the real backend:
 
 - **Explore** (the new start page), **Create** pages per category (Clipping, Talking head, Ads, …) and **Styles** work without logging in. Liking, recreating, adding footage or using a style opens the login window first, then carries on.
 - Explore shows only videos people publish; it starts empty ("The gallery is empty", with Publish a video). There is no dummy content: no example videos, no fake Google Drive, no sample footage buttons.
-- **Editor**: the new AI tab is a chat. You type a change, Claude makes it with the same editing tools as the AI connector, and shows the steps it took. Every change is a new version you can undo. Changes made through the Claude or ChatGPT connector show up in the same thread.
+- **Editor**: the AI tab shows what Claude or ChatGPT did through the connector: each edit's steps and the short note it left for you. You can't type there; you ask for changes in Claude or ChatGPT. Every change is a new version you can undo.
 - **Editor notes**: leave a note at any moment of the video; it sits next to your client's review comments.
 - **Billing** page: plans, card and invoices (payments are not switched on yet, see below).
 - **Final ready** popup: Save to this computer, or Save to Google Drive.
@@ -52,7 +76,7 @@ Under 1024px wide the app has its own touch layout (the desktop design above tha
 
 A clickable preview of the whole UI runs in the browser with the design's demo data (no server, no real login): https://claude.ai/artifact/KduyKRPmudMLzg9L7fBZF5 (private to you until you share it from its Share menu). Rebuild it with `pnpm --filter @rendrr/web preview:build`.
 
-In the preview you can log in with any email and password, browse Explore and the categories, add footage (sample, the fake Drive, or a video from your phone or computer, which then plays in the editor), make an edit, cut words, leave notes, use the AI chat (canned replies), render a final, share a review link and open the client page, publish to the gallery, and change plan or settings. Nothing is saved: a reload starts fresh. Downloads and "Save image" do nothing inside the preview window.
+In the preview you can log in with any email and password, browse Explore and the categories, add footage (sample, the fake Drive, or a video from your phone or computer, which then plays in the editor), make an edit, cut words, leave notes, render a final, share a review link and open the client page, publish to the gallery, and change plan or settings. Nothing is saved: a reload starts fresh. Downloads and "Save image" do nothing inside the preview window.
 
 ## 2. What works end to end
 
@@ -78,14 +102,11 @@ Earlier, on a full local copy of the system (Postgres, Redis, S3-compatible stor
 |---|---|---|---|
 | Google Drive | The Drive tab says Google Drive is not set up yet (the fake Drive with demo folders is gone) | `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (Google Cloud → OAuth client, Drive API on, redirect URI `https://api-production-2428.up.railway.app/drive/callback`) | Railway → `api` and `worker` → Variables |
 | Billing | The Billing page shows Free / Pro / Studio. Switching changes the plan name and storage figure only; there is no card, no invoices and no limits | `STRIPE_SECRET_KEY` (plus product setup, not built yet) | Railway → `api` |
-| Editor AI chat | Replies that it needs a key, and points to the Connect AI page | `ANTHROPIC_API_KEY` (console.anthropic.com → API keys). Optional: `AI_CHAT_EFFORT` = low, medium (default), high | Railway → `api` |
 | Save final to Google Drive | Says it is not switched on yet; Save to this computer works | Same Google keys as Drive (above) | Railway → `api` |
 | Transcription | **Real** (your AssemblyAI key is set). Without a key every video would get the sample transcript | `ASSEMBLYAI_API_KEY` | already set on `api` and `worker` |
 | Login | **Real** Clerk (development instance `mature-joey-7879`; Google login uses Clerk's shared test credentials) | For a public launch: a Clerk production instance and your own Google OAuth app | Railway → `api`, `mcp`, `web` |
 
 Keys live only in Railway's settings and in a local `.env` that is never committed.
-
-With `ANTHROPIC_API_KEY` set, the chat uses Claude Opus 5.5. If Claude's safety filter declines a request, Anthropic automatically retries it on its recommended fallback model ("server-side fallbacks"), so the chat answers instead of failing.
 
 ## 4. The one command to test it
 
@@ -95,7 +116,7 @@ After the services are live (step 1 above):
 API_URL=https://api-production-2428.up.railway.app CLERK_SECRET_KEY=sk_test_... pnpm smoke
 ```
 
-It prints PASS or FAIL for each of the 17 steps. Details and the AI connector test: [SMOKE_TEST.md](SMOKE_TEST.md).
+It prints PASS or FAIL for each of the 24 steps. Details and the AI connector test: [SMOKE_TEST.md](SMOKE_TEST.md).
 To try it by hand: open the web app, sign up, add a short video from your computer in the Library, wait for Ready, then make an edit.
 To try the AI: in Claude, Settings → Connectors → Add custom connector → `https://mcp-production-7fa0.up.railway.app/mcp`.
 
@@ -106,8 +127,9 @@ To try the AI: in Claude, Settings → Connectors → Add custom connector → `
 | Phone and tablet layout (bottom tab bar, bottom sheets, stacked editor) | The design was desktop only; on a phone it was shrunk to a tiny page |
 | Explore shows only real published videos (no example videos, no invented creators, likes or views) | No dummy data in a real app |
 | Billing: "No card on file. Payments are not switched on yet…", "No invoices yet.", PDF button only for a real invoice | Payments are stubbed |
-| The editor's AI chat is real Claude; without a key it says what to set | The design's chat gave canned replies |
-| Changes made through the Claude/ChatGPT connector appear in the editor's AI thread | So you see in the editor what an outside AI changed |
+| The editor's AI tab only shows what Claude or ChatGPT did through the connector, with their notes; there is no chat box | Rendrr runs no AI of its own: Claude does the thinking, Rendrr measures and renders |
+| Connect AI has "Link another login" | So an AI that logged in with a different account can be pointed at yours with a code |
+| Your own saved styles (for example ones Claude saved) have "Delete style" | Claude can now save styles |
 | The hint on "Preview up to date" now says the player shows changes live and a preview render burns in captions, zooms and music | Previews are not rendered after every change |
 | "Save to Google Drive" says it is not switched on until the Google keys are set | Google Drive is not set up yet |
 | Logging in with Google and logging out land on Explore | Explore is the new start page |

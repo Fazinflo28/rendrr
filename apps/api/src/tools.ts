@@ -1,23 +1,28 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
-// Every response is small text (plus a few images: frames or contact sheets). Every write goes through applyTimelineChange.
-import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signGet, type ChangeActor, type GraphicJob } from "@rendrr/core";
-import { prisma } from "@rendrr/db";
+// Every response is small text (plus an image only when it helps: the overview sheet, or frames asked for).
+// Every write goes through applyTimelineChange.
+import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
+import { prisma, type Prisma } from "@rendrr/db";
 import {
-  allWords, breakdownAsText, CreateGraphicInput, findMusic, fmtClock, fmtT, GRAPHIC_TEMPLATES, keptRanges, makeTimeMap, MCP_TOOLS, MUSIC_TRACKS, outputDuration, SFX,
-  sheetsIn, summarizeTimeline, transcriptAsText, type Breakdown, type Op, type Silence, type Snapshot, type Transcript, type VideoKind,
+  allWords, breakdownAsText, CreateGraphicInput, describeRules, editCheck, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, keptRanges, makeTimeMap, mergeRules, MUSIC_TRACKS, outputDuration, SFX,
+  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, type Breakdown, type EditOp, type FileLoudness, type Sheet, type Silence, type Snapshot, type StyleRules, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { createProject, getOwnedProject } from "./services/projects";
 import { renderResult, startRender } from "./services/render";
+import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
-export type ToolCtx = { userId: string; ai: "claude" | "chatgpt" | null; aiName?: string; via?: "chat" };
+/** loginId: the Clerk user who called (a linked login opens its account's userId). */
+export type ToolCtx = { userId: string; loginId?: string; ai: "claude" | "chatgpt" | null; aiName?: string };
 type Ctx = ToolCtx;
 
 const MAX_CHARS = 24_000; // ~6k tokens
 export const clip = (s: string) => (s.length > MAX_CHARS ? s.slice(0, MAX_CHARS) + "\n…(cut to stay short; ask for a narrower range)" : s);
-const actorFor = (c: Ctx, toolName: string, input: unknown): ChangeActor => ({ kind: c.ai === "chatgpt" ? "chatgpt" : "claude", userId: c.userId, ai: c.aiName, via: c.via, toolName, input });
+const actorFor = (c: Ctx, toolName: string, input: unknown): ChangeActor => ({ kind: c.ai === "chatgpt" ? "chatgpt" : "claude", userId: c.userId, ai: c.aiName, toolName, input });
+const aiName = (c: Ctx) => (c.ai === "chatgpt" ? "ChatGPT" : "Claude");
+const WEB = () => (process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "");
 
 async function ownedVideo(userId: string, id: string) {
   const v = await prisma.video.findUnique({ where: { id }, include: { analysis: true } });
@@ -29,37 +34,104 @@ type OwnedVideo = Awaited<ReturnType<typeof ownedVideo>>;
 /** Which Rendrr account this connection uses, so a user with two logins can tell. */
 async function accountLine(userId: string) {
   const u = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  return `Rendrr account: ${u?.email || "unknown"}`;
+  return `Account ${u?.email || "unknown"}.`;
 }
+const EMPTY_HINT = "If the user has videos on the Rendrr website, this login opens another account: ask them for a code from Rendrr > Connect AI > Link another login, then call link_account.";
+const pageOf = <T,>(rows: T[], i: { offset?: number; limit?: number }) => {
+  const offset = i.offset ?? 0, limit = i.limit ?? 20;
+  const shown = rows.slice(offset, offset + limit);
+  const more = rows.length - offset - shown.length;
+  return { shown, offset, more, tail: more > 0 ? `\n${more} more: offset ${offset + shown.length}.` : "" };
+};
 
-/** The stored breakdown with the video's current name and kind (both can change after it was made). */
+/** The stored breakdown with the video's current name, kind and filler count (all can change after it was made). */
 export function breakdownOf(v: OwnedVideo): Breakdown | null {
   const b = v.analysis?.breakdown as unknown as Breakdown | null;
-  return b?.v ? { ...b, video: { ...b.video, name: v.name, kind: (v.kind as VideoKind) || "footage" } } : null;
+  const fillers = allWords((v.analysis?.transcript as unknown as Transcript) || []).filter((w) => w.filler).length;
+  return b?.v ? { ...b, video: { ...b.video, name: v.name, kind: (v.kind as VideoKind) || "footage" }, pacing: { ...b.pacing, fillers } } : null;
 }
 
-/** The breakdown text plus its contact sheets for a time range: what an AI reads instead of watching. */
-async function videoAsCode(v: OwnedVideo, from?: number, to?: number, maxSheets = 4): Promise<{ text: string; images: string[] }> {
+/**
+ * The breakdown text plus the pictures asked for: by default one overview sheet (16 frames across the whole video),
+ * "sheets" for the frame sheets in from/to, "none" for text only. What an AI reads instead of watching.
+ */
+async function videoAsCode(v: OwnedVideo, o: { from?: number; to?: number; pictures?: "overview" | "sheets" | "none" } = {}): Promise<{ text: string; images: string[] }> {
   const b = breakdownOf(v);
   if (!b) {
-    const kf = ((v.analysis?.keyFrames as { t: number; key: string }[]) || []).slice(0, 5);
-    return { text: `BREAKDOWN not ready yet for "${v.name}" (Rendrr makes it right after the transcript; ask again in a minute). Key frames at ${kf.map((k) => k.t.toFixed(1) + "s").join(", ") || "none"} attached.`, images: await Promise.all(kf.map((k) => signGet(k.key, 900))) };
+    const kf = o.pictures === "none" ? [] : ((v.analysis?.keyFrames as { t: number; key: string }[]) || []).slice(0, 3);
+    return { text: `BREAKDOWN not ready yet for "${v.name}" (Rendrr makes it right after the transcript; ask again in a minute).${kf.length ? ` Key frames at ${kf.map((k) => k.t.toFixed(1) + "s").join(", ")} attached.` : ""}`, images: await Promise.all(kf.map((k) => signGet(k.key, 900))) };
   }
-  const sheets = sheetsIn(b, from ?? 0, to ?? 1e9, maxSheets);
-  const all = b.frames.sheets.length;
-  const note = !all ? "Contact sheets are gone with the expired preview copy; the text above still holds."
-    : `Attached: ${sheets.map((s) => `sheet ${b.frames.sheets.indexOf(s) + 1} (${fmtT(s.from)}-${fmtT(s.to)})`).join(", ")}${all > sheets.length ? `. ${all - sheets.length} more sheet${all - sheets.length === 1 ? "" : "s"}: ask with from/to` : ""}.`;
-  return { text: `${breakdownAsText(b, { from, to })}\n${note}`, images: await Promise.all(sheets.map((s) => signGet(s.key, 900))) };
+  const all = b.frames.sheets;
+  const more = 'More: pictures "sheets" with from/to, or get_frames.';
+  let pics: Sheet[] = [];
+  let note: string;
+  if (!all.length) note = "PICTURES none: the frame sheets went with the expired preview copy; the text still holds.";
+  else if (o.pictures === "none") note = 'PICTURES none attached (overview by default; pictures "sheets" for from/to).';
+  else if (o.pictures === "sheets") {
+    pics = sheetsIn(b, o.from ?? 0, o.to ?? 1e9, 4);
+    const left = all.filter((s) => s.to >= (o.from ?? 0) && s.from <= (o.to ?? 1e9)).length - pics.length;
+    note = `ATTACHED ${pics.map((s) => `sheet ${all.indexOf(s) + 1} ${fmtT(s.from)}-${fmtT(s.to)}`).join(", ")}${left > 0 ? `; ${left} more in this range: narrow from/to` : ""}.`;
+  } else {
+    const ov = b.frames.overview ?? (all.length === 1 ? all[0] : null);
+    if (ov) { pics = [ov]; note = `ATTACHED overview: ${ov.times.length} frames across the whole video. ${more}`; }
+    else {
+      // A breakdown made before overview sheets existed: show the first sheet now and make the overview.
+      pics = [all[0]];
+      note = `ATTACHED sheet 1 (${fmtT(all[0].from)}-${fmtT(all[0].to)}); the overview is being made. ${more}`;
+      if (v.status === "ready" && v.proxyKey) await enqueue<BreakdownJob>("breakdown", { videoId: v.id }, { jobId: `breakdown-${v.id}-overview` }).catch(() => {});
+    }
+  }
+  return { text: `${breakdownAsText(b, { from: o.from, to: o.to })}\n${note}`, images: await Promise.all(pics.map((s) => signGet(s.key, 900))) };
 }
 
-async function edit(c: Ctx, name: string, projectId: string, op: Op, input: unknown): Promise<ToolOut> {
-  await getOwnedProject(c.userId, projectId);
-  const r = await applyTimelineChange(projectId, op, actorFor(c, name, input));
-  const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { video: { include: { analysis: true } } } });
-  const tr = (p.video.analysis?.transcript as unknown as Transcript) || [];
-  const out = outputDuration(r.snapshot.timeline, allWords(tr));
-  if (r.unchanged) return { text: `Nothing to change: ${r.summary}.\nStill version ${r.version}.`, data: { version: r.version } };
-  return { text: `Done: ${r.summary}.\nNow version ${r.version}. Output length ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s footage. Render a preview to check it.`, data: { version: r.version } };
+/** A saved recipe (a gallery video the user recreated, or one whose author allows it): its rhythm, as JSON, and up to 3 frames. */
+async function recipeOut(c: Ctx, refId: string): Promise<ToolOut | null> {
+  const g0 = await prisma.galleryItem.findUnique({ where: { id: refId } });
+  const shared = !!g0 && (g0.userId === c.userId || g0.allowRecreate);
+  const r0 = await prisma.reference.findUnique({ where: { id: refId } });
+  const r = r0 && (r0.userId === c.userId || shared) ? r0 : null;
+  const g = r ? null : shared ? g0 : null;
+  if (!r && !g) return null;
+  const frames: string[] = [];
+  const projectId = g?.projectId ?? g0?.projectId;
+  if (projectId) {
+    const rr = await prisma.render.findFirst({ where: { projectId, status: "done", outputKey: { not: null } }, orderBy: { createdAt: "desc" } });
+    for (const k of ((rr?.framesKeys as string[]) || []).slice(0, 3)) frames.push(await signGet(k, 900));
+  }
+  return { text: `RECIPE "${r?.name ?? g!.title}" (match the rhythm, not the footage): ${JSON.stringify(r?.recipe ?? g!.recipe)}`, images: frames };
+}
+
+/** Rules a style saved by an AI starts from: nothing cut, clean captions, no zooms, no music. */
+const PLAIN_RULES: StyleRules = StyleRulesSchema.parse({ cutSilencesOver: null, removeFillers: false, captions: { on: true, look: "clean", wordsAtOnce: 6 }, zoom: { mode: "none", scale: 1 }, music: { mood: null, gainDb: -20 } });
+
+/** The edit list checked one by one, with the first problem said plainly ("Edit 3 (add_zoom): end is required"). */
+function parseEdits(raw: unknown[]): EditOp[] {
+  return raw.map((e, n) => {
+    const r = EditOpSchema.safeParse(e);
+    if (r.success) return r.data;
+    const op = (e as { op?: string })?.op;
+    const iss = r.error.issues[0];
+    throw new AppError(`Edit ${n + 1}${op ? ` (${op})` : ""}: ${iss.path.length ? iss.path.join(".") + " " : ""}${iss.message.charAt(0).toLowerCase() + iss.message.slice(1)}. Nothing was changed.`, 400, "invalid-edit");
+  });
+}
+
+/** Runs a list of edits as one version and leaves a message with the steps (and the AI's note) in the editor's AI tab. */
+async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: string | undefined, input: unknown): Promise<ToolOut> {
+  const p0 = await getOwnedProject(c.userId, projectId);
+  if (!edits.length) {
+    if (!note?.trim()) throw new AppError("Send at least one edit, or a note for the user.");
+    await prisma.aiChatMessage.create({ data: { projectId, userId: c.userId, role: "ai", ai: aiName(c), text: note.trim().slice(0, 600) } });
+    return { text: "Note posted in Rendrr's AI tab.", data: { version: p0.currentVersion } };
+  }
+  // The activity log keeps the edits, but long lists (clips, word ids) only as counts.
+  const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e)) };
+  const r = await applyTimelineChange(projectId, edits.length === 1 ? edits[0] : { op: "batch", ops: edits }, actorFor(c, "apply_edits", logged));
+  const v = await prisma.video.findUniqueOrThrow({ where: { id: p0.videoId }, include: { analysis: true } });
+  const out = outputDuration(r.snapshot.timeline, allWords((v.analysis?.transcript as unknown as Transcript) || []));
+  if (r.unchanged) return { text: `Nothing changed (still v${r.version}): ${r.summary}.`, data: { version: r.version } };
+  const steps = r.summary.split("; ");
+  await prisma.aiChatMessage.create({ data: { projectId, userId: c.userId, role: "ai", ai: aiName(c), text: (note?.trim() || `Made ${steps.length === 1 ? "a change" : steps.length + " changes"}.`).slice(0, 600), workflow: steps.map((x) => x.charAt(0).toUpperCase() + x.slice(1)) as unknown as Prisma.InputJsonValue, changed: true } });
+  return { text: `Done (v${r.version}, ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s): ${r.summary}.`, data: { version: r.version } };
 }
 
 async function waitFor<T>(fn: () => Promise<T | null>, ms: number, every = 1000): Promise<T | null> {
@@ -68,28 +140,55 @@ async function waitFor<T>(fn: () => Promise<T | null>, ms: number, every = 1000)
   return null;
 }
 
+/** A finished render as text: a preview comes with the check of the edit; nothing to download into the chat. */
 async function renderOut(renderId: string): Promise<ToolOut> {
   const r = await prisma.render.findUniqueOrThrow({ where: { id: renderId } });
   if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Render final; the app will ask for the original file." : ""}` };
   if (r.status !== "done") return { text: `The ${r.kind} render is still running (render id ${r.id}). Call get_render in a little while.` };
   const res = await renderResult(r);
-  return { text: `${r.kind === "final" ? "Final" : "Preview"} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s (version ${r.version}).\nWatch: ${res.url}\n(Link works for 6 hours.)`, images: res.frames.slice(0, 4), data: { renderId: r.id, url: res.url } };
+  const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
+  if (r.kind === "final") return { text: head, data: { renderId: r.id } };
+  return { text: `${head}\n${await checkOf(r.projectId, r.version, (r.plan as { loudness?: FileLoudness } | null)?.loudness ?? null)}`, data: { renderId: r.id } };
+}
+
+/** The measured check of one version of an edit (pauses over 0.4 s, whatever the style says: the AI knows what it asked for). */
+async function checkOf(projectId: string, version: number, loudness: FileLoudness | null): Promise<string> {
+  const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { video: { include: { analysis: true } } } });
+  const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
+  const snap = (ver?.timeline ?? { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId }) as unknown as Snapshot;
+  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { pauseOver: 0.4, loudness });
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
   // ---------------- read ----------------
-  async list_footage(c) {
-    const vs = await prisma.video.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 100 });
+  async list_footage(c, i) {
+    const vs = await prisma.video.findMany({ where: { userId: c.userId, ...(i.kind ? { kind: i.kind } : {}) }, orderBy: { createdAt: "desc" }, take: 500 });
+    const recipes = i.kind === "reference" ? await prisma.reference.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 }) : [];
     const acct = await accountLine(c.userId);
-    if (!vs.length) return { text: `${acct}\nNo footage in this account yet. Ask the user to add some in Rendrr (Library > Add footage), from Google Drive or their computer. If they already have videos in Rendrr, they are logged in to Rendrr with a different email than this connection: they should disconnect Rendrr in their AI's connector settings and connect again with the email they use on the Rendrr website.` };
-    return { text: `${acct}\nVideos (id | name | kind | length | shape | status | raw file). kind reference = a video whose style to copy, not to edit:\n` + vs.map((v) => `${v.id} | ${v.name} | ${v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${v.sample ? "sample" : v.source === "drive" ? "Google Drive" : "user's computer"}`).join("\n") };
+    if (!vs.length && !recipes.length) return { text: i.kind ? `${acct} No ${i.kind === "reference" ? "reference videos" : "footage"} yet.` : `${acct} No footage yet: the user adds videos in Rendrr (Library > Add footage). ${EMPTY_HINT}` };
+    const pg = pageOf(vs, i);
+    const where = (v: (typeof vs)[number]) => (v.sample ? "sample" : v.source === "drive" ? "drive" : "computer");
+    return { text: `${acct} Videos ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${vs.length} (id | name | kind | length | shape | status | raw file):\n` +
+      pg.shown.map((v) => `${v.id} | ${v.name} | ${v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${where(v)}`).join("\n") + pg.tail +
+      (recipes.length ? "\nSaved recipes (id | name):\n" + recipes.map((r) => `${r.id} | ${r.name}`).join("\n") : "") };
   },
 
   async get_footage(c, i) {
-    const v = await ownedVideo(c.userId, i.videoId);
-    if (!v.analysis || !["ready", "expired"].includes(v.status)) return { text: `"${v.name}" is ${v.status}${v.error ? ": " + v.error : ""}. It can be read and edited once it is ready.` };
+    const v = await prisma.video.findUnique({ where: { id: i.videoId }, include: { analysis: true } });
+    if (!v || v.userId !== c.userId) {
+      const recipe = await recipeOut(c, i.videoId);
+      if (recipe) return recipe;
+      throw notFound("That video is not in the library. Use list_footage for the ids.");
+    }
+    if (!v.analysis || !["ready", "expired"].includes(v.status)) return { text: `"${v.name}" is ${v.status}${v.error ? ": " + v.error : ""}. It can be read once it is ready.` };
+    const isRef = v.kind === "reference";
+    // A reference read before: its rules are saved as a style, so say that instead of sending it all again.
+    if (isRef && i.detail == null && i.pictures == null && i.from == null && i.to == null) {
+      const saved = await prisma.style.findMany({ where: { ownerId: c.userId, sourceVideoId: v.id }, orderBy: { createdAt: "desc" }, take: 3 });
+      if (saved.length) return { text: `REFERENCE "${v.name}" ${v.id} (${fmtClock(v.seconds)}) was read before. Saved as style ${saved.map((s) => `${s.id} "${s.name}": ${s.cutPace}; ${s.captionRule}; ${s.zoomRules}; ${s.musicVibe}`).join(" | ")}. Apply it with apply_edits [{"op":"apply_style","styleId":"${saved[0].id}"}]. To read the video again, pass detail "sentences".` };
+    }
     if (i.detail === "json") { const b = breakdownOf(v); return { text: b ? clip(JSON.stringify(b)) : "The breakdown is not ready yet. Ask again in a minute." }; }
-    const code = await videoAsCode(v, i.from, i.to);
+    const code = await videoAsCode(v, { from: i.from, to: i.to, pictures: i.pictures });
     let tr = v.analysis.transcript as unknown as Transcript;
     if (i.from != null || i.to != null) tr = tr.filter((l) => l.end >= (i.from ?? 0) && l.start <= (i.to ?? 1e9));
     const words = allWords(v.analysis.transcript as unknown as Transcript);
@@ -99,11 +198,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const counts: Record<string, number> = {};
     for (const f of fillers) { const k = f.text.toLowerCase().replace(/[^a-z' ]/g, ""); counts[k] = (counts[k] || 0) + 1; }
     const lines = [
+      ...(isRef ? ["REFERENCE: copy its rhythm, shot lengths, hook and look onto the user's footage, not its content. Then save_style with fromVideoId so it is not read again."] : []),
       code.text,
-      `RAW FILE ${v.sample ? "Rendrr's built-in sample" : v.source === "drive" ? "in Google Drive" : "on the user's computer"}${v.status === "expired" ? " | preview copy expired: rebuild it in the Library to edit or take frames" : ""}`,
-      `TRANSCRIPT (${v.analysis.transcriber === "stub" ? "SAMPLE transcript: transcription is not set up" : "AssemblyAI"}), ${words.length} words. Line id [start] text${i.detail === "words" ? "; words as text(wordId@start)" : ""}:`,
+      `RAW FILE ${v.sample ? "Rendrr's sample" : v.source === "drive" ? "in Google Drive" : "on the user's computer"}${v.status === "expired" ? " | preview copy expired: rebuild it in the Library to edit or take frames" : ""}`,
+      `TRANSCRIPT (${v.analysis.transcriber === "stub" ? "SAMPLE: transcription is not set up" : "AssemblyAI"}) ${words.length} words. Line id [start] text${i.detail === "words" ? "; words as text(wordId@start)" : ""}:`,
       transcriptAsText(tr, undefined, i.detail === "words" ? "words" : "sentences") || "(no speech found)",
-      `SILENCES of 0.4s or more (${sil.length}): ${sil.slice(0, 80).map((s) => `${s.start.toFixed(1)}-${s.end.toFixed(1)}`).join(", ") || "none"}${sil.length > 80 ? ", …" : ""}`,
+      `SILENCES 0.4s+ (${sil.length}): ${sil.slice(0, 80).map((s) => `${s.start.toFixed(1)}-${s.end.toFixed(1)}`).join(", ") || "none"}${sil.length > 80 ? ", …" : ""}`,
       `FILLERS ${fillers.length}${fillers.length ? " (" + Object.entries(counts).map(([k, n]) => `${k} x${n}`).join(", ") + ")" : ""}${i.detail === "words" && fillers.length ? ". Ids: " + fillers.slice(0, 200).map((f) => f.id).join(" ") : ""}`,
       `SCENE CUTS (${cuts.length}): ${cuts.slice(0, 100).map((t) => t.toFixed(1)).join(", ") || "none"}`,
     ];
@@ -123,29 +223,18 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     if (!images.length) return { text: "No frames came back. Try again in a moment." };
     const b = breakdownOf(v);
     const where = (t: number) => b?.shots.find((s) => t >= s.start && t < s.end)?.id;
-    return { text: `Frames of "${v.name}" at ${times.map((t) => `${fmtT(t)}${where(t) ? ` (${where(t)})` : ""}`).join(", ")} attached, in that order.`, images };
-  },
-
-  async list_references(c) {
-    const [vs, saved] = await Promise.all([
-      prisma.video.findMany({ where: { userId: c.userId, kind: "reference" }, orderBy: { createdAt: "desc" }, take: 100 }),
-      prisma.reference.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 }),
-    ]);
-    if (!vs.length && !saved.length) return { text: "No references yet. The user can add one in Rendrr: Library > Add footage > \"Add as a reference\" (a video whose style to copy). Any video in list_footage also works with get_reference." };
-    return { text: ["References (id | name | type | length | status):",
-      ...vs.map((v) => `${v.id} | ${v.name} | reference video | ${fmtClock(v.seconds)} | ${v.status}`),
-      ...saved.map((r) => `${r.id} | ${r.name} | saved gallery recipe | - | ready`)].join("\n") };
+    return { text: `Frames of "${v.name}" at ${times.map((t) => `${fmtT(t)}${where(t) ? ` (${where(t)})` : ""}`).join(", ")}, in that order.`, images };
   },
 
   async list_styles(c) {
-    const ss = await prisma.style.findMany({ where: { OR: [{ ownerId: null }, { ownerId: c.userId }] }, orderBy: { sortOrder: "asc" } });
+    const ss = await prisma.style.findMany({ where: { OR: [{ ownerId: null }, { ownerId: c.userId }] }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] });
     return { text: "Styles (id | name | type | vibe | shapes | platforms):\n" + ss.map((s) => `${s.id} | ${s.name} | ${s.type} | ${s.vibe} | ${s.ori.join(" ")} | ${s.platforms.join(" ")}`).join("\n") };
   },
 
   async get_style(c, i) {
     const s = await prisma.style.findFirst({ where: { id: i.styleId, OR: [{ ownerId: null }, { ownerId: c.userId }] } });
     if (!s) throw notFound("That style does not exist. Use list_styles for the ids.");
-    return { text: [`${s.name} (${s.id}), ${s.type}: ${s.vibe}`, `Shapes: ${s.ori.join(", ")}. Best on: ${s.platforms.join(", ")}.`, `Cut pace: ${s.cutPace}`, `Captions: ${s.captionRule} (look ${s.captionLook})`, `Zooms: ${s.zoomRules}`, `Music: ${s.musicVibe}`, `Machine rules apply_style uses: ${JSON.stringify(s.rules)}`].join("\n") };
+    return { text: [`${s.name} (${s.id}), ${s.type}: ${s.vibe}`, `Cut pace: ${s.cutPace}. Captions: ${s.captionRule} (${s.captionLook}). Zooms: ${s.zoomRules}. Music: ${s.musicVibe}.`, `Rules apply_style runs: ${JSON.stringify(s.rules)}`].join("\n") };
   },
 
   async list_folders(c) {
@@ -154,9 +243,10 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   async list_projects(c, i) {
-    const ps = await prisma.project.findMany({ where: { userId: c.userId, deletedAt: null, ...(i.folderId ? { folderId: i.folderId } : {}) }, orderBy: { updatedAt: "desc" }, take: 100, include: { folder: true } });
-    if (!ps.length) return { text: `${await accountLine(c.userId)}\nNo edits in this account yet. Use create_project. If the user already has edits in Rendrr, this connection is logged in with a different email than the Rendrr website: they should reconnect Rendrr with that email.` };
-    return { text: "Edits (id | name | folder | style | aspect | status | version):\n" + ps.map((p) => `${p.id} | ${p.name} | ${p.folder.name} | ${p.styleId} | ${p.aspect} | ${p.status} | v${p.currentVersion}`).join("\n") };
+    const ps = await prisma.project.findMany({ where: { userId: c.userId, deletedAt: null, ...(i.folderId ? { folderId: i.folderId } : {}) }, orderBy: { updatedAt: "desc" }, take: 500, include: { folder: true } });
+    if (!ps.length) return { text: `${await accountLine(c.userId)} No edits yet: use create_project. ${i.folderId ? "" : EMPTY_HINT}`.trim() };
+    const pg = pageOf(ps, i);
+    return { text: `Edits ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${ps.length} (id | name | folder | style | aspect | status | version):\n` + pg.shown.map((p) => `${p.id} | ${p.name} | ${p.folder.name} | ${p.styleId} | ${p.aspect} | ${p.status} | v${p.currentVersion}`).join("\n") + pg.tail };
   },
 
   async get_project(c, i) {
@@ -165,46 +255,25 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const snap = { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId } as unknown as Snapshot;
     const style = await prisma.style.findUnique({ where: { id: p.styleId } });
     const preview = await prisma.render.findFirst({ where: { projectId: p.id, status: "done", kind: "preview" }, orderBy: { createdAt: "desc" } });
-    return { text: clip([`Edit "${p.name}" (${p.id}) on footage ${v.id} "${v.name}". Status ${p.status}, version ${p.currentVersion}, style ${style?.name ?? p.styleId}.`,
+    return { text: clip([`Edit "${p.name}" (${p.id}) on footage ${v.id} "${v.name}". ${p.status}, v${p.currentVersion}, style ${style?.name ?? p.styleId}.`,
       summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || []),
-      preview ? `Latest preview: version ${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview rendered yet."].join("\n")) };
-  },
-
-  async get_reference(c, i) {
-    // A video of the user's (marked reference or not): its breakdown and contact sheets.
-    const rv = await prisma.video.findUnique({ where: { id: i.referenceId }, include: { analysis: true } });
-    if (rv && rv.userId === c.userId) {
-      if (!rv.analysis || !["ready", "expired"].includes(rv.status)) return { text: `The reference "${rv.name}" is ${rv.status}. Rendrr reads it once it is ready.` };
-      const code = await videoAsCode(rv);
-      const tr = (rv.analysis.transcript as unknown as Transcript) || [];
-      return { text: clip(`Reference video: match its rhythm, shot lengths, hook and look with the user's own footage; do not copy its content.\n${code.text}\nTRANSCRIPT\n${transcriptAsText(tr) || "(no speech)"}`), images: code.images };
-    }
-    // Your own saved recipes, or a gallery video whose author allows recreating it.
-    const g0 = await prisma.galleryItem.findUnique({ where: { id: i.referenceId } });
-    const shared = !!g0 && (g0.userId === c.userId || g0.allowRecreate);
-    const r0 = await prisma.reference.findUnique({ where: { id: i.referenceId } });
-    const r = r0 && (r0.userId === c.userId || shared) ? r0 : null;
-    const g = r ? null : shared ? g0 : null;
-    if (!r && !g) throw notFound("That reference does not exist.");
-    const recipe = r?.recipe ?? g!.recipe;
-    const frames: string[] = [];
-    const projectId = g?.projectId ?? (await prisma.galleryItem.findUnique({ where: { id: i.referenceId } }))?.projectId;
-    if (projectId) {
-      const rr = await prisma.render.findFirst({ where: { projectId, status: "done", outputKey: { not: null } }, orderBy: { createdAt: "desc" } });
-      for (const k of ((rr?.framesKeys as string[]) || []).slice(0, 5)) frames.push(await signGet(k, 900));
-    }
-    return { text: `Reference "${r?.name ?? g!.title}". Recipe (match the rhythm, not the footage):\n${JSON.stringify(recipe, null, 1)}`, images: frames };
+      preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet."].join("\n")) };
   },
 
   async list_graphics(c) {
     const custom = await prisma.graphic.findMany({ where: { ownerId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 });
+    // Params as name:type, * = required (the full schemas are long and rarely needed).
+    const params = (schema: Record<string, unknown>) => {
+      const props = (schema.properties || {}) as Record<string, { type?: string; enum?: string[]; pattern?: string }>;
+      const req = new Set((schema.required as string[]) || []);
+      return Object.entries(props).map(([k, p]) => `${k}${req.has(k) ? "*" : ""}:${p.enum ? p.enum.join("/") : p.pattern ? "#hex" : p.type === "number" ? "number" : "text"}`).join(" ");
+    };
     return { text: [
-      "Graphic templates (id | name | default seconds | params JSON schema):",
-      ...GRAPHIC_TEMPLATES.map((t) => `${t.id} | ${t.name} | ${t.durationSec}s | ${JSON.stringify(t.paramsSchema)}`),
-      "Custom graphics (id | name | status | seconds | size):",
-      ...(custom.length ? custom.map((g) => `${g.id} | ${g.name} | ${g.status}${g.error ? " (" + g.error + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}`) : ["none yet (create_graphic)"]),
-      "Music for add_music (trackId | name | mood): " + MUSIC_TRACKS.map((m) => `${m.id} | ${m.name} | ${m.mood}`).join("; "),
-      "Sound effects (put on a3 with set_clips: {id, start, end, label, sfxId}): " + SFX.map((s) => `${s.id} (${s.name}, ${s.seconds}s)`).join("; "),
+      "Graphic templates (id | name | seconds | params):",
+      ...GRAPHIC_TEMPLATES.map((t) => `${t.id} | ${t.name} | ${t.durationSec}s | ${params(t.paramsSchema)}`),
+      "Custom graphics (id | name | status | seconds | size): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${g.error ? " (" + g.error + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}`).join("\n") : "none (create_graphic)"),
+      "Music (trackId | name | mood): " + MUSIC_TRACKS.map((m) => `${m.id} | ${m.name} | ${m.mood}`).join("; "),
+      "Sound effects for a3 (set_clips clip with sfxId): " + SFX.map((x) => `${x.id} ${x.seconds}s`).join(", "),
     ].join("\n") };
   },
 
@@ -215,10 +284,10 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const short = (t: string) => (t.length > 600 ? t.slice(0, 600) + "…" : t).replace(/\s+/g, " ");
     const row = (x: { id: string; time: number; text: string; resolved: boolean }) => `${x.id} | ${fmtClock(x.time)} | ${short(x.text)} | ${x.resolved ? "resolved" : "open"}`;
     const parts = [
-      cs.length ? "Client comments (comment id | time in the rendered video | text | resolved):\n" + cs.map(row).join("\n") + "\nClient comment times are OUTPUT times of the version the client watched." : "No client comments on this edit.",
-      notes.length ? "The user's own notes in the editor (comment id | time in the edited video | text | resolved):\n" + notes.map(row).join("\n") : "",
+      cs.length ? "Client comments (id | output time of the version they watched | text | state):\n" + cs.map(row).join("\n") : "No client comments.",
+      notes.length ? "The user's notes (id | time in the edited video | text | state):\n" + notes.map(row).join("\n") : "",
     ];
-    return { text: parts.filter(Boolean).join("\n\n") };
+    return { text: parts.filter(Boolean).join("\n") };
   },
 
   async get_preview_frames(c, i) {
@@ -238,42 +307,42 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       const ws = l.words.filter((w) => !cut.has(w.id) && kept.some((k) => w.t >= k.start && w.t < k.end));
       return ws.length ? `[${fmtClock(map.toOutput(ws[0].t))}] ${ws.map((w) => w.text).join(" ")}` : null;
     }).filter(Boolean).join("\n");
-    return { text: clip(`Preview of version ${r.version}${r.version === p.currentVersion ? " (current)" : `; the edit is now at version ${p.currentVersion}, render again to see newer changes`}, ${r.seconds.toFixed(1)}s. Frames at output times ${times.map((t: number) => t.toFixed(1) + "s").join(", ")} attached.\nTranscript as it plays now (output times):\n${after}`), images };
+    return { text: clip(`Preview v${r.version}${r.version === p.currentVersion ? "" : ` (the edit is at v${p.currentVersion} now)`}, ${r.seconds.toFixed(1)}s. Frames at ${times.map((t: number) => t.toFixed(1) + "s").join(", ")}.\nTranscript as it plays (output times):\n${after}`), images };
   },
 
   // ---------------- write ----------------
   async create_project(c, i) {
     const p = await createProject(c.userId, i, { autoStyle: false, actorKind: c.ai === "chatgpt" ? "chatgpt" : "claude" });
-    return { text: `Created edit "${p.name}" (${p.id}), version 1 = the footage as recorded, aspect ${p.aspect}, style ${p.styleId}. Next: apply_style(${p.id}, styleId).`, data: { projectId: p.id } };
+    return { text: `Created edit "${p.name}" (${p.id}), v1 = the footage as recorded, ${p.aspect}, style ${p.styleId}. Next: apply_edits.`, data: { projectId: p.id } };
   },
-  apply_style: (c, i) => edit(c, "apply_style", i.projectId, { op: "apply_style", styleId: i.styleId }, i),
-  cut_words: (c, i) => edit(c, "cut_words", i.projectId, { op: "cut_words", wordIds: i.wordIds, from: i.from, to: i.to }, i),
-  restore_words: (c, i) => edit(c, "restore_words", i.projectId, { op: "restore_words", wordIds: i.wordIds }, i),
-  cut_silences: (c, i) => edit(c, "cut_silences", i.projectId, { op: "cut_silences", overSeconds: i.overSeconds }, i),
-  remove_fillers: (c, i) => edit(c, "remove_fillers", i.projectId, { op: "remove_fillers" }, i),
-  set_clips: (c, i) => edit(c, "set_clips", i.projectId, { op: "set_clips", track: i.track, clips: i.clips }, { projectId: i.projectId, track: i.track, clips: i.clips.length }),
-  split_clip: (c, i) => edit(c, "split_clip", i.projectId, { op: "split_clip", track: i.track, clipId: i.clipId, at: i.at }, i),
-  trim_clip: (c, i) => edit(c, "trim_clip", i.projectId, { op: "trim_clip", track: i.track, clipId: i.clipId, start: i.start, end: i.end }, i),
-  delete_clip: (c, i) => edit(c, "delete_clip", i.projectId, { op: "delete_clip", track: i.track, clipId: i.clipId }, i),
-  add_zoom: (c, i) => edit(c, "add_zoom", i.projectId, { op: "add_zoom", start: i.start, end: i.end, scale: i.scale }, i),
-  add_broll: (c, i) => edit(c, "add_broll", i.projectId, { op: "add_broll", videoId: i.videoId, start: i.start, end: i.end, sourceStart: i.sourceStart ?? 0 }, i),
-  set_captions: (c, i) => edit(c, "set_captions", i.projectId, { op: "set_captions", on: i.on, look: i.look }, i),
-  edit_caption: (c, i) => edit(c, "edit_caption", i.projectId, { op: "edit_caption", lineId: i.lineId, text: i.text }, i),
-  add_music(c, i) {
-    const pick = i.trackId || i.mood;
-    if (!pick) throw new AppError("Give a trackId or a mood. Moods: " + Array.from(new Set(MUSIC_TRACKS.map((m) => m.mood))).join(", ") + ".");
-    if (!findMusic(pick)) throw new AppError(`No music track or mood called "${pick}". Use list_graphics to see the tracks.`);
-    return edit(c, "add_music", i.projectId, { op: "add_music", trackId: pick, gainDb: i.gainDb }, i);
+  apply_edits: (c, i) => applyEdits(c, i.projectId, parseEdits(i.edits || []), i.note, i),
+
+  async save_style(c, i) {
+    let base = PLAIN_RULES;
+    if (i.baseStyleId) {
+      const b = await prisma.style.findFirst({ where: { id: i.baseStyleId, OR: [{ ownerId: null }, { ownerId: c.userId }] } });
+      if (!b) throw notFound("That base style does not exist. Use list_styles for the ids.");
+      base = StyleRulesSchema.parse(b.rules);
+    }
+    const patch = StyleRulesPatchSchema.safeParse(i.rules);
+    if (!patch.success) { const iss = patch.error.issues[0]; throw new AppError(`Rule ${iss.path.join(".") || "rules"}: ${iss.message}. Rules: cutSilencesOver, removeFillers, trimEdges, captions, zoom, music, sfxOnZoom.`, 400, "invalid-rules"); }
+    const ref = i.fromVideoId ? await ownedVideo(c.userId, i.fromVideoId) : null;
+    const rules = mergeRules(base, patch.data);
+    const text = describeRules(rules);
+    const s = await prisma.style.create({ data: {
+      id: "u_" + Math.random().toString(36).slice(2, 10), ownerId: c.userId, name: i.name, type: "custom", vibe: ref ? `From the reference "${ref.name}"` : `Saved by ${aiName(c)}`,
+      ori: ["9:16", "16:9", "1:1"], platforms: ["instagram", "tiktok", "youtube", "linkedin"], captionLook: rules.captions.look, ...text, rules: rules as unknown as Prisma.InputJsonValue,
+      art: "a", sortOrder: 1000, sourceVideoId: ref?.id ?? null,
+    } });
+    return { text: `Saved style ${s.id} "${s.name}": ${text.cutPace}; ${text.captionRule}; ${text.zoomRules}; ${text.musicVibe}. Apply it with apply_edits [{"op":"apply_style","styleId":"${s.id}"}].`, data: { styleId: s.id } };
   },
-  add_graphic: (c, i) => edit(c, "add_graphic", i.projectId, { op: "add_graphic", graphicId: i.graphicId, start: i.start, end: i.end, params: i.params || {} }, i),
-  set_aspect: (c, i) => edit(c, "set_aspect", i.projectId, { op: "set_aspect", aspect: i.aspect }, i),
-  rename_project: (c, i) => edit(c, "rename_project", i.projectId, { op: "rename", name: i.name }, i),
+
   async undo(c, i) {
     const p = await getOwnedProject(c.userId, i.projectId);
     const target = Math.max(1, p.currentVersion - (i.steps ?? 1));
     if (target === p.currentVersion) return { text: "Already at the first version; nothing to undo." };
     const r = await restoreVersion(p.id, target, actorFor(c, "undo", i), `went back to version ${target}`);
-    return { text: `Undone: the edit now matches version ${target} (saved as version ${r.version}).` };
+    return { text: `Undone: the edit now matches v${target} (saved as v${r.version}).` };
   },
 
   async create_graphic(c, i) {
@@ -284,7 +353,14 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     if (!done) return { text: `Graphic ${g.id} is still rendering. Call list_graphics in a little while to see its status.` };
     if (done.status === "failed") return { text: `The graphic did not render: ${done.error}. Fix the code and call create_graphic again.` };
     const images = await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900)));
-    return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}). 4 check frames attached. Place it with add_graphic.`, images, data: { graphicId: done.id } };
+    return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}). 4 check frames attached. Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };
+  },
+
+  async link_account(c, i) {
+    if (!c.loginId) throw new AppError("This connection did not say which login it is. Reconnect Rendrr and try again.");
+    const r = await redeemLinkCode(c.loginId, i.code);
+    const acct = await accountLine(r.userId);
+    return { text: r.already ? `Already linked: this login opens the right account. ${acct}` : `Linked. This login now opens the user's Rendrr account (${acct.replace(/^Account |\.$/g, "")})${r.removedEmpty ? "; the empty account it had before was removed" : ""}. Call list_footage again.` };
   },
 
   // ---------------- render and share ----------------
@@ -311,8 +387,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
   async create_review_link(c, i) {
     const r = await createReviewLink(c.userId, { projectId: i.projectId, password: i.password, expiresDays: i.expiresDays, allowDownload: i.allowDownload });
-    const base = (process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "");
-    return { text: `Review link: ${base}/review/${r.token}${r.password ? `\nPassword: ${r.password} (share it separately)` : ""}\nExpires: ${r.expires}. ${r.allowDownload ? "Download on." : "No download."} If this version has no render yet, a preview is being made for the client now.` };
+    return { text: `Review link: ${WEB()}/review/${r.token}${r.password ? `\nPassword: ${r.password} (share it separately)` : ""}\nExpires ${r.expires}. ${r.allowDownload ? "Download on." : "No download."} If this version has no render yet, a preview is being made for the client now.` };
   },
   async resolve_comment(c, i) {
     const cm = await prisma.reviewComment.findUnique({ where: { id: i.commentId }, include: { review: true } });

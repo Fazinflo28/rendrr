@@ -5,6 +5,7 @@ Prints one JSON object:
   loudness  dBFS per second of audio
   tempo     {bpm, confidence, beats} when the audio has a steady beat, else null
   sheets    contact sheets written to --out: file, times on its tiles
+  overview  one sheet of 16 frames spread over the whole video (null when a single sheet holds every frame)
 
 Usage: breakdown.py VIDEO --seconds S --cuts '[1.2, 4.5]' [--audio raw_s16le_mono --sr 8000] --out DIR
 """
@@ -118,27 +119,37 @@ def read_frames(path: str, times: list[float], shot_of: list[int]):
     return samples, tiles, w, h
 
 
+def write_sheet(chunk, tw: int, th: int, path: str) -> dict:
+    """Tiles in a 4-wide grid, the time printed on each one."""
+    rows = (len(chunk) + COLS - 1) // COLS
+    sheet = np.full((rows * th + (rows - 1) * 4, COLS * tw + (COLS - 1) * 4, 3), 24, np.uint8)
+    for i, (tile, t) in enumerate(chunk):
+        r, c = divmod(i, COLS)
+        tile = tile.copy()
+        label = fmt(t)
+        (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(tile, (0, 0), (lw + 10, lh + 10), (0, 0, 0), -1)
+        cv2.putText(tile, label, (5, lh + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        y, x = r * (th + 4), c * (tw + 4)
+        sheet[y:y + th, x:x + tw] = tile
+    cv2.imwrite(path, sheet, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return {"file": os.path.basename(path), "times": [t for _, t in chunk], "cols": COLS, "rows": rows, "tile": [tw, th]}
+
+
 def sheets(tiles, w, h, out_dir: str):
     tw, th = tile_size(w, h)
     per = COLS * ROWS
-    written = []
-    for n in range(0, len(tiles), per):
-        chunk = tiles[n:n + per]
-        rows = (len(chunk) + COLS - 1) // COLS
-        sheet = np.full((rows * th + (rows - 1) * 4, COLS * tw + (COLS - 1) * 4, 3), 24, np.uint8)
-        for i, (tile, t) in enumerate(chunk):
-            r, c = divmod(i, COLS)
-            tile = tile.copy()
-            label = fmt(t)
-            (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            cv2.rectangle(tile, (0, 0), (lw + 10, lh + 10), (0, 0, 0), -1)
-            cv2.putText(tile, label, (5, lh + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-            y, x = r * (th + 4), c * (tw + 4)
-            sheet[y:y + th, x:x + tw] = tile
-        name = f"sheet-{len(written) + 1:03d}.jpg"
-        cv2.imwrite(os.path.join(out_dir, name), sheet, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        written.append({"file": name, "times": [t for _, t in chunk], "cols": COLS, "rows": rows, "tile": [tw, th]})
-    return written
+    return [write_sheet(tiles[n:n + per], tw, th, os.path.join(out_dir, f"sheet-{n // per + 1:03d}.jpg")) for n in range(0, len(tiles), per)]
+
+
+def overview(tiles, w, h, out_dir: str):
+    """16 frames spread over the whole video on one sheet: the first look at a video. None when one sheet holds it all."""
+    per = COLS * ROWS
+    if len(tiles) <= per:
+        return None
+    tw, th = tile_size(w, h)
+    idx = sorted({round(i * (len(tiles) - 1) / (per - 1)) for i in range(per)})
+    return write_sheet([tiles[i] for i in idx], tw, th, os.path.join(out_dir, "sheet-overview.jpg"))
 
 
 def loudness(pcm: np.ndarray, sr: int) -> list[float]:
@@ -206,6 +217,7 @@ def main():
         "size": [w, h],
         "samples": samples,
         "sheets": sheets(tiles, w, h, a.out),
+        "overview": overview(tiles, w, h, a.out),
         "loudness": [],
         "tempo": None,
     }

@@ -37,7 +37,7 @@ export default async function internal(app: FastifyInstance) {
       const input = def.input.parse(req.body ?? {});
       const t0 = Date.now();
       try {
-        const out = await handler({ userId, ai: req.ai ?? null, aiName: req.aiName }, input);
+        const out = await handler({ userId, loginId: req.loginId, ai: req.ai ?? null, aiName: req.aiName }, input);
         await usage(userId, "mcp_tool", 0, { tool: name, ai: req.aiName || client, ms: Date.now() - t0, ok: true });
         return { ...out, text: clip(out.text) }; // every answer stays under ~6k tokens
       } catch (e) {

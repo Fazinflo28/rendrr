@@ -1,4 +1,4 @@
-import { FILLER_PHRASES, FILLER_WORDS } from "./constants";
+import { FILLER_PHRASES, FILLER_SOUNDS, FILLER_WORDS } from "./constants";
 
 // Same shape as the UI's buildTranscript(): lines -> words with t (start), text, filler.
 // `end` is extra: the UI ignores it, the renderer uses it.
@@ -12,15 +12,24 @@ export type RawWord = { text: string; start: number; end: number };
 
 const clean = (s: string) => s.toLowerCase().replace(/[^a-z']/g, "");
 
-/** Marks um, uh, like, basically, honestly, and both words of "you know". */
+/** Marks um, uh (and umm, uhh, erm, hmm), like, basically, honestly, and both words of "you know". */
 export function markFillers(words: RawWord[]): boolean[] {
-  const flags = words.map((w) => (FILLER_WORDS as readonly string[]).includes(clean(w.text)));
+  const flags = words.map((w) => { const c = clean(w.text); return (FILLER_WORDS as readonly string[]).includes(c) || FILLER_SOUNDS.test(c); });
   for (const phrase of FILLER_PHRASES) {
     for (let i = 0; i + phrase.length <= words.length; i++) {
       if (phrase.every((p, k) => clean(words[i + k].text) === p)) for (let k = 0; k < phrase.length; k++) flags[i + k] = true;
     }
   }
   return flags;
+}
+
+/** A stored transcript with its filler flags marked again by today's rules, or null when nothing changes. */
+export function refreshFillers(tr: Transcript): Transcript | null {
+  const words = tr.flatMap((l) => l.words);
+  const flags = markFillers(words.map((w) => ({ text: w.text, start: w.t, end: w.end })));
+  if (words.every((w, i) => w.filler === flags[i])) return null;
+  let i = 0;
+  return tr.map((l) => ({ ...l, words: l.words.map((w) => ({ ...w, filler: flags[i++] })) }));
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;

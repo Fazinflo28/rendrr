@@ -39,6 +39,18 @@ model User {
   renders     Render[]
   chat        AiChatMessage[]
   notes       ProjectComment[]
+  logins      UserLogin[]
+}
+
+// More logins that open the same Rendrr account: for example the Google account someone used for the AI connector
+// when the website account was made with another one. The main login is User.clerkId.
+model UserLogin {
+  clerkId   String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model DriveConnection {
@@ -206,6 +218,7 @@ model Style {
   rules       Json
   art         String
   sortOrder   Int      @default(0)
+  sourceVideoId String? // a style an AI saved from a reference video: that video's id
   createdAt   DateTime @default(now())
 }
 

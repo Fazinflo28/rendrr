@@ -6,7 +6,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 export type ReqUser = Pick<User, "id" | "clerkId" | "email" | "name">;
 export type AiClient = "claude" | "chatgpt" | null;
 declare module "fastify" {
-  interface FastifyRequest { user?: ReqUser; ai?: AiClient; aiName?: string }
+  interface FastifyRequest { user?: ReqUser; loginId?: string; ai?: AiClient; aiName?: string } // loginId: the Clerk user who called
 }
 
 let clerkClient: ReturnType<typeof createClerkClient> | null = null;
@@ -17,20 +17,26 @@ export function clerk() {
 
 const cache = new Map<string, { user: ReqUser; until: number }>();
 
-/** Finds the Rendrr user for a Clerk user, creating it (and a first folder) on first sight. */
+const SELECT = { id: true, clerkId: true, email: true, name: true } as const;
+
+/**
+ * Finds the Rendrr user for a Clerk user: its own account, or the account this login was linked to (UserLogin).
+ * A login Rendrr has never seen gets a new account (and a first folder).
+ */
 export async function ensureUser(clerkId: string): Promise<ReqUser> {
   const c = cache.get(clerkId);
   if (c && c.until > Date.now()) return c.user;
-  let u = await prisma.user.findUnique({ where: { clerkId }, select: { id: true, clerkId: true, email: true, name: true } });
+  let u = await prisma.user.findUnique({ where: { clerkId }, select: SELECT });
+  if (!u) u = (await prisma.userLogin.findUnique({ where: { clerkId }, select: { user: { select: SELECT } } }))?.user ?? null;
   if (!u) {
     const cu = await clerk().users.getUser(clerkId);
     const email = cu.primaryEmailAddress?.emailAddress || cu.emailAddresses[0]?.emailAddress || "";
     const name = [cu.firstName, cu.lastName].filter(Boolean).join(" ") || email.split("@")[0] || "You";
     try {
-      u = await prisma.user.create({ data: { clerkId, email, name }, select: { id: true, clerkId: true, email: true, name: true } });
+      u = await prisma.user.create({ data: { clerkId, email, name }, select: SELECT });
     } catch {
       // Two first requests at once: the other one created it.
-      u = await prisma.user.findUniqueOrThrow({ where: { clerkId }, select: { id: true, clerkId: true, email: true, name: true } });
+      u = await prisma.user.findUniqueOrThrow({ where: { clerkId }, select: SELECT });
     }
     const existing = await prisma.folder.count({ where: { userId: u.id } });
     if (!existing) await prisma.folder.create({ data: { userId: u.id, name: "My edits", workspace: `${name.split(" ")[0]}'s Workspace`, cover: 1 } });
@@ -49,6 +55,7 @@ export async function authenticate(req: FastifyRequest, _reply: FastifyReply) {
     const clerkId = String(req.headers["x-rendrr-clerk-id"] || "");
     if (!clerkId) throw unauthorized();
     req.user = await ensureUser(clerkId);
+    req.loginId = clerkId;
     const ai = String(req.headers["x-rendrr-ai"] || "");
     req.ai = ai === "claude" || ai === "chatgpt" ? ai : null;
     req.aiName = String(req.headers["x-rendrr-ai-name"] || "").slice(0, 80) || undefined;
@@ -62,4 +69,5 @@ export async function authenticate(req: FastifyRequest, _reply: FastifyReply) {
   const payload = (r && typeof r === "object" && "data" in r ? (r as { data?: { sub?: string } }).data : (r as { sub?: string } | null)) || null;
   if (!payload?.sub) throw unauthorized();
   req.user = await ensureUser(payload.sub);
+  req.loginId = payload.sub;
 }

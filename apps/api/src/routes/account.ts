@@ -4,12 +4,13 @@ import { fmtShortDate, LoginInput, LogoInput, PlanInput, PLANS, PREFIX, ProfileP
 import type { FastifyInstance } from "fastify";
 import { authenticate, clerk, forgetUser } from "../auth";
 import { userOut } from "../serialize";
+import { createLinkCode, listLogins, unlinkLogin } from "../services/logins";
 
 const TOOLS: [string, string][] = [
-  ["Read footage", "See transcripts, silences and scene cuts"],
-  ["Read styles", "Know your style packs and their rules"],
-  ["Build timeline", "Cut, zoom, add captions and music"],
-  ["Render preview", "Make a quick preview to check"],
+  ["Read footage", "Each video as text and frames: shots, pacing, transcript, silences"],
+  ["Read styles", "Know your style packs and save new ones"],
+  ["Edit in one go", "Cut, zoom, add captions and music in a single step"],
+  ["Render and check", "Make a preview and read a check of what it does"],
   ["Read client comments", "See what your client asked for"],
 ];
 
@@ -181,6 +182,14 @@ export default async function account(app: FastifyInstance) {
       const which = (req.params as { which: string }).which === "chatgpt" ? "chatgpt" : "claude";
       await prisma.aiConnection.updateMany({ where: { userId: req.user!.id, client: which }, data: { revokedAt: new Date() } });
       return connectStatus(req.user!.id);
+    });
+
+    // ---------------- logins (several logins, one account) ----------------
+    a.get("/account/logins", async (req) => ({ logins: await listLogins(req.user!.id), current: req.loginId }));
+    a.post("/account/link-code", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req) => createLinkCode(req.user!.id));
+    a.delete("/account/logins/:clerkId", async (req) => {
+      await unlinkLogin(req.user!.id, (req.params as { clerkId: string }).clerkId);
+      return { logins: await listLogins(req.user!.id), current: req.loginId };
     });
 
     // ---------------- search ----------------

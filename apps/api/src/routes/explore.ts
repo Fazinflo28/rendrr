@@ -1,4 +1,4 @@
-import { notFound } from "@rendrr/core";
+import { notFound, unauthorized } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { PLATFORMS, STYLE_TYPES } from "@rendrr/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -24,6 +24,15 @@ export default async function explore(app: FastifyInstance) {
     const s = await prisma.style.findFirst({ where: { id: (req.params as { id: string }).id, ...visible(req.user?.id) } });
     if (!s) throw notFound("That style does not exist.");
     return styleOut(s);
+  });
+
+  // A style the user (or their AI, with save_style) saved. Edits made with it keep their timeline as it is.
+  app.delete("/styles/:id", async (req) => {
+    if (!req.user) throw unauthorized("Please log in to continue.");
+    const s = await prisma.style.findFirst({ where: { id: (req.params as { id: string }).id, ownerId: req.user.id } });
+    if (!s) throw notFound("That style is not one of yours.");
+    await prisma.style.delete({ where: { id: s.id } });
+    return { ok: true };
   });
 
   app.get("/gallery", async (req) => {

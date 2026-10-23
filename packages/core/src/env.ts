@@ -17,8 +17,6 @@ const Env = z.object({
   GOOGLE_CLIENT_ID: z.string().optional(), // TODO(key): unset = fake Drive with sample files
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   STRIPE_SECRET_KEY: z.string().optional(), // TODO(key): billing is stubbed
-  ANTHROPIC_API_KEY: z.string().optional(), // TODO(key): unset = the editor's AI chat explains how to turn it on
-  AI_CHAT_EFFORT: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
   ENCRYPTION_KEY: z.string().optional(), // 32 bytes, base64. Required in production.
   INTERNAL_API_SECRET: z.string().optional(), // shared by the API and the MCP server
   PUBLIC_API_URL: z.string().default("http://localhost:4000"),
@@ -45,5 +43,4 @@ export const features = () => ({
   transcription: !!env().ASSEMBLYAI_API_KEY,
   drive: !!(env().GOOGLE_CLIENT_ID && env().GOOGLE_CLIENT_SECRET),
   billing: !!env().STRIPE_SECRET_KEY,
-  aiChat: !!env().ANTHROPIC_API_KEY,
 });

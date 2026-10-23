@@ -15,15 +15,53 @@ export const StyleRulesSchema = z.object({
     maxLines: z.number().int().min(1).max(3).default(1),
   }),
   zoom: z.object({
-    mode: z.enum(["none", "newSentence", "interval", "slowPush"]),
+    mode: z.enum(["none", "newSentence", "interval", "slowPush", "count"]), // count: exactly `count` zooms, spread over the edit
     scale: z.number().min(1).max(2),
     everySec: z.number().min(0.3).max(30).optional(),
     holdSec: z.number().min(0.3).max(30).optional(),
+    count: z.number().int().min(1).max(50).optional(),
   }),
   music: z.object({ mood: z.string().nullable(), gainDb: z.number().min(-40).max(0) }),
   sfxOnZoom: z.string().nullable().default(null),
 });
 export type StyleRules = z.infer<typeof StyleRulesSchema>;
+
+/** Some rules to change on top of a style ("zoom: count 2"); anything left out keeps the style's value. */
+export const StyleRulesPatchSchema = z.object({
+  cutSilencesOver: z.number().min(0.1).max(10).nullable().optional(),
+  removeFillers: z.boolean().optional(),
+  trimEdges: z.boolean().optional(),
+  captions: StyleRulesSchema.shape.captions.partial().optional(),
+  zoom: StyleRulesSchema.shape.zoom.partial().optional(),
+  music: StyleRulesSchema.shape.music.partial().optional(),
+  sfxOnZoom: z.string().nullable().optional(),
+});
+export type StyleRulesPatch = z.infer<typeof StyleRulesPatchSchema>;
+
+export function mergeRules(base: StyleRules, patch?: StyleRulesPatch | null): StyleRules {
+  if (!patch) return base;
+  const zoom = { ...base.zoom, ...patch.zoom };
+  if (patch.zoom?.mode === "count" && zoom.count == null) zoom.count = 3;
+  if (zoom.mode === "count" && zoom.scale <= 1) zoom.scale = 1.15;
+  return StyleRulesSchema.parse({
+    ...base, ...patch,
+    captions: { ...base.captions, ...patch.captions },
+    zoom,
+    music: { ...base.music, ...patch.music },
+  });
+}
+
+/** The people-readable lines of a style, written from its rules (for styles saved by an AI). */
+export function describeRules(r: StyleRules): { cutPace: string; captionRule: string; zoomRules: string; musicVibe: string } {
+  const z = r.zoom;
+  return {
+    cutPace: [r.cutSilencesOver != null ? `Cut every pause over ${r.cutSilencesOver}s` : "Keep the pauses", r.removeFillers ? "remove filler words" : "", r.trimEdges ? "trim the start and end" : ""].filter(Boolean).join(", "),
+    captionRule: r.captions.on ? `${r.captions.look} captions, ${r.captions.wordsAtOnce} words at a time${r.captions.upper ? ", upper case" : ""}` : "No captions",
+    zoomRules: z.mode === "none" ? "No zooms" : z.mode === "count" ? `${z.count ?? 3} zooms at ${Math.round(z.scale * 100)}%, spread over the edit`
+      : z.mode === "interval" ? `Zoom to ${Math.round(z.scale * 100)}% every ${z.everySec ?? 3}s` : z.mode === "slowPush" ? `Slow push to ${Math.round(z.scale * 100)}% on each part` : `Zoom to ${Math.round(z.scale * 100)}% on every new sentence`,
+    musicVibe: r.music.mood ? `${r.music.mood} music at ${r.music.gainDb}dB` : "No music",
+  };
+}
 
 export type StyleSeed = {
   id: string; name: string; type: string; vibe: string; ori: string[]; platforms: string[];
@@ -71,6 +109,6 @@ export const STYLES: StyleSeed[] = [
     rules: R({ cutSilencesOver: 0.25, removeFillers: true, trimEdges: true, captions: { on: true, look: "bold", wordsAtOnce: 2, upper: true, maxLines: 1 }, zoom: { mode: "interval", scale: 1.1, everySec: 0.7, holdSec: 0.35 }, music: { mood: "trending", gainDb: -12 } }) },
 ];
 
-export const STYLE_TYPES: [string, string][] = [["talking-head", "Talking head"], ["podcast-clip", "Podcast clip"], ["clipping", "Clipping only"], ["motion-graphics", "Motion graphics"], ["tier-ranking", "Tier ranking"], ["listicle", "Listicle"], ["ugc-ad", "UGC ad"], ["cinematic", "Cinematic"], ["documentary", "Documentary"], ["tutorial", "Screen tutorial"], ["split-screen", "Split screen"], ["greenscreen", "Green screen"], ["before-after", "Before / after"], ["text-story", "Text story"], ["slideshow", "Slideshow"], ["news", "Newsroom"], ["brainrot", "Brainrot"]];
+export const STYLE_TYPES: [string, string][] = [["talking-head", "Talking head"], ["podcast-clip", "Podcast clip"], ["clipping", "Clipping only"], ["motion-graphics", "Motion graphics"], ["tier-ranking", "Tier ranking"], ["listicle", "Listicle"], ["ugc-ad", "UGC ad"], ["cinematic", "Cinematic"], ["documentary", "Documentary"], ["tutorial", "Screen tutorial"], ["split-screen", "Split screen"], ["greenscreen", "Green screen"], ["before-after", "Before / after"], ["text-story", "Text story"], ["slideshow", "Slideshow"], ["news", "Newsroom"], ["brainrot", "Brainrot"], ["custom", "Saved"]];
 export const PLATFORMS: [string, string][] = [["instagram", "Instagram"], ["tiktok", "TikTok"], ["youtube", "YouTube"], ["linkedin", "LinkedIn"]];
 export const DEFAULT_STYLE_ID = "s2";

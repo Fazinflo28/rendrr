@@ -1,11 +1,11 @@
 import { AppError, applyTimelineChange, notFound, projectChannel, restoreVersion } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { AiChatInput, CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
+import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
-import { projectChat, sendChat } from "../services/aiChat";
+import { projectChat } from "../services/aiChat";
 import { createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles } from "../services/projects";
 
 /** Server-sent events on a raw response. Keeps CORS headers that Fastify already set. */
@@ -177,14 +177,10 @@ export default async function projects(app: FastifyInstance) {
     return noteOut(await prisma.projectComment.update({ where: { id: n.id }, data: { resolved } }), req.user!.name);
   });
 
-  // ---------------- AI chat (editor side) ----------------
+  // ---------------- AI tab (read only: what a connected AI did, and its notes) ----------------
   app.get("/projects/:id/ai-chat", async (req) => {
     const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
     return projectChat(req.user!.id, p.id);
-  });
-  app.post("/projects/:id/ai-chat", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => {
-    const { text } = AiChatInput.parse(req.body);
-    return sendChat(req.user!.id, (req.params as { id: string }).id, text);
   });
 }
 

@@ -10,7 +10,7 @@ import library from "./routes/library";
 import projects from "./routes/projects";
 import render from "./routes/render";
 import reviews from "./routes/reviews";
-import { backfillOutputSeconds } from "./services/projects";
+import { backfillOutputSeconds, refreshFillerFlags } from "./services/projects";
 import { removeDemoFootage } from "./services/cleanup";
 
 export async function buildServer() {
@@ -92,6 +92,7 @@ export async function buildServer() {
     .then(() => app.log.info({ origins: corsOrigins }, "bucket CORS set"), (e) => app.log.warn({ msg: (e as Error).message }, "could not set bucket CORS: browser uploads will fail"));
 
   backfillOutputSeconds().catch(() => {});
+  refreshFillerFlags().then((n) => { if (n) app.log.info({ transcripts: n }, "filler marks refreshed"); }, () => {});
   removeDemoFootage().then((r) => { if (r.removed || r.kept || r.fakeDriveConnections) app.log.info(r, "demo footage removed"); }, (e) => app.log.warn({ msg: (e as Error).message }, "demo footage cleanup failed"));
 
   await app.register(account);

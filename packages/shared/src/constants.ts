@@ -73,6 +73,8 @@ export const PREFIX = {
 } as const;
 
 export const FILLER_WORDS = ["um", "uh", "like", "basically", "honestly"] as const;
+// Drawn-out spellings the transcriber writes for the same sounds: umm, uhh, erm, hmm.
+export const FILLER_SOUNDS = /^(u+m+|u+h+|e+r+m*|h+m+)$/;
 export const FILLER_PHRASES = [["you", "know"]] as const;
 
 export const MCP_RATE_LIMIT_PER_MIN = 120;
