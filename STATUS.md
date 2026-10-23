@@ -91,6 +91,23 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 | Browser, demo: every tool, add clip, undo | all work, no page errors |
 | Browser, real files: player across a cut between two videos, and a J cut | right element and moment; J cut plays the next clip's sound early |
 
+### Phase 2 live (23 October)
+
+- **Migration on the live database:** 2 projects converted, 0 left on model A. Both matched the old planner within a frame, with backups in `TimelineBackup`. The reference-video edit reads back at the same 54.6 s, with its turn, framing and five graphic cards each attached to a clip.
+- **Through the connector (smoke-test account), a new edit:**
+  - `set_rotation`, `cut_silences`
+  - `add_clip` of a second video, `add_zoom` with `edit: true`
+  - `set_audio_offset` (J cut), `move_clip`, `roll_edit`, `slip_clip`
+  - `render_preview`
+
+  The preview rendered from both videos. The check's sequence line read "12 clips from 2 videos, 1 moved, 1 J cut".
+- **Bug found by the live test, fixed:** the check compared the file with the edit's length before frame alignment. Over 12 parts that added up to 0.11 s, so it flagged "file is 73.37s but the edit is 73.48s". The worker now stores the planned length with each render and the check uses it: file 72.70 s, planned 72.70 s, no flag.
+- **Live editor (browser):**
+  - 12 V1 and 12 A1 clips; the other video's clip has its own colour
+  - J cut and muted dialogue shown on A1; all six tools
+  - after a change, one player element per video; undo works
+  - no page errors
+
 ## Reference-video test (23 October, live, through the connector only)
 
 The test: copy the edit of a finished reel (Glow Flow, 51 s, vertical) onto a raw talking-head video (77 s, 4K), using only the MCP connector, the way Claude would.
