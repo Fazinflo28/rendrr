@@ -9,7 +9,8 @@ Last updated: 23 October 2026 (UTC). Live on Railway with the new design (V2). N
 | Web app | https://web-production-9ef14.up.railway.app | Yes (since 23 October, 05:37 UTC) |
 | API health | https://api-production-2428.up.railway.app/health | Yes |
 | AI connector (MCP) | https://mcp-production-7fa0.up.railway.app/mcp | Yes |
-| app.rendrr.live, api.rendrr.live | Added on Railway, CNAMEs correct | Not yet: Railway cannot see the two `_railway-verify` TXT records |
+| https://app.rendrr.live | Same web app on your domain | Yes (verified, certificate valid, 23 October) |
+| api.rendrr.live | Verified | Certificate waiting: Let's Encrypt's hourly limit; retried automatically, then the app switches to it |
 
 The Railway project `rendrr` runs Postgres, Redis, a private file bucket and the four services (`web`, `api`, `worker`, `mcp`), all in **US East**. Each service builds from the branch `claude/rendrr-backend-mcp-1vbkgg`, so every push redeploys it.
 
@@ -17,7 +18,7 @@ Checked on the live servers on 23 October: smoke test 17/17, and the AI connecto
 
 ### Still to do
 
-- **Domains**: in GoDaddy, add TXT `_railway-verify.app` = `railway-verify=ad274ce6e10f75604a4704e9128c2c4a1a22f7f8768ee841aaeb020ae39f89db` and TXT `_railway-verify.api` = `railway-verify=571ecbd5a97b54b7850f632cc07a92451353b4e6bfc516cac3b9f475469a289c`. Type only that much in the Name box: GoDaddy adds `.rendrr.live` itself. Once Railway sees them, the web and API settings switch to the rendrr.live addresses.
+- **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
 ## Every video as text and frames
