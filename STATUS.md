@@ -14,7 +14,7 @@ Last updated: 23 October 2026 (UTC). Live on Railway with the new design (V2). N
 
 The Railway project `rendrr` runs Postgres, Redis, a private file bucket and the four services (`web`, `api`, `worker`, `mcp`), all in **US East**. Each service builds from the branch `claude/rendrr-backend-mcp-1vbkgg`, so every push redeploys it.
 
-Checked on the live servers on 23 October: smoke test 17/17, and the AI connector's full login and tools (see section 2).
+Checked on the live servers on 23 October: smoke test 23/23 (including the video breakdown, frames on request and reference videos), and the AI connector's full login and tools (see section 2).
 
 ### Still to do
 
