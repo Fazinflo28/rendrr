@@ -26,6 +26,12 @@ async function ownedVideo(userId: string, id: string) {
 }
 type OwnedVideo = Awaited<ReturnType<typeof ownedVideo>>;
 
+/** Which Rendrr account this connection uses, so a user with two logins can tell. */
+async function accountLine(userId: string) {
+  const u = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  return `Rendrr account: ${u?.email || "unknown"}`;
+}
+
 /** The stored breakdown with the video's current name and kind (both can change after it was made). */
 export function breakdownOf(v: OwnedVideo): Breakdown | null {
   const b = v.analysis?.breakdown as unknown as Breakdown | null;
@@ -74,8 +80,9 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   // ---------------- read ----------------
   async list_footage(c) {
     const vs = await prisma.video.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 100 });
-    if (!vs.length) return { text: "No footage yet. Ask the user to add some in Rendrr (Library > Add footage), from Google Drive or their computer." };
-    return { text: "Videos (id | name | kind | length | shape | status | raw file). kind reference = a video whose style to copy, not to edit:\n" + vs.map((v) => `${v.id} | ${v.name} | ${v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${v.sample ? "sample" : v.source === "drive" ? "Google Drive" : "user's computer"}`).join("\n") };
+    const acct = await accountLine(c.userId);
+    if (!vs.length) return { text: `${acct}\nNo footage in this account yet. Ask the user to add some in Rendrr (Library > Add footage), from Google Drive or their computer. If they already have videos in Rendrr, they are logged in to Rendrr with a different email than this connection: they should disconnect Rendrr in their AI's connector settings and connect again with the email they use on the Rendrr website.` };
+    return { text: `${acct}\nVideos (id | name | kind | length | shape | status | raw file). kind reference = a video whose style to copy, not to edit:\n` + vs.map((v) => `${v.id} | ${v.name} | ${v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${v.sample ? "sample" : v.source === "drive" ? "Google Drive" : "user's computer"}`).join("\n") };
   },
 
   async get_footage(c, i) {
@@ -148,7 +155,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
 
   async list_projects(c, i) {
     const ps = await prisma.project.findMany({ where: { userId: c.userId, deletedAt: null, ...(i.folderId ? { folderId: i.folderId } : {}) }, orderBy: { updatedAt: "desc" }, take: 100, include: { folder: true } });
-    return { text: ps.length ? "Edits (id | name | folder | style | aspect | status | version):\n" + ps.map((p) => `${p.id} | ${p.name} | ${p.folder.name} | ${p.styleId} | ${p.aspect} | ${p.status} | v${p.currentVersion}`).join("\n") : "No edits yet. Use create_project." };
+    if (!ps.length) return { text: `${await accountLine(c.userId)}\nNo edits in this account yet. Use create_project. If the user already has edits in Rendrr, this connection is logged in with a different email than the Rendrr website: they should reconnect Rendrr with that email.` };
+    return { text: "Edits (id | name | folder | style | aspect | status | version):\n" + ps.map((p) => `${p.id} | ${p.name} | ${p.folder.name} | ${p.styleId} | ${p.aspect} | ${p.status} | v${p.currentVersion}`).join("\n") };
   },
 
   async get_project(c, i) {

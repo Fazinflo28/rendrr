@@ -129,16 +129,19 @@ function Modal({ title, sub, onClose, children, wide, footer }) {
 function useAsync(fn, deps = []) {
   const [s, set] = useState({ status: "loading", data: null, error: null, slow: false });
   const n = useRef(0);
-  const load = useCallback(() => {
+  // keep: refresh in the background. What is on screen stays until the new data arrives (no blank, no skeleton),
+  // and a failed refresh leaves it as it was. Pages that poll (the Library while a video is processed) use this.
+  const load = useCallback((opts) => {
     const me = ++n.current;
-    set((x) => ({ ...x, status: "loading", error: null, slow: false }));
+    const keep = !!opts?.keep;
+    set((x) => (keep && x.data != null ? x : { ...x, status: "loading", error: null, slow: false }));
     const slowT = setTimeout(() => n.current === me && set((x) => (x.status === "loading" ? { ...x, slow: true } : x)), 250);
     Promise.resolve().then(fn).then((data) => { if (n.current !== me) return; clearTimeout(slowT); const empty = data == null || (Array.isArray(data) && data.length === 0); set({ status: empty ? "empty" : "ready", data, error: null, slow: false }); })
-      .catch((error) => { if (n.current !== me) return; clearTimeout(slowT); set({ status: "error", data: null, error, slow: false }); });
+      .catch((error) => { if (n.current !== me) return; clearTimeout(slowT); set((x) => (keep && x.data != null ? x : { status: "error", data: null, error, slow: false })); });
     return () => clearTimeout(slowT);
   }, deps);
   useEffect(() => { load(); }, [load]);
-  return { ...s, reload: load, setData: (fnOrData) => set((x) => { const data = typeof fnOrData === "function" ? fnOrData(x.data) : fnOrData; const empty = data == null || (Array.isArray(data) && data.length === 0); return { ...x, data, status: empty ? "empty" : "ready" }; }) };
+  return { ...s, reload: () => load({ keep: true }), setData: (fnOrData) => set((x) => { const data = typeof fnOrData === "function" ? fnOrData(x.data) : fnOrData; const empty = data == null || (Array.isArray(data) && data.length === 0); return { ...x, data, status: empty ? "empty" : "ready" }; }) };
 }
 const Skeleton = ({ rows = 3, card = true }) => html`<div class=${card ? "card" : ""} aria-busy="true"><div class="col">${Array.from({ length: rows }).map((_, i) => html`<div key=${i} class="skeleton sk-line" style=${{ width: (85 - i * 17) + "%" }} />`)}</div></div>`;
 const GridSkeleton = ({ n = 6 }) => html`<div class="grid" aria-busy="true">${Array.from({ length: n }).map((_, i) => html`<div key=${i} class="card tight"><div class="skeleton" style="aspect-ratio:16/10" /><div class="col" style="padding-top:12px"><div class="skeleton sk-line" style="width:70%" /><div class="skeleton sk-line" style="width:40%" /></div></div>`)}</div>`;

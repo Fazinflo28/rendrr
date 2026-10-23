@@ -642,6 +642,7 @@ function ClientReviewPage({ token }) {
 
 /* ---------- /connect ---------- */
 function ConnectPage() {
+  const { user } = useApp();
   const toast = useToast(); const q = useAsync(() => api.getConnectStatus(), []); const aq = useAsync(() => api.getAiActivity(), []);
   const [tab, setTab] = useState("claude"); const [busy, setBusy] = useState(false);
   const steps = { claude: ["Open Claude › Settings › Connectors › Add custom connector", "Paste your connector URL and name it Rendrr", "Say: 'Edit my latest footage in the Clean Podcast style'"], chatgpt: ["Open ChatGPT › Settings › Connectors › Create", "Paste your connector URL and allow all tools", "Say: 'Make a 30 second reel from my gym footage'"] };
@@ -652,7 +653,7 @@ function ConnectPage() {
     <${Async} q=${q} skeleton=${html`<${Skeleton} rows=${5} />`}>${(c) => { const on = c[tab] === "connected"; return html`
       <div class="two" style="align-items:start">
         <div class="col" style="gap:24px">
-          <div class="card col" style="gap:16px"><b class="t-heading">Your connector URL</b><div class="copybox" id="mcp-url"><code>${c.url}</code><${Btn} size="sm" icon="copy" id="copy-url" onClick=${() => copyText(c.url, toast)}>Copy<//></div><p class="t-small muted">Your AI will ask you to log in to Rendrr the first time.</p></div>
+          <div class="card col" style="gap:16px"><b class="t-heading">Your connector URL</b><div class="copybox" id="mcp-url"><code>${c.url}</code><${Btn} size="sm" icon="copy" id="copy-url" onClick=${() => copyText(c.url, toast)}>Copy<//></div><p class="t-small muted" id="connect-email">Your AI will ask you to log in to Rendrr the first time. Log in with ${user?.email ? html`<b style="color:var(--ink)">${user.email}</b>` : "the email you use here"}, the same account as this page, or your AI will see an empty library.</p></div>
           <div class="card col" style="gap:16px">
             <div class="row between"><${Seg} value=${tab} options=${[{ value: "claude", label: "Claude" }, { value: "chatgpt", label: "ChatGPT" }]} onChange=${setTab} />
               <${Chip} tone=${on ? "brand" : "neutral"} id="conn-status"><i class=${"dot " + (on ? "brand" : "")} />${on ? "Connected" : "Not connected"}<//></div>
