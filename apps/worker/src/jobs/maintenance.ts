@@ -3,7 +3,7 @@ import { prisma, type Prisma } from "@rendrr/db";
 import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderTimeoutMs, TEMP_ORIGINAL_HOURS, type Breakdown } from "@rendrr/shared";
 import { ensureAssets } from "../lib/assets";
 import type { Ctx } from "../lib/job";
-import { framesPrefix } from "./breakdown";
+import { framesPrefix, queueMissingBreakdowns } from "./breakdown";
 
 /**
  * Daily retention (the storage rules in the brief):
@@ -12,10 +12,11 @@ import { framesPrefix } from "./breakdown";
  *  - temp originals for export: 24 hours, no matter what
  *  - preview renders: 30 days (finals and graphics stay until the user deletes them)
  *  - stuck jobs: anything "in progress" for over an hour is failed with a clear message
+ *  - ready videos without a breakdown get one queued
  */
 export async function cleanup() {
   const now = new Date();
-  const out = { expiredVideos: 0, tempOriginals: 0, previewRenders: 0, stuckRenders: 0, stuckVideos: 0 };
+  const out = { expiredVideos: 0, tempOriginals: 0, previewRenders: 0, stuckRenders: 0, stuckVideos: 0, breakdownsQueued: 0 };
 
   const expired = await prisma.video.findMany({ where: { previewExpiresAt: { lt: now }, status: { in: ["ready", "missing", "failed"] } }, include: { analysis: true } });
   for (const v of expired) {
@@ -79,6 +80,7 @@ export async function cleanup() {
     await prisma.video.update({ where: { id: v.id }, data: browserSide ? { status: "paused" } : { status: "failed", error: "Processing stopped before it finished. Press Retry." } });
     out.stuckVideos++;
   }
+  out.breakdownsQueued = await queueMissingBreakdowns().catch(() => 0); // ready videos whose breakdown failed
   return out;
 }
 

@@ -1,10 +1,10 @@
-import { enqueue, env, newRedis, queue, type BreakdownJob, type MaintenanceJob } from "@rendrr/core";
-import { Prisma, prisma } from "@rendrr/db";
+import { env, newRedis, queue, type MaintenanceJob } from "@rendrr/core";
+import { prisma } from "@rendrr/db";
 import { processTimeoutMs, QUEUES, renderTimeoutMs } from "@rendrr/shared";
 import { Worker, type Job } from "bullmq";
 import { createServer } from "node:http";
 import { analyzeJob } from "./jobs/analyze";
-import { breakdownJob } from "./jobs/breakdown";
+import { breakdownJob, queueMissingBreakdowns } from "./jobs/breakdown";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
 import { framesJob } from "./jobs/frames";
 import { maintenanceJob } from "./jobs/maintenance";
@@ -47,9 +47,13 @@ await queue("maintenance").upsertJobScheduler("daily-cleanup", { pattern: "15 3 
 await queue("maintenance").add("maintenance", { task: "ensure-assets" } satisfies MaintenanceJob, { removeOnComplete: true, removeOnFail: 50, attempts: 2 });
 
 // Ready videos without a breakdown (analysed before breakdowns existed, or the breakdown failed): make them now.
-const missing = await prisma.video.findMany({ where: { status: "ready", proxyKey: { not: null }, analysis: { is: { breakdown: { equals: Prisma.DbNull } } } }, select: { id: true }, take: 200, orderBy: { createdAt: "desc" } }).catch(() => []);
-for (const v of missing) await enqueue<BreakdownJob>("breakdown", { videoId: v.id }, { jobId: `breakdown-${v.id}-${new Date().toISOString().slice(0, 10)}` }).catch(() => {});
-if (missing.length) console.log(`[worker] breakdown queued for ${missing.length} earlier videos`);
+// The API applies database changes when it starts, which can be after this worker starts: keep trying for a while.
+void (async () => {
+  for (let i = 0; i < 20; i++) {
+    try { const n = await queueMissingBreakdowns(); if (n) console.log(`[worker] breakdown queued for ${n} earlier videos`); return; }
+    catch { await new Promise((r) => setTimeout(r, 30_000)); }
+  }
+})();
 
 // Tiny health endpoint so Railway can tell the worker is alive.
 const port = Number(process.env.PORT || 8080);

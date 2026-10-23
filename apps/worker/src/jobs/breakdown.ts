@@ -1,5 +1,5 @@
-import { deletePrefix, downloadFile, uploadFile, type BreakdownJob } from "@rendrr/core";
-import { prisma, type FootageAnalysis, type Prisma, type Video } from "@rendrr/db";
+import { deletePrefix, downloadFile, enqueue, uploadFile, type BreakdownJob } from "@rendrr/core";
+import { Prisma, prisma, type FootageAnalysis, type Video } from "@rendrr/db";
 import { buildBreakdown, PREFIX, type Measured, type Silence, type Transcript, type VideoKind } from "@rendrr/shared";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -83,4 +83,12 @@ export async function breakdownJob(ctx: Ctx) {
   let audio: string | null = null;
   if (v.audioKey) { audio = join(ctx.dir, "audio.m4a"); await downloadFile(v.audioKey, audio).catch(() => { audio = null; }); }
   await breakdownVideo(ctx, v, v.analysis, proxy, audio);
+}
+
+/** Queues a breakdown for every ready video that has none (at most once a day each). Returns how many. */
+export async function queueMissingBreakdowns(): Promise<number> {
+  const missing = await prisma.video.findMany({ where: { status: "ready", proxyKey: { not: null }, analysis: { is: { breakdown: { equals: Prisma.DbNull } } } }, select: { id: true }, take: 200, orderBy: { createdAt: "desc" } });
+  const day = new Date().toISOString().slice(0, 10);
+  for (const v of missing) await enqueue<BreakdownJob>("breakdown", { videoId: v.id }, { jobId: `breakdown-${v.id}-${day}` }).catch(() => {});
+  return missing.length;
 }
