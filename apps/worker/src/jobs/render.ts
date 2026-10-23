@@ -1,7 +1,7 @@
 import { deleteObject, downloadFile, drive, publishRender, signGet, uploadFile, usage, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { PREFIX, renderTimeoutMs, StyleRulesSchema, type FileMeasure, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
-import { ffmpegArgs, planRender, RenderPlanError, type PlanFiles } from "@rendrr/shared/renderPlan";
+import { isSequence, mainVideoOf, PREFIX, renderTimeoutMs, StyleRulesSchema, type FileMeasure, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { ffmpegArgs, planRender, RenderPlanError, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -82,11 +82,36 @@ export async function renderJob(ctx: Ctx) {
     const brollIds = Array.from(new Set(snapshot.timeline.tracks.v2.map((c) => (c as { videoId?: string }).videoId).filter(Boolean) as string[]));
     const brollVideos = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId: video.userId, proxyKey: { not: null } } }) : [];
     const graphicClips = (snapshot.timeline.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId);
-    const files: PlanFiles = { source: src, output: join(ctx.dir, "out.mp4"), assPath: join(ctx.dir, "captions.ass"), fontsDir: FONTS_DIR, broll: {}, graphics: {}, audio: {} };
+    const files: PlanFiles = { source: src, output: join(ctx.dir, "out.mp4"), assPath: join(ctx.dir, "captions.ass"), fontsDir: FONTS_DIR, broll: {}, graphics: {}, audio: {}, videos: {} };
     const sourceInfo = { width: info.width, height: info.height, fps: info.fps, seconds: info.seconds || video.seconds, hasAudio: info.hasAudio, hdr: !!info.hdr };
 
+    // The other videos on V1 (a sequence can cut between several): previews use their preview copy; finals their
+    // original when Rendrr keeps it, else the preview copy (the operations say so). A video that is gone fails the
+    // plan with a plain message.
+    const sources: Record<string, SourceInfo> = {};
+    const transcripts: Record<string, Transcript> = {};
+    const copies: string[] = [];
+    if (isSequence(snapshot.timeline)) {
+      const main = mainVideoOf(snapshot.timeline);
+      const otherIds = Array.from(new Set((snapshot.timeline.tracks.v1 as unknown as { sourceVideoId: string }[]).map((c) => c.sourceVideoId))).filter((id) => id !== main);
+      const others = otherIds.length ? await prisma.video.findMany({ where: { id: { in: otherIds }, userId: video.userId }, include: { analysis: true } }) : [];
+      for (const o of others) {
+        const key = kind === "final" && o.sourceKey ? o.sourceKey : o.proxyKey;
+        if (!key) continue;
+        if (kind === "final" && !o.sourceKey) copies.push(o.name);
+        const p = join(ctx.dir, `video-${o.id}`);
+        await downloadFile(key, p);
+        const oi = await probe(p, { signal });
+        if (!oi.hasVideo) throw new JobError(`"${o.name}" on V1 looks damaged. Remove it from the edit or add it again.`, "damaged", false);
+        files.videos![o.id] = p;
+        sources[o.id] = { width: oi.width, height: oi.height, fps: oi.fps, seconds: oi.seconds || o.seconds, hasAudio: oi.hasAudio, hdr: !!oi.hdr };
+        transcripts[o.id] = (o.analysis?.transcript as unknown as Transcript) || [];
+      }
+    }
+    const planBase = { kind, snapshot, transcript, source: sourceInfo, videoId: video.id, sources, transcripts, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])) };
+
     // A first plan tells us the output size, so graphics can be drawn at the right resolution.
-    const first = planRender({ kind, snapshot, transcript, source: sourceInfo, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])) });
+    const first = planRender(planBase);
     const graphicsReady: Record<string, boolean> = {};
     // Only graphics that are still in the edit, each drawn for the time it is on screen.
     for (const sp of first.graphics) {
@@ -100,8 +125,8 @@ export async function renderJob(ctx: Ctx) {
         console.error("[render] graphic skipped:", c.graphicId, (e as Error).message.slice(0, 200));
       }
     }
-    const plan = planRender({ kind, snapshot, transcript, source: sourceInfo, captionRules: rules?.success ? rules.data.captions : undefined,
-      brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])), graphicsReady });
+    const plan = planRender({ ...planBase, graphicsReady });
+    if (copies.length) plan.operations.push(`Other videos without an original in Rendrr use their 720p copy: ${copies.join(", ")}`);
     for (const b of plan.broll) {
       const bv = brollVideos.find((x) => x.id === b.videoId);
       if (bv?.proxyKey) { const p = join(ctx.dir, `broll-${b.clipId}.mp4`); await downloadFile(bv.proxyKey, p); files.broll![b.clipId] = p; }
@@ -177,7 +202,7 @@ export async function renderJob(ctx: Ctx) {
     }
     await prisma.render.update({ where: { id: r.id }, data: {
       status: "done", outputKey: `${base}.mp4`, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.kept.length, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
     } });
     const fresh = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     await prisma.project.update({ where: { id: project.id }, data: {

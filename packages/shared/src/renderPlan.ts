@@ -1,11 +1,13 @@
 // Timeline -> FFmpeg. The one place that decides what a render looks like.
 // planRender() is pure: it turns a snapshot + transcript into an ordered plan in OUTPUT time.
 // ffmpegArgs() turns a plan + local file paths into one FFmpeg command (a single pass: fast and lossless between steps).
+// Sequences (model B) are planned here; timelines stored in model A go to the unchanged A planner (renderPlanA.ts).
 import { catalogMusic, catalogSfx } from "./catalog";
 import type { Aspect, CaptionLook } from "./constants";
-import { cutRegions, keptRanges, makeTimeMap, mergeRanges, subtractRanges, type Range } from "./sequence";
-import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip } from "./timeline";
+import { cutRegions, isSequence, mainVideoOf, mergeRanges, sequenceView, type Attached, type PicturePart, type Range, type SequenceView, type SoundPart } from "./sequence";
+import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
+import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean };
@@ -21,6 +23,12 @@ export type PlanInput = {
   brollSeconds?: Record<string, number>;
   /** Which graphic clips have a rendered file ready, by v3 clip id. */
   graphicsReady?: Record<string, boolean>;
+  /** The project's footage id (the sequence's main video). */
+  videoId?: string;
+  /** The other videos on V1, by id. */
+  sources?: Record<string, SourceInfo>;
+  /** Their transcripts (captions of their speech), by id. */
+  transcripts?: Record<string, Transcript>;
 };
 
 export type ZoomOp = { start: number; end: number; scale: number; mode: "punch" | "push" };
@@ -29,10 +37,21 @@ export type AudioOp = { clipId: string; start: number; end: number; gainDb: numb
 export type CaptionEvent = { start: number; end: number; text: string };
 
 export type RenderPlan = {
+  /** "B" = planned from a sequence; "A" = from a timeline stored in model A (renderPlanA.ts). */
+  model: "A" | "B";
   kind: RenderKind;
   width: number; height: number; fps: number;
   aspect: Aspect;
+  /** Footage ranges of the picture parts, in edit order (each part's video is in `parts`). */
   kept: Range[];
+  /** The picture: parts in edit order, each a stretch of one video with its turn and framing. */
+  parts: PicturePart[];
+  /** The dialogue: parts in edit order covering the whole edit (muted = silent). */
+  sound: SoundPart[];
+  /** The videos it plays, main footage first. */
+  sources: string[];
+  /** Per video: has a sound track, HDR (tone-mapped like the preview copy). */
+  videos?: Record<string, { hasAudio: boolean; hdr: boolean }>;
   outputSeconds: number;
   rotate: 0 | 90 | 180 | 270; // clockwise turn of the footage before it is fitted
   framing: { scale: number; x: number; y: number } | null; // the footage's position and scale in the frame, after the fit
@@ -53,6 +72,7 @@ export class RenderPlanError extends Error {
 }
 
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
+const sameFraming = (a: Framing | null, b: Framing | null) => (!a && !b) || (!!a && !!b && a.scale === b.scale && a.x === b.x && a.y === b.y);
 const FPS = 30;
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
@@ -63,7 +83,7 @@ export function outputSize(aspect: Aspect, kind: RenderKind) {
   return { width: even((short * 16) / 9), height: short };
 }
 
-const DEFAULT_CAPTION_RULES: Record<CaptionLook, CaptionRules> = {
+export const DEFAULT_CAPTION_RULES: Record<CaptionLook, CaptionRules> = {
   clean: { wordsAtOnce: 7, upper: false, maxLines: 2 },
   bold: { wordsAtOnce: 3, upper: true, maxLines: 1 },
   outline: { wordsAtOnce: 5, upper: false, maxLines: 1 },
@@ -74,7 +94,7 @@ const DEFAULT_CAPTION_RULES: Record<CaptionLook, CaptionRules> = {
 // ---------------------------------------------------------------------------------------------
 type TimedToken = { text: string; t: number; end: number };
 
-function captionTokens(lineWords: Word[], text: string, cut: Set<string>, inKept: (t: number) => boolean): TimedToken[] {
+export function captionTokens(lineWords: Word[], text: string, cut: Set<string>, inKept: (t: number) => boolean): TimedToken[] {
   const tokens = text.trim().split(/\s+/).filter(Boolean);
   if (!tokens.length || !lineWords.length) return [];
   if (tokens.length === lineWords.length) {
@@ -99,17 +119,15 @@ function captionTokens(lineWords: Word[], text: string, cut: Set<string>, inKept
   });
 }
 
-export function captionEvents(input: PlanInput, kept: Range[], toOutput: (s: number) => number, total: number, rules: CaptionRules): CaptionEvent[] {
-  const tl = input.snapshot.timeline;
-  if (!tl.captionsOn) return [];
-  const cut = new Set(tl.cut);
-  const inKept = (t: number) => kept.some((k) => t >= k.start && t < k.end);
-  const capClips = (tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "caption" || (!c.kind && c.lineId));
-  const visible = capClips.length ? new Set(capClips.map((c) => c.lineId).filter(Boolean)) : null;
+/**
+ * Caption events for transcript lines whose words play in one stretch of footage that moves forward (a "run"):
+ * inKept says whether a footage moment plays, toOutput maps it to the edit.
+ */
+function lineEvents(lines: Transcript, captionText: Record<string, string>, cut: Set<string>, visible: Set<string> | null, inKept: (t: number) => boolean, toOutput: (s: number) => number, total: number, rules: CaptionRules, look: CaptionLook): CaptionEvent[] {
   const events: CaptionEvent[] = [];
-  for (const line of input.transcript) {
+  for (const line of lines) {
     if (visible && !visible.has(line.id)) continue;
-    const text = tl.captionText[line.id] ?? line.words.map((w) => w.text).join(" ");
+    const text = captionText[line.id] ?? line.words.map((w) => w.text).join(" ");
     const toks = captionTokens(line.words, text, cut, inKept);
     if (!toks.length) continue;
     // A rewritten line with many more words than time shows them in bigger groups (each group on screen for at
@@ -124,15 +142,52 @@ export function captionEvents(input: PlanInput, kept: Range[], toOutput: (s: num
       end = Math.min(end, total);
       if (end - start < 0.08) continue;
       // Bold and outline looks drop trailing commas and full stops, like most social captions.
-      const tidy = (w: string) => (input.snapshot.timeline.captionLook === "clean" ? w : w.replace(/[,.;:]+$/, ""));
+      const tidy = (w: string) => (look === "clean" ? w : w.replace(/[,.;:]+$/, ""));
       const words = chunk.map((x) => tidy(x.text)).join(" ");
       events.push({ start: r3(start), end: r3(end), text: rules.upper ? words.toUpperCase() : words });
     }
   }
-  // No overlaps: a caption ends when the next one starts.
+  return events;
+}
+
+/** No overlaps: a caption ends when the next one starts. */
+function tidyEvents(events: CaptionEvent[]): CaptionEvent[] {
   events.sort((a, b) => a.start - b.start);
   for (let i = 0; i + 1 < events.length; i++) if (events[i].end > events[i + 1].start) events[i].end = events[i + 1].start;
   return events.filter((e) => e.end - e.start >= 0.05);
+}
+
+/**
+ * Captions of a sequence: they follow the dialogue. The dialogue is split into runs (one video, footage moving
+ * forward); each run captions the lines spoken in it, so a line that plays twice is captioned twice. Main footage
+ * lines use the edit's caption text and caption clips; other videos show their own words.
+ */
+export function sequenceCaptions(input: PlanInput, view: SequenceView, total: number, rules: CaptionRules): CaptionEvent[] {
+  const tl = input.snapshot.timeline;
+  if (!tl.captionsOn) return [];
+  const main = view.mainVideoId;
+  const cut = new Set(tl.cut);
+  const capClips = (tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "caption" || (!c.kind && c.lineId));
+  const visible = capClips.length ? new Set(capClips.map((c) => c.lineId).filter(Boolean) as string[]) : null;
+  const runs: SoundPart[][] = [];
+  for (const s of view.sound) {
+    const run = runs[runs.length - 1], prev = run?.[run.length - 1];
+    if (prev && prev.videoId === s.videoId && s.srcIn >= prev.srcOut - 1e-6) run.push(s);
+    else runs.push([s]);
+  }
+  const events: CaptionEvent[] = [];
+  for (const run of runs) {
+    const vid = run[0].videoId;
+    const lines = vid === main ? input.transcript : input.transcripts?.[vid];
+    if (!lines?.length) continue;
+    const inKept = (t: number) => run.some((s) => t >= s.srcIn && t < s.srcOut);
+    const toOutput = (src: number) => {
+      for (const s of run) { if (src < s.srcIn) return r3(s.start); if (src <= s.srcOut) return r3(s.start + (src - s.srcIn)); }
+      return r3(run[run.length - 1].end);
+    };
+    events.push(...lineEvents(lines, vid === main ? tl.captionText : {}, vid === main ? cut : new Set(), vid === main ? visible : null, inKept, toOutput, total, rules, tl.captionLook));
+  }
+  return tidyEvents(events);
 }
 
 const assTime = (s: number) => {
@@ -175,28 +230,35 @@ export function buildAss(events: CaptionEvent[], look: CaptionLook, width: numbe
 // planRender
 // ---------------------------------------------------------------------------------------------
 export function planRender(input: PlanInput): RenderPlan {
+  // A timeline stored in model A (an old version, or a project the migration left on A) renders exactly as before.
+  if (!isSequence(input.snapshot.timeline)) return planRenderA(input);
   const { snapshot, transcript, kind } = input;
   const tl = snapshot.timeline;
   const words = allWords(transcript);
-  // Footage beyond the real file length cannot be rendered. Every kept part starts and ends on a frame of the
-  // 30 fps output, so the picture and the sound of each part are exactly as long as the plan says (no drift
-  // at each cut, and captions, zooms and music stay on the footage).
-  const f30 = (x: number) => Math.round(x * FPS) / FPS;
-  const kept = mergeRanges(subtractRanges(keptRanges(tl, words), [{ start: input.source.seconds, end: 1e9 }])
-    .map((k) => ({ start: f30(k.start), end: Math.min(f30(k.end), Math.floor(input.source.seconds * FPS) / FPS) }))
-    .filter((k) => k.end - k.start >= 1 / FPS - 1e-9));
-  if (!kept.length) throw new RenderPlanError("Nothing is left to render. Every part of the video is cut. Restore some words or clips, then try again.");
-  const map = makeTimeMap(kept);
-  const total = r3(map.total);
+  const main = mainVideoOf(tl);
+  const infoOf = (vid: string) => (vid === main ? input.source : input.sources?.[vid]);
+  const used = Array.from(new Set([main, ...(tl.tracks.v1 as unknown as { sourceVideoId: string }[]).map((c) => c.sourceVideoId)]));
+  const missing = used.filter((v) => !infoOf(v));
+  if (missing.length) throw new RenderPlanError(`A clip on V1 plays a video that is no longer in your library (${missing.join(", ")}). Remove that clip, then render again.`);
+  // Every part starts and ends on a frame of the 30 fps output; footage beyond a file's real length is left out.
+  const view = sequenceView(tl, words, { align: FPS, seconds: Object.fromEntries(used.map((v) => [v, infoOf(v)!.seconds])) });
+  if (!view.picture.length) throw new RenderPlanError("Nothing is left to render. Every part of the video is cut. Restore some words or clips, then try again.");
+  const total = r3(view.total);
   const { width, height } = outputSize(snapshot.aspect, kind);
-  const toOut = (s: number) => r3(map.toOutput(s));
-  // A clip on another track keeps its place in the edit: both ends move with the cuts.
-  const span = (a: number, b: number) => { const s = toOut(a), e = toOut(b); return e - s >= 0.05 ? { start: s, end: e } : null; };
+  // A clip on another track hangs on its V1 clip and keeps its length.
+  const placed = (c: Attached): { start: number; end: number } | null => {
+    let s: number, e: number;
+    if (c.fill) { s = 0; e = total; }
+    else if (c.anchorId && view.clip(c.anchorId)) { s = view.editAt(c.anchorId, Number(c.anchorAt ?? 0))!; e = s + Number(c.length ?? c.end - c.start); }
+    else return null;
+    s = r3(Math.max(0, s)); e = r3(Math.min(total, e));
+    return e - s >= 0.05 ? { start: s, end: e } : null;
+  };
 
   const zooms: ZoomOp[] = [];
   const broll: OverlayOp[] = [];
-  for (const c of tl.tracks.v2 as V2Clip[]) {
-    const sp = span(c.start, c.end);
+  for (const c of tl.tracks.v2 as (V2Clip & Attached)[]) {
+    const sp = placed(c);
     if (!sp) continue;
     const x = c as V2Clip & { mode?: string };
     if (c.kind === "zoom" || (c.zoom && !c.videoId)) {
@@ -209,55 +271,69 @@ export function planRender(input: PlanInput): RenderPlan {
     }
   }
   const graphics: OverlayOp[] = [];
-  for (const c of tl.tracks.v3 as V3Clip[]) {
+  for (const c of tl.tracks.v3 as (V3Clip & Attached)[]) {
     if (c.kind !== "graphic" || !c.graphicId || (input.graphicsReady && !input.graphicsReady[c.id])) continue;
-    const sp = span(c.start, c.end);
+    const sp = placed(c);
     if (sp) graphics.push({ clipId: c.id, ...sp, sourceStart: 0, graphicId: c.graphicId });
   }
   const audio: AudioOp[] = [];
   // Keys come from the catalog only (see catalogMusic), whatever the stored clip says.
-  for (const c of tl.tracks.a2 as A2Clip[]) {
+  for (const c of tl.tracks.a2 as (A2Clip & Attached)[]) {
     const track = catalogMusic(c);
     if (!track) continue;
-    const sp = span(c.start, c.end);
+    const sp = placed(c);
     if (sp) audio.push({ clipId: c.id, ...sp, gainDb: c.gainDb ?? -18, assetKey: track.key, kind: "music" });
   }
-  for (const c of tl.tracks.a3 as A3Clip[]) {
+  for (const c of tl.tracks.a3 as (A3Clip & Attached)[]) {
     const sfx = catalogSfx(c);
-    if (!sfx) continue;
-    const start = toOut(c.start);
+    if (!sfx || !c.anchorId || !view.clip(c.anchorId)) continue;
+    const start = r3(view.editAt(c.anchorId, Number(c.anchorAt ?? 0))!);
     if (start >= total) continue;
-    audio.push({ clipId: c.id, start, end: r3(Math.min(total, start + Math.max(0.1, c.end - c.start))), gainDb: c.gainDb ?? -6, assetKey: sfx.key, kind: "sfx" });
+    audio.push({ clipId: c.id, start, end: r3(Math.min(total, start + Math.max(0.1, Number(c.length ?? c.end - c.start)))), gainDb: c.gainDb ?? -6, assetKey: sfx.key, kind: "sfx" });
   }
-  // Dialogue plays only where an A1 clip covers it.
-  const a1 = mergeRanges(tl.tracks.a1.map((c) => ({ start: c.start, end: c.end })));
-  const silentSrc = subtractRanges(kept, a1);
-  const dialogueMutes = mergeRanges(silentSrc.map((g) => ({ start: toOut(g.start), end: toOut(g.end) })).filter((g) => g.end > g.start));
+  // Muted clips: their dialogue is silent.
+  const dialogueMutes = mergeRanges(view.sound.filter((x) => x.muted).map((x) => ({ start: r3(x.start), end: r3(x.end) })).filter((g) => g.end > g.start));
 
   const look = tl.captionLook;
   const rules: CaptionRules = { ...DEFAULT_CAPTION_RULES[look], ...(input.captionRules || {}) };
-  const captions = captionEvents(input, kept, toOut, total, rules);
+  const captions = sequenceCaptions(input, view, total, rules);
   const ass = captions.length ? buildAss(captions, look, width, height) : null;
 
+  const parts = view.picture.map((p) => ({ ...p, start: r3(p.start), end: r3(p.end) }));
+  const sound = view.sound.map((x) => ({ ...x, start: r3(x.start), end: r3(x.end) }));
+  const sources = Array.from(new Set([main, ...parts.map((p) => p.videoId), ...sound.map((x) => x.videoId)])).filter((v) => parts.some((p) => p.videoId === v) || sound.some((x) => x.videoId === v));
+  const videos = Object.fromEntries(sources.map((v) => [v, { hasAudio: infoOf(v)!.hasAudio, hdr: !!infoOf(v)!.hdr }]));
   const cutCount = cutRegions(words, new Set(tl.cut)).length;
+  const live = view.clips.filter((c) => c.pieces.length);
+  const jl = { j: live.filter((c, i) => i > 0 && c.soundStart < c.start - 1e-6).length, l: live.filter((c, i) => i > 0 && c.soundStart > c.start + 1e-6).length, muted: (tl.tracks.v1 as unknown as { audioMuted?: boolean }[]).filter((c) => c.audioMuted).length };
+  const turned = new Set(parts.map((p) => p.rotate)), framings = parts.filter((p) => p.framing);
+  const lookText = parts.every((p) => p.rotate === parts[0].rotate && sameFraming(p.framing, parts[0].framing))
+    ? `${parts[0].rotate ? `Turn the footage ${parts[0].rotate}° clockwise, then fit` : "Fit"} to ${snapshot.aspect} at ${width}x${height}, 30 fps${parts[0].framing ? `; frame it: scale ${parts[0].framing.scale}, offset ${parts[0].framing.x}, ${parts[0].framing.y}` : ""}`
+    : `Fit each part to ${snapshot.aspect} at ${width}x${height}, 30 fps (turned ${Array.from(turned).join("/")}°, ${framings.length} framed parts)`;
   const operations = [
-    `Keep ${kept.length} ${kept.length === 1 ? "part" : "parts"} of the footage (${cutCount} word cuts, V1 gaps removed): ${total.toFixed(2)}s out of ${input.source.seconds.toFixed(2)}s`,
-    `${tl.rotate ? `Turn the footage ${tl.rotate}° clockwise, then fit` : "Fit"} to ${snapshot.aspect} at ${width}x${height}, 30 fps${tl.framing ? `; frame it: scale ${tl.framing.scale}, offset ${tl.framing.x}, ${tl.framing.y}` : ""}`,
+    `Play ${parts.length} ${parts.length === 1 ? "part" : "parts"} from ${sources.length} ${sources.length === 1 ? "video" : "videos"} (${live.length} clips, ${cutCount} word cuts): ${total.toFixed(2)}s`,
+    lookText,
     zooms.length ? `Zoom: ${zooms.length} (${zooms.filter((z) => z.mode === "punch").length} punch, ${zooms.filter((z) => z.mode === "push").length} slow push)` : "Zoom: none",
     broll.length ? `B-roll overlays: ${broll.length}` : "B-roll overlays: none",
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
     captions.length ? `Captions: ${captions.length} word-timed events, look ${look}` : "Captions: off",
-    `Audio: dialogue${dialogueMutes.length ? ` (${dialogueMutes.length} muted gaps)` : ""}${audio.some((a) => a.kind === "music") ? " + music ducked under speech" : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}`,
+    `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${audio.some((a) => a.kind === "music") ? " + music ducked under speech" : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}`,
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
   ];
-  return { kind, width, height, fps: 30, aspect: snapshot.aspect, kept, outputSeconds: total, rotate: tl.rotate ?? 0, framing: tl.framing ?? null, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, ass, operations };
+  return {
+    model: "B", kind, width, height, fps: 30, aspect: snapshot.aspect, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })), parts, sound, sources, videos,
+    outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, ass, operations,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
 // ffmpegArgs: plan + local files -> one command. The filter graph goes in a script file.
 // ---------------------------------------------------------------------------------------------
 export type PlanFiles = {
+  /** The main footage. */
   source: string;
+  /** The other videos on V1, by video id. */
+  videos?: Record<string, string>;
   output: string;
   assPath?: string;
   fontsDir?: string;
@@ -282,58 +358,87 @@ export function zoomExpr(zooms: ZoomOp[]): string {
 }
 
 export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: { threads?: number } = {}): { args: string[]; filterGraph: string } {
+  if (plan.model === "A") return ffmpegArgsA(plan, files, source, opts);
   const inputs: string[] = [];
   const g: string[] = [];
   let idx = 0;
   const W = plan.width, H = plan.height;
+  const main = plan.sources[0];
+  const info = (vid: string) => plan.videos?.[vid] ?? { hasAudio: vid === main ? source.hasAudio : true, hdr: vid === main ? !!source.hdr : false };
 
-  inputs.push("-i", files.source);
-  const srcIdx = idx++;
-  let srcAudio = `${srcIdx}:a`;
-  if (!source.hasAudio) {
-    inputs.push("-f", "lavfi", "-t", n3(source.seconds + 1), "-i", "anullsrc=r=48000:cl=stereo");
-    srcAudio = `${idx++}:a`;
+  // One input per video.
+  const inOf: Record<string, number> = {};
+  for (const vid of plan.sources) {
+    const path = vid === main ? files.source : files.videos?.[vid];
+    if (!path) throw new RenderPlanError(`The file of a video on V1 is missing (${vid}).`);
+    inputs.push("-i", path);
+    inOf[vid] = idx++;
   }
 
-  // 1. Cut: put the source on a 30 fps grid, split it, keep each part, then join them back together.
-  // Kept parts start and end on frames (planRender), so each part is a whole number of frames in both streams.
-  // After fps=30 the video time base is 1/30 s and trim rounds its times to the nearest frame, so small float
-  // errors can never take or drop a boundary frame. Audio trims are sample-exact.
-  const N = plan.kept.length;
-  const vt = (k: Range) => `trim=start=${n6(k.start)}:end=${n6(k.end)},setpts=PTS-STARTPTS`;
-  const at = (k: Range) => `atrim=start=${n6(k.start)}:end=${n6(k.end)},asetpts=PTS-STARTPTS`;
-  if (N === 1) {
-    g.push(`[${srcIdx}:v]fps=${FPS},${vt(plan.kept[0])}[v0]`);
-    g.push(`[${srcAudio}]aresample=48000,${at(plan.kept[0])}[a0]`);
-  } else {
-    g.push(`[${srcIdx}:v]fps=${FPS},split=${N}${plan.kept.map((_, i) => `[sv${i}]`).join("")}`);
-    g.push(`[${srcAudio}]aresample=48000,asplit=${N}${plan.kept.map((_, i) => `[sa${i}]`).join("")}`);
-    plan.kept.forEach((k, i) => {
-      g.push(`[sv${i}]${vt(k)}[v${i}]`);
-      g.push(`[sa${i}]${at(k)}[a${i}]`);
-    });
-  }
-  g.push(`${plan.kept.map((_, i) => `[v${i}][a${i}]`).join("")}concat=n=${N}:v=1:a=1[vcat][acat]`);
-
-  // 2. Fit to the output shape (fill and centre-crop), constant 30 fps. HDR originals are tone-mapped to SDR
-  // BT.709 exactly like the preview copy, so the final looks like the preview that was approved.
-  const tone = source.hdr ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "";
-  // Footage filmed sideways is turned first (transpose=1 is 90° clockwise, 2 is 90° anticlockwise).
-  const turn = plan.rotate === 90 ? "transpose=1," : plan.rotate === 270 ? "transpose=2," : plan.rotate === 180 ? "hflip,vflip," : "";
-  g.push(`[vcat]${turn}${tone}fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1[vfit]`);
-  let v = "vfit";
-
-  // 2b. Framing (position and scale): the fitted picture is scaled about its centre and moved over a black frame.
-  if (plan.framing) {
-    const f = plan.framing;
+  // 1. Picture: put each video on a 30 fps grid, take its parts and join them in edit order. Parts start and end on
+  // frames (planRender), so each is a whole number of frames; after fps=30 trim rounds to the nearest frame.
+  const vt = (k: { srcIn: number; srcOut: number }) => `trim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},setpts=PTS-STARTPTS`;
+  const at = (k: { srcIn: number; srcOut: number }) => `atrim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},asetpts=PTS-STARTPTS`;
+  const turnOf = (r: number) => (r === 90 ? "transpose=1," : r === 270 ? "transpose=2," : r === 180 ? "hflip,vflip," : "");
+  // HDR originals are tone-mapped to SDR BT.709 exactly like the preview copy, so the final looks like the preview.
+  const toneOf = (vid: string) => (info(vid).hdr ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "");
+  const fit = `fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1`;
+  const frame = (from: string, f: Framing, to: string, tag: string) => {
+    // The fitted picture is scaled about its centre and moved over a black frame.
     const sw = even(W * f.scale), sh = even(H * f.scale);
     const ox = Math.round((W - sw) / 2 + f.x * W), oy = Math.round((H - sh) / 2 + f.y * H);
-    g.push(`color=c=black:s=${W}x${H}:r=${FPS}[fcanvas]`);
-    g.push(`[${v}]scale=${sw}:${sh},setsar=1[fscaled]`);
-    g.push(`[fcanvas][fscaled]overlay=x=${ox}:y=${oy}:shortest=1,format=yuv420p[vframed]`);
-    v = "vframed";
+    g.push(`color=c=black:s=${W}x${H}:r=${FPS}[fcanvas${tag}]`);
+    g.push(`[${from}]scale=${sw}:${sh},setsar=1[fscaled${tag}]`);
+    g.push(`[fcanvas${tag}][fscaled${tag}]overlay=x=${ox}:y=${oy}:shortest=1,format=yuv420p[${to}]`);
+  };
+  const splitOf = (kind: "v" | "a", vid: string, n: number, name: (i: number) => string) => {
+    if (kind === "v") g.push(`[${inOf[vid]}:v]fps=${FPS}${n > 1 ? `,split=${n}${Array.from({ length: n }, (_, i) => `[${name(i)}]`).join("")}` : `[${name(0)}]`}`);
+    else g.push(`[${inOf[vid]}:a]aresample=48000${n > 1 ? `,asplit=${n}${Array.from({ length: n }, (_, i) => `[${name(i)}]`).join("")}` : `[${name(0)}]`}`);
+  };
+  const N = plan.parts.length;
+  // One video, one look: cut, join, then fit once (the same graph model A used). Otherwise each part is fitted first.
+  const uniform = plan.sources.length === 1 && plan.parts.every((p) => p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing));
+  for (const vid of plan.sources) {
+    const mine = plan.parts.map((p, i) => ({ p, i })).filter((x) => x.p.videoId === vid);
+    if (!mine.length) continue;
+    splitOf("v", vid, mine.length, (k) => `sv${mine[k].i}`);
+    for (const { p, i } of mine) {
+      if (uniform) g.push(`[sv${i}]${vt(p)}[v${i}]`);
+      else {
+        g.push(`[sv${i}]${vt(p)},${turnOf(p.rotate)}${toneOf(vid)}${fit},format=yuv420p[${p.framing ? `pf${i}` : `v${i}`}]`);
+        if (p.framing) frame(`pf${i}`, p.framing, `v${i}`, String(i));
+      }
+    }
+  }
+  g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0[vcat]`);
+  let v = "vcat";
+  if (uniform) {
+    const p0 = plan.parts[0];
+    g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId)}${fit}[vfit]`);
+    v = "vfit";
+    if (p0.framing) { frame(v, p0.framing, "vframed", ""); v = "vframed"; }
   }
 
+  // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts, joined in edit order.
+  const S = plan.sound.length;
+  const live = (x: SoundPart) => !x.muted && info(x.videoId).hasAudio && inOf[x.videoId] != null;
+  for (const vid of plan.sources) {
+    const mine = plan.sound.map((x, i) => ({ x, i })).filter((y) => y.x.videoId === vid && live(y.x));
+    if (!mine.length) continue;
+    splitOf("a", vid, mine.length, (k) => `sa${mine[k].i}`);
+    for (const { x, i } of mine) g.push(`[sa${i}]${at(x)}[a${i}]`);
+  }
+  plan.sound.forEach((x, i) => { if (!live(x)) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${Math.max(1, Math.round((x.srcOut - x.srcIn) * 48000))},asetpts=PTS-STARTPTS[a${i}]`); });
+  g.push(`${plan.sound.map((_, i) => `[a${i}]`).join("")}concat=n=${S}:v=0:a=1[acat]`);
+
+  overlaysAndMix(plan, files, g, inputs, () => idx++, v);
+  return { args: encodeArgs(plan, inputs, files, opts), filterGraph: g.join(";\n") };
+}
+
+/** Zooms, b-roll, graphics, captions on [v]; dialogue [acat] mixed with music (ducked) and sound effects. */
+function overlaysAndMix(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string) {
+  const W = plan.width, H = plan.height;
+  let v = v0;
   // 3. Zooms: scale per frame, crop back to size.
   if (plan.zooms.length) {
     const z = zoomExpr(plan.zooms);
@@ -342,29 +447,26 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     g.push(`[${v}]scale=w='2*trunc(${W}*(${z})/2)':h='2*trunc(${H}*(${z})/2)':eval=frame,crop=${W}:${H}:x='(2*trunc(${W}*(${z})/2)-${W})/2':y='(2*trunc(${H}*(${z})/2)-${H})*0.4'[vzoom]`);
     v = "vzoom";
   }
-
   // 4. B-roll overlays (video only; the dialogue keeps playing underneath).
   plan.broll.forEach((b, i) => {
     const path = files.broll?.[b.clipId];
     if (!path) return;
     inputs.push("-ss", n3(b.sourceStart), "-t", n3(b.end - b.start), "-i", path);
-    const bi = idx++;
+    const bi = next();
     g.push(`[${bi}:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,setpts=PTS-STARTPTS+${n3(b.start)}/TB[br${i}]`);
     g.push(`[${v}][br${i}]overlay=0:0:enable='between(t,${n3(b.start)},${n3(b.end)})':eof_action=pass[vb${i}]`);
     v = `vb${i}`;
   });
-
   // 5. Graphics: transparent WebM, decoded with libvpx to keep the alpha channel.
   plan.graphics.forEach((gr, i) => {
     const path = files.graphics?.[gr.clipId];
     if (!path) return;
     inputs.push("-c:v", "libvpx-vp9", "-i", path);
-    const gi = idx++;
+    const gi = next();
     g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n3(gr.start)},${n3(gr.end)})':eof_action=pass[vg${i}]`);
     v = `vg${i}`;
   });
-
   // 6. Captions on top of everything.
   if (plan.ass && files.assPath) {
     g.push(`[${v}]ass=filename=${q(files.assPath)}${files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : ""}[vcap]`);
@@ -372,9 +474,8 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   }
   g.push(`[${v}]format=yuv420p[vout]`);
 
-  // 7. Audio: dialogue (with muted gaps), music ducked under speech, sound effects.
-  const mute = plan.dialogueMutes.length ? `,volume=volume=0:enable='${plan.dialogueMutes.map((m) => `between(t,${n3(m.start)},${n3(m.end)})`).join("+")}'` : "";
-  g.push(`[acat]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo${mute}[dlg]`);
+  // 7. Audio: dialogue, music ducked under speech, sound effects.
+  g.push(`[acat]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[dlg]`);
   const music = plan.audio.filter((a) => a.kind === "music" && files.audio?.[a.clipId]);
   const sfx = plan.audio.filter((a) => a.kind === "sfx" && files.audio?.[a.clipId]);
   const mixIn: string[] = [];
@@ -383,7 +484,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     mixIn.push("[dlgmix]");
     music.forEach((m, i) => {
       inputs.push("-stream_loop", "-1", "-i", files.audio![m.clipId]);
-      const mi = idx++;
+      const mi = next();
       const d = Math.max(0.1, m.end - m.start);
       g.push(`[${mi}:a]atrim=0:${n3(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,afade=t=in:d=${n3(Math.min(0.6, d / 4))},afade=t=out:st=${n3(Math.max(0, d - Math.min(1.2, d / 4)))}:d=${n3(Math.min(1.2, d / 4))},volume=${m.gainDb}dB,adelay=delays=${Math.round(m.start * 1000)}:all=1[mu${i}]`);
     });
@@ -396,15 +497,17 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   }
   sfx.forEach((s, i) => {
     inputs.push("-i", files.audio![s.clipId]);
-    const si = idx++;
+    const si = next();
     g.push(`[${si}:a]atrim=0:${n3(Math.max(0.1, s.end - s.start))},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${s.gainDb}dB,adelay=delays=${Math.round(s.start * 1000)}:all=1[fx${i}]`);
     mixIn.push(`[fx${i}]`);
   });
   if (mixIn.length > 1) g.push(`${mixIn.join("")}amix=inputs=${mixIn.length}:normalize=0:duration=first,alimiter=limit=0.95[aout]`);
   else g.push(`${mixIn[0]}alimiter=limit=0.95[aout]`);
+}
 
+function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: { threads?: number }): string[] {
   const preview = plan.kind === "preview";
-  const args = [
+  return [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
     ...inputs,
     "-filter_complex_script", "__FILTER_SCRIPT__",
@@ -419,5 +522,4 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     "-progress", "pipe:1", "-nostats",
     files.output,
   ];
-  return { args, filterGraph: g.join(";\n") };
 }

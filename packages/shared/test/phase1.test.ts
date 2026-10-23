@@ -1,8 +1,8 @@
 // Phase 1: ripple, linked clips, the player plays the plan, the check measures the file, and the op fixes.
 import { describe, expect, it } from "vitest";
 import {
-  applyOp, buildInitialTimeline, editCheck, keptClock, keptRanges, layoutTimeline, liveFrame, MCP_TOOLS, outputDuration, parseMeasureLog,
-  playerGraphicHtml, STYLES, stripLayout, stubTranscript, transcriptAsText, zoomAt,
+  applyOp, buildInitialTimeline, editCheck, layoutTimeline, liveFrame, MCP_TOOLS, outputDuration, parseMeasureLog,
+  playerGraphicHtml, sequenceClock, sequenceView, STYLES, stripLayout, stubTranscript, transcriptAsText, zoomAt,
   type Clip, type EditContext, type FileMeasure, type Snapshot, type Transcript,
 } from "../src/index";
 import { ffmpegArgs, planRender, zoomExpr } from "../src/renderPlan";
@@ -10,7 +10,9 @@ import { ffmpegArgs, planRender, zoomExpr } from "../src/renderPlan";
 const tr = stubTranscript(40);
 const words = tr.flatMap((l) => l.words);
 const ctx: EditContext = { videoId: "vid1", transcript: tr, silences: [], sceneCuts: [], duration: 40, getStyle: (id) => STYLES.find((s) => s.id === id), getVideo: () => undefined, getGraphic: (id) => (id === "gt_title_card" ? { id, name: "Title card", durationSec: 3 } : undefined) };
-const snap = (): Snapshot => ({ timeline: buildInitialTimeline(tr, 40, "clean"), name: "t", aspect: "16:9", styleId: "s2" });
+const snap = (): Snapshot => ({ timeline: buildInitialTimeline(tr, 40, "clean", [], "vid1"), name: "t", aspect: "16:9", styleId: "s2" });
+type Seq = Clip & { sourceVideoId: string; sourceIn: number; sourceOut: number; rotate?: number; framing?: { scale: number; x: number; y: number } };
+const seq = (s: Snapshot) => s.timeline.tracks.v1 as Seq[];
 const at = (c: Clip) => c as Clip & { timelineStart: number; timelineEnd: number; sourceVideoId: string; sourceIn: number; sourceOut: number; linkId?: string };
 const v1Len = (s: Snapshot) => s.timeline.tracks.v1.reduce((a, c) => a + c.end - c.start, 0);
 const source = { width: 1920, height: 1080, fps: 30, seconds: 40, hasAudio: true };
@@ -57,30 +59,29 @@ describe("linked clips: picture and dialogue edit together", () => {
     const sp = applyOp(s, { op: "split_clip", track: "v1", clipId: c.id, at: mid }, ctx).snap;
     expect(sp.timeline.tracks.v1.length).toBe(s.timeline.tracks.v1.length + 1);
     expect(sp.timeline.tracks.a1.length).toBe(s.timeline.tracks.a1.length + 1);
+    // Trimming A1 trims the picture (its footage); deleting A1 deletes the clip.
     const tr2 = applyOp(s, { op: "trim_clip", track: "a1", clipId: s.timeline.tracks.a1[0].id, start: c.start + 0.5, end: c.end }, ctx).snap;
-    expect(tr2.timeline.tracks.v1[0].start).toBeCloseTo(c.start + 0.5, 2);
+    expect(seq(tr2)[0].sourceIn).toBeCloseTo(c.start + 0.5, 2);
+    expect(tr2.timeline.tracks.v1[0].start).toBe(0); // the edit starts with it, 0.5 s shorter
     const del = applyOp(s, { op: "delete_clip", track: "a1", clipId: s.timeline.tracks.a1[0].id }, ctx).snap;
     expect(del.timeline.tracks.v1.find((x) => x.id === c.id)).toBeUndefined();
+    // In the sequence the dialogue always follows its picture.
     const solo = applyOp(s, { op: "split_clip", track: "v1", clipId: c.id, at: mid, linked: false }, ctx).snap;
-    expect(solo.timeline.tracks.a1.length).toBe(s.timeline.tracks.a1.length);
+    expect(solo.timeline.tracks.a1.length).toBe(s.timeline.tracks.a1.length + 1);
   });
-  it("set_link unlinks (then edits are separate) and links again", () => {
+  it("set_link is kept for old callers: the dialogue follows its picture", () => {
     const { s, c } = first();
-    const un = applyOp(s, { op: "set_link", track: "v1", clipId: c.id, linked: false }, ctx).snap;
-    expect(at(un.timeline.tracks.v1[0]).linkId).toBeUndefined();
-    const sp = applyOp(un, { op: "split_clip", track: "v1", clipId: c.id, at: (c.start + c.end) / 2 }, ctx).snap;
-    expect(sp.timeline.tracks.a1.length).toBe(s.timeline.tracks.a1.length);
-    const re = applyOp(un, { op: "set_link", track: "a1", clipId: un.timeline.tracks.a1[0].id, linked: true }, ctx).snap;
-    expect(at(re.timeline.tracks.v1[0]).linkId).toBeTruthy();
+    const un = applyOp(s, { op: "set_link", track: "v1", clipId: c.id, linked: false }, ctx);
+    expect(un.summary).toMatch(/always follows its picture/);
+    expect(at(un.snap.timeline.tracks.v1[0]).linkId).toBeTruthy();
     expect(() => applyOp(s, { op: "set_link", track: "v2", clipId: "x", linked: false }, ctx)).toThrow();
   });
-  it("set_clips takes plain start/end (no ids) and gives A1 the same clips", () => {
+  it("set_clips takes plain start/end (no ids), in that order, and A1 follows", () => {
     const r = applyOp(snap(), { op: "set_clips", track: "v1", clips: [{ start: 1, end: 5, label: "" }, { start: 8, end: 12, label: "" }] }, ctx).snap;
-    expect(r.timeline.tracks.v1.map((c) => [c.start, c.end])).toEqual([[1, 5], [8, 12]]);
-    expect(r.timeline.tracks.a1.map((c) => [c.start, c.end])).toEqual([[1, 5], [8, 12]]);
+    expect(seq(r).map((c) => [c.sourceIn, c.sourceOut])).toEqual([[1, 5], [8, 12]]);
+    expect(r.timeline.tracks.v1.map((c) => [c.start, c.end])).toEqual([[0, 4], [4, 8]]);
+    expect(r.timeline.tracks.a1.map((c) => [c.start, c.end])).toEqual([[0, 4], [4, 8]]);
     expect(r.timeline.tracks.v1.every((c) => c.id)).toBe(true);
-    const one = applyOp(snap(), { op: "set_clips", track: "v1", clips: [{ start: 1, end: 5, label: "" }], linked: false }, ctx).snap;
-    expect(one.timeline.tracks.a1.length).toBe(snap().timeline.tracks.a1.length);
   });
 });
 
@@ -92,17 +93,17 @@ describe("op fixes", () => {
   ];
   const c2: EditContext = { ...ctx, transcript: t2, duration: 10 };
   it("cut_silences removes silence at the start and end of every clip", () => {
-    const tl = buildInitialTimeline(t2, 10, "clean");
-    const s: Snapshot = { timeline: { ...tl, tracks: { ...tl.tracks, v1: [{ id: "a", start: 0, end: 3.2, label: "" }, { id: "b", start: 3.2, end: 10, label: "" }], a1: [{ id: "da", start: 0, end: 3.2, label: "" }, { id: "db", start: 3.2, end: 10, label: "" }] } }, name: "t", aspect: "16:9", styleId: "s2" };
+    const tl = buildInitialTimeline(t2, 10, "clean", [], "vid1");
+    const clip = (id: string, a: number, b: number) => ({ id, start: a, end: b, label: "", sourceVideoId: "vid1", sourceIn: a, sourceOut: b });
+    const s: Snapshot = { timeline: { ...tl, tracks: { ...tl.tracks, v1: [clip("a", 0, 3.2), clip("b", 3.2, 10)] } }, name: "t", aspect: "16:9", styleId: "s2" };
     const r = applyOp(s, { op: "cut_silences", overSeconds: 1 }, c2).snap; // no pause between words is over 1 s
-    const v1 = r.timeline.tracks.v1;
-    expect(v1.map((c) => [c.start, c.end])).toEqual([[1.4, 3.2], [3.5, 5.15]]); // clip a: head; clip b: head and tail
-    expect(r.timeline.tracks.a1.map((c) => [c.start, c.end])).toEqual(v1.map((c) => [c.start, c.end]));
+    expect(seq(r).map((c) => [c.sourceIn, c.sourceOut])).toEqual([[1.4, 3.2], [3.5, 5.15]]); // clip a: head; clip b: head and tail
+    expect(r.timeline.tracks.a1.map((c) => [c.start, c.end])).toEqual(r.timeline.tracks.v1.map((c) => [c.start, c.end]));
     const off = applyOp(s, { op: "cut_silences", overSeconds: 1, edges: false }, c2).snap;
-    expect(off.timeline.tracks.v1.map((c) => c.start)).toEqual([0, 3.2]);
+    expect(seq(off).map((c) => c.sourceIn)).toEqual([0, 3.2]);
   });
   it("cut_words with a time range works when the range has no words", () => {
-    const s: Snapshot = { timeline: buildInitialTimeline(t2, 10, "clean"), name: "t", aspect: "16:9", styleId: "s2" };
+    const s: Snapshot = { timeline: buildInitialTimeline(t2, 10, "clean", [], "vid1"), name: "t", aspect: "16:9", styleId: "s2" };
     const before = outputDuration(s.timeline, allW(t2));
     const r = applyOp(s, { op: "cut_words", from: 5.5, to: 9 }, c2);
     expect(before - outputDuration(r.snap.timeline, allW(t2))).toBeCloseTo(3.5, 2);
@@ -120,11 +121,11 @@ const allW = (t: Transcript) => t.flatMap((l) => l.words);
 describe("the live player plays what renders", () => {
   const edited = applyOp(snap(), { op: "batch", ops: [{ op: "cut_silences", overSeconds: 0.4 }, { op: "add_zoom", start: 5, end: 6, scale: 1.3 }, { op: "add_graphic", graphicId: "gt_title_card", start: 8, end: 11, params: {} }] }, ctx).snap;
   const plan = planRender({ kind: "preview", snapshot: edited, transcript: tr, source });
-  const clock = keptClock(plan.kept);
-  it("edit time and footage time round trip over the kept parts", () => {
+  const clock = sequenceClock(plan);
+  it("edit time and footage time round trip over the picture parts", () => {
     expect(clock.total).toBeCloseTo(plan.outputSeconds, 2);
-    for (const t of [0, 1.234, plan.outputSeconds / 2, plan.outputSeconds - 0.1]) expect(clock.toOutput(clock.toSource(t))).toBeCloseTo(t, 3);
-    expect(plan.kept.length).toBeGreaterThan(1);
+    for (const t of [0, 1.234, plan.outputSeconds / 2, plan.outputSeconds - 0.1]) { const p = clock.picture(t)!; expect(clock.toEdit(p.i, p.src)).toBeCloseTo(t, 3); expect(p.videoId).toBe("vid1"); }
+    expect(plan.parts.length).toBeGreaterThan(1);
   });
   it("captions, zoom and graphics at a moment match the plan", () => {
     const cap = plan.captions[2];
@@ -143,11 +144,11 @@ describe("the live player plays what renders", () => {
   it("mutes picture that has no dialogue under it, like the render", () => {
     const s = applyOp(snap(), { op: "rename", name: "x" }, ctx).snap;
     const d = s.timeline.tracks.a1[0];
-    const un = applyOp(s, { op: "trim_clip", track: "a1", clipId: d.id, start: d.start, end: d.end - 1, linked: false }, ctx).snap;
+    const un = applyOp(s, { op: "delete_clip", track: "a1", clipId: d.id, linked: false }, ctx).snap;
     const p = planRender({ kind: "preview", snapshot: un, transcript: tr, source });
     expect(p.dialogueMutes.length).toBe(1);
     expect(liveFrame(p, p.dialogueMutes[0].start + 0.1).muted).toBe(true);
-    expect(liveFrame(p, 0.1).muted).toBe(false);
+    expect(liveFrame(p, p.dialogueMutes[0].end + 0.1).muted).toBe(false);
   });
   it("draws a template with the recorder's HTML and clock, no network", () => {
     const h = playerGraphicHtml("gt_title_card", { title: "Hi" }, 640, 360, 3);
@@ -190,7 +191,7 @@ describe("the check measures the rendered file", () => {
   });
   it("flags picture without its dialogue and lists pauses from 0.15 s", () => {
     const d = s.timeline.tracks.a1[0];
-    const un = applyOp(s, { op: "trim_clip", track: "a1", clipId: d.id, start: d.start, end: d.end - 1, linked: false }, ctx).snap;
+    const un = applyOp(s, { op: "set_audio_offset", clipId: d.id, muted: true }, ctx).snap;
     const out = editCheck(un, tr, { measured: ok });
     expect(out).toMatch(/of picture without its dialogue/);
     expect(out).toMatch(/Pauses over 0.15s/);
@@ -210,14 +211,14 @@ describe("connector: text first", () => {
   it("kept parts used by the check are the same ones the render plays", () => {
     const s = applyOp(snap(), { op: "cut_silences", overSeconds: 0.4 }, ctx).snap;
     const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source });
-    expect(plan.kept.length).toBe(keptRanges(s.timeline, words).length);
+    expect(plan.parts.length).toBe(sequenceView(s.timeline, words).picture.length);
   });
 });
 
 describe("footage filmed sideways", () => {
   it("set_rotation turns the footage before the fit, and 0 puts it back", () => {
     const s = applyOp(snap(), { op: "set_rotation", degrees: 90 }, ctx);
-    expect(s.snap.timeline.rotate).toBe(90);
+    expect(seq(s.snap).every((c) => c.rotate === 90)).toBe(true); // every clip of the footage
     expect(s.summary).toMatch(/turned the footage 90° clockwise/);
     const plan = planRender({ kind: "preview", snapshot: { ...s.snap, aspect: "9:16" }, transcript: tr, source });
     expect(plan.rotate).toBe(90);
@@ -226,7 +227,7 @@ describe("footage filmed sideways", () => {
     expect(graph).toMatch(/\[vcat\]transpose=1,fps=30,scale=/);
     expect(editCheck(s.snap, tr)).toMatch(/footage turned 90°/);
     const back = applyOp(s.snap, { op: "set_rotation", degrees: 0 }, ctx).snap;
-    expect(back.timeline).not.toHaveProperty("rotate");
+    expect(seq(back).some((c) => "rotate" in c)).toBe(false);
     expect(ffmpegArgs(planRender({ kind: "preview", snapshot: back, transcript: tr, source }), { source: "a", output: "b" }, source).filterGraph).not.toMatch(/transpose|hflip/);
     expect(ffmpegArgs(planRender({ kind: "preview", snapshot: applyOp(snap(), { op: "set_rotation", degrees: 270 }, ctx).snap, transcript: tr, source }), { source: "a", output: "b" }, source).filterGraph).toMatch(/transpose=2,/);
   });
@@ -235,7 +236,7 @@ describe("footage filmed sideways", () => {
 describe("footage position and scale", () => {
   it("set_framing scales and moves the footage in the render, keeps fields left out, and resets", () => {
     const s = applyOp({ ...snap(), aspect: "9:16" }, { op: "set_framing", scale: 1.15, y: 0.34 }, ctx);
-    expect(s.snap.timeline.framing).toEqual({ scale: 1.15, x: 0, y: 0.34 });
+    expect(seq(s.snap).map((c) => c.framing)).toEqual(seq(s.snap).map(() => ({ scale: 1.15, x: 0, y: 0.34 })));
     expect(s.summary).toMatch(/framed the footage: scale 1.15, moved down 34%/);
     const plan = planRender({ kind: "preview", snapshot: s.snap, transcript: tr, source });
     const graph = ffmpegArgs(plan, { source: "a", output: "b" }, source).filterGraph;
@@ -243,11 +244,11 @@ describe("footage position and scale", () => {
     expect(graph).toMatch(/color=c=black:s=540x960:r=30\[fcanvas\]/);
     expect(graph).toMatch(/\[vfit\]scale=622:1104,setsar=1\[fscaled\]/);
     expect(graph).toMatch(/overlay=x=-41:y=254:shortest=1/);
-    expect(editCheck(s.snap, tr)).toMatch(/footage framed \(scale 1.15, y 0.34\)/);
+    expect(editCheck(s.snap, tr)).toMatch(/footage framed scale 1.15, moved down 34%/);
     const x = applyOp(s.snap, { op: "set_framing", x: -0.1 }, ctx).snap;
-    expect(x.timeline.framing).toEqual({ scale: 1.15, x: -0.1, y: 0.34 });
+    expect(seq(x)[0].framing).toEqual({ scale: 1.15, x: -0.1, y: 0.34 });
     const back = applyOp(x, { op: "set_framing", scale: 1, x: 0, y: 0 }, ctx).snap;
-    expect(back.timeline).not.toHaveProperty("framing");
+    expect(seq(back).some((c) => "framing" in c)).toBe(false);
     expect(ffmpegArgs(planRender({ kind: "preview", snapshot: back, transcript: tr, source }), { source: "a", output: "b" }, source).filterGraph).not.toMatch(/fcanvas/);
   });
 });

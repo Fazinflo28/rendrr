@@ -170,7 +170,7 @@ describe("render plan", () => {
   it("refuses an edit with everything cut", () => {
     const s = snap();
     // Only the middle of the talking is kept on V1, and every word is cut: nothing is left.
-    s.timeline = { ...s.timeline, cut: words.map((w) => w.id), tracks: { ...s.timeline.tracks, v1: [{ id: "x", start: 5, end: 10, label: "" }] } };
+    s.timeline = { ...s.timeline, cut: words.map((w) => w.id), tracks: { ...s.timeline.tracks, v1: [{ id: "x", start: 0, end: 5, label: "", sourceVideoId: "main", sourceIn: 5, sourceOut: 10 }] } };
     expect(() => planRender({ kind: "preview", snapshot: s, transcript: tr, source: { width: 1280, height: 720, fps: 30, seconds: 40, hasAudio: true } })).toThrow(/Nothing is left/);
   });
   it("captions follow edited text and the caption track", () => {

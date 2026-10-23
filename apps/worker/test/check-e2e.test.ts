@@ -51,14 +51,15 @@ describe("the check agrees with the rendered file", () => {
     assert.match(check, /Flags: none$/, check);
   });
 
-  it("dialogue trimmed off part of the picture: the file is silent there and the check says so", async () => {
+  it("a muted clip: the file is silent there and the check says so (once)", async () => {
     const s0 = applyOp({ timeline: buildInitialTimeline(tr, SECONDS, "clean"), name: "t", aspect: "16:9", styleId: "s2" }, { op: "rename", name: "t" }, ctx).snap;
-    const d = s0.timeline.tracks.a1[0];
-    const s = applyOp(s0, { op: "trim_clip", track: "a1", clipId: d.id, start: d.start, end: d.start + 4, linked: false }, ctx).snap;
+    const c = s0.timeline.tracks.v1[0];
+    const sp = applyOp(s0, { op: "split_clip", track: "v1", clipId: c.id, at: 6 }, ctx).snap;
+    const s = applyOp(sp, { op: "set_audio_offset", clipId: c.id, muted: true }, ctx).snap;
     const { measured, check } = await renderAndCheck(s, "muted");
-    assert.ok(measured.silences.some((x) => x.end - x.start > 1), JSON.stringify(measured.silences));
-    assert.match(check, /of picture without its dialogue/);
-    assert.match(check, /where words should play/);
+    assert.ok(measured.silences.some((x) => x.start < 0.1 && x.end > 5.5), JSON.stringify(measured.silences));
+    assert.match(check, /6.0s of picture without its dialogue at 0:00.0 \(clip muted\)/);
+    assert.doesNotMatch(check, /where words should play/);
   });
 
   it("footage filmed sideways comes out upright when turned 90° clockwise", async () => {

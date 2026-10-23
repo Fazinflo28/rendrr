@@ -3,8 +3,12 @@ import { catalogMusic, catalogSfx } from "./catalog";
 import { ASPECTS, CAPTION_LOOKS } from "./constants";
 
 // The shared timeline. Same shape as timelineFor() in ui/rendrr-ui.html.
-// All times are seconds in the ORIGINAL footage (source time). Rendering removes cut words and
-// anything outside the V1 clips, then maps every other track onto the output.
+// Two models (see docs/timeline-model.md and sequence.ts):
+//   A (no `model` field, before Phase 2): clip times are seconds in the project's ORIGINAL footage. Rendering
+//     removes cut words and anything outside the V1 clips, then maps every other track onto the output.
+//   B (`model: "B"`): V1 is an ordered list of clips from any video (sourceVideoId, sourceIn, sourceOut), played
+//     back to back. Other tracks are attached to a V1 clip (anchorId, anchorAt, length). start/end = edit seconds,
+//     written by the layout.
 
 const id = z.string().min(1).max(80);
 const time = z.number().finite().min(0).max(24 * 3600);
@@ -57,6 +61,11 @@ export const FramingSchema = z.object({ scale: z.number().min(0.25).max(4), x: z
 export type Framing = z.infer<typeof FramingSchema>;
 
 export const TimelineSchema = z.object({
+  /** "B" = the sequence model. Missing = model A (stored before Phase 2; converted when edited). */
+  model: z.literal("B").optional(),
+  /** Model B: the project's own footage (its transcript and cut words). */
+  mainVideoId: z.string().max(80).optional(),
+  /** The main footage's length in seconds. */
   duration: z.number().finite().min(0).max(24 * 3600),
   cut: z.array(id).max(200_000),
   captionsOn: z.boolean(),
@@ -92,6 +101,7 @@ export type Snapshot = z.infer<typeof SnapshotSchema>;
 
 /** Checks the things zod cannot: clip order, ends after starts, unique ids. Returns plain-English problems. */
 export function timelineProblems(t: Timeline): string[] {
+  if (t.model === "B") return sequenceProblems(t);
   const out: string[] = [];
   for (const name of TRACK_NAMES) {
     const seen = new Set<string>();
@@ -114,15 +124,81 @@ function canonicalAudio(name: TrackName, c: Clip): Clip {
   return name === "a2" ? { ...rest, trackId: hit.id, assetKey: hit.key } : { ...rest, sfxId: hit.id, assetKey: hit.key };
 }
 
+/** Model B: V1 clips play footage, every other clip (but captions) hangs on a V1 clip; A1 is written by the layout. */
+function sequenceProblems(t: Timeline): string[] {
+  const out: string[] = [];
+  const v1 = t.tracks.v1 as (Clip & { sourceVideoId?: unknown; sourceIn?: number; sourceOut?: number })[];
+  const ids = new Set(v1.map((c) => c.id));
+  for (const name of TRACK_NAMES) {
+    if (name === "a1") continue;
+    const seen = new Set<string>();
+    for (const c of t.tracks[name] as (Clip & Record<string, unknown>)[]) {
+      if (seen.has(c.id)) out.push(`Track ${name.toUpperCase()} has two clips with the id "${c.id}".`);
+      seen.add(c.id);
+      if (name === "v1") {
+        if (typeof c.sourceVideoId !== "string" || !c.sourceVideoId) out.push(`Clip "${c.label || c.id}" on V1 has no video.`);
+        if (!(Number(c.sourceOut) > Number(c.sourceIn))) out.push(`Clip "${c.label || c.id}" on V1 must end after it starts.`);
+      } else if (!isCaptionMarker(name, c) && !c.fill) {
+        if (!(Number(c.length) > 0)) out.push(`Clip "${c.label || c.id}" on ${name.toUpperCase()} must end after it starts.`);
+        if (typeof c.anchorId === "string" && !ids.has(c.anchorId)) out.push(`Clip "${c.label || c.id}" on ${name.toUpperCase()} hangs on a V1 clip that is gone.`);
+      }
+    }
+  }
+  return out;
+}
+
+/** V3 caption clips mark which transcript lines show captions; they are not placed in the edit by hand. */
+export const isCaptionMarker = (track: TrackName, c: Clip) => {
+  const x = c as Clip & { kind?: string; lineId?: string; graphicId?: string };
+  return track === "v3" && (x.kind === "caption" || (!x.kind && !!x.lineId && !x.graphicId));
+};
+
 /** Sorts clips, clamps them to the footage length, rounds times to 1/100 s and fixes audio keys. */
 export function normalizeTimeline(t: Timeline): Timeline {
   const r = (n: number) => Math.round(n * 100) / 100;
+  if (t.model === "B") return normalizeSequence(t);
   const tracks = {} as Tracks;
   for (const name of TRACK_NAMES) {
     (tracks as Record<string, Clip[]>)[name] = [...t.tracks[name]]
       .map((c) => canonicalAudio(name, { ...c, start: r(Math.max(0, Math.min(c.start, t.duration))), end: r(Math.max(0, Math.min(c.end, t.duration))) }))
       .filter((c) => c.end > c.start)
       .sort((a, b) => a.start - b.start || a.end - b.end);
+  }
+  return { ...t, cut: Array.from(new Set(t.cut)), tracks };
+}
+
+/**
+ * Model B: rounds the fields that decide the edit and fixes audio keys. V1 keeps its order (it is the sequence);
+ * main-footage clips stay inside the footage. Edit positions are written afterwards by the layout.
+ */
+function normalizeSequence(t: Timeline): Timeline {
+  const r = (n: number) => Math.round(n * 100) / 100;
+  const main = t.mainVideoId || "main";
+  const tracks = {} as Tracks;
+  for (const name of TRACK_NAMES) {
+    let clips = (t.tracks[name] as (Clip & Record<string, unknown>)[]).map((c) => canonicalAudio(name, { ...c }) as Clip & Record<string, unknown>);
+    if (name === "v1") {
+      clips = clips.map((c) => {
+        const vid = String(c.sourceVideoId || main);
+        const hi = vid === main ? t.duration : 24 * 3600;
+        const sIn = r(Math.max(0, Math.min(Number(c.sourceIn ?? c.start), hi))), sOut = r(Math.max(0, Math.min(Number(c.sourceOut ?? c.end), hi)));
+        const x: Clip & Record<string, unknown> = { ...c, sourceVideoId: vid, sourceIn: sIn, sourceOut: sOut };
+        if (x.audioStart != null) { const a = r(Number(x.audioStart)); if (a) x.audioStart = a; else delete x.audioStart; }
+        if (!x.audioMuted) delete x.audioMuted;
+        if (!x.rotate) delete x.rotate;
+        return x;
+      }).filter((c) => Number(c.sourceOut) - Number(c.sourceIn) >= 0.01);
+    } else if (name !== "a1") {
+      clips = clips.map((c) => {
+        const x: Clip & Record<string, unknown> = { ...c, start: r(Math.max(0, c.start)), end: r(Math.max(0, c.end)) };
+        // Attachment to 1/1000 s: a clip keeps its place and length within a frame through any number of saves.
+        const r3 = (n: number) => Math.round(n * 1000) / 1000;
+        if (x.length != null) x.length = r3(Number(x.length));
+        if (x.anchorAt != null) x.anchorAt = r3(Number(x.anchorAt));
+        return x;
+      }).filter((c) => isCaptionMarker(name, c) || c.fill || c.length == null || Number(c.length) >= 0.01);
+    }
+    (tracks as Record<string, Clip[]>)[name] = clips;
   }
   return { ...t, cut: Array.from(new Set(t.cut)), tracks };
 }

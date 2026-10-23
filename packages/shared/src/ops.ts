@@ -3,53 +3,75 @@ import { findMusic, MUSIC_TRACKS, SFX } from "./catalog";
 import type { Aspect } from "./constants";
 import { mergeRules, StyleRulesPatchSchema, type StyleRules } from "./styles";
 import {
-  AspectSchema, CaptionLookSchema, ClipSchema, RotationSchema, SnapshotSchema, TimelineSchema, TrackNameSchema,
+  AspectSchema, CaptionLookSchema, ClipSchema, FramingSchema, isCaptionMarker, RotationSchema, SnapshotSchema, TimelineSchema, TrackNameSchema,
   normalizeTimeline, timelineProblems,
-  type Clip, type Snapshot, type Timeline, type TrackName, type V2Clip,
+  type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
 } from "./timeline";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
 import {
-  deleteClip, EditError, fmtClock, keptRanges, layoutTimeline, LINKED_TRACK, makeTimeMap, mergeRanges, outputDuration,
-  removeFromMainCut, removeRangeFromTrack, setLink, splitClip, trimClip, withTracks, type Range,
+  asSequence, EditError, findClip, fmtClock, insertSeqClip, isPlainSequence, layoutTimeline, mainVideoOf, mergeRanges, moveSeqClip, newSeqClipId,
+  outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
+  type Attached, type Range, type SeqClip, type SequenceView,
 } from "./sequence";
 
 // ---------------------------------------------------------------------------------------------
 // Every change to a timeline is one of these ops. The UI sends `replace` (its autosave);
 // the AI sends the granular ones. applyOp() is pure; applyTimelineChange() in packages/core
-// is the only place that stores the result.
+// is the only place that stores the result. Every op works on the sequence (model B): an older timeline is
+// converted first (toModelB).
 // ---------------------------------------------------------------------------------------------
 
 const t = z.number().finite().min(0).max(24 * 3600);
+const by = z.number().finite().min(-3600).max(3600);
+/** edit: true = the op's times are seconds of the edit, not of the footage. */
+const edit = z.boolean().optional();
+const clipId = z.string().max(80);
 // The ops that change an edit step by step. An AI sends a list of them in one go (the `batch` op).
 const EDIT_OPS = [
-  // wordIds cut those words (restore_words brings them back); from/to removes exactly that footage range, words or not.
-  z.object({ op: z.literal("cut_words"), wordIds: z.array(z.string().max(40)).max(50_000).optional(), from: t.optional(), to: t.optional() }),
+  // wordIds cut those words (restore_words brings them back); from/to removes exactly that range, words or not.
+  z.object({ op: z.literal("cut_words"), wordIds: z.array(z.string().max(40)).max(50_000).optional(), from: t.optional(), to: t.optional(), edit }),
   z.object({ op: z.literal("restore_words"), wordIds: z.array(z.string().max(40)).max(50_000) }),
   // edges (default on): also the silence at the start and end of every V1 clip (longer than 0.3 s), whatever overSeconds.
   z.object({ op: z.literal("cut_silences"), overSeconds: z.number().min(0.1).max(30), edges: z.boolean().optional() }),
   z.object({ op: z.literal("remove_fillers") }),
-  // A clip without an id gets a new one; keep a clip's id to keep it the same clip. On V1 or A1 the other track
-  // gets the same clips too (picture and dialogue stay linked) unless linked is false.
-  z.object({ op: z.literal("set_clips"), track: TrackNameSchema, clips: z.array(ClipSchema.extend({ id: z.string().min(1).max(80).optional() }).passthrough()).max(4000), linked: z.boolean().optional() }),
-  // linked (default true): a V1 clip and its A1 dialogue change together.
-  z.object({ op: z.literal("split_clip"), track: TrackNameSchema, clipId: z.string().max(80), at: t, linked: z.boolean().optional() }),
-  z.object({ op: z.literal("trim_clip"), track: TrackNameSchema, clipId: z.string().max(80), start: t, end: t, linked: z.boolean().optional() }),
-  z.object({ op: z.literal("delete_clip"), track: TrackNameSchema, clipId: z.string().max(80), linked: z.boolean().optional() }),
-  // Unlink a V1 clip from its A1 dialogue (linked false), or link them again (true).
-  z.object({ op: z.literal("set_link"), track: TrackNameSchema, clipId: z.string().max(80), linked: z.boolean() }),
-  z.object({ op: z.literal("add_zoom"), start: t, end: t, scale: z.number().min(1.01).max(2) }),
-  z.object({ op: z.literal("add_broll"), videoId: z.string().max(80), start: t, end: t, sourceStart: t.default(0), label: z.string().max(200).optional() }),
+  // V1: the whole sequence, in order (start/end = footage of videoId, default the main footage). Keep a clip's id
+  // to keep that clip. Other tracks: their clips (footage times, or edit times with edit true).
+  z.object({ op: z.literal("set_clips"), track: TrackNameSchema, clips: z.array(ClipSchema.extend({ id: z.string().min(1).max(80).optional(), videoId: z.string().max(80).optional() }).passthrough()).max(4000), linked: z.boolean().optional(), edit }),
+  // V1 clip times are that clip's own footage (or edit times with edit true).
+  z.object({ op: z.literal("split_clip"), track: TrackNameSchema, clipId, at: t, linked: z.boolean().optional(), edit }),
+  z.object({ op: z.literal("trim_clip"), track: TrackNameSchema, clipId, start: t, end: t, linked: z.boolean().optional(), edit }),
+  z.object({ op: z.literal("delete_clip"), track: TrackNameSchema, clipId, linked: z.boolean().optional() }),
+  // Model A only (picture and dialogue linked by matching times); in the sequence dialogue always follows its picture.
+  z.object({ op: z.literal("set_link"), track: TrackNameSchema, clipId, linked: z.boolean() }),
+  z.object({ op: z.literal("add_zoom"), start: t, end: t, scale: z.number().min(1.01).max(2), edit }),
+  z.object({ op: z.literal("add_broll"), videoId: z.string().max(80), start: t, end: t, sourceStart: t.default(0), label: z.string().max(200).optional(), edit }),
   z.object({ op: z.literal("set_captions"), on: z.boolean(), look: CaptionLookSchema.optional() }),
   z.object({ op: z.literal("edit_caption"), lineId: z.string().max(40), text: z.string().max(2000) }),
-  z.object({ op: z.literal("add_music"), trackId: z.string().max(80), gainDb: z.number().min(-40).max(6).optional(), start: t.optional(), end: t.optional() }),
-  z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), label: z.string().max(200).optional() }),
+  z.object({ op: z.literal("add_music"), trackId: z.string().max(80), gainDb: z.number().min(-40).max(6).optional(), start: t.optional(), end: t.optional(), edit }),
+  z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), label: z.string().max(200).optional(), edit }),
   z.object({ op: z.literal("set_aspect"), aspect: AspectSchema }),
   // Position and scale of the footage in the frame (Premiere's Motion). Leave a field out to keep it.
-  z.object({ op: z.literal("set_framing"), scale: z.number().min(0.25).max(4).optional(), x: z.number().min(-1).max(1).optional(), y: z.number().min(-1).max(1).optional() }),
+  // clipIds: those V1 clips (default every clip of the main footage).
+  z.object({ op: z.literal("set_framing"), scale: z.number().min(0.25).max(4).optional(), x: z.number().min(-1).max(1).optional(), y: z.number().min(-1).max(1).optional(), clipIds: z.array(clipId).max(2000).optional() }),
   // Turn the footage clockwise (footage filmed sideways); 0 puts it back.
-  z.object({ op: z.literal("set_rotation"), degrees: RotationSchema }),
+  z.object({ op: z.literal("set_rotation"), degrees: RotationSchema, clipIds: z.array(clipId).max(2000).optional() }),
   z.object({ op: z.literal("rename"), name: z.string().min(1).max(200) }),
   z.object({ op: z.literal("apply_style"), styleId: z.string().max(80), overrides: StyleRulesPatchSchema.optional() }),
+  // ---- the sequence ----
+  // A clip of any video (default the main footage) into V1: at position `index`, or at edit time `at` (a clip
+  // playing there is split), else at the end.
+  z.object({ op: z.literal("add_clip"), videoId: z.string().max(80).optional(), from: t, to: t, index: z.number().int().min(0).max(4000).optional(), at: t.optional(), label: z.string().max(200).optional() }),
+  // Reorder: to position `index` (0 = first) or to the cut nearest edit time `at`.
+  z.object({ op: z.literal("move_clip"), clipId, index: z.number().int().min(0).max(4000).optional(), at: t.optional() }),
+  // J/L cuts. start -0.5: the clip's sound starts 0.5 s before its picture (J); end 0.5: its sound runs 0.5 s into
+  // the next clip (L). muted: no sound.
+  z.object({ op: z.literal("set_audio_offset"), clipId, start: by.optional(), end: by.optional(), muted: z.boolean().optional() }),
+  // Rolling edit: the cut after clipId moves by `by` seconds (the clip gets longer, the next one shorter).
+  z.object({ op: z.literal("roll_edit"), clipId, by }),
+  // Slip: same place and length, footage `by` seconds later.
+  z.object({ op: z.literal("slip_clip"), clipId, by }),
+  // Slide: same footage, `by` seconds later in the edit (the clip before gets longer, the one after shorter).
+  z.object({ op: z.literal("slide_clip"), clipId, by }),
 ] as const;
 export const EditOpSchema = z.discriminatedUnion("op", [...EDIT_OPS]);
 export const EDIT_OP_NAMES = EDIT_OPS.map((o) => o.shape.op.value) as [EditOp["op"], ...EditOp["op"][]];
@@ -66,7 +88,7 @@ export type StyleLite = { id: string; name: string; captionLook: "clean" | "bold
 export type GraphicLite = { id: string; name: string; durationSec: number };
 export type VideoLite = { id: string; name: string; seconds: number; ready: boolean };
 export type EditContext = {
-  /** The project's footage: written on every clip as the video it plays (see layoutTimeline). */
+  /** The project's footage (the sequence's main video). */
   videoId?: string;
   transcript: Transcript;
   silences: Silence[];
@@ -75,6 +97,8 @@ export type EditContext = {
   getStyle: (id: string) => StyleLite | undefined;
   getVideo?: (id: string) => VideoLite | undefined;
   getGraphic?: (id: string) => GraphicLite | undefined;
+  /** Other videos on V1: their transcripts and silences (cut_silences works on them too). */
+  sources?: Record<string, { transcript: Transcript; silences: Silence[] }>;
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -96,23 +120,25 @@ export function paragraphs(tr: Transcript, { gap = 1.5, maxLen = 30 } = {}): Lin
   return out;
 }
 
-export function buildInitialTimeline(tr: Transcript, duration: number, captionLook: "clean" | "bold" | "outline", cut: string[] = []): Timeline {
+/** One V1 clip per paragraph, cut in the middle of the pauses between them (footage seconds). */
+function paragraphClips(tr: Transcript, duration: number): Clip[] {
   const dur = r2(Math.max(0.5, duration));
   const paras = paragraphs(tr);
+  if (!paras.length) return [{ id: "vc1", start: 0, end: dur, label: "Main" }];
   const v1: Clip[] = [];
-  const a1: Clip[] = [];
-  if (!paras.length) {
-    v1.push({ id: "vc1", start: 0, end: dur, label: "Main" });
-    a1.push({ id: "d1", start: 0, end: dur, label: "Dialogue" });
-  } else {
-    paras.forEach((p, i) => {
-      const start = i === 0 ? 0 : r2((paras[i - 1][paras[i - 1].length - 1].end + p[0].start) / 2);
-      const end = i === paras.length - 1 ? dur : r2((p[p.length - 1].end + paras[i + 1][0].start) / 2);
-      if (end - start < 0.05) return;
-      v1.push({ id: "vc" + (i + 1), start, end, label: firstWords(p[0]) });
-      a1.push({ id: "d" + (i + 1), start, end, label: "Dialogue" });
-    });
-  }
+  paras.forEach((p, i) => {
+    const start = i === 0 ? 0 : r2((paras[i - 1][paras[i - 1].length - 1].end + p[0].start) / 2);
+    const end = i === paras.length - 1 ? dur : r2((p[p.length - 1].end + paras[i + 1][0].start) / 2);
+    if (end - start >= 0.05) v1.push({ id: "vc" + (i + 1), start, end, label: firstWords(p[0]) });
+  });
+  return v1;
+}
+
+/** The first timeline as model A stored it (kept for the migration and its tests). */
+export function buildInitialTimelineA(tr: Transcript, duration: number, captionLook: "clean" | "bold" | "outline", cut: string[] = []): Timeline {
+  const dur = r2(Math.max(0.5, duration));
+  const v1 = paragraphClips(tr, dur);
+  const a1 = v1.map((c, i) => ({ id: "d" + (i + 1), start: c.start, end: c.end, label: "Dialogue" }));
   const v3 = tr.map((l, i) => ({ id: "cap" + i, start: l.start, end: r2(Math.min(dur, Math.max(l.end, l.start + 0.6))), label: firstWords(l), kind: "caption" as const, lineId: l.id }));
   return normalizeTimeline({
     duration: dur,
@@ -122,6 +148,11 @@ export function buildInitialTimeline(tr: Transcript, duration: number, captionLo
     captionText: Object.fromEntries(tr.map((l) => [l.id, l.words.map((w) => w.text).join(" ")])),
     tracks: { v1, v2: [], v3, a1, a2: [], a3: [] },
   });
+}
+
+/** The first sequence for new footage: one clip per paragraph, in footage order, captions on. */
+export function buildInitialTimeline(tr: Transcript, duration: number, captionLook: "clean" | "bold" | "outline", cut: string[] = [], videoId = "main"): Timeline {
+  return toModelB(buildInitialTimelineA(tr, duration, captionLook, cut), allWords(tr), videoId);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -138,59 +169,77 @@ export function pauseRanges(words: Word[], over: number, pad = 0.08): Range[] {
   return out.filter((x) => x.end - x.start > 0.05);
 }
 
-
-
+const EDGE_SILENCE = 0.3;
 /**
- * The silence at the start and end of every V1 clip, before its first and after its last spoken word, when longer
- * than 0.3 s: each cut then sits right on the speech. Small pads keep the breath before the first word and the
- * tail of the last one.
+ * The silence at the start and end of every V1 clip of a video, before its first and after its last spoken word,
+ * when longer than 0.3 s: each cut then sits right on the speech. Small pads keep the breath before the first word
+ * and the tail of the last one. Footage seconds of that clip.
  */
-export function clipEdgeSilences(tl: Timeline, words: Word[]): Range[] {
-  const cut = new Set(tl.cut);
-  const out: Range[] = [];
-  for (const c of tl.tracks.v1) {
-    const inside = words.filter((w) => !cut.has(w.id) && w.end > c.start && w.t < c.end);
+export function clipEdgeSilences(tl: Timeline, words: Word[], videoId = mainVideoOf(tl)): (Range & { clipId: string })[] {
+  const cut = new Set(videoId === mainVideoOf(tl) ? tl.cut : []);
+  const out: (Range & { clipId: string })[] = [];
+  for (const c of tl.tracks.v1 as SeqClip[]) {
+    if (c.sourceVideoId !== videoId) continue;
+    const inside = words.filter((w) => !cut.has(w.id) && w.end > c.sourceIn && w.t < c.sourceOut);
     if (!inside.length) continue; // a clip with no words: the audio's own silences decide (fromAudio)
     const first = inside[0], last = inside[inside.length - 1];
-    if (first.t - c.start > EDGE_SILENCE) out.push({ start: c.start, end: r2(first.t - 0.1) });
-    if (c.end - last.end > EDGE_SILENCE) out.push({ start: r2(last.end + 0.15), end: c.end });
+    if (first.t - c.sourceIn > EDGE_SILENCE) out.push({ clipId: c.id, start: c.sourceIn, end: r2(first.t - 0.1) });
+    if (c.sourceOut - last.end > EDGE_SILENCE) out.push({ clipId: c.id, start: r2(last.end + 0.15), end: c.sourceOut });
   }
   return out;
 }
-const EDGE_SILENCE = 0.3;
 
-function linesOutsideCuts(tr: Transcript, tl: Timeline) {
+/** Transcript lines with a word that plays in the edit, with the edit time of the line's start. */
+function linesInEdit(tr: Transcript, tl: Timeline, view: SequenceView): { line: Line; at: number; end: number }[] {
   const cut = new Set(tl.cut);
-  const kept = keptRanges(tl, allWords(tr));
-  const inKept = (time: number) => kept.some((k) => time >= k.start && time < k.end);
-  return tr.filter((l) => l.words.some((w) => !cut.has(w.id) && inKept(w.t)));
+  const main = view.mainVideoId;
+  const plays = (w: Word) => !cut.has(w.id) && view.pieces.some((p) => p.videoId === main && w.t >= p.srcIn && w.t < p.srcOut);
+  return tr.filter((l) => l.words.some(plays)).map((l) => ({ line: l, at: view.videoToEdit(main, l.start) ?? 0, end: view.videoToEdit(main, l.end) ?? 0 }));
 }
 
 function zoomClip(start: number, end: number, scale: number, mode: "punch" | "push", auto = false): V2Clip {
   return { id: rid("z"), start: r2(start), end: r2(end), label: `${mode === "push" ? "Push" : "Zoom"} ${Math.round(scale * 100)}%`, kind: "zoom", zoom: scale, mode, ...(auto ? { auto: true } : {}) } as V2Clip;
 }
 
+/** A clip for another track, placed at edit seconds s..e: it hangs on the V1 clip playing at s. */
+function attachAt<T extends Clip>(view: SequenceView, c: T, s: number, e: number): T {
+  const a = view.anchorFor(s);
+  if (!a) throw new EditError("The sequence is empty: add a clip to V1 first.");
+  return { ...c, start: r2(s), end: r2(e), anchorId: a.anchorId, anchorAt: r2(a.anchorAt), length: r2(e - s) } as T;
+}
+
+const seqClips = (tl: Timeline) => tl.tracks.v1 as SeqClip[];
+const setSeq = (tl: Timeline, v1: SeqClip[]) => withTracks(tl, "v1", v1);
+const mapClip = (tl: Timeline, id: string, f: (c: SeqClip) => SeqClip) => setSeq(tl, seqClips(tl).map((c) => (c.id === id ? f(c) : c)));
+const name = (c: Clip) => c.label || c.id;
+
 // ---------------------------------------------------------------------------------------------
-// applyStyle: the machine-readable rules in action. Server side, deterministic, no AI.
+// applyStyle: the machine-readable rules in action. Server side, deterministic, no AI. A plain cut of the footage
+// starts again from the paragraph cut (so switching styles does not stack old silence cuts); a sequence that was
+// rearranged or mixes videos is kept, and only gets the cuts.
 // ---------------------------------------------------------------------------------------------
 function applyStyleRules(snap: Snapshot, style: StyleLite, ctx: EditContext): { snap: Snapshot; summary: string } {
   const rules = style.rules;
   const words = allWords(ctx.transcript);
+  const main = mainVideoOf(snap.timeline);
   let tl: Timeline = { ...snap.timeline };
   const did: string[] = [];
 
-  // Start from the clean paragraph cut so switching styles does not stack old silence cuts.
-  const fresh = buildInitialTimeline(ctx.transcript, ctx.duration, rules.captions.look, tl.cut);
-  tl = { ...tl, tracks: { ...tl.tracks, v1: fresh.tracks.v1, a1: fresh.tracks.a1 } };
+  if (isPlainSequence(tl)) {
+    const before = tl;
+    const look = seqClips(tl)[0] ? { ...(seqClips(tl)[0].rotate ? { rotate: seqClips(tl)[0].rotate } : {}), ...(plainFraming(seqClips(tl)[0].framing) ? { framing: seqClips(tl)[0].framing } : {}) } : {};
+    tl = setSeq(tl, paragraphClips(ctx.transcript, ctx.duration).map((c) => ({ ...c, sourceVideoId: main, sourceIn: c.start, sourceOut: c.end, ...look }) as SeqClip));
+    tl = reattach(before, tl, words);
+  }
   // Drop what an earlier style added automatically; keep everything people or the AI placed by hand.
   const notAuto = <T extends Clip>(c: T) => !(c as Record<string, unknown>).auto;
   tl = { ...tl, tracks: { ...tl.tracks, v2: tl.tracks.v2.filter(notAuto), a2: tl.tracks.a2.filter(notAuto), a3: tl.tracks.a3.filter(notAuto) } };
 
   if (rules.trimEdges && words.length) {
+    const before = tl;
     const a = Math.max(0, words[0].t - 0.15), b = Math.min(ctx.duration, words[words.length - 1].end + 0.3);
-    let v1 = removeRangeFromTrack(tl.tracks.v1, 0, a); v1 = removeRangeFromTrack(v1, b, ctx.duration + 1);
-    let a1 = removeRangeFromTrack(tl.tracks.a1, 0, a); a1 = removeRangeFromTrack(a1, b, ctx.duration + 1);
-    tl = { ...tl, tracks: { ...tl.tracks, v1, a1 } };
+    tl = removeSourceRange(removeSourceRange(tl, main, 0, a), main, b, ctx.duration + 1);
+    tl = reattach(before, tl, words);
     did.push("trimmed the start and end");
   }
   if (rules.cutSilencesOver != null) {
@@ -204,50 +253,47 @@ function applyStyleRules(snap: Snapshot, style: StyleLite, ctx: EditContext): { 
     if (r.count) did.push(`removed ${r.count} filler ${r.count === 1 ? "word" : "words"}`);
   }
 
-  // Zooms follow the kept footage so they land on what people will actually see.
-  const zooms: V2Clip[] = [];
-  const kept = keptRanges(tl, words);
-  const map = makeTimeMap(kept);
+  // Zooms land on what people will actually see (edit seconds).
+  const view = sequenceView(tl, words);
+  const total = view.total;
+  const spans: { s: number; e: number; mode: "punch" | "push" }[] = [];
   const z = rules.zoom;
   if (z.mode === "newSentence") {
     let lastAt = -99;
-    for (const l of linesOutsideCuts(ctx.transcript, tl)) {
-      const at = l.start;
-      if (map.toOutput(at) - lastAt < 2) continue;
-      const end = Math.min(l.end, at + (z.holdSec ?? 1.6));
+    for (const { line, at } of linesInEdit(ctx.transcript, tl, view)) {
+      if (at - lastAt < 2) continue;
+      const end = view.videoToEdit(main, Math.min(line.end, line.start + (z.holdSec ?? 1.6))) ?? at;
       if (end - at < 0.3) continue;
-      zooms.push(zoomClip(at, end, z.scale, "punch", true));
-      lastAt = map.toOutput(at);
+      spans.push({ s: at, e: end, mode: "punch" });
+      lastAt = at;
     }
-  } else if (z.mode === "interval" && map.total > 0) {
+  } else if (z.mode === "interval" && total > 0) {
     const every = z.everySec ?? 3, hold = z.holdSec ?? Math.min(1.5, every / 2);
-    for (let o = every; o < map.total - 0.3; o += every) {
-      const a = map.toSource(o), b = map.toSource(Math.min(map.total, o + hold));
-      if (b - a > 0.2) zooms.push(zoomClip(a, b, z.scale, "punch", true));
-    }
-  } else if (z.mode === "slowPush" && kept.length) {
-    for (const k of kept) if (k.end - k.start > 1.5) zooms.push(zoomClip(k.start, k.end, z.scale, "push", true));
-  } else if (z.mode === "count" && map.total > 0) {
+    for (let o = every; o < total - 0.3; o += every) if (Math.min(total, o + hold) - o > 0.2) spans.push({ s: o, e: Math.min(total, o + hold), mode: "punch" });
+  } else if (z.mode === "slowPush") {
+    for (const p of view.picture) if (p.end - p.start > 1.5) spans.push({ s: p.start, e: p.end, mode: "push" });
+  } else if (z.mode === "count" && total > 0) {
     // Exactly `count` zooms on sentence starts, picked evenly across the edit (evenly spaced moments without speech).
     const n = z.count ?? 3, hold = z.holdSec ?? 1.6;
     const starts: { at: number; end: number }[] = [];
     let lastAt = -99;
-    for (const l of linesOutsideCuts(ctx.transcript, tl)) {
-      if (map.toOutput(l.start) - lastAt < 1.5) continue;
-      starts.push({ at: l.start, end: Math.min(l.end, l.start + hold) });
-      lastAt = map.toOutput(l.start);
+    for (const { line, at } of linesInEdit(ctx.transcript, tl, view)) {
+      if (at - lastAt < 1.5) continue;
+      starts.push({ at, end: view.videoToEdit(main, Math.min(line.end, line.start + hold)) ?? at });
+      lastAt = at;
     }
     const picks = starts.length >= n
       ? Array.from({ length: n }, (_, k) => starts[Math.min(starts.length - 1, Math.floor(((k + 0.5) * starts.length) / n))])
-      : Array.from({ length: n }, (_, k) => { const o = (map.total * (k + 0.5)) / n; return { at: map.toSource(o), end: map.toSource(Math.min(map.total, o + hold)) }; });
-    for (const p of picks) if (p.end - p.at > 0.2) zooms.push(zoomClip(p.at, p.end, z.scale, "punch", true));
+      : Array.from({ length: n }, (_, k) => { const o = (total * (k + 0.5)) / n; return { at: o, end: Math.min(total, o + hold) }; });
+    for (const p of picks) if (p.end - p.at > 0.2) spans.push({ s: p.at, e: p.end, mode: "punch" });
   }
+  const zooms = spans.map((x) => attachAt(view, zoomClip(x.s, x.e, z.scale, x.mode, true), x.s, x.e));
   if (zooms.length) did.push(`added ${zooms.length} ${zooms.length === 1 ? "zoom" : "zooms"}`);
   const sfx = rules.sfxOnZoom ? SFX.find((s) => s.id === rules.sfxOnZoom) : undefined;
-  const sfxClips = sfx ? zooms.filter((x) => (x as Record<string, unknown>).mode === "punch").map((x) => ({ id: rid("x"), start: x.start, end: r2(Math.min(ctx.duration, x.start + sfx.seconds)), label: sfx.name, sfxId: sfx.id, assetKey: sfx.key, auto: true })) : [];
+  const sfxClips = sfx ? zooms.filter((x) => (x as Record<string, unknown>).mode === "punch").map((x) => attachAt(view, { id: rid("x"), start: 0, end: 0, label: sfx.name, sfxId: sfx.id, assetKey: sfx.key, auto: true } as Clip, x.start, x.start + sfx.seconds)) : [];
 
   const music = rules.music.mood ? findMusic(rules.music.mood) : undefined;
-  const musicClips = music ? [{ id: rid("m"), start: 0, end: r2(ctx.duration), label: music.name, trackId: music.id, assetKey: music.key, gainDb: rules.music.gainDb, auto: true }] : [];
+  const musicClips = music ? [{ id: rid("m"), start: 0, end: r2(total), label: music.name, trackId: music.id, assetKey: music.key, gainDb: rules.music.gainDb, auto: true, fill: true }] : [];
   if (music) did.push(`music ${music.name}`);
 
   tl = {
@@ -266,9 +312,63 @@ function applyStyleRules(snap: Snapshot, style: StyleLite, ctx: EditContext): { 
 type Inner = { snap: Snapshot; summary: string; count?: number };
 
 function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
+  if (op.op === "batch") {
+    // One version for the whole list; the first edit that cannot be made stops it, so nothing half-done is saved.
+    let cur = snap;
+    const did: string[] = [];
+    op.ops.forEach((o, i) => {
+      try {
+        const r = applyOpInner(cur, o, ctx);
+        cur = r.snap;
+        did.push(r.summary);
+      } catch (e) {
+        if (e instanceof EditError && op.ops.length > 1) throw new EditError(`Edit ${i + 1} (${o.op}): ${e.message} Nothing was changed.`);
+        throw e;
+      }
+    });
+    return { snap: cur, summary: did.join("; ") };
+  }
+  const words = allWords(ctx.transcript);
+  const r = applyLeaf(snap, op, ctx);
+  // A replaced or restored timeline may be an older one: it becomes a sequence too.
+  const tl = asSequence(r.snap.timeline, words, ctx.videoId);
+  // Clips on other tracks whose V1 clip went away are put back by their footage.
+  return { ...r, snap: { ...r.snap, timeline: reattach(snap.timeline, normalizeTimeline(tl), words) } };
+}
+
+function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditContext): Inner {
   const tl = snap.timeline;
   const words = allWords(ctx.transcript);
   const wordById = new Map(words.map((w) => [w.id, w]));
+  const main = mainVideoOf(tl);
+  let viewCache: SequenceView | null = null;
+  const view = () => (viewCache ??= sequenceView(tl, words));
+  /** A time the op sent: edit seconds with edit true, else main-footage seconds (where that footage first plays). */
+  const toEdit = (x: number, isEdit?: boolean) => (isEdit ? Math.min(x, view().total) : view().videoToEdit(main, x) ?? 0);
+  const videoIdOf = (v?: string) => (!v || v === "main" ? main : v);
+  const secondsOf = (vid: string) => (vid === main ? ctx.duration : ctx.getVideo?.(vid)?.seconds);
+  const wordsOf = (vid: string) => (vid === main ? words : allWords(ctx.sources?.[vid]?.transcript ?? []));
+  const lookOf = (vid: string) => {
+    const c = seqClips(tl).find((x) => x.sourceVideoId === vid);
+    return c ? { ...(c.rotate ? { rotate: c.rotate } : {}), ...(plainFraming(c.framing) ? { framing: c.framing } : {}) } : {};
+  };
+  /** A video for V1: the main footage, or a ready video of the user's. */
+  const footage = (vid: string) => {
+    if (vid === main) return { name: "the footage", seconds: ctx.duration };
+    const v = ctx.getVideo?.(vid);
+    if (!v) throw new EditError(`Video "${vid}" is not in your library. Use list_footage for the ids.`);
+    if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
+    return { name: `"${v.name}"`, seconds: v.seconds };
+  };
+  const inFootage = (vid: string, a: number, b: number) => {
+    const f = footage(vid);
+    if (!(b > a)) throw new EditError("The clip must end after it starts.");
+    if (b > f.seconds + 0.05) throw new EditError(`${f.name} is only ${f.seconds.toFixed(1)}s long.`);
+    return f;
+  };
+  const v1Footage = (x: Timeline) => seqClips(x).reduce((a, c) => a + c.sourceOut - c.sourceIn, 0);
+  const at2 = (s: number) => s.toFixed(2);
+
   switch (op.op) {
     case "replace": {
       // The editor sends the whole timeline. Keep the server's duration: the footage length never changes.
@@ -288,12 +388,14 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
         parts.push(ws.length === 1 ? `cut the word "${ws[0].text}" at ${fmtClock(ws[0].t)}` : `cut ${fmtClock(ws[0].t)} to ${fmtClock(ws[ws.length - 1].end)} (${added} ${added === 1 ? "word" : "words"})`);
       }
       if (range) {
-        // Exactly this footage range leaves the main cut (picture and dialogue), whether or not anyone speaks in it.
+        // Exactly this range leaves the sequence (picture and dialogue), whether or not anyone speaks in it: footage of
+        // the main video wherever it plays, or with edit true that stretch of the edit.
         const before = outputDuration(next, words);
-        next = removeFromMainCut(next, range.start, range.end);
+        next = op.edit ? removeEditRange(next, words, range.start, range.end) : removeSourceRange(next, main, range.start, range.end);
         const gone = before - outputDuration(next, words);
-        const inside = words.filter((w) => w.t >= range.start && w.end <= range.end).length;
-        parts.push(gone > 0.01 ? `cut ${range.start.toFixed(2)}s to ${range.end.toFixed(2)}s (${gone.toFixed(2)}s${inside ? `, ${inside} ${inside === 1 ? "word" : "words"}` : ", no words"})` : `${range.start.toFixed(2)}s to ${range.end.toFixed(2)}s was already out of the edit`);
+        const inside = op.edit ? 0 : words.filter((w) => w.t >= range.start && w.end <= range.end).length;
+        const where = `${op.edit ? "edit " : ""}${at2(range.start)}s to ${at2(range.end)}s`;
+        parts.push(gone > 0.01 ? `cut ${where} (${gone.toFixed(2)}s${op.edit ? "" : inside ? `, ${inside} ${inside === 1 ? "word" : "words"}` : ", no words"})` : `${where} was already out of the edit`);
       }
       return { snap: { ...snap, timeline: next }, summary: parts.join("; "), count: added };
     }
@@ -304,21 +406,25 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
       return { snap: { ...snap, timeline: { ...tl, cut } }, summary: `restored ${n} ${n === 1 ? "word" : "words"}`, count: n };
     }
     case "cut_silences": {
-      const pauses = pauseRanges(words, op.overSeconds);
-      // Long silences the transcript cannot see (no words at all) come from the audio analysis.
-      const fromAudio = ctx.silences.filter((s) => s.end - s.start > op.overSeconds && !words.some((w) => w.t < s.end && w.end > s.start))
-        .map((s) => ({ start: r2(s.start + 0.08), end: r2(s.end - 0.08) }));
-      const edges = op.edges === false ? [] : clipEdgeSilences(tl, words);
-      const ranges = mergeRanges([...pauses, ...fromAudio, ...edges]);
+      // Every video on V1 whose transcript Rendrr has: the main footage, and the others in ctx.sources.
+      const videos = Array.from(new Set(seqClips(tl).map((c) => c.sourceVideoId))).filter((v) => v === main || ctx.sources?.[v]);
       let next = tl;
       let removed = 0, n = 0;
       const done: Range[] = [];
-      const v1Len = (x: Timeline) => x.tracks.v1.reduce((a, c) => a + c.end - c.start, 0);
-      for (const g of ranges) {
-        const before = v1Len(next);
-        next = removeFromMainCut(next, g.start, g.end);
-        const diff = before - v1Len(next);
+      const take = (f: () => Timeline, g: Range) => {
+        const before = v1Footage(next);
+        next = f();
+        const diff = before - v1Footage(next);
         if (diff > 0.01) { removed += diff; n++; done.push(g); }
+      };
+      for (const vid of videos) {
+        const ws = wordsOf(vid);
+        const sil = vid === main ? ctx.silences : ctx.sources![vid].silences;
+        // Each clip's own start and end first (they only shorten clips), then the pauses wherever they play.
+        if (op.edges !== false) for (const g of clipEdgeSilences(next, ws, vid)) take(() => removeSourceRange(next, vid, g.start, g.end, g.clipId), g);
+        // Long silences the transcript cannot see (no words at all) come from the audio analysis.
+        const fromAudio = sil.filter((s) => s.end - s.start > op.overSeconds && !ws.some((w) => w.t < s.end && w.end > s.start)).map((s) => ({ start: r2(s.start + 0.08), end: r2(s.end - 0.08) }));
+        for (const g of mergeRanges([...pauseRanges(ws, op.overSeconds), ...fromAudio])) take(() => removeSourceRange(next, vid, g.start, g.end), g);
       }
       const summary = n === 0 ? `no pauses over ${op.overSeconds}s left to cut` : n === 1 ? `cut ${fmtClock(done[0].start)} to ${fmtClock(done[0].end)} (silence, ${removed.toFixed(1)}s)` : `cut ${n} silences over ${op.overSeconds}s (${removed.toFixed(1)}s total)`;
       return { snap: { ...snap, timeline: next }, summary, count: n };
@@ -328,41 +434,115 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
       return { snap: { ...snap, timeline: { ...tl, cut: [...tl.cut, ...ids] } }, summary: ids.length ? `removed ${ids.length} filler ${ids.length === 1 ? "word" : "words"}` : "no filler words left to remove", count: ids.length };
     }
     case "set_clips": {
-      const clips = op.clips.map((c, i) => ({ ...c, id: c.id || rid(op.track + "_" + i) }));
-      let next = withTracks(tl, op.track, clips as Clip[]);
-      const other = op.linked === false ? undefined : LINKED_TRACK[op.track];
-      if (other) next = withTracks(next, other, clips.map((c, i) => ({ id: rid(other + "_" + i), start: c.start, end: c.end, label: other === "a1" ? "Dialogue" : c.label || "Main" })));
-      return { snap: { ...snap, timeline: next }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on ${op.track.toUpperCase()}${other ? ` and ${other.toUpperCase()}` : ""}` };
+      if (op.track === "a1" && op.linked === false) throw new EditError("In the sequence the dialogue follows its picture. Use set_audio_offset for J/L cuts or to mute a clip.");
+      if (op.track === "v1" || op.track === "a1") {
+        // The whole sequence, in this order.
+        const old = new Map(seqClips(tl).map((c) => [c.id, c]));
+        const used = new Set<string>();
+        const taken = new Set([...old.keys(), ...op.clips.map((c) => c.id).filter(Boolean) as string[]]);
+        const freshId = () => { let id = rid("vc_"); while (taken.has(id)) id = rid("vc_"); taken.add(id); return id; };
+        const clips = op.clips.map((c) => {
+          const { videoId: v, id: _id, start, end, timelineStart: _a, timelineEnd: _b, linkId: _l, ...extra } = c as typeof c & Record<string, unknown>;
+          const vid = videoIdOf((v as string | undefined) ?? (extra.sourceVideoId as string | undefined));
+          inFootage(vid, start, end);
+          const prev = c.id && !used.has(c.id) ? old.get(c.id) : undefined;
+          const id = c.id && !used.has(c.id) ? c.id : freshId();
+          used.add(id);
+          return { ...(prev ?? lookOf(vid)), ...extra, id, label: c.label ?? prev?.label ?? "", start, end, sourceVideoId: vid, sourceIn: r2(start), sourceOut: r2(end) } as SeqClip;
+        });
+        return { snap: { ...snap, timeline: setSeq(tl, clips) }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on V1` };
+      }
+      // Another track: each clip hangs on the V1 clip playing at its start.
+      let dropped = 0;
+      const clips: Clip[] = [];
+      op.clips.forEach((c, i) => {
+        const base = { ...c, id: c.id || rid(op.track + "_" + i) } as Clip;
+        if (isCaptionMarker(op.track, base)) { clips.push({ ...base, sourceVideoId: main, sourceIn: c.start, sourceOut: c.end } as Clip); return; }
+        const s = toEdit(c.start, op.edit), e = op.track === "a3" && !op.edit ? s + Math.max(0.1, c.end - c.start) : toEdit(c.end, op.edit);
+        if (e - s < 0.05 || s >= view().total) { dropped++; return; }
+        const { anchorId: _x, anchorAt: _y, length: _z, fill: _f, ...rest } = base as Attached;
+        clips.push(attachAt(view(), rest as Clip, s, e));
+      });
+      return { snap: { ...snap, timeline: withTracks(tl, op.track, clips) }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on ${op.track.toUpperCase()}${dropped ? ` (${dropped} not in the edit, left out)` : ""}` };
     }
     case "split_clip": {
-      const r = splitClip(tl, op.track, op.clipId, op.at, { linked: op.linked });
-      return { snap: { ...snap, timeline: r.tl }, summary: r.summary };
+      if (op.track === "v1" || op.track === "a1") {
+        if (op.track === "a1" && op.linked === false) throw new EditError("In the sequence the dialogue follows its picture: split the V1 clip.");
+        findClip(tl, "v1", op.clipId);
+        const at = op.edit ? view().editToSource(op.clipId, op.at) : op.at;
+        const r = splitSeqClip(tl, op.clipId, at);
+        const c = findClip(tl, "v1", op.clipId);
+        return { snap: { ...snap, timeline: r.tl }, summary: `split ${name(c)} at ${op.edit ? "edit " : ""}${fmtClock(op.at)} (second half is clip ${r.newId})` };
+      }
+      const c = findClip(tl, op.track, op.clipId) as Attached;
+      if (isCaptionMarker(op.track, c)) throw new EditError("Caption clips follow their transcript line; they cannot be split.");
+      const lay = placeOf(view(), c);
+      const at = toEdit(op.at, op.edit);
+      if (!(at > lay.s + 0.05 && at < lay.e - 0.05)) throw new EditError(`Split time must be inside the clip (edit ${at2(lay.s)}s to ${at2(lay.e)}s).`);
+      const first = c.fill ? attachAt(view(), { ...c, fill: undefined } as Clip, lay.s, at) : { ...c, length: r2(at - lay.s) };
+      const second = attachAt(view(), { ...c, fill: undefined, id: rid(op.track + "_"), label: label2(c.label) } as Clip, at, lay.e);
+      const clips = (tl.tracks[op.track] as Clip[]).flatMap((x) => (x.id === c.id ? [first as Clip, second] : [x]));
+      return { snap: { ...snap, timeline: withTracks(tl, op.track, clips) }, summary: `split ${name(c)} at edit ${fmtClock(at)} (second half is clip ${second.id})` };
     }
     case "trim_clip": {
-      const r = trimClip(tl, op.track, op.clipId, op.start, op.end, { linked: op.linked });
-      return { snap: { ...snap, timeline: r.tl }, summary: r.summary };
+      if (!(op.end > op.start)) throw new EditError("The new end must be after the new start.");
+      if (op.track === "a1" && op.linked === false) {
+        // Dialogue trimmed on its own: the cuts between its sound and its neighbours' move (J/L).
+        const c = findClip(tl, "v1", op.clipId) as SeqClip;
+        const p = view().clip(c.id)!;
+        const i = seqClips(tl).findIndex((x) => x.id === c.id);
+        const startOff = op.edit ? op.start - p.start : op.start - c.sourceIn;
+        const endOff = op.edit ? op.end - p.end : op.end - c.sourceOut;
+        return applyLeaf(snap, { op: "set_audio_offset", clipId: c.id, ...(i > 0 ? { start: r2(startOff) } : {}), ...(i < seqClips(tl).length - 1 ? { end: r2(endOff) } : {}) }, ctx);
+      }
+      if (op.track === "v1" || op.track === "a1") {
+        const c = findClip(tl, "v1", op.clipId) as SeqClip;
+        const a = op.edit ? view().editToSource(c.id, op.start) : op.start, b = op.edit ? view().editToSource(c.id, op.end) : op.end;
+        if (a < -0.005) throw new EditError(`The footage starts at 0s; ${name(c)} cannot start ${(-a).toFixed(2)}s before it.`);
+        inFootage(c.sourceVideoId, Math.max(0, a), b);
+        const next = mapClip(tl, c.id, (x) => ({ ...x, sourceIn: r2(Math.max(0, a)), sourceOut: r2(b) }));
+        return { snap: { ...snap, timeline: next }, summary: `trimmed ${name(c)} to ${fmtClock(Math.max(0, a))}–${fmtClock(b)} of its footage` };
+      }
+      const c = findClip(tl, op.track, op.clipId) as Attached;
+      if (isCaptionMarker(op.track, c)) return { snap: { ...snap, timeline: withTracks(tl, op.track, (tl.tracks[op.track] as Clip[]).map((x) => (x.id === c.id ? { ...x, sourceIn: r2(op.start), sourceOut: r2(op.end) } : x))) }, summary: `trimmed ${name(c)}` };
+      const s = toEdit(op.start, op.edit), e = op.track === "a3" && !op.edit ? s + (op.end - op.start) : toEdit(op.end, op.edit);
+      if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
+      const { fill: _f, ...rest } = c;
+      const next = withTracks(tl, op.track, (tl.tracks[op.track] as Clip[]).map((x) => (x.id === c.id ? attachAt(view(), rest as Clip, s, e) : x)));
+      return { snap: { ...snap, timeline: next }, summary: `trimmed ${name(c)} to edit ${fmtClock(s)}–${fmtClock(e)}` };
     }
     case "delete_clip": {
-      const r = deleteClip(tl, op.track, op.clipId, { linked: op.linked });
-      return { snap: { ...snap, timeline: r.tl }, summary: r.summary };
+      if (op.track === "a1" && op.linked === false) {
+        const c = findClip(tl, "v1", op.clipId);
+        return { snap: { ...snap, timeline: mapClip(tl, c.id, (x) => ({ ...x, audioMuted: true })) }, summary: `muted the dialogue of ${name(c)}` };
+      }
+      const track: TrackName = op.track === "a1" ? "v1" : op.track;
+      const c = findClip(tl, track, op.clipId);
+      const next = withTracks(tl, track, (tl.tracks[track] as Clip[]).filter((x) => x.id !== c.id));
+      return { snap: { ...snap, timeline: next }, summary: `removed ${c.label || "a clip"} from ${track.toUpperCase()}${track === "v1" ? " (and its dialogue)" : ""}` };
     }
     case "set_link": {
-      const r = setLink(tl, op.track, op.clipId, op.linked);
-      return { snap: { ...snap, timeline: r.tl }, summary: r.summary };
+      const track: TrackName = op.track === "a1" ? "v1" : op.track;
+      findClip(tl, track, op.clipId);
+      return { snap, summary: "the dialogue always follows its picture in the sequence (set_audio_offset makes J/L cuts or mutes a clip)" };
     }
     case "add_zoom": {
+      const s = toEdit(op.start, op.edit), e = toEdit(op.end, op.edit);
       if (!(op.end > op.start)) throw new EditError("A zoom must end after it starts.");
-      const z = zoomClip(op.start, op.end, op.scale, op.end - op.start > 4 ? "push" : "punch");
-      return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, z]) }, summary: `added zoom at ${fmtClock(op.start)}` };
+      if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
+      const z = attachAt(view(), zoomClip(s, e, op.scale, e - s > 4 ? "push" : "punch"), s, e);
+      return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, z]) }, summary: `added zoom at ${op.edit ? "edit " : ""}${fmtClock(op.start)}` };
     }
     case "add_broll": {
       const v = ctx.getVideo?.(op.videoId);
       if (!v) throw new EditError("That b-roll footage is not in your library.");
       if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
       if (!(op.end > op.start)) throw new EditError("B-roll must end after it starts.");
-      if (op.sourceStart + (op.end - op.start) > v.seconds + 0.05) throw new EditError(`"${v.name}" is only ${v.seconds.toFixed(1)}s long. Pick an earlier sourceStart or a shorter range.`);
-      const c: V2Clip = { id: rid("b"), start: r2(op.start), end: r2(op.end), label: op.label || v.name, kind: "broll", videoId: v.id, sourceStart: r2(op.sourceStart) };
-      return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, c]) }, summary: `added b-roll ${v.name} at ${fmtClock(op.start)}` };
+      const s = toEdit(op.start, op.edit), e = toEdit(op.end, op.edit);
+      if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
+      if (op.sourceStart + (e - s) > v.seconds + 0.05) throw new EditError(`"${v.name}" is only ${v.seconds.toFixed(1)}s long. Pick an earlier sourceStart or a shorter range.`);
+      const c = attachAt(view(), { id: rid("b"), start: 0, end: 0, label: op.label || v.name, kind: "broll", videoId: v.id, sourceStart: r2(op.sourceStart) } as V2Clip, s, e);
+      return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, c]) }, summary: `added b-roll ${v.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}` };
     }
     case "set_captions": {
       const next = { ...tl, captionsOn: op.on, captionLook: op.look ?? tl.captionLook };
@@ -376,33 +556,47 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
     case "add_music": {
       const track = findMusic(op.trackId);
       if (!track) throw new EditError(`No music track or mood called "${op.trackId}". Moods: ${Array.from(new Set(MUSIC_TRACKS.map((m) => m.mood))).join(", ")}.`);
-      const start = op.start ?? 0, end = op.end ?? tl.duration;
-      const clip = { id: rid("m"), start: r2(start), end: r2(end), label: track.name, trackId: track.id, assetKey: track.key, gainDb: op.gainDb ?? -18 };
-      // A full-length bed replaces the old one; a ranged clip is added next to what is there.
-      const a2 = op.start == null && op.end == null ? [clip] : [...tl.tracks.a2.filter((c) => c.end <= start || c.start >= end), clip];
-      return { snap: { ...snap, timeline: withTracks(tl, "a2", a2) }, summary: `added music: ${track.name}` };
+      const base = { id: rid("m"), start: 0, end: 0, label: track.name, trackId: track.id, assetKey: track.key, gainDb: op.gainDb ?? -18 };
+      // A bed under the whole edit replaces the old one; a ranged clip is added next to what is there.
+      if (op.start == null && op.end == null) return { snap: { ...snap, timeline: withTracks(tl, "a2", [{ ...base, end: r2(view().total), fill: true } as Clip]) }, summary: `added music: ${track.name}` };
+      const s = op.start == null ? 0 : toEdit(op.start, op.edit), e = op.end == null ? view().total : toEdit(op.end, op.edit);
+      if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
+      const keep = (tl.tracks.a2 as Attached[]).filter((c) => { const p = placeOf(view(), c); return p.e <= s || p.s >= e; });
+      return { snap: { ...snap, timeline: withTracks(tl, "a2", [...keep, attachAt(view(), base as Clip, s, e)]) }, summary: `added music: ${track.name}` };
     }
     case "add_graphic": {
       const g = ctx.getGraphic?.(op.graphicId);
       if (!g) throw new EditError("That graphic does not exist. Use list_graphics to see the ids.");
       if (!(op.end > op.start)) throw new EditError("A graphic must end after it starts.");
-      const c = { id: rid("g"), start: r2(op.start), end: r2(op.end), label: op.label || g.name, kind: "graphic" as const, graphicId: g.id, params: op.params };
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added graphic ${g.name} at ${fmtClock(op.start)}` };
+      const s = toEdit(op.start, op.edit), e = toEdit(op.end, op.edit);
+      if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
+      const c = attachAt(view(), { id: rid("g"), start: 0, end: 0, label: op.label || g.name, kind: "graphic" as const, graphicId: g.id, params: op.params } as Clip, s, e);
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added graphic ${g.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}` };
     }
     case "set_aspect":
       return { snap: { ...snap, aspect: op.aspect }, summary: `changed shape to ${op.aspect}` };
     case "rename":
       return { snap: { ...snap, name: op.name }, summary: `renamed the edit to "${op.name}"` };
     case "set_framing": {
-      const cur = tl.framing ?? { scale: 1, x: 0, y: 0 };
-      const f = { scale: r2(op.scale ?? cur.scale), x: r2(op.x ?? cur.x), y: r2(op.y ?? cur.y) };
-      const { framing: _f, ...rest } = tl;
-      const plain = f.scale === 1 && f.x === 0 && f.y === 0;
-      return { snap: { ...snap, timeline: plain ? rest : { ...rest, framing: f } }, summary: plain ? "footage back to filling the frame" : `framed the footage: ${framingText(f)}` };
+      const ids = targets(tl, op.clipIds);
+      let shown: Framing | null = null;
+      const next = setSeq(tl, seqClips(tl).map((c) => {
+        if (!ids.has(c.id)) return c;
+        const cur = c.framing ?? { scale: 1, x: 0, y: 0 };
+        const f = FramingSchema.parse({ scale: r2(op.scale ?? cur.scale), x: r2(op.x ?? cur.x), y: r2(op.y ?? cur.y) });
+        shown = f;
+        const { framing: _f, ...rest } = c;
+        return (plainFraming(f) ? { ...rest, framing: f } : rest) as SeqClip;
+      }));
+      const f = shown as Framing | null;
+      const what = op.clipIds ? `${ids.size} ${ids.size === 1 ? "clip" : "clips"}` : "the footage";
+      return { snap: { ...snap, timeline: next }, summary: !f || !plainFraming(f) ? `${what} back to filling the frame` : `framed ${what}: ${framingText(f)}` };
     }
     case "set_rotation": {
-      const { rotate: _r, ...rest } = tl;
-      return { snap: { ...snap, timeline: op.degrees ? { ...rest, rotate: op.degrees } : rest }, summary: op.degrees ? `turned the footage ${op.degrees}° clockwise` : "footage back to its own orientation" };
+      const ids = targets(tl, op.clipIds);
+      const next = setSeq(tl, seqClips(tl).map((c) => { if (!ids.has(c.id)) return c; const { rotate: _r, ...rest } = c; return (op.degrees ? { ...rest, rotate: op.degrees } : rest) as SeqClip; }));
+      const what = op.clipIds ? `${ids.size} ${ids.size === 1 ? "clip" : "clips"}` : "the footage";
+      return { snap: { ...snap, timeline: next }, summary: op.degrees ? `turned ${what} ${op.degrees}° clockwise` : `${what} back to ${op.clipIds ? "their" : "its"} own orientation` };
     }
     case "apply_style": {
       const style = ctx.getStyle(op.styleId);
@@ -411,33 +605,146 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
     }
     case "restore_snapshot":
       return { snap: op.snapshot, summary: op.note };
-    case "batch": {
-      // One version for the whole list; the first edit that cannot be made stops it, so nothing half-done is saved.
-      let cur = snap;
-      const did: string[] = [];
-      op.ops.forEach((o, i) => {
-        try {
-          const r = applyOpInner(cur, o, ctx);
-          cur = r.snap;
-          did.push(r.summary);
-        } catch (e) {
-          if (e instanceof EditError && op.ops.length > 1) throw new EditError(`Edit ${i + 1} (${o.op}): ${e.message} Nothing was changed.`);
-          throw e;
+
+    // ---- the sequence ----
+    case "add_clip": {
+      const vid = videoIdOf(op.videoId);
+      const f = inFootage(vid, op.from, op.to);
+      if (op.to - op.from < 0.1) throw new EditError("A clip must be at least 0.1 s long.");
+      let next = tl;
+      let index = op.index;
+      if (op.at != null && index == null) {
+        // Inserted at that moment of the edit; a clip playing there is split around it.
+        const v = view();
+        const hit = v.clips.find((c) => op.at! > c.start + 0.05 && op.at! < c.end - 0.05);
+        if (hit) {
+          const r = splitSeqClip(tl, hit.id, v.editToSource(hit.id, op.at));
+          next = r.tl;
+          index = seqClips(next).findIndex((c) => c.id === r.newId);
+        } else {
+          const near = v.clips.reduce((best, c, i) => (Math.abs(c.start - op.at!) < Math.abs(best.t - op.at!) ? { i, t: c.start } : best), { i: v.clips.length, t: v.total });
+          index = near.i;
         }
-      });
-      return { snap: cur, summary: did.join("; ") };
+      }
+      const id = newSeqClipId(next);
+      const label = op.label || (vid === main ? "Main" : ctx.getVideo?.(vid)?.name || "Clip");
+      next = insertSeqClip(next, { id, label, start: 0, end: 0, sourceVideoId: vid, sourceIn: r2(op.from), sourceOut: r2(op.to), ...lookOf(vid) } as SeqClip, index);
+      const pos = seqClips(next).findIndex((c) => c.id === id);
+      return { snap: { ...snap, timeline: next }, summary: `added clip ${id} (${f.name} ${at2(op.from)}–${at2(op.to)}s) at position ${pos + 1} of ${seqClips(next).length}` };
+    }
+    case "move_clip": {
+      const v1 = seqClips(tl);
+      const from = v1.findIndex((c) => c.id === op.clipId);
+      if (from < 0) findClip(tl, "v1", op.clipId);
+      let index = op.index;
+      if (index == null) {
+        if (op.at == null) throw new EditError("Say where to move the clip: index (0 = first) or at (edit seconds).");
+        const v = view();
+        const cuts = [...v.clips.map((c) => c.start), v.total];
+        let best = 0;
+        cuts.forEach((x, i) => { if (Math.abs(x - op.at!) < Math.abs(cuts[best] - op.at!)) best = i; });
+        index = best - (from < best ? 1 : 0);
+      }
+      const next = moveSeqClip(tl, op.clipId, index);
+      const pos = seqClips(next).findIndex((c) => c.id === op.clipId);
+      return { snap: { ...snap, timeline: next }, summary: pos === from ? `${name(v1[from])} stays at position ${pos + 1}` : `moved ${name(v1[from])} to position ${pos + 1} of ${v1.length}` };
+    }
+    case "set_audio_offset": {
+      const v1 = seqClips(tl);
+      const i = v1.findIndex((c) => c.id === op.clipId);
+      if (i < 0) findClip(tl, "v1", op.clipId);
+      if (op.start == null && op.end == null && op.muted == null) throw new EditError("Send start, end or muted.");
+      if (op.start && i === 0) throw new EditError("The first clip has no clip before it, so its sound cannot start earlier or later.");
+      if (op.end && i === v1.length - 1) throw new EditError("The last clip has no clip after it, so its sound cannot run on.");
+      const c = v1[i];
+      if (op.start != null && op.start < 0 && c.sourceIn + op.start < -0.005) throw new EditError(`Only ${c.sourceIn.toFixed(2)}s of footage comes before ${name(c)}, so its sound can start at most that much earlier.`);
+      if (op.end != null && op.end > 0) { const s = secondsOf(c.sourceVideoId); if (s != null && c.sourceOut + op.end > s + 0.005) throw new EditError(`Only ${(s - c.sourceOut).toFixed(2)}s of footage comes after ${name(c)}, so its sound can run on at most that much.`); }
+      let next = setSeq(tl, v1.map((x, k) => {
+        let y = x;
+        if (k === i && op.start != null) y = { ...y, audioStart: r2(op.start) };
+        if (k === i + 1 && op.end != null) y = { ...y, audioStart: r2(op.end) };
+        if (k === i && op.muted != null) { y = { ...y }; if (op.muted) y.audioMuted = true; else delete y.audioMuted; }
+        return y;
+      }));
+      next = normalizeTimeline(next);
+      // Say what it became (an offset is limited by the neighbouring clips' lengths).
+      const nv = sequenceView(next, words);
+      const p = nv.clip(c.id)!;
+      const bits: string[] = [];
+      if (op.start != null) { const d = r2(p.soundStart - p.start); bits.push(d < 0 ? `its sound starts ${(-d).toFixed(2)}s before its picture (J cut)` : d > 0 ? `the clip before is heard ${d.toFixed(2)}s into it (L cut)` : "its sound starts with its picture"); }
+      if (op.end != null) { const d = r2(p.soundEnd - p.end); bits.push(d > 0 ? `its sound runs ${d.toFixed(2)}s into the next clip (L cut)` : d < 0 ? `the next clip is heard ${(-d).toFixed(2)}s before its picture (J cut)` : "its sound ends with its picture"); }
+      if (op.muted != null) bits.push(op.muted ? "muted" : "sound on");
+      return { snap: { ...snap, timeline: next }, summary: `${name(c)}: ${bits.join(", ")}` };
+    }
+    case "roll_edit": {
+      const v1 = seqClips(tl);
+      const i = v1.findIndex((c) => c.id === op.clipId);
+      if (i < 0) findClip(tl, "v1", op.clipId);
+      const a = v1[i], b = v1[i + 1];
+      if (!b) throw new EditError(`${name(a)} is the last clip: there is no cut after it to roll.`);
+      const aOut = r2(a.sourceOut + op.by), bIn = r2(b.sourceIn + op.by);
+      if (aOut < a.sourceIn + 0.1 || bIn > b.sourceOut - 0.1) throw new EditError(`Rolling ${op.by}s would leave a clip shorter than 0.1 s.`);
+      if (bIn < 0) throw new EditError(`${name(b)}'s footage starts ${b.sourceIn.toFixed(2)}s in; the cut can move at most ${b.sourceIn.toFixed(2)}s earlier.`);
+      const sa = secondsOf(a.sourceVideoId);
+      if (sa != null && aOut > sa + 0.005) throw new EditError(`${name(a)}'s footage ends ${(sa - a.sourceOut).toFixed(2)}s after the clip; the cut can move at most that much later.`);
+      const next = setSeq(tl, v1.map((x, k) => (k === i ? { ...x, sourceOut: aOut } : k === i + 1 ? { ...x, sourceIn: bIn } : x)));
+      return { snap: { ...snap, timeline: next }, summary: `moved the cut after ${name(a)} ${op.by > 0 ? "later" : "earlier"} by ${Math.abs(op.by).toFixed(2)}s` };
+    }
+    case "slip_clip": {
+      const c = findClip(tl, "v1", op.clipId) as SeqClip;
+      const sIn = r2(c.sourceIn + op.by), sOut = r2(c.sourceOut + op.by);
+      if (sIn < 0) throw new EditError(`${name(c)} can slip at most ${c.sourceIn.toFixed(2)}s earlier (the footage starts there).`);
+      const s = secondsOf(c.sourceVideoId);
+      if (s != null && sOut > s + 0.005) throw new EditError(`${name(c)} can slip at most ${(s - c.sourceOut).toFixed(2)}s later (the footage ends there).`);
+      let next = mapClip(tl, c.id, (x) => ({ ...x, sourceIn: sIn, sourceOut: sOut }));
+      // Clips hanging on it stay where they are in the edit.
+      const tracks = { ...next.tracks } as Timeline["tracks"];
+      for (const k of ["v2", "v3", "a2", "a3"] as TrackName[]) (tracks as Record<string, Clip[]>)[k] = (next.tracks[k] as Attached[]).map((x) => (x.anchorId === c.id ? { ...x, anchorAt: r2(Number(x.anchorAt ?? 0) + op.by) } : x));
+      next = { ...next, tracks };
+      return { snap: { ...snap, timeline: next }, summary: `slipped ${name(c)} ${Math.abs(op.by).toFixed(2)}s ${op.by > 0 ? "later" : "earlier"} in its footage (now ${at2(sIn)}–${at2(sOut)}s)` };
+    }
+    case "slide_clip": {
+      const v1 = seqClips(tl);
+      const i = v1.findIndex((c) => c.id === op.clipId);
+      if (i < 0) findClip(tl, "v1", op.clipId);
+      const prev = v1[i - 1], next0 = v1[i + 1];
+      if (!prev || !next0) throw new EditError(`${name(v1[i])} needs a clip before and after it to slide between them.`);
+      const pOut = r2(prev.sourceOut + op.by), nIn = r2(next0.sourceIn + op.by);
+      if (pOut < prev.sourceIn + 0.1 || nIn > next0.sourceOut - 0.1) throw new EditError(`Sliding ${op.by}s would leave a neighbouring clip shorter than 0.1 s.`);
+      if (nIn < 0) throw new EditError(`${name(next0)}'s footage starts ${next0.sourceIn.toFixed(2)}s in; the clip can slide at most that much earlier.`);
+      const sp = secondsOf(prev.sourceVideoId);
+      if (sp != null && pOut > sp + 0.005) throw new EditError(`${name(prev)}'s footage ends ${(sp - prev.sourceOut).toFixed(2)}s after it; the clip can slide at most that much later.`);
+      const next = setSeq(tl, v1.map((x, k) => (k === i - 1 ? { ...x, sourceOut: pOut } : k === i + 1 ? { ...x, sourceIn: nIn } : x)));
+      return { snap: { ...snap, timeline: next }, summary: `slid ${name(v1[i])} ${Math.abs(op.by).toFixed(2)}s ${op.by > 0 ? "later" : "earlier"} in the edit` };
     }
   }
 }
 
+const label2 = (l: string) => (/\(2\)$/.test(l) ? l : l ? l + " (2)" : "");
+/** V1 clips an op works on: the ids given, else every clip of the main footage. */
+function targets(tl: Timeline, ids?: string[]): Set<string> {
+  if (ids) { for (const id of ids) findClip(tl, "v1", id); return new Set(ids); }
+  const main = mainVideoOf(tl);
+  return new Set(seqClips(tl).filter((c) => c.sourceVideoId === main).map((c) => c.id));
+}
+/** Where a clip on another track is in the edit now. */
+function placeOf(view: SequenceView, c: Attached): { s: number; e: number } {
+  if (c.fill) return { s: 0, e: view.total };
+  const s = c.anchorId ? view.editAt(c.anchorId, Number(c.anchorAt ?? 0)) : null;
+  if (s == null) return { s: c.start, e: c.end };
+  return { s, e: s + Number(c.length ?? c.end - c.start) };
+}
+
 export function applyOp(snap: Snapshot, op: Op, ctx: EditContext): { snap: Snapshot; summary: string } {
-  const r = applyOpInner(snap, op, ctx);
+  const words = allWords(ctx.transcript);
+  const start = { ...snap, timeline: asSequence(snap.timeline, words, ctx.videoId) };
+  const r = applyOpInner(start, op, ctx);
   const timeline = normalizeTimeline(r.snap.timeline);
   const parsed = TimelineSchema.safeParse(timeline);
   if (!parsed.success) throw new EditError("That change would break the timeline: " + parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")} ${i.message}`).join("; "));
   const problems = timelineProblems(timeline);
   if (problems.length) throw new EditError(problems.slice(0, 3).join(" "));
-  return { snap: { ...r.snap, timeline: layoutTimeline(timeline, allWords(ctx.transcript), ctx.videoId) }, summary: r.summary };
+  return { snap: { ...r.snap, timeline: layoutTimeline(timeline, words) }, summary: r.summary };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -449,24 +756,56 @@ export function framingText(f: { scale: number; x: number; y: number }) {
   return [`scale ${f.scale}`, f.x ? `moved ${f.x > 0 ? "right" : "left"} ${pct(f.x)}` : "", f.y ? `moved ${f.y > 0 ? "down" : "up"} ${pct(f.y)}` : ""].filter(Boolean).join(", ");
 }
 
-export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60): string {
+/** "turned 90° (3 of 8 clips)", "framed scale 1.15, moved down 30%": how the clips' look reads, or "" if plain. */
+export function lookText(tl: Timeline): string {
+  const v1 = seqClips(tl);
+  if (!v1.length) return "";
+  const out: string[] = [];
+  const turned = v1.filter((c) => c.rotate);
+  if (turned.length) {
+    const degs = Array.from(new Set(turned.map((c) => c.rotate)));
+    out.push(`footage turned ${degs.join("/")}°${turned.length < v1.length ? ` (${turned.length} of ${v1.length} clips)` : ""}`);
+  }
+  const framed = v1.filter((c) => plainFraming(c.framing));
+  if (framed.length) {
+    const f = framed[0].framing!;
+    const same = framed.every((c) => c.framing!.scale === f.scale && c.framing!.x === f.x && c.framing!.y === f.y);
+    out.push(`footage framed ${same ? framingText(f) : "per clip"}${framed.length < v1.length ? ` (${framed.length} of ${v1.length} clips)` : ""}`);
+  }
+  return out.join(", ");
+}
+
+export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60, mainVideoId?: string): string {
   const words = allWords(tr);
-  const tl = layoutTimeline(snap.timeline, words);
-  const out = outputDuration(tl, words);
+  const tl = layoutTimeline(asSequence(snap.timeline, words, mainVideoId), words);
+  const view = sequenceView(tl, words);
+  const main = view.mainVideoId;
+  const look = lookText(tl);
   const lines: string[] = [];
-  lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${out.toFixed(1)}s, aspect ${snap.aspect}${tl.rotate ? `, footage turned ${tl.rotate}°` : ""}${tl.framing ? `, footage framed ${framingText(tl.framing)}` : ""}, style ${snap.styleId}.`);
+  lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${view.total.toFixed(1)}s, aspect ${snap.aspect}${look ? ", " + look : ""}, style ${snap.styleId}.`);
   lines.push(`Cut words: ${tl.cut.length}. Captions ${tl.captionsOn ? "on (" + tl.captionLook + ")" : "off"}. Edited caption lines: ${Object.entries(tl.captionText).filter(([id, txt]) => { const l = tr.find((x) => x.id === id); return l && l.words.map((w) => w.text).join(" ") !== txt; }).length}.`);
-  lines.push("Each clip: id footageStart-footageEnd @editStart-editEnd (edit = the output; ops take footage seconds). Linked V1/A1 pairs edit together.");
-  const names: Record<TrackName, string> = { v1: "V1 main cut", v2: "V2 b-roll/zooms", v3: "V3 titles", a1: "A1 dialogue", a2: "A2 music", a3: "A3 sfx" };
+  lines.push("V1 plays in this order, back to back: id video footageIn-footageOut @editStart-editEnd. Ops on a V1 clip take its own footage seconds. Its dialogue (A1) follows it; J/L cuts and mutes are shown on it. Other tracks: id @editStart-editEnd on <V1 clip> at <its footage second>; they move with that clip. Their op times are main-footage seconds (where it first plays), or edit seconds with edit:true.");
+  const v1 = tl.tracks.v1 as SeqClip[];
+  const vName = (v: string) => (v === main ? "main" : v);
+  const shownV1 = v1.slice(0, maxPerTrack).map((c) => {
+    const p = view.clip(c.id)!;
+    const extra: string[] = [];
+    if (p.pieces.length && p.soundStart < p.start - 0.005) extra.push(`J ${(p.soundStart - p.start).toFixed(2)}`);
+    if (p.pieces.length && p.soundEnd > p.end + 0.005) extra.push(`L +${(p.soundEnd - p.end).toFixed(2)}`);
+    if (c.audioMuted) extra.push("muted");
+    if (c.rotate && !look.includes("turned") ) extra.push(`turned ${c.rotate}°`);
+    const at = p.end > p.start ? ` @${p.start.toFixed(2)}-${p.end.toFixed(2)}` : " (all cut)";
+    return `  ${c.id} ${vName(c.sourceVideoId)} ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}${at} "${c.label}"${extra.length ? " " + extra.join(" ") : ""}`;
+  });
+  lines.push(`V1 sequence: ${v1.length ? "\n" + shownV1.join("\n") + (v1.length > maxPerTrack ? `\n  …and ${v1.length - maxPerTrack} more` : "") : "empty"}`);
+  const names: Partial<Record<TrackName, string>> = { v2: "V2 b-roll/zooms", v3: "V3 titles", a2: "A2 music", a3: "A3 sfx" };
   for (const k of Object.keys(names) as TrackName[]) {
-    let clips = tl.tracks[k] as Clip[];
-    if (k === "v3") clips = clips.filter((c) => (c as Record<string, unknown>).kind === "graphic");
+    let clips = tl.tracks[k] as (Clip & Record<string, unknown>)[];
+    if (k === "v3") clips = clips.filter((c) => !isCaptionMarker("v3", c));
     const shown = clips.slice(0, maxPerTrack).map((c) => {
-      const x = c as Record<string, unknown>;
-      const extra = x.kind === "zoom" ? ` x${x.zoom}` : x.kind === "broll" ? ` video=${x.videoId}@${x.sourceStart}` : x.graphicId ? ` graphic=${x.graphicId}` : x.trackId ? ` track=${x.trackId} ${x.gainDb ?? -18}dB` : x.sfxId ? ` sfx=${x.sfxId}` : "";
-      const at = Number(x.timelineEnd) > Number(x.timelineStart) ? ` @${Number(x.timelineStart).toFixed(2)}-${Number(x.timelineEnd).toFixed(2)}` : " (not in the edit)";
-      const link = x.linkId ? "" : (k === "v1" || k === "a1") && x.unlinked ? " unlinked" : "";
-      return `  ${c.id} ${c.start.toFixed(2)}-${c.end.toFixed(2)}${at} "${c.label}"${extra}${link}`;
+      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB` : c.sfxId ? ` sfx=${c.sfxId}` : "";
+      const on = c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "";
+      return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;
     });
     const more = clips.length > maxPerTrack ? `\n  …and ${clips.length - maxPerTrack} more` : "";
     lines.push(`${names[k]}${k === "v3" ? " (graphics only; caption clips follow transcript lines)" : ""}: ${clips.length ? "\n" + shown.join("\n") + more : "empty"}`);
