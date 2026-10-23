@@ -35,7 +35,7 @@ What A cannot do:
 - V1 may hold any videos in any order, with repeats. Ripple becomes an explicit rule in `sequence.ts`: it shifts later clips by the change in length, and it is no longer a side effect of footage order.
 - Links become explicit (`linkId`) instead of "same start and end". A1 can then sit offset from V1, which gives J and L cuts.
 - Cut words become ranges removed from the clips that contain them.
-- The edit-wide `rotate` (footage filmed sideways) becomes a per-clip transform. The migration copies it onto every V1 clip.
+- The edit-wide `rotate` (footage filmed sideways) and `framing` (position and scale) become a per-clip transform. The migration copies them onto every V1 clip.
 
 ## Migration A → B
 

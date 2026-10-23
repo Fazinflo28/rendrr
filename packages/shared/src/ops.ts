@@ -44,6 +44,8 @@ const EDIT_OPS = [
   z.object({ op: z.literal("add_music"), trackId: z.string().max(80), gainDb: z.number().min(-40).max(6).optional(), start: t.optional(), end: t.optional() }),
   z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), label: z.string().max(200).optional() }),
   z.object({ op: z.literal("set_aspect"), aspect: AspectSchema }),
+  // Position and scale of the footage in the frame (Premiere's Motion). Leave a field out to keep it.
+  z.object({ op: z.literal("set_framing"), scale: z.number().min(0.25).max(4).optional(), x: z.number().min(-1).max(1).optional(), y: z.number().min(-1).max(1).optional() }),
   // Turn the footage clockwise (footage filmed sideways); 0 puts it back.
   z.object({ op: z.literal("set_rotation"), degrees: RotationSchema }),
   z.object({ op: z.literal("rename"), name: z.string().min(1).max(200) }),
@@ -391,6 +393,13 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
       return { snap: { ...snap, aspect: op.aspect }, summary: `changed shape to ${op.aspect}` };
     case "rename":
       return { snap: { ...snap, name: op.name }, summary: `renamed the edit to "${op.name}"` };
+    case "set_framing": {
+      const cur = tl.framing ?? { scale: 1, x: 0, y: 0 };
+      const f = { scale: r2(op.scale ?? cur.scale), x: r2(op.x ?? cur.x), y: r2(op.y ?? cur.y) };
+      const { framing: _f, ...rest } = tl;
+      const plain = f.scale === 1 && f.x === 0 && f.y === 0;
+      return { snap: { ...snap, timeline: plain ? rest : { ...rest, framing: f } }, summary: plain ? "footage back to filling the frame" : `framed the footage: ${framingText(f)}` };
+    }
     case "set_rotation": {
       const { rotate: _r, ...rest } = tl;
       return { snap: { ...snap, timeline: op.degrees ? { ...rest, rotate: op.degrees } : rest }, summary: op.degrees ? `turned the footage ${op.degrees}° clockwise` : "footage back to its own orientation" };
@@ -434,12 +443,18 @@ export function applyOp(snap: Snapshot, op: Op, ctx: EditContext): { snap: Snaps
 // ---------------------------------------------------------------------------------------------
 // Small text summary of a project for the AI (get_project). Kept well under 8k tokens.
 // ---------------------------------------------------------------------------------------------
+/** "scale 1.15, moved down 34%" */
+export function framingText(f: { scale: number; x: number; y: number }) {
+  const pct = (n: number) => `${Math.round(Math.abs(n) * 100)}%`;
+  return [`scale ${f.scale}`, f.x ? `moved ${f.x > 0 ? "right" : "left"} ${pct(f.x)}` : "", f.y ? `moved ${f.y > 0 ? "down" : "up"} ${pct(f.y)}` : ""].filter(Boolean).join(", ");
+}
+
 export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60): string {
   const words = allWords(tr);
   const tl = layoutTimeline(snap.timeline, words);
   const out = outputDuration(tl, words);
   const lines: string[] = [];
-  lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${out.toFixed(1)}s, aspect ${snap.aspect}${tl.rotate ? `, footage turned ${tl.rotate}°` : ""}, style ${snap.styleId}.`);
+  lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${out.toFixed(1)}s, aspect ${snap.aspect}${tl.rotate ? `, footage turned ${tl.rotate}°` : ""}${tl.framing ? `, footage framed ${framingText(tl.framing)}` : ""}, style ${snap.styleId}.`);
   lines.push(`Cut words: ${tl.cut.length}. Captions ${tl.captionsOn ? "on (" + tl.captionLook + ")" : "off"}. Edited caption lines: ${Object.entries(tl.captionText).filter(([id, txt]) => { const l = tr.find((x) => x.id === id); return l && l.words.map((w) => w.text).join(" ") !== txt; }).length}.`);
   lines.push("Each clip: id footageStart-footageEnd @editStart-editEnd (edit = the output; ops take footage seconds). Linked V1/A1 pairs edit together.");
   const names: Record<TrackName, string> = { v1: "V1 main cut", v2: "V2 b-roll/zooms", v3: "V3 titles", a1: "A1 dialogue", a2: "A2 music", a3: "A3 sfx" };

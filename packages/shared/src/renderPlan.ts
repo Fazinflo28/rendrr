@@ -35,6 +35,7 @@ export type RenderPlan = {
   kept: Range[];
   outputSeconds: number;
   rotate: 0 | 90 | 180 | 270; // clockwise turn of the footage before it is fitted
+  framing: { scale: number; x: number; y: number } | null; // the footage's position and scale in the frame, after the fit
   zooms: ZoomOp[];
   broll: OverlayOp[];
   graphics: OverlayOp[];
@@ -241,7 +242,7 @@ export function planRender(input: PlanInput): RenderPlan {
   const cutCount = cutRegions(words, new Set(tl.cut)).length;
   const operations = [
     `Keep ${kept.length} ${kept.length === 1 ? "part" : "parts"} of the footage (${cutCount} word cuts, V1 gaps removed): ${total.toFixed(2)}s out of ${input.source.seconds.toFixed(2)}s`,
-    `${tl.rotate ? `Turn the footage ${tl.rotate}° clockwise, then fit` : "Fit"} to ${snapshot.aspect} at ${width}x${height}, 30 fps`,
+    `${tl.rotate ? `Turn the footage ${tl.rotate}° clockwise, then fit` : "Fit"} to ${snapshot.aspect} at ${width}x${height}, 30 fps${tl.framing ? `; frame it: scale ${tl.framing.scale}, offset ${tl.framing.x}, ${tl.framing.y}` : ""}`,
     zooms.length ? `Zoom: ${zooms.length} (${zooms.filter((z) => z.mode === "punch").length} punch, ${zooms.filter((z) => z.mode === "push").length} slow push)` : "Zoom: none",
     broll.length ? `B-roll overlays: ${broll.length}` : "B-roll overlays: none",
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
@@ -249,7 +250,7 @@ export function planRender(input: PlanInput): RenderPlan {
     `Audio: dialogue${dialogueMutes.length ? ` (${dialogueMutes.length} muted gaps)` : ""}${audio.some((a) => a.kind === "music") ? " + music ducked under speech" : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}`,
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
   ];
-  return { kind, width, height, fps: 30, aspect: snapshot.aspect, kept, outputSeconds: total, rotate: tl.rotate ?? 0, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, ass, operations };
+  return { kind, width, height, fps: 30, aspect: snapshot.aspect, kept, outputSeconds: total, rotate: tl.rotate ?? 0, framing: tl.framing ?? null, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, ass, operations };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -321,6 +322,17 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   const turn = plan.rotate === 90 ? "transpose=1," : plan.rotate === 270 ? "transpose=2," : plan.rotate === 180 ? "hflip,vflip," : "";
   g.push(`[vcat]${turn}${tone}fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1[vfit]`);
   let v = "vfit";
+
+  // 2b. Framing (position and scale): the fitted picture is scaled about its centre and moved over a black frame.
+  if (plan.framing) {
+    const f = plan.framing;
+    const sw = even(W * f.scale), sh = even(H * f.scale);
+    const ox = Math.round((W - sw) / 2 + f.x * W), oy = Math.round((H - sh) / 2 + f.y * H);
+    g.push(`color=c=black:s=${W}x${H}:r=${FPS}[fcanvas]`);
+    g.push(`[${v}]scale=${sw}:${sh},setsar=1[fscaled]`);
+    g.push(`[fcanvas][fscaled]overlay=x=${ox}:y=${oy}:shortest=1,format=yuv420p[vframed]`);
+    v = "vframed";
+  }
 
   // 3. Zooms: scale per frame, crop back to size.
   if (plan.zooms.length) {

@@ -51,6 +51,10 @@ export const TracksSchema = z.object({
 /** Clockwise turn of the footage, for footage filmed sideways (applied before it is fitted to the shape). */
 export const RotationSchema = z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]);
 export type Rotation = z.infer<typeof RotationSchema>;
+/** Position and scale of the footage in the frame (after the fit): scale 1 = fills it; x, y = offset as a share of
+ *  the frame's width and height (0.3 = moved down by 30% of the height). Uncovered parts are black. */
+export const FramingSchema = z.object({ scale: z.number().min(0.25).max(4), x: z.number().min(-1).max(1), y: z.number().min(-1).max(1) });
+export type Framing = z.infer<typeof FramingSchema>;
 
 export const TimelineSchema = z.object({
   duration: z.number().finite().min(0).max(24 * 3600),
@@ -60,6 +64,7 @@ export const TimelineSchema = z.object({
   captionText: z.record(z.string().max(2000)),
   tracks: TracksSchema,
   rotate: RotationSchema.optional(),
+  framing: FramingSchema.optional(),
 });
 
 export type Clip = z.infer<typeof ClipSchema>;

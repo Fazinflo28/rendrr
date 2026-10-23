@@ -5,6 +5,7 @@ import { fmtT } from "./breakdown";
 import { dialogueMismatch, keptRanges, makeTimeMap, type Range } from "./sequence";
 import type { Clip, Snapshot } from "./timeline";
 import { allWords, type Transcript } from "./transcript";
+const framed = (f?: { scale: number; x: number; y: number }) => (f ? ` | footage framed (scale ${f.scale}${f.x ? `, x ${f.x}` : ""}${f.y ? `, y ${f.y}` : ""})` : "");
 
 export type FileLoudness = { lufs: number | null; peakDb: number | null };
 /** What the worker measured in a rendered file (edit seconds). */
@@ -122,8 +123,8 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
 
   const lines = [
     m && !m.error && m.videoSeconds != null
-      ? `CHECK file ${m.videoSeconds.toFixed(2)}s, edit ${total.toFixed(2)}s of ${tl.duration.toFixed(1)}s footage | ${snap.aspect}${tl.rotate ? ` | footage turned ${tl.rotate}°` : ""} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`
-      : `CHECK ${total.toFixed(1)}s of ${tl.duration.toFixed(1)}s footage | ${snap.aspect}${tl.rotate ? ` | footage turned ${tl.rotate}°` : ""} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`,
+      ? `CHECK file ${m.videoSeconds.toFixed(2)}s, edit ${total.toFixed(2)}s of ${tl.duration.toFixed(1)}s footage | ${snap.aspect}${tl.rotate ? ` | footage turned ${tl.rotate}°` : ""}${framed(tl.framing)} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`
+      : `CHECK ${total.toFixed(1)}s of ${tl.duration.toFixed(1)}s footage | ${snap.aspect}${tl.rotate ? ` | footage turned ${tl.rotate}°` : ""}${framed(tl.framing)} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`,
     ...fileLines,
     `Pauses over ${over}s: ${pauses.length ? list(pauses.map((p) => `${fmtT(p.at)} (${p.len.toFixed(1)}s)`)) : "none"}`,
     `Fillers left: ${fillers.length ? list(fillers.map((w) => `"${w.text.replace(/[^\w'-]/g, "")}" ${at(w.t)}`)) : "none"}`,

@@ -84,4 +84,30 @@ describe("the check agrees with the rendered file", () => {
     assert.ok(top.v > 180 && top.u < 128, `top should be red, got ${JSON.stringify(top)}`);
     assert.ok(bottom.u > 180 && bottom.v < 128, `bottom should be blue, got ${JSON.stringify(bottom)}`);
   });
+
+  it("framing moves the footage: down by half the frame, the top is black and the old top is at the bottom", async () => {
+    // A 9:16 source whose TOP half is red and bottom half blue.
+    const tall = join(dir, "tall.mp4");
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", `color=red:s=180x320:r=30:d=${SECONDS}`, "-f", "lavfi", "-i", `color=blue:s=180x320:r=30:d=${SECONDS}`,
+      "-f", "lavfi", "-i", `sine=f=300:d=${SECONDS}:sample_rate=48000`, "-filter_complex", "[0:v]crop=180:160:0:0[t];[1:v]crop=180:160:0:160[b];[t][b]vstack[v]", "-map", "[v]", "-map", "2:a",
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", tall]);
+    const s0: Snapshot = { timeline: buildInitialTimeline(tr, SECONDS, "clean"), name: "t", aspect: "9:16", styleId: "s2" };
+    const s = applyOp(s0, { op: "batch", ops: [{ op: "set_framing", y: 0.5 }, { op: "set_captions", on: false }] }, ctx).snap;
+    const src = { ...source, width: 180, height: 320 };
+    const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source: src });
+    const out = join(dir, "framed.mp4");
+    const { args, filterGraph } = ffmpegArgs(plan, { source: tall, output: out }, src);
+    await writeFile(join(dir, "framed.txt"), filterGraph);
+    await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? join(dir, "framed.txt") : a)));
+    const yuv = async (y: number) => {
+      const { stderr } = await run("ffmpeg", ["-hide_banner", "-ss", "1", "-i", out, "-frames:v", "1", "-vf", `crop=16:16:iw/2-8:ih*${y},signalstats,metadata=print`, "-f", "null", "-"]);
+      const v = (k: string) => Number(new RegExp(`signalstats\\.${k}=([\\d.]+)`).exec(stderr)?.[1]);
+      return { y: v("YAVG"), u: v("UAVG"), v: v("VAVG") };
+    };
+    const [top, bottom] = [await yuv(0.2), await yuv(0.8)];
+    assert.ok(top.y < 30, `top should be black, got ${JSON.stringify(top)}`);
+    assert.ok(bottom.v > 180, `bottom should show the red top half, got ${JSON.stringify(bottom)}`);
+    const m = await measureFile(out, { timeoutMs: 60_000 });
+    assert.ok(Math.abs((m.videoSeconds ?? 0) - plan.outputSeconds) < 0.1, "framing keeps the length");
+  });
 });
