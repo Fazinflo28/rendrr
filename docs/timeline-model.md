@@ -1,66 +1,69 @@
-# Timeline model: A today, B later
+# Timeline model: the sequence (B)
 
-All timeline logic lives in `packages/shared/src/sequence.ts`. It covers what plays, where each clip lands, links, split, trim, delete, unlink and range removal. Everything else calls into it:
+All timeline logic lives in `packages/shared/src/sequence.ts`: what plays, where each clip lands, and the clip edits. Everything else calls into it:
 
 - the connector's edit ops (`ops.ts`)
 - the render plan (`renderPlan.ts`)
 - the after-render check (`qa.ts`)
-- the editor (`apps/web/src/rendrr/editor.js`)
+- the editor (`apps/web/src/rendrr/editor.js`), which edits with the same ops
 
-The live player reads the render plan through `playback.ts`. Model B replaces `sequence.ts` and the parts of `renderPlan.ts` that read clip positions. The player, the connector and the check keep their interfaces.
+The live player reads the render plan through `playback.ts` (`sequenceClock`, `liveFrame`).
 
-## Model A (now)
+## Model B (since Phase 2)
 
-- A clip's `start` and `end` are seconds in the project's one original footage.
-- V1 is magnetic. Its clips play in footage order, back to back, minus cut words. Removing or shortening a V1 clip closes the gap, so ripple is built in. The edit's length is the sum of the kept parts.
-- A1 is the dialogue. A V1 clip and the A1 clip with the same start and end are linked and edit together, unless one was unlinked (`unlinked: true`). Picture with no A1 under it plays muted.
-- V2, V3, A2 and A3 clips are pinned to footage moments. When footage before them is cut, they move with it. When their own footage is cut, they shrink or leave the edit.
-- Every clip also carries derived fields, rewritten after every change:
-  - `sourceVideoId`, `sourceIn`, `sourceOut`: the video the clip plays and its in/out points. For V1 and A1 that's the footage; for b-roll, its own video. For clips that play no video (captions, zooms, graphics, music, sound effects), it's the footage moment they are pinned to.
-  - `timelineStart`, `timelineEnd`: the clip's place in the edit, in edit seconds.
-  - `linkId`: shared by a linked V1/A1 pair.
+A timeline with `model: "B"` and `mainVideoId` (the project's footage):
 
-  Versions are compared without these fields (`stripLayout`), so they never create a version.
+- **V1 is the sequence.** An ordered list of clips, each with `sourceVideoId`, `sourceIn` and `sourceOut` (seconds in that video). They play back to back in list order, so the edit never has gaps and every change ripples by itself. Clips can come from any of the user's videos, the same footage can play twice, and clips can be moved.
+- **Cut words** (`cut`, word ids of the main footage) are left out of main-footage clips wherever they play. `cut_words` / `restore_words` work as before.
+- **Dialogue follows its picture.** Each V1 clip's sound plays its own footage in sync with its picture. `audioStart` on a clip moves the cut between its sound and the sound before it:
+  - `< 0`: its sound starts that much before its picture (J cut)
+  - `> 0`: the clip before is heard that much into it (L cut)
 
-What A cannot do:
-- several videos on V1
-- the same footage twice
-- clips out of footage order
-- J/L cuts (dialogue offset from its picture)
-- moving a clip without changing which footage it plays
+  The cut never passes the picture cut before or after it, and never reaches outside the footage. `audioMuted` makes a clip silent. A1 is written from this by the layout: one clip per V1 clip, with the same id.
+- **Other tracks hang on a V1 clip.** V2 (zooms, b-roll), V3 graphics, A2 music and A3 sound effects store `anchorId` (the V1 clip), `anchorAt` (a moment of its footage) and `length` (edit seconds). They move with their clip and keep their length. `fill: true` is a music bed under the whole edit. V3 caption clips only say which transcript lines show captions.
+- **Turn and framing** (`rotate`, `framing`) are per V1 clip.
+- **`start` / `end`** on every clip are edit seconds, written by the layout with `timelineStart`, `timelineEnd` and `linkId`. `stripLayout` removes the last three, so they never make a version.
 
-## Model B (Phase 2)
+### What plays
 
-- A clip is placed freely on the edit's timeline: `timelineStart`, plus `sourceVideoId` and `sourceIn`/`sourceOut`. Its length in the edit is `sourceOut - sourceIn`, until speed arrives in Phase 5.
-- V1 may hold any videos in any order, with repeats. Ripple becomes an explicit rule in `sequence.ts`: it shifts later clips by the change in length, and it is no longer a side effect of footage order.
-- Links become explicit (`linkId`) instead of "same start and end". A1 can then sit offset from V1, which gives J and L cuts.
-- Cut words become ranges removed from the clips that contain them.
-- The edit-wide `rotate` (footage filmed sideways) and `framing` (position and scale) become a per-clip transform. The migration copies them onto every V1 clip.
+`sequenceView(timeline, words)` gives:
 
-## Migration A → B
+- **picture parts:** stretches with no cut in them; footage that continues (same video, same look) is one part
+- **sound parts:** they cover the whole edit; muted ones keep their footage, so captions follow them
+- each clip's place, and lookups between edit time and footage time
 
-1. **Back up.** Copy every `Project.timeline` and every `ProjectVersion.timeline` to a backup table before anything changes.
-2. **Convert each timeline**, inside one migration script:
-   - **V1:** each clip's kept parts (V1 minus cut words) become B clips. They take `sourceVideoId` = the project footage, `sourceIn`/`sourceOut` = the kept part, and `timelineStart` = its place in the edit, already stored as `timelineStart`.
-   - **A1:** split the same way. Each A1 piece takes the `linkId` of the V1 piece it covers; A1 that covers no kept V1 stays unlinked.
-   - **V2, V3, A2, A3:** keep `timelineStart`/`timelineEnd` as their positions; b-roll keeps its `sourceIn`.
-   - **Cut words:** stay in `cut` for the transcript view. They no longer decide what plays, because the B clips already leave them out.
-3. **Verify.** For every project, render the plan from the A timeline and from the B timeline and compare:
-   - every kept part, as source video, source in/out and edit time, must be within one frame
-   - the captions, zooms, overlays and audio must be equal, as numbers
-   - for a sample of projects, a full render each way, compared by stream length and frame hashes
+With `align: 30` (the render plan) every part starts and ends on a frame, exactly as model A's planner did.
 
-   Any project that fails stays on A and is listed in the migration report.
-4. **Switch.** A `model: "B"` field on the timeline tells `sequence.ts` which rules to use, so A and B can live side by side until every project has moved.
-5. **Keep the ops working.** `split_clip`, `trim_clip`, `delete_clip`, `cut_words` and `cut_silences` take the same input. On B their times are footage seconds of V1 clip parts, found through `sourceIn`/`sourceOut`. The new ops are `move_clip`, `add_clip` and `set_audio_offset`.
-6. **Rollback.** Restore the backup table. A-format timelines still load, because `sequence.ts` reads the `model` field.
+### Ops on the sequence
 
-## Where the code reads positions today
+- Old ops take the same input as before. Their times are main-footage seconds, where that footage first plays. V1 clip ops (`split_clip`, `trim_clip`) take that clip's own footage seconds.
+- `edit: true` on any timed op makes its times edit seconds.
+- New ops: `add_clip`, `move_clip`, `set_audio_offset`, `roll_edit`, `slip_clip`, `slide_clip`.
+- When a V1 clip goes away, clips that hung on it are put back by their footage, as model A did: their footage no longer plays, they leave; it partly plays, they get shorter.
+- `set_link` is kept for old callers. It changes nothing, because dialogue always follows its picture. `trim_clip` on A1 with `linked: false` moves the J/L cuts. `delete_clip` on A1 with `linked: false` mutes the clip.
+- `apply_style` rebuilds a plain cut of the footage from paragraphs, as before. A sequence that was rearranged or mixes videos is kept, and only gets the cuts.
 
-| Reads clip positions | File |
-| --- | --- |
-| Kept parts, time map, layout | `packages/shared/src/sequence.ts` |
-| Render plan (spans, dialogue mutes) | `packages/shared/src/renderPlan.ts`, `planRender()` |
-| After-render check | `packages/shared/src/qa.ts` (through `keptRanges`, `makeTimeMap`) |
-| Style rules (zoom placement) | `packages/shared/src/ops.ts`, `applyStyleRules()` |
-| Editor drawing and trims | `apps/web/src/rendrr/editor.js` (draws `timelineStart`/`timelineEnd`) |
+### Render
+
+`planRender` plans a sequence from several inputs, one per video. With one video and one look, the graph is model A's: cut, join, then fit once. Otherwise each part is fitted, turned and framed on its own, then joined. The dialogue is joined from its own parts, with silence for muted parts.
+
+## Model A (before Phase 2)
+
+Clip times were seconds in the project's one footage. V1 played in footage order minus cut words. A1 holes muted the picture, and other tracks were pinned to footage moments. `renderPlanA.ts` keeps that planner unchanged: an old version, or a project the migration left on A, renders exactly as before.
+
+## Migration A → B (done at API start-up)
+
+1. **Convert.** `toModelB()`, measured with the same frame-aligned map as the old planner:
+   - V1 clips keep their footage, in footage order; footage two clips shared plays once.
+   - Kept footage without A1 becomes a muted clip.
+   - The edit-wide turn and framing go onto every clip.
+   - Every other clip hangs on the kept moment where its start landed, with the length it had in the edit.
+2. **Check.** `convertChecked()` (`packages/shared/src/migrate.ts`) plans the old timeline with the A planner and the converted one with the B planner. It compares picture parts, muted dialogue, captions, zooms, b-roll, graphics, music and sound effects, all within one frame.
+3. **Back up, then store.** Only a project whose plans match is converted. Its old timeline goes to `TimelineBackup` first, and its place in the list of edits is kept. A project that differs stays on A, renders with the old planner, is logged, and converts at its next edit.
+4. **Versions are not touched.** A version converts when it is restored, and renders with the A planner until then.
+5. **Rollback:** copy `TimelineBackup.timeline` back into `Project.timeline`. A-format timelines still load and render.
+
+Tests:
+
+- 500 random model A edits convert to the same plan.
+- The same edit rendered by both graphs decodes to identical frames and sound (`apps/worker/test/sequence-render.test.ts`).

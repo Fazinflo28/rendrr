@@ -69,7 +69,7 @@ Object.assign(api, {
   createLinkCode: async () => { await wait(300); return { code: "DEMO42", expiresInMinutes: 15 }; },
   unlinkLogin: async () => ({ logins: [{ id: "demo", email: "you@example.com", main: true }], current: "demo" }),
   saveFinalToDrive: async () => { await wait(900); return { ok: true, message: "Saved to your Google Drive (demo)." }; },
-  getVideo: async (id) => { const v = withKind(await getVideo(id)); return { ...v, breakdown: v.status === "ready" ? demoBreakdown(v) : null }; },
+  getVideo: async (id) => { const v = withKind(await getVideo(id)); return { ...v, proxyUrl: playable[id] || null, breakdown: v.status === "ready" ? demoBreakdown(v) : null }; },
   listVideos: async () => { const vs = await listVideos(); return Array.isArray(vs) ? vs.map(withKind) : vs; },
   updateVideo: async (id, body) => { await wait(300); if (body.kind) kinds[id] = body.kind; return withKind(await getVideo(id)); },
   addFromDrive: async (ids, kind) => { const out = await addFromDrive(ids); if (kind) out.forEach((v) => { kinds[v.id] = kind; }); return out.map(withKind); },

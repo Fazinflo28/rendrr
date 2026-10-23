@@ -1,6 +1,7 @@
 import { abortMultipart, AppError, applyTimelineChange, deleteObjects, notFound, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, aspectFor, buildInitialTimeline, DEFAULT_STYLE_ID, outputDuration, refreshFillers, type Snapshot, type Transcript } from "@rendrr/shared";
+import { allWords, asSequence, aspectFor, buildInitialTimeline, DEFAULT_STYLE_ID, outputDuration, refreshFillers, type Snapshot, type Transcript } from "@rendrr/shared";
+import { playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
 export async function defaultFolderId(userId: string, name?: string): Promise<string> {
@@ -35,7 +36,7 @@ export async function createProject(userId: string, input: { videoId: string; st
   }
   folderId ||= await defaultFolderId(userId);
   const transcript = v.analysis.transcript as unknown as Transcript;
-  const timeline = buildInitialTimeline(transcript, v.seconds, style.captionLook as "clean" | "bold" | "outline", Array.isArray(input.cut) ? input.cut : []);
+  const timeline = buildInitialTimeline(transcript, v.seconds, style.captionLook as "clean" | "bold" | "outline", Array.isArray(input.cut) ? input.cut : [], v.id);
   const aspect = input.aspect || aspectFor(v.orientation);
   const name = (input.name || "").trim() || v.name + " edit";
   const snap: Snapshot = { timeline, name, aspect: aspect as Snapshot["aspect"], styleId };
@@ -80,14 +81,19 @@ export async function projectFull(userId: string, id: string) {
   ].sort((a, b) => a.time - b.time || a.at - b.at);
   const preview = await latestRender(p.id, "preview");
   const final = await latestRender(p.id, "final");
+  // The editor always works on a sequence: a project still stored in model A is shown converted (it is stored
+  // converted at its next save).
+  const transcript = (video.analysis?.transcript as unknown as Transcript) || [];
+  const timeline = asSequence(p.timeline as unknown as Snapshot["timeline"], allWords(transcript), p.videoId, video.seconds);
   return {
-    ...(await playerMedia(userId, p.timeline as unknown as Snapshot["timeline"])),
+    ...(await playerMedia(userId, timeline)),
+    videos: await playerVideos(userId, timeline, p.videoId), // the other videos on V1
     ...projectOut(p),
     style: style ? styleOut(style) : undefined,
     video: { ...(await videoOut(video)), proxyUrl: video.proxyKey && video.status !== "expired" ? await signGet(video.proxyKey, 6 * 3600) : null },
-    transcript: (video.analysis?.transcript as unknown as Transcript) || [],
+    transcript,
     silences: (video.analysis?.silences as unknown as { start: number; end: number }[]) || [], // for Cut silences in the editor
-    timeline: p.timeline,
+    timeline,
     versions: versions.map((x) => ({ v: x.v, note: x.note, at: x.updatedAt.getTime(), by: x.createdBy })),
     comments,
     activity: activity.map((a) => activityOut(a)),

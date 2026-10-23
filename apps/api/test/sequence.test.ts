@@ -1,0 +1,82 @@
+// Phase 2 in the API: projects stored in model A are converted to sequences at start-up (backed up first, only when
+// the render stays the same), new edits are sequences, the AI tools read and edit sequences with clips from other
+// videos, and the check knows them. Needs a database and Redis (as in .env). Run: pnpm --filter @rendrr/api test
+import assert from "node:assert/strict";
+import { after, before, describe, it } from "node:test";
+
+const ready = !!process.env.DATABASE_URL && !!process.env.REDIS_URL;
+const run = Math.random().toString(36).slice(2, 8);
+
+describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL and REDIS_URL" }, async () => {
+  const { prisma } = await import("@rendrr/db");
+  const { buildInitialTimelineA, removeRangeFromTrack, isSequence, stubTranscript } = await import("@rendrr/shared");
+  const { planRender } = await import("@rendrr/shared/renderPlan");
+  const { planDifferences } = await import("@rendrr/shared/migrate");
+  const { migrateToSequences } = await import("../src/services/sequence");
+  const { projectFull } = await import("../src/services/projects");
+  const { TOOL_HANDLERS } = await import("../src/tools");
+  const { redis } = await import("@rendrr/core");
+
+  let userId = "", projectId = "", videoId = "", otherId = "";
+  const tr = stubTranscript(30);
+  const words = tr.flatMap((l) => l.words);
+  const c = () => ({ userId, ai: "claude" as const, clerkId: `seq_${run}` });
+  let aTimeline: ReturnType<typeof buildInitialTimelineA>;
+  const changed = new Date("2026-01-02T03:04:05Z");
+
+  before(async () => {
+    const u = await prisma.user.create({ data: { clerkId: `seq_${run}`, email: `seq-${run}@test.rendrr.dev`, name: "Seq" } });
+    userId = u.id;
+    const folder = await prisma.folder.create({ data: { userId, name: "My edits", workspace: "Seq's Workspace" } });
+    const v = await prisma.video.create({ data: { userId, name: `Main ${run}`, seconds: 30, width: 1920, height: 1080, source: "local", status: "ready", analysis: { create: { transcriber: "stub", transcript: tr as never, silences: [], sceneCuts: [], keyFrames: [] } } } });
+    videoId = v.id;
+    const o = await prisma.video.create({ data: { userId, name: `Second camera ${run}`, seconds: 12, width: 1280, height: 720, source: "local", status: "ready", analysis: { create: { transcriber: "stub", transcript: stubTranscript(12) as never, silences: [], sceneCuts: [], keyFrames: [] } } } });
+    otherId = o.id;
+    // An edit stored before Phase 2: model A with cut words, a removed range and a zoom.
+    let a = buildInitialTimelineA(tr, 30, "clean", [words[4].id, words[5].id]);
+    a = { ...a, tracks: { ...a.tracks, v1: removeRangeFromTrack(a.tracks.v1, 12, 14), a1: removeRangeFromTrack(a.tracks.a1, 12, 14), v2: [{ id: "z1", start: 16, end: 18, label: "Zoom", kind: "zoom", zoom: 1.2 } as never] } };
+    aTimeline = a;
+    const p = await prisma.project.create({ data: { userId, folderId: folder.id, videoId, styleId: "s2", name: `Old edit ${run}`, timeline: a as never, updatedAt: changed,
+      versions: { create: { v: 1, note: "Footage as recorded", timeline: { timeline: a, name: "Old", aspect: "16:9", styleId: "s2" } as never, createdBy: "user", sealed: true } } } });
+    projectId = p.id;
+  });
+
+  after(async () => {
+    await prisma.timelineBackup.deleteMany({ where: { projectId } });
+    await prisma.user.deleteMany({ where: { clerkId: `seq_${run}` } });
+    await prisma.$disconnect();
+    redis().disconnect();
+  });
+
+  it("converts a model A project at start-up: backed up first, same render, its place in the list kept", async () => {
+    await migrateToSequences();
+    const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+    assert.ok(isSequence(p.timeline as never));
+    assert.equal(p.updatedAt.toISOString(), changed.toISOString());
+    const backup = await prisma.timelineBackup.findFirstOrThrow({ where: { projectId } });
+    assert.equal(backup.model, "A");
+    assert.deepEqual(backup.timeline, JSON.parse(JSON.stringify(aTimeline)));
+    const source = { width: 1920, height: 1080, fps: 30, seconds: 30, hasAudio: true };
+    const before = planRender({ kind: "preview", snapshot: { timeline: aTimeline, name: "x", aspect: "16:9", styleId: "s2" }, transcript: tr, source, videoId });
+    const after = planRender({ kind: "preview", snapshot: { timeline: p.timeline as never, name: "x", aspect: "16:9", styleId: "s2" }, transcript: tr, source, videoId });
+    assert.equal(before.model, "A");
+    assert.equal(after.model, "B");
+    assert.deepEqual(planDifferences(before, after), []);
+    // A second start changes nothing.
+    assert.equal((await migrateToSequences()).converted, 0);
+    assert.equal(await prisma.timelineBackup.count({ where: { projectId } }), 1);
+  });
+
+  it("the AI adds another video's clip, sets a J cut and reads the sequence back", async () => {
+    const p0 = await projectFull(userId, projectId);
+    const v1 = (p0.timeline as { tracks: { v1: { id: string }[] } }).tracks.v1;
+    const r = await TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "add_clip", videoId: otherId, from: 1, to: 4, index: 1 }, { op: "set_audio_offset", clipId: v1[1].id, start: -0.4 }] });
+    assert.match(r.text, /Done \(v2/);
+    assert.match(r.text, /added clip/);
+    const read = await TOOL_HANDLERS.get_project(c(), { projectId });
+    assert.match(read.text, new RegExp(`${otherId} 1.00-4.00 @`));
+    assert.match(read.text, /J -0.40/);
+    const full = await projectFull(userId, projectId);
+    assert.ok((full as { videos: Record<string, { name: string }> }).videos[otherId], "the editor gets the other video");
+  });
+});

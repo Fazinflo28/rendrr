@@ -28,16 +28,19 @@ export function displayAi(kind: Actor, fallback?: string) {
   return kind === "claude" ? "Claude" : kind === "chatgpt" ? "ChatGPT" : kind === "rendrr" ? "Rendrr" : fallback || "You";
 }
 
-/** Everything the pure editing ops need to know about a project's footage. */
-export async function editContext(tx: Prisma.TransactionClient, userId: string, videoId: string): Promise<EditContext> {
+/** Everything the pure editing ops need to know about a project's footage (and the other videos on its V1). */
+export async function editContext(tx: Prisma.TransactionClient, userId: string, videoId: string, timeline?: unknown, alsoIds: string[] = []): Promise<EditContext> {
   const video = await tx.video.findUnique({ where: { id: videoId }, include: { analysis: true } });
   if (!video) throw notFound("The footage for this edit is gone.");
   const styles = await tx.style.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] } });
   const styleMap = new Map<string, StyleLite>(styles.map((s) => [s.id, { id: s.id, name: s.name, captionLook: s.captionLook as StyleLite["captionLook"], rules: StyleRulesSchema.parse(s.rules) }]));
   const videos = await tx.video.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
   const graphics = await tx.graphic.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] }, select: { id: true, name: true, durationSec: true, status: true } });
+  const onV1 = Array.from(new Set([...((timeline as Timeline | undefined)?.tracks?.v1 ?? []).map((c) => (c as { sourceVideoId?: string }).sourceVideoId), ...alsoIds].filter((v): v is string => !!v && v !== video.id)));
+  const others = onV1.length ? await tx.video.findMany({ where: { id: { in: onV1 }, userId }, include: { analysis: true } }) : [];
   return {
     videoId: video.id,
+    sources: Object.fromEntries(others.map((o) => [o.id, { transcript: (o.analysis?.transcript as unknown as Transcript) || [], silences: (o.analysis?.silences as unknown as Silence[]) || [] }])),
     transcript: (video.analysis?.transcript as unknown as Transcript) || [],
     silences: (video.analysis?.silences as unknown as Silence[]) || [],
     sceneCuts: (video.analysis?.sceneCuts as unknown as number[]) || [],
@@ -54,6 +57,14 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
 
 export function snapshotOf(p: { timeline: unknown; name: string; aspect: string; styleId: string }): Snapshot {
   return { timeline: TimelineSchema.parse(p.timeline) as Timeline, name: p.name, aspect: p.aspect as Snapshot["aspect"], styleId: p.styleId };
+}
+
+/** Videos a change puts on V1 (add_clip, set_clips), so their transcripts are at hand for the rest of the change. */
+function videosIn(op: Op): string[] {
+  if (op.op === "batch") return op.ops.flatMap(videosIn);
+  if (op.op === "add_clip" && op.videoId) return [op.videoId];
+  if (op.op === "set_clips") return op.clips.map((c) => c.videoId).filter((v): v is string => !!v);
+  return [];
 }
 
 /** Key order does not matter (Postgres JSON reorders keys); everything else must match. */
@@ -80,7 +91,7 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
       if (newer) throw new AppError(`${displayAi(newer.createdBy as Actor)} just changed this edit. Loading the new version.`, 409, "stale", { version: p.currentVersion });
     }
 
-    const ctx = await editContext(tx, p.userId, p.videoId);
+    const ctx = await editContext(tx, p.userId, p.videoId, p.timeline, videosIn(change));
     let out: { snap: Snapshot; summary: string };
     try {
       out = applyOp(snapshotOf(p), change, ctx);

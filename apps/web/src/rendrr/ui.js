@@ -159,11 +159,13 @@ function Async({ q, skeleton, whenEmpty, children }) {
 // Plays a fake scene, or a real <video> (Player `src`), which is then the clock. `comments` show as dots on the
 // scrub bar. With `clock` (keptClock from @rendrr/shared) the time is EDIT time: the footage plays its kept parts
 // back to back and the video jumps from part to part, so the player plays the edit as it will render.
-function usePlayback(duration, { cuts = [], clock = null } = {}) {
+// With `seq` (a sequence: several videos, J/L cuts) the clock is the wall clock; the player's media follow it, and
+// hold it (attachGate) while the picture that should show is still loading.
+function usePlayback(duration, { cuts = [], clock = null, seq = false } = {}) {
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const ref = useRef({ time: 0, playing: false, cuts, clock, video: null, part: 0 });
-  ref.current.cuts = cuts; ref.current.clock = clock && clock.kept.length ? clock : null;
+  const ref = useRef({ time: 0, playing: false, cuts, clock, video: null, part: 0, seq, gate: null });
+  ref.current.cuts = cuts; ref.current.clock = clock && clock.kept.length ? clock : null; ref.current.seq = seq;
   useEffect(() => { ref.current.time = time; }, [time]);
   useEffect(() => {
     if (!playing) return;
@@ -171,7 +173,10 @@ function usePlayback(duration, { cuts = [], clock = null } = {}) {
     const tick = () => {
       const n = performance.now(); const el = ref.current.video; const ck = ref.current.clock;
       let t;
-      if (ck) {
+      if (ref.current.seq) {
+        const ok = !ref.current.gate || ref.current.gate();
+        t = ref.current.time + (ok ? (n - last) / 1000 : 0);
+      } else if (ck) {
         let i = Math.min(ref.current.part, ck.kept.length - 1);
         if (el && el.readyState >= 2 && !el.seeking) {
           const src = el.currentTime;
@@ -194,15 +199,17 @@ function usePlayback(duration, { cuts = [], clock = null } = {}) {
     id = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(id);
   }, [playing, duration]);
-  const toSource = useCallback((t) => (ref.current.clock ? ref.current.clock.toSource(t) : t), []);
+  const toSource = useCallback((t) => (ref.current.clock && !ref.current.seq ? ref.current.clock.toSource(t) : t), []);
   const seek = useCallback((t) => {
     const v = Math.min(duration, Math.max(0, t)); ref.current.time = v; setTime(v);
+    if (ref.current.seq) return; // the media follow the time
     const ck = ref.current.clock; if (ck) ref.current.part = ck.partAt(v);
     const el = ref.current.video; const s = toSource(v);
     if (el && Math.abs(el.currentTime - s) > 0.04) { try { el.currentTime = s; } catch {} }
   }, [duration]);
   const attach = useCallback((el) => { ref.current.video = el; }, []);
-  return { time, playing, setPlaying, seek, attach, toSource, toggle: () => setPlaying((p) => (ref.current.time >= duration - 0.01 ? (seek(0), true) : !p)) };
+  const attachGate = useCallback((fn) => { ref.current.gate = fn; }, []);
+  return { time, playing, setPlaying, seek, attach, attachGate, toSource, toggle: () => setPlaying((p) => (ref.current.time >= duration - 0.01 ? (seek(0), true) : !p)) };
 }
 const QUALITIES = ["Auto", "720p", "480p"];
 // Draws the current fake frame to a canvas so a snapshot is a real image.
@@ -238,7 +245,7 @@ function turnedVideoStyle(rotate, aspect) {
   if (rotate === 180) return { position: "absolute", inset: 0, width: "100%", height: "100%", transform: "rotate(180deg)", objectPosition: "50% 60%" };
   return { position: "absolute", left: "50%", top: "50%", width: `${100 / ar}%`, height: `${100 * ar}%`, transform: `translate(-50%, -50%) rotate(${rotate}deg)`, objectPosition: rotate === 90 ? "40% 50%" : "60% 50%" };
 }
-function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect = "16:9", marks = [], onMark, onClickVideo, showControls = true, style = {}, onSnapshot, children, src, videoFit = "contain", onVideoError, muted = false, overlay = null, zoomTransition = true, rotate = 0, framing = null }) {
+function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect = "16:9", marks = [], onMark, onClickVideo, showControls = true, style = {}, onSnapshot, children, src, videoFit = "contain", onVideoError, muted = false, overlay = null, zoomTransition = true, rotate = 0, framing = null, media = null }) {
   const ar = { "16:9": "16 / 9", "9:16": "9 / 16", "1:1": "1 / 1" }[aspect] || "16 / 9";
   const toast = useToast();
   // Real footage: the <video> follows the playback state; pb uses it as its clock.
@@ -252,7 +259,7 @@ function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect
   const [quality, setQuality] = useState("Auto"); const [qMenu, setQMenu] = useState(false); const [switching, setSwitching] = useState(false); const [snap, setSnap] = useState(null);
   const effective = quality === "Auto" ? "720p" : quality; // the player streams the 720p preview copy; finals are 1080p
   const pickQuality = (q) => { setQMenu(false); if (q === quality) return; setSwitching(true); setQuality(q); setTimeout(() => setSwitching(false), 650); };
-  const takeSnapshot = (e) => { e?.stopPropagation(); pb.setPlaying(false); try { let url; try { url = src && videoRef.current ? drawVideoFrame(videoRef.current, { caption, captionLook, zoom, aspect }) : null; } catch { url = null; } url ||= drawFrame({ aspect, time: pb.time, caption, captionLook, zoom }); setSnap({ url, time: pb.time }); onSnapshot?.({ url, time: pb.time }); } catch (err) { toast("Could not take a snapshot: " + err.message); } };
+  const takeSnapshot = (e) => { e?.stopPropagation(); pb.setPlaying(false); try { let url; const shown = media ? document.querySelector("video[data-on='1']") : null; try { url = shown ? drawVideoFrame(shown, { caption, captionLook, zoom, aspect }) : src && videoRef.current ? drawVideoFrame(videoRef.current, { caption, captionLook, zoom, aspect }) : null; } catch { url = null; } url ||= drawFrame({ aspect, time: pb.time, caption, captionLook, zoom }); setSnap({ url, time: pb.time }); onSnapshot?.({ url, time: pb.time }); } catch (err) { toast("Could not take a snapshot: " + err.message); } };
   const copySnap = async () => { try { const blob = await (await fetch(snap.url)).blob(); await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); toast("Snapshot copied", { icon: "check", tone: "brand" }); } catch { toast("Copy is blocked here. Right click the image to save it.", { ms: 4000 }); } };
   const pct = duration ? (pb.time / duration) * 100 : 0;
   const scrubRef = useRef();
@@ -261,7 +268,7 @@ function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect
   const fit = style && style.height === "100%";
   return html`<div class=${"pwrap" + (fit ? " fit" : "")} onClick=${() => qMenu && setQMenu(false)}><div class=${"player q" + (quality === "Auto" ? "auto" : effective.replace("p", ""))} style=${{ aspectRatio: ar, "--ar": { "9 / 16": 9 / 16, "1 / 1": 1 }[ar] || 16 / 9, ...(fit ? {} : style) }}>
     <div class="screen" onClick=${(e) => onClickVideo?.(e)} data-testid="screen">
-      ${src ? (rotate || framing ? html`<div style=${{ position: "absolute", inset: 0, overflow: "hidden", background: "#000", transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: zoomTransition ? "transform .4s cubic-bezier(.2,.8,.2,1)" : "none" }}><div style=${{ position: "absolute", inset: 0, transform: framing ? `translate(${framing.x * 100}%, ${framing.y * 100}%) scale(${framing.scale})` : "none" }}><video ref=${videoRef} src=${src} playsInline preload="auto" onLoadedMetadata=${(e) => { const el = e.currentTarget; el.muted = !!muted; if (Math.abs(el.currentTime - srcTime()) > 0.1) { try { el.currentTime = srcTime(); } catch {} } if (pb.playing) el.play().catch(() => pb.setPlaying(false)); }} onError=${() => onVideoError?.()} style=${{ objectFit: videoFit, background: "#000", ...(turnedVideoStyle(rotate, aspect) || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: "50% 40%" }) }} /></div></div>` : html`<video ref=${videoRef} src=${src} playsInline preload="auto" onLoadedMetadata=${(e) => { const el = e.currentTarget; el.muted = !!muted; if (Math.abs(el.currentTime - srcTime()) > 0.1) { try { el.currentTime = srcTime(); } catch {} } if (pb.playing) el.play().catch(() => pb.setPlaying(false)); }} onError=${() => onVideoError?.()} style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: videoFit, objectPosition: "50% 40%", background: "#000", transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: zoomTransition ? "transform .4s cubic-bezier(.2,.8,.2,1)" : "none" }} />`) : html`<div class="scene" style=${{ transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: "transform .4s cubic-bezier(.2,.8,.2,1)" }}>
+      ${media ? html`<div style=${{ position: "absolute", inset: 0, overflow: "hidden", background: "#000", transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: zoomTransition ? "transform .4s cubic-bezier(.2,.8,.2,1)" : "none" }}>${media}</div>` : src ? (rotate || framing ? html`<div style=${{ position: "absolute", inset: 0, overflow: "hidden", background: "#000", transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: zoomTransition ? "transform .4s cubic-bezier(.2,.8,.2,1)" : "none" }}><div style=${{ position: "absolute", inset: 0, transform: framing ? `translate(${framing.x * 100}%, ${framing.y * 100}%) scale(${framing.scale})` : "none" }}><video ref=${videoRef} src=${src} playsInline preload="auto" onLoadedMetadata=${(e) => { const el = e.currentTarget; el.muted = !!muted; if (Math.abs(el.currentTime - srcTime()) > 0.1) { try { el.currentTime = srcTime(); } catch {} } if (pb.playing) el.play().catch(() => pb.setPlaying(false)); }} onError=${() => onVideoError?.()} style=${{ objectFit: videoFit, background: "#000", ...(turnedVideoStyle(rotate, aspect) || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: "50% 40%" }) }} /></div></div>` : html`<video ref=${videoRef} src=${src} playsInline preload="auto" onLoadedMetadata=${(e) => { const el = e.currentTarget; el.muted = !!muted; if (Math.abs(el.currentTime - srcTime()) > 0.1) { try { el.currentTime = srcTime(); } catch {} } if (pb.playing) el.play().catch(() => pb.setPlaying(false)); }} onError=${() => onVideoError?.()} style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: videoFit, objectPosition: "50% 40%", background: "#000", transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: zoomTransition ? "transform .4s cubic-bezier(.2,.8,.2,1)" : "none" }} />`) : html`<div class="scene" style=${{ transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: "transform .4s cubic-bezier(.2,.8,.2,1)" }}>
         <div class="head" style=${{ transform: `translateX(calc(-50% + ${Math.sin(pb.time * 1.3) * 6}px))` }} />
         <div class="subject" style=${{ transform: `translateX(calc(-50% + ${Math.sin(pb.time * 1.3) * 4}px))` }} />
       </div>`}
@@ -314,6 +321,6 @@ export {
   React, useState, useEffect, useRef, useMemo, useCallback, useContext, createContext,
   h, html, fmtTime, fmtLen, fmtAgo, initials, Icon, ICONS, Btn, Toggle, Seg, Chip, Field, StatusChip,
   ToastCtx, ToastHost, useToast, Modal, useAsync, Skeleton, GridSkeleton, EmptyState, ErrorState, Async,
-  usePlayback, QUALITIES, drawFrame, Player, Art, Thumb, OriIcon, readTheme, applyTheme, ThemeBtn, copyText,
+  usePlayback, QUALITIES, drawFrame, Player, turnedVideoStyle, Art, Thumb, OriIcon, readTheme, applyTheme, ThemeBtn, copyText,
   Masonry, Dropdown, NavCtx, useNav, AppCtx, useApp,
 };

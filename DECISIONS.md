@@ -162,3 +162,19 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Footage filmed sideways | One rotation for the edit's footage (`timeline.rotate`, clockwise), applied before the fit (FFmpeg `transpose`). The live player rotates the video element the same way. In model B this becomes a per-clip transform. It was added when the reference-video test footage turned out to be sideways (no rotation flag in the file). |
 | Position and scale | One static framing for the edit's footage (`timeline.framing`: scale about the centre, then x/y offsets as a share of the frame), applied after the fit and before zooms. The player applies the same transform. It becomes a per-clip, keyframable transform in Phase 2/5. |
 | Duplicate accounts | Merged at API start-up, every time (safe to repeat). Only an account with nothing in it is removed. A folder other than the first "My edits" counts as something. Two accounts that both hold data are left alone and logged. |
+
+## Phase 2: the sequence (model B)
+
+| Question | Decision |
+|---|---|
+| Where clips sit | V1 is an ordered list played back to back (magnetic, like Final Cut's primary storyline), so ripple is built in. Every other clip hangs on a V1 clip at a moment of its footage and keeps its length (Final Cut's connected clips). |
+| J/L cuts | One offset per cut between two clips (`audioStart` on the clip after it): a rolling edit on the dialogue only, so two clips' sounds never play over each other. Limited by the neighbouring pictures and the footage there is. |
+| Ops' times | Unchanged input. Times are main-footage seconds, where that footage first plays. V1 clip ops take that clip's own footage seconds. `edit: true` takes edit seconds. |
+| A clip's V1 clip is deleted | Clips that hung on it are put back by their footage (model A's rule): they leave if their footage no longer plays, and get shorter if it partly plays. Sound effects keep their length. |
+| `set_link` | Kept so old callers do not fail. It changes nothing (dialogue always follows its picture) and says so. |
+| `apply_style` | Rebuilds a plain cut of the footage from paragraphs, as before. A rearranged or multi-video sequence keeps its clips and only gets the cuts, zooms, music and captions. |
+| Migration | Converted at API start-up only when both planners give the same plan within one frame. The old planner is kept unchanged (`renderPlanA.ts`), so old versions and unconverted projects render exactly as before. Old timelines are backed up in `TimelineBackup`. |
+| Finals with other videos | Main footage as before. Other videos use their original when Rendrr keeps one (samples), else their 720p preview copy, and the plan says so. Phase 7 can fetch Drive originals. |
+| Player | Wall clock plus one element per video, re-synced on cuts and drifts over 0.15 s. The clock waits up to 1.5 s for the picture to load. The up-to-date rendered preview still plays the exact file. |
+| Keys | Premiere's: V, C, B, N, Y, U for the tools, S for snapping, Shift Z for fit, Cmd/Ctrl K to split. |
+

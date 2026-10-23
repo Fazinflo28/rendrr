@@ -182,6 +182,18 @@ model ProjectVersion {
   @@unique([projectId, v])
 }
 
+/// A timeline as it was before a change of timeline model (Phase 2: model A -> the sequence), to put back if needed.
+model TimelineBackup {
+  id        String   @id @default(cuid())
+  projectId String
+  version   Int?     // null: the project's working timeline; else that version's snapshot
+  model     String   // the model it was stored in ("A")
+  timeline  Json
+  createdAt DateTime @default(now())
+
+  @@index([projectId])
+}
+
 model AiAction {
   id            String   @id @default(cuid())
   projectId     String

@@ -30,14 +30,12 @@
 
 ## Migration A → B
 
-1. Back up every project's timeline and every version's timeline in `TimelineBackup`.
-2. Convert with `toModelB()`:
-   - V1 clips keep their footage ranges, in footage order.
-   - Holes in A1 become muted pieces.
-   - Other tracks are anchored at the kept moment their start lands on, with the length they had in the edit.
-3. Verify: the old planner (A) and the new planner (B) must give the same plan within one frame: picture parts, sound, captions, zooms, b-roll, graphics and audio clips. A project that differs stays on A (it converts on the fly when read) and is listed in the log.
-4. A real render through both graphs is compared by frame hashes in the tests.
-5. Old versions convert when restored.
+1. At API start-up, each project still in model A is converted with `toModelB()`.
+2. It is checked: the old planner (A, kept as `renderPlanA.ts`) and the new one (B) must give the same plan within one frame. That covers picture parts, muted dialogue, captions, zooms, b-roll, graphics and audio clips.
+3. Only then is its old timeline copied to `TimelineBackup` and the project stored as a sequence. Its place in the list of edits is kept.
+4. A project that differs stays on A. It keeps rendering with the old planner, is listed in the log, and converts at its next edit.
+5. Versions are not touched. An old version converts when it is restored, and renders with the A planner until then.
+6. Tests: 500 random A timelines convert to the same plan. A real render through both graphs gives identical decoded frames and sound.
 
 ## Risks
 

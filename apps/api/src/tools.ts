@@ -4,9 +4,10 @@
 import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  allWords, breakdownAsText, CreateGraphicInput, describeRules, editCheck, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, keptRanges, makeTimeMap, mergeRules, MUSIC_TRACKS, outputDuration, SFX,
+  allWords, asSequence, breakdownAsText, CreateGraphicInput, describeRules, editCheck, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, type Breakdown, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Transcript, type VideoKind,
 } from "@rendrr/shared";
+import { otherSources } from "./services/sequence";
 import { createProject, getOwnedProject } from "./services/projects";
 import { renderResult, startRender } from "./services/render";
 import { redeemLinkCode } from "./services/logins";
@@ -157,7 +158,8 @@ async function checkOf(projectId: string, version: number, loudness: FileLoudnes
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { video: { include: { analysis: true } } } });
   const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   const snap = (ver?.timeline ?? { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId }) as unknown as Snapshot;
-  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured });
+  const others = await otherSources(p.userId, snap.timeline, p.videoId);
+  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, videoId: p.videoId, transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
@@ -257,7 +259,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const style = await prisma.style.findUnique({ where: { id: p.styleId } });
     const preview = await prisma.render.findFirst({ where: { projectId: p.id, status: "done", kind: "preview" }, orderBy: { createdAt: "desc" } });
     return { text: clip([`Edit "${p.name}" (${p.id}) on footage ${v.id} "${v.name}". ${p.status}, v${p.currentVersion}, style ${style?.name ?? p.styleId}.`,
-      summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || []),
+      summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || [], 60, p.videoId),
       preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet."].join("\n")) };
   },
 
@@ -301,12 +303,14 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId: p.id, v: r.version } } });
     const snap = (ver?.timeline ?? { timeline: p.timeline }) as unknown as Snapshot;
     const tr = (v.analysis?.transcript as unknown as Transcript) || [];
-    const kept = keptRanges(snap.timeline, allWords(tr));
-    const map = makeTimeMap(kept);
-    const cut = new Set(snap.timeline.cut);
-    const after = tr.map((l) => {
-      const ws = l.words.filter((w) => !cut.has(w.id) && kept.some((k) => w.t >= k.start && w.t < k.end));
-      return ws.length ? `[${fmtClock(map.toOutput(ws[0].t))}] ${ws.map((w) => w.text).join(" ")}` : null;
+    // What is said, in edit order: each stretch of dialogue's words (other videos' too), one line per stretch.
+    const tl = asSequence(snap.timeline, allWords(tr), p.videoId);
+    const view = sequenceView(tl, allWords(tr));
+    const others = await otherSources(c.userId, tl, p.videoId);
+    const cut = new Set(tl.cut);
+    const after = view.sound.filter((s) => !s.muted).map((s) => {
+      const ws = (s.videoId === view.mainVideoId ? allWords(tr) : allWords(others[s.videoId]?.transcript ?? [])).filter((w) => !(s.videoId === view.mainVideoId && cut.has(w.id)) && w.t >= s.srcIn && w.t < s.srcOut);
+      return ws.length ? `[${fmtClock(s.start + (ws[0].t - s.srcIn))}] ${ws.map((w) => w.text).join(" ")}` : null;
     }).filter(Boolean).join("\n");
     return { text: clip(`Preview v${r.version}${r.version === p.currentVersion ? "" : ` (the edit is at v${p.currentVersion} now)`}, ${r.seconds.toFixed(1)}s. Frames at ${times.map((t: number) => t.toFixed(1) + "s").join(", ")}.\nTranscript as it plays (output times):\n${after}`), images };
   },

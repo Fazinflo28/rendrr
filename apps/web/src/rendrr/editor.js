@@ -1,12 +1,13 @@
 /* ===================== /editor/:id ===================== */
 // Ported from ui/rendrr-ui.html (editor script). Changes: real footage in the player, live reload when an AI
 // edits, autosave conflicts, real undo/restore, the rendered preview plays in the player, real downloads.
-import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, Art, useNav, useApp } from "./ui";
+// Phase 2: the edit is a sequence (clips of any video, in any order, J/L cuts) with Premiere's tools.
+import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, turnedVideoStyle, Art, useNav, useApp } from "./ui";
 import { StyleArt, CreateLinkModal } from "./screens";
 import { api } from "./api";
-// The timeline logic and the render plan are shared with the server: the editor edits, draws and plays the edit
-// exactly as the connector changes it and the renderer renders it.
-import { applyOp, deleteClip, GRAPHIC_TEMPLATES, keptClock, layoutTimeline, liveFrame, playerGraphicHtml, setLink, splitClip, stripLayout, StyleRulesSchema, templateSize, trimClip } from "@rendrr/shared";
+// The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
+// draws and plays the edit exactly as the connector changes it and the renderer renders it.
+import { applyOp, asSequence, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -37,7 +38,9 @@ const styleCode = (st, S) => [
   "  shapes: " + st.ori.join(", "),
   "  best_on: " + st.platforms.join(", "),
 ].join("\n");
-const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "Pause"], ["L", "Forward 5 seconds"], ["S", "Split at playhead"], ["Delete", "Cut selected words or clip"], ["Alt click", "Unlink or link a clip's picture and dialogue"], ["Alt drag", "Trim one side of a linked clip"], ["Cmd Z", "Undo"], ["Cmd Shift Z", "Redo"], ["?", "Show shortcuts"]];
+// Premiere's tools and keys.
+const TOOLS = [["select", "V", "Select", "Click to select, drag a clip to reorder it, drag an edge to trim"], ["razor", "C", "Razor", "Click a clip to split it there"], ["ripple", "B", "Ripple", "Drag an edge: the clip gets longer or shorter and the edit closes up"], ["roll", "N", "Rolling", "Drag a cut: one clip gets longer, the next shorter"], ["slip", "Y", "Slip", "Drag a clip: same place and length, other footage"], ["slide", "U", "Slide", "Drag a clip between its neighbours"]];
+const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "Pause"], ["L", "Forward 5 seconds"], ...TOOLS.map(([, k, l, d]) => [k, `${l}: ${d.charAt(0).toLowerCase() + d.slice(1)}`]), ["S", "Snapping on or off"], ["Shift Z", "Zoom the timeline to fit"], ["Cmd K", "Split at the playhead"], ["Alt drag", "Drag a dialogue edge: J or L cut"], ["Delete", "Cut selected words or clip"], ["Cmd Z", "Undo"], ["Cmd Shift Z", "Redo"], ["?", "Show shortcuts"]];
 const r2 = (n) => Math.round(n * 100) / 100;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
@@ -73,6 +76,73 @@ function LiveOverlays({ frame, clips, media, aspect, playing }) {
       return m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`; })}`;
 }
 
+// The sequence's picture and sound, from the render plan: one <video> per video on V1 (the one playing shows, turned
+// and framed like its clip) and one sound element per video for J/L cuts (when the sound is another clip's). They
+// follow the edit time: a cut or a drift over 0.15 s seeks again. While the picture that should show is loading,
+// the clock waits (at most 1.5 s), so picture and time stay together.
+function SeqMedia({ plan, clock, time, playing, urls, aspect, pb }) {
+  const pic = clock.picture(time), snd = clock.soundAt(time);
+  const part = pic ? plan.parts[pic.i] : null;
+  const vref = useRef({}), aref = useRef({}), hold = useRef(0);
+  // Sound that is not its picture's own (J/L cuts): its elements load ahead.
+  const jl = useMemo(() => plan.sound.some((s) => { const p = plan.parts.find((x) => s.start >= x.start - 1e-3 && s.start < x.end); return !p || p.videoId !== s.videoId || Math.abs((p.srcIn - p.start) - (s.srcIn - s.start)) > 0.02; }), [plan]);
+  useEffect(() => {
+    pb.attachGate?.(() => {
+      const el = part && vref.current[part.videoId];
+      if (!el || !urls[part.videoId]) return true;
+      if (el.readyState >= 3 && !el.seeking) { hold.current = 0; return true; }
+      hold.current ||= performance.now();
+      return performance.now() - hold.current > 1500;
+    });
+  });
+  useEffect(() => () => pb.attachGate?.(null), []);
+  useEffect(() => {
+    const follow = (el, want) => {
+      const drift = Math.abs(el.currentTime - want);
+      if (playing) { if (drift > 0.15) { try { el.currentTime = want; } catch {} } if (el.paused) el.play().catch(() => {}); }
+      else { if (!el.paused) el.pause(); if (drift > 0.04) { try { el.currentTime = want; } catch {} } }
+    };
+    // The picture's own element plays the sound when the sound is its own footage, else a sound element does.
+    const own = !!(snd && part && snd.videoId === part.videoId && Math.abs(snd.src - pic.src) < 0.08);
+    for (const [id, el] of Object.entries(vref.current)) {
+      const on = part?.videoId === id;
+      el.muted = !(on && own && !snd.muted);
+      if (on) follow(el, pic.src); else if (!el.paused) el.pause();
+    }
+    for (const [id, el] of Object.entries(aref.current)) {
+      if (snd && !own && !snd.muted && snd.videoId === id) follow(el, snd.src); else if (!el.paused) el.pause();
+    }
+  }, [time, playing, part]);
+  return html`${plan.sources.map((id) => {
+    const on = part?.videoId === id; const p = on ? part : plan.parts.find((x) => x.videoId === id);
+    const f = p?.framing; const turn = turnedVideoStyle(p?.rotate || 0, aspect);
+    return html`<div key=${id} style=${{ position: "absolute", inset: 0, visibility: on ? "visible" : "hidden", transform: f ? `translate(${f.x * 100}%, ${f.y * 100}%) scale(${f.scale})` : "none" }}>
+      ${urls[id] ? html`<video ref=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} data-on=${on ? "1" : "0"} data-video=${id} src=${urls[id]} muted playsInline preload="auto" style=${{ objectFit: "cover", background: "#000", ...(turn || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: "50% 40%" }) }} />`
+        : on && html`<div style="position:absolute;inset:0;display:grid;place-items:center;background:#000;color:#999"><span class="t-small">No preview copy of this video</span></div>`}
+      ${urls[id] && html`<audio ref=${(el) => { if (el) aref.current[id] = el; else delete aref.current[id]; }} data-sound=${id} src=${urls[id]} preload=${jl ? "auto" : "none"} />`}
+    </div>`;
+  })}`;
+}
+
+// Puts a clip of any video into the sequence (the connector's add_clip).
+function AddClipModal({ main, at, onAdd, onClose }) {
+  const q = useAsync(() => api.listVideos(), []);
+  const list = [main, ...(Array.isArray(q.data) ? q.data : []).filter((v) => v.id !== main.id && v.status === "ready" && v.kind !== "reference")];
+  const [vid, setVid] = useState(main.id);
+  const v = list.find((x) => x.id === vid) || main;
+  const [from, setFrom] = useState(0); const [to, setTo] = useState(Math.min(5, main.seconds || 5)); const [where, setWhere] = useState("playhead");
+  const ok = to - from >= 0.1 && from >= 0 && to <= (v.seconds || 0) + 0.05;
+  return html`<${Modal} title="Add a clip" sub="Any video of yours, any part of it. It goes into the sequence and the edit makes room." onClose=${onClose}
+    footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="add-clip-go" icon="plus" disabled=${!ok} onClick=${() => onAdd({ video: v, from: r2(from), to: r2(to), at: where === "playhead" ? at : undefined })}>Add clip<//>`}>
+    <div class="col" style="gap:12px" id="add-clip-form">
+      <label class="t-small" style="display:grid;gap:4px">Video<select class="input sm" id="add-clip-video" value=${vid} onChange=${(e) => { setVid(e.target.value); const nv = list.find((x) => x.id === e.target.value); if (nv) { setFrom(0); setTo(Math.min(5, nv.seconds || 5)); } }}>${list.map((x) => html`<option key=${x.id} value=${x.id}>${x.id === main.id ? x.name + " (this edit's footage)" : x.name} · ${fmtTime(x.seconds || 0)}</option>`)}</select></label>
+      <div class="row" style="gap:8px"><label class="t-small grow" style="display:grid;gap:4px">From (s)<input class="input sm" id="add-clip-from" type="number" min="0" step="0.1" value=${from} onInput=${(e) => setFrom(+e.target.value)} /></label><label class="t-small grow" style="display:grid;gap:4px">To (s)<input class="input sm" id="add-clip-to" type="number" min="0" step="0.1" value=${to} onInput=${(e) => setTo(+e.target.value)} /></label></div>
+      <div class="row" style="gap:12px">${[["playhead", "At the playhead (" + fmtTime(at) + ")"], ["end", "At the end"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-where" data-where=${k} checked=${where === k} onChange=${() => setWhere(k)} />${l}</label>`)}</div>
+      ${!ok && html`<p class="t-small muted" role="alert">Pick a part at least 0.1 s long inside the video (${fmtTime(v.seconds || 0)}).</p>`}
+    </div>
+  <//>`;
+}
+
 function EditorPage({ id }) {
   const q = useAsync(() => api.getProject(id), [id]);
   const { go } = useNav();
@@ -95,21 +165,31 @@ function EditorInner({ project, reload, ai, keep }) {
     const all = project.transcript.flatMap((l) => l.words); let i = 0;
     return project.transcript.map((l) => { const ws = l.words.map((w) => { const nx = all[++i]; return w.end != null ? w : { ...w, end: r2(Math.min(nx ? nx.t : w.t + 0.6, w.t + 0.6)) }; }); return { ...l, words: ws, end: l.end ?? (ws.length ? ws[ws.length - 1].end : l.start) }; });
   }, [project]);
-  const tl = project.timeline; const words = useMemo(() => transcript.flatMap((l) => l.words), [transcript]);
-  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, rotate: tl.rotate || 0, framing: tl.framing || null, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText });
-  const S = H.state; const footDur = tl.duration;
+  const words = useMemo(() => transcript.flatMap((l) => l.words), [transcript]);
+  const footDur = project.timeline.duration;
+  // The edit is a sequence. A project stored before Phase 2 is shown converted (the server stores it so at the next save).
+  const tl = useMemo(() => asSequence(project.timeline, words, project.videoId, project.video?.seconds || footDur), [project, words]);
+  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText });
+  const S = H.state;
   // The edit as the server and the renderer see it, the place of every clip in it, and the render plan the live
-  // player draws from. Times on the timeline and in the player are EDIT seconds (gaps closed: what renders).
+  // player draws from. Times on the timeline and in the player are EDIT seconds.
   const initial = useRef(S).current;
-  const tlOf = (s) => { const { rotate: _r, framing: _f, ...base } = tl; return { ...base, ...(s.rotate ? { rotate: s.rotate } : {}), ...(s.framing ? { framing: s.framing } : {}), cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText }; };
+  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText });
   const timeline = useMemo(() => tlOf(S), [S]);
-  const lay = useMemo(() => layoutTimeline(timeline, words, project.videoId), [timeline, words]);
+  const lay = useMemo(() => layoutTimeline(timeline, words), [timeline, words]);
+  const view = useMemo(() => sequenceView(lay, words), [lay, words]);
+  const main = view.mainVideoId;
+  // The other videos on V1: sent with the project, plus any added here (their preview copy is fetched then).
+  const [added, setAdded] = useState({});
+  const others = useMemo(() => ({ ...(project.videos || {}), ...added }), [project, added]);
   const media = useMemo(() => ({ broll: project.brollMedia || {}, graphics: project.graphicMedia || {} }), [project]);
+  const urls = useMemo(() => ({ ...Object.fromEntries(Object.entries(others).map(([id, v]) => [id, v.url || null])), [main]: project.video?.proxyUrl || null }), [others, main, project]);
   const [sel, setSel] = useState(null); // {track,id}
   const [wsel, setWsel] = useState(null); // {a,b} word indexes
   const [rtab, setRtabNow] = useState(keep.current.tab); const setRtab = (t) => { keep.current.tab = t; setRtabNow(t); }; const [verMenu, setVerMenu] = useState(false);
   useEffect(() => { const k = () => setVerMenu(false); window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
   const [zoom, setZoom] = useState(36);
+  const [tool, setTool] = useState("select"); const [snapOn, setSnapOn] = useState(true); const [addOpen, setAddOpen] = useState(false);
   const [render, setRender] = useState(null);
   const [share, setShare] = useState(false); const [help, setHelp] = useState(false);
   const [viewVer, setViewVer] = useState(null);
@@ -122,18 +202,20 @@ function EditorInner({ project, reload, ai, keep }) {
   const plan = useMemo(() => {
     try {
       const v = project.video || {};
-      return planRender({ kind: "preview", snapshot: { timeline, name: S.name, aspect: S.aspect, styleId: S.styleId }, transcript,
+      return planRender({ kind: "preview", snapshot: { timeline, name: S.name, aspect: S.aspect, styleId: S.styleId }, transcript, videoId: project.videoId,
         source: { width: v.width || 1920, height: v.height || 1080, fps: v.fps || 30, seconds: v.seconds || footDur, hasAudio: true }, captionRules,
+        sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { width: o.width || 1920, height: o.height || 1080, fps: 30, seconds: o.seconds || 0, hasAudio: true }])),
+        transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript || []])),
         brollSeconds: Object.fromEntries(Object.entries(media.broll).map(([id, b]) => [id, b.seconds])),
         // Templates draw live; a custom graphic shows once its recorded file is there (as in the render).
         graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, GRAPHIC_TEMPLATES.some((g) => g.id === c.graphicId) || !!media.graphics[c.graphicId]])) });
     } catch { return null; } // everything is cut
-  }, [timeline, S.aspect, captionRules, media]);
-  const clock = useMemo(() => keptClock(plan ? plan.kept : []), [plan]);
+  }, [timeline, S.aspect, captionRules, media, others]);
+  const clock = useMemo(() => sequenceClock(plan || { parts: [], sound: [], outputSeconds: 0 }), [plan]);
   const dur = plan ? plan.outputSeconds : 0;
   // The rendered preview plays instead when it is of this version and nothing changed since: exactly the file.
   const fresh = !!project.previewUrl && project.previewVersion === project.version && S === initial;
-  const pb = usePlayback(dur, { clock: fresh ? null : clock });
+  const pb = usePlayback(dur, { seq: !fresh });
   useEffect(() => { if (keep.current.time > 0) pb.seek(Math.min(keep.current.time, dur)); }, []);
   useEffect(() => { keep.current.time = pb.time; }, [pb.time]);
   // "Watch preview": the rendered file plays in the same player, without the live overlays.
@@ -146,54 +228,81 @@ function EditorInner({ project, reload, ai, keep }) {
 
   // Derived playback bits: what the render shows at this moment of the edit.
   const frame = plan && !fresh ? liveFrame(plan, pb.time, clock) : null;
-  const srcNow = clock.toSource(pb.time);
-  const curWord = words.filter((w) => w.t <= srcNow).pop();
-  const inEdit = (w) => !!plan && plan.kept.some((k) => w.t >= k.start && w.t < k.end);
+  const picNow = fresh ? (clock.picture(pb.time)?.videoId === main ? clock.picture(pb.time).src : null) : frame && frame.videoId === main ? frame.src : null;
+  const curWord = picNow == null ? null : words.filter((w) => w.t <= picNow).pop();
+  const inEdit = (w) => !!plan && plan.parts.some((p) => p.videoId === main && w.t >= p.srcIn && w.t < p.srcOut);
+  const wordAt = (w) => view.videoToEdit(main, w.t) ?? 0; // where a word first plays
 
-  // ---- editing actions ----
+  // ---- editing: every change is one of the connector's ops, run here on the editor's state ----
+  const ectx = useMemo(() => ({ videoId: project.videoId, transcript, silences: project.silences || [], sceneCuts: [], duration: footDur, getStyle: () => undefined,
+    getVideo: (id) => (others[id] ? { id, name: others[id].name, seconds: others[id].seconds || 0, ready: true } : undefined),
+    getGraphic: (id) => { const g = GRAPHIC_TEMPLATES.find((x) => x.id === id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
+    sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others]);
+  const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
+  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); return { state: { ...s, cut: r.snap.timeline.cut, tracks: r.snap.timeline.tracks }, summary: r.summary }; };
+  const say = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+  const doOp = (op, tell = true) => { try { const r = opOn(H.state, op); H.commit(r.state); if (tell) toast(say(r.summary), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
+  const liveOp = (base, op) => { try { H.replace(opOn(base, op).state); return true; } catch { return false; } };
   const cutWords = (ids) => { if (!ids.length) return; H.commit((s) => ({ ...s, cut: Array.from(new Set([...s.cut, ...ids])) })); toast(ids.length + (ids.length === 1 ? " word cut" : " words cut"), { icon: "scissors" }); };
   const restoreWord = (wid) => H.commit((s) => ({ ...s, cut: s.cut.filter((x) => x !== wid) }));
   const selWords = () => { if (!wsel) return []; const [a, b] = [Math.min(wsel.a, wsel.b), Math.max(wsel.a, wsel.b)]; return words.slice(a, b + 1).filter((w) => !cutSet.has(w.id)).map((w) => w.id); };
-  // Clip edits go through the shared timeline module: linked picture and dialogue change together, and the edit
-  // closes up (ripple) because V1 plays back to back.
-  const commitTl = (next) => H.commit((s) => ({ ...s, tracks: stripLayout(next).tracks, cut: next.cut }));
-  const tryEdit = (fn, done) => { try { const r = fn(); commitTl(r.tl); if (done) toast(done(r), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
+  const isV1 = (k) => k === "v1" || k === "a1"; // a V1 clip and its dialogue share an id and edit together
+  // Split at the playhead: the selected clip if the playhead is in it, else the V1 clip playing.
   const split = () => {
-    const t = r2(clock.toSource(pb.time)); const inside = (c) => t > c.start + .05 && t < c.end - .05;
-    let target = sel && S.tracks[sel.track].find((c) => c.id === sel.id && inside(c)) ? sel : null;
-    if (!target) { const c = S.tracks.v1.find(inside); if (c) target = { track: "v1", id: c.id }; }
+    const t = pb.time; const inside = (c) => t > c.start + .05 && t < c.end - .05;
+    let target = sel && lay.tracks[sel.track]?.find((c) => c.id === sel.id && inside(c)) ? sel : null;
+    if (!target) { const c = lay.tracks.v1.find(inside); if (c) target = { track: "v1", id: c.id }; }
     if (!target) { toast("Move the playhead inside a clip to split it"); return; }
-    tryEdit(() => splitClip(timeline, target.track, target.id, t), () => "Split at " + fmtTime(pb.time));
+    doOp({ op: "split_clip", track: isV1(target.track) ? "v1" : target.track, clipId: target.id, at: r2(t), edit: true });
   };
-  const removeSel = () => { if (!sel) return; if (tryEdit(() => deleteClip(timeline, sel.track, sel.id), (r) => r.summary.charAt(0).toUpperCase() + r.summary.slice(1))) setSel(null); };
-  // Cut silences: the connector's own op, run here on the editor's state (same rules: pauses over the limit, the
-  // silence at each clip's start and end, linked dialogue with its picture).
+  const removeSel = () => { if (!sel) return; if (doOp({ op: "delete_clip", track: sel.track, clipId: sel.id })) setSel(null); };
+  // Cut silences: the connector's own op (pauses over the limit, the silence at each clip's start and end).
   const [silOver, setSilOver] = useState(0.5);
   const [frameOpen, setFrameOpen] = useState(false); const frameBase = useRef(null);
-  const cutSilences = () => {
+  const cutSilences = () => doOp({ op: "cut_silences", overSeconds: silOver });
+  const selClip = sel ? lay.tracks[sel.track]?.find((c) => c.id === sel.id) : null;
+  const selV1 = sel && isV1(sel.track) ? lay.tracks.v1.find((c) => c.id === sel.id) : null;
+  const isOn = (k, c) => !!sel && c.id === sel.id && (k === sel.track || (isV1(k) && isV1(sel.track)));
+  const toggleMute = () => selV1 && doOp({ op: "set_audio_offset", clipId: selV1.id, muted: !selV1.audioMuted });
+  // Turn and framing: the selected V1 clip, else every clip of the footage (as the connector's ops do).
+  const lookIds = selV1 ? [selV1.id] : undefined;
+  const lookClip = selV1 || lay.tracks.v1.find((c) => c.sourceVideoId === main) || null;
+  const rotNow = lookClip?.rotate || 0; const frNow = lookClip?.framing || { scale: 1, x: 0, y: 0 };
+  const onDelete = () => { const ids = selWords(); if (ids.length) { cutWords(ids); setWsel(null); } else if (sel) removeSel(); };
+  const fit = () => setZoom(Math.max(16, Math.min(90, Math.floor(((canvasRef.current?.parentElement?.clientWidth || 900) - 40) / Math.max(1, dur)))));
+  // A clip of another video: its preview copy and words, so it plays here at once.
+  const addClip = async ({ video, from, to, at }) => {
+    setAddOpen(false);
+    if (video.id !== main && !others[video.id]) {
+      try { const v = await api.getVideo(video.id); setAdded((a) => ({ ...a, [video.id]: { name: v.name, seconds: v.seconds, width: v.width, height: v.height, url: v.proxyUrl || null, transcript: [] } })); }
+      catch (e) { toast(e.message); return; }
+    }
+    // The op needs to know the video: run it with this video known.
     try {
-      const r = applyOp({ timeline, name: S.name, aspect: S.aspect, styleId: S.styleId }, { op: "cut_silences", overSeconds: silOver }, { videoId: project.videoId, transcript, silences: project.silences || [], sceneCuts: [], duration: footDur, getStyle: () => undefined });
-      commitTl(r.snap.timeline); toast(r.summary.charAt(0).toUpperCase() + r.summary.slice(1), { icon: "scissors" });
+      const ctx2 = { ...ectx, getVideo: (id) => (id === video.id ? { id, name: video.name, seconds: video.seconds || 0, ready: true } : ectx.getVideo(id)) };
+      const r = applyOp(snapOf(H.state), { op: "add_clip", videoId: video.id === main ? undefined : video.id, from, to, ...(at != null ? { at: r2(at) } : {}), label: video.id === main ? undefined : video.name }, ctx2);
+      H.commit((s) => ({ ...s, cut: r.snap.timeline.cut, tracks: r.snap.timeline.tracks })); toast(say(r.summary), { icon: "plus" });
     } catch (e) { toast(e.message); }
   };
-  const toggleLink = (track, clipId) => { const c = lay.tracks[track].find((x) => x.id === clipId); if (c) tryEdit(() => setLink(timeline, track, clipId, !c.linkId), (r) => r.summary.charAt(0).toUpperCase() + r.summary.slice(1)); };
-  const selClip = sel ? lay.tracks[sel.track].find((c) => c.id === sel.id) : null;
-  const isOn = (k, c) => (sel?.track === k && sel?.id === c.id) || (!!selClip?.linkId && c.linkId === selClip.linkId);
-  const onDelete = () => { const ids = selWords(); if (ids.length) { cutWords(ids); setWsel(null); } else if (sel) removeSel(); };
 
   // ---- keyboard ----
   useEffect(() => {
     const k = (e) => {
       const tag = e.target.tagName; if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target.isContentEditable) return;
-      if (render || share) return;
+      if (render || share || addOpen) return;
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? H.redo() : H.undo(); return; }
+      if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); split(); return; }
+      if (mod) return;
+      if (e.shiftKey && e.key.toLowerCase() === "z") { fit(); return; }
+      const t = TOOLS.find(([, key]) => key.toLowerCase() === e.key.toLowerCase());
+      if (t && !e.shiftKey) { setTool(t[0]); return; }
       switch (e.key) {
         case " ": e.preventDefault(); pb.toggle(); break;
         case "j": case "J": pb.seek(pb.time - 5); break; // edit time
         case "k": case "K": pb.setPlaying(false); break;
         case "l": case "L": pb.seek(pb.time + 5); break;
-        case "s": case "S": split(); break;
+        case "s": case "S": setSnapOn((x) => { toast(x ? "Snapping off" : "Snapping on"); return !x; }); break;
         case "Delete": case "Backspace": e.preventDefault(); onDelete(); break;
         case "?": setHelp((h) => !h); break;
         case "Escape": setHelp(false); setWsel(null); setSel(null); break;
@@ -231,31 +340,87 @@ function EditorInner({ project, reload, ai, keep }) {
   const dragRef = useRef(null);
   const onWordDown = (i) => (e) => { e.preventDefault(); dragRef.current = { a: i, moved: false }; setWsel({ a: i, b: i }); };
   const onWordEnter = (i) => () => { if (dragRef.current) { dragRef.current.moved = dragRef.current.moved || i !== dragRef.current.a; setWsel({ a: dragRef.current.a, b: i }); } };
-  useEffect(() => { const up = () => { if (!dragRef.current) return; const d = dragRef.current; dragRef.current = null; if (!d.moved) { const w = words[d.a]; if (cutSet.has(w.id)) { restoreWord(w.id); setWsel(null); } else if (inEdit(w)) { pb.seek(clock.toOutput(w.t)); } else toast("This word's clip is out of the edit. Undo, or trim the clip back, to bring it back."); } }; window.addEventListener("pointerup", up); return () => window.removeEventListener("pointerup", up); }, [words, cutSet, clock, plan]);
+  useEffect(() => { const up = () => { if (!dragRef.current) return; const d = dragRef.current; dragRef.current = null; if (!d.moved) { const w = words[d.a]; if (cutSet.has(w.id)) { restoreWord(w.id); setWsel(null); } else if (inEdit(w)) { pb.seek(wordAt(w)); } else toast("This word's clip is out of the edit. Undo, or trim the clip back, to bring it back."); } }; window.addEventListener("pointerup", up); return () => window.removeEventListener("pointerup", up); }, [words, cutSet, view, plan]);
   const inWsel = (i) => wsel && i >= Math.min(wsel.a, wsel.b) && i <= Math.max(wsel.a, wsel.b);
 
   // ---- timeline pointer logic ----
   const canvasRef = useRef();
   const PAD = 12; const px = (t) => PAD + t * zoom; const tAt = (clientX) => { const r = canvasRef.current.getBoundingClientRect(); return Math.min(dur, Math.max(0, (clientX - r.left - PAD) / zoom)); };
   const scrubTimeline = (e) => { pb.seek(tAt(e.clientX)); const mv = (ev) => pb.seek(tAt(ev.clientX)); const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); }; window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up); };
-  // Trim an edge. V1/A1 edges move in the footage (the edit grows or closes up after them); other clips keep their
-  // place in the edit and pin to the footage under it. A linked pair trims together; Alt-drag trims one side.
-  const trim = (track, clip, edge) => (e) => {
-    e.stopPropagation(); e.preventDefault(); setSel({ track, id: clip.id });
-    const base = H.state; const baseTl = tlOf(base); const ck0 = clock; const solo = e.altKey; const x0 = e.clientX;
-    const list = baseTl.tracks[track]; const i = list.findIndex((c) => c.id === clip.id); const raw = list[i]; const prev = list[i - 1], next = list[i + 1];
-    const main = track === "v1" || track === "a1";
-    const mv = (ev) => {
-      const d = (ev.clientX - x0) / zoom; let start = raw.start, end = raw.end;
-      if (edge === "l") start = clamp(main ? raw.start + d : ck0.toSource(clip.timelineStart + d), prev ? prev.end : 0, raw.end - .2);
-      else end = clamp(main ? raw.end + d : ck0.toSource(clip.timelineEnd + d), raw.start + .2, next ? next.start : footDur);
-      try { const r = trimClip(baseTl, track, raw.id, r2(start), r2(end), { linked: !solo }); H.replace((s) => ({ ...s, tracks: stripLayout(r.tl).tracks })); } catch {}
-    };
-    const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); H.commitFrom(base); };
+  // Snapping: an edge or a cut dragged within 8 px of the playhead or another clip's edge lands on it.
+  const snapT = (t, skip = []) => {
+    if (!snapOn) return t;
+    let best = t, bd = 8 / zoom;
+    for (const p of [0, dur, pb.time, ...TRACKS.flatMap(([k]) => lay.tracks[k].flatMap((c) => [c.start, c.end]))]) {
+      if (skip.some((x) => Math.abs(x - p) < 1e-6)) continue;
+      const d = Math.abs(p - t); if (d < bd) { best = p; bd = d; }
+    }
+    return best;
+  };
+  // A drag: each move shows the result of the op on the state before the drag; letting go makes it one undo step.
+  const drag = (e, onMove, onUp) => {
+    const x0 = e.clientX; const base = H.state;
+    const mv = (ev) => onMove((ev.clientX - x0) / zoom, base, ev);
+    const up = (ev) => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); if (onUp) onUp((ev.clientX - x0) / zoom, base); else H.commitFrom(base); };
     window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+  };
+  const [drop, setDrop] = useState(null); // reordering: the cut where the dragged clip would go
+  const clipDown = (k, c) => (e) => {
+    e.stopPropagation(); e.preventDefault();
+    setSel({ track: k, id: c.id });
+    const marker = isCaptionMarker(k, c);
+    if (tool === "razor") { if (!marker) doOp({ op: "split_clip", track: isV1(k) ? "v1" : k, clipId: c.id, at: r2(snapT(tAt(e.clientX))), edit: true }); return; }
+    if (isV1(k) && tool === "slip") return drag(e, (d, base) => liveOp(base, { op: "slip_clip", clipId: c.id, by: r2(-d) }));
+    if (isV1(k) && tool === "slide") return drag(e, (d, base) => { const s = snapT(c.start + d, [c.start]); liveOp(base, { op: "slide_clip", clipId: c.id, by: r2(s - c.start) }); });
+    if (k === "v1" && tool === "select") {
+      // Drag to reorder: the clip goes to the cut nearest the pointer.
+      const t0 = tAt(e.clientX); const cuts = [...lay.tracks.v1.map((x) => x.start), dur];
+      let moved = false;
+      return drag(e, (d) => { if (!moved && Math.abs(d * zoom) < 5) return; moved = true; const t = t0 + d; setDrop(cuts.reduce((b, x) => (Math.abs(x - t) < Math.abs(b - t) ? x : b), cuts[0])); },
+        (d) => { setDrop(null); if (moved) doOp({ op: "move_clip", clipId: c.id, at: r2(clamp(t0 + d, 0, dur)) }); });
+    }
+    if (!isV1(k) && !marker && (tool === "select" || tool === "ripple")) {
+      // Move a clip on another track: it hangs on the V1 clip under its new start.
+      const len = c.end - c.start;
+      return drag(e, (d, base) => { const s = clamp(snapT(c.start + d, [c.start]), 0, Math.max(0, dur - 0.05)); liveOp(base, { op: "trim_clip", track: k, clipId: c.id, start: r2(s), end: r2(Math.min(dur, s + len)), edit: true }); });
+    }
+  };
+  const edgeDown = (k, c, edge) => (e) => {
+    e.stopPropagation(); e.preventDefault(); setSel({ track: k, id: c.id });
+    if (isCaptionMarker(k, c)) return;
+    const v = isV1(k) ? lay.tracks.v1.find((x) => x.id === c.id) : null;
+    const at0 = edge === "l" ? c.start : c.end;
+    if (k === "a1" && e.altKey && v) {
+      // J/L cut: the dialogue's edge moves on its own (the neighbour's sound gives way).
+      return drag(e, (d, base) => { const t = snapT(at0 + d, [at0]); liveOp(base, edge === "l" ? { op: "set_audio_offset", clipId: c.id, start: r2(t - v.start) } : { op: "set_audio_offset", clipId: c.id, end: r2(t - v.end) }); });
+    }
+    if (v && tool === "roll") {
+      // Rolling edit: the cut between this clip and its neighbour moves; the edit keeps its length.
+      const i = lay.tracks.v1.findIndex((x) => x.id === c.id); const left = edge === "l" ? lay.tracks.v1[i - 1] : v;
+      if (!left) return;
+      const cut = edge === "l" ? v.start : v.end;
+      return drag(e, (d, base) => { const t = snapT(cut + d, [cut]); liveOp(base, { op: "roll_edit", clipId: left.id, by: r2(t - cut) }); });
+    }
+    if (v) {
+      // Ripple trim: the clip's footage edge moves; the edit grows or closes up after it.
+      const vEdge = edge === "l" ? v.start : v.end;
+      return drag(e, (d, base) => { const dd = snapT(vEdge + d, [vEdge]) - vEdge; liveOp(base, { op: "trim_clip", track: "v1", clipId: c.id, start: r2(edge === "l" ? v.sourceIn + dd : v.sourceIn), end: r2(edge === "r" ? v.sourceOut + dd : v.sourceOut) }); });
+    }
+    // Another track: the edge moves in the edit.
+    return drag(e, (d, base) => {
+      const s = edge === "l" ? clamp(snapT(c.start + d, [c.start]), 0, c.end - 0.1) : c.start;
+      const en = edge === "r" ? clamp(snapT(c.end + d, [c.end]), c.start + 0.1, dur) : c.end;
+      liveOp(base, { op: "trim_clip", track: k, clipId: c.id, start: r2(s), end: r2(en), edit: true });
+    });
   };
   const canvasW = Math.max(900, px(dur) + 40);
   const ticks = []; for (let t = 0; t <= dur; t += zoom < 30 ? 5 : zoom < 60 ? 2 : 1) ticks.push(t);
+  const v1ById = useMemo(() => new Map(lay.tracks.v1.map((c) => [c.id, c])), [lay]);
+  const clipText = (k, c) => {
+    if (k === "v1") { const vn = c.sourceVideoId !== main ? others[c.sourceVideoId]?.name || "Other video" : ""; return (vn && vn !== c.label ? vn + " · " : "") + (c.label || vn) + (c.rotate ? ` ↻${c.rotate}°` : ""); }
+    if (k === "a1") { const v = v1ById.get(c.id); const j = v && c.start < v.start - 0.005, l = v && v.end < c.end - 0.005; return "Dialogue" + (j ? " · J" : "") + (l ? " · L" : "") + (c.audioMuted ? " · muted" : ""); }
+    return c.label;
+  };
 
   const { chat, setChat } = ai;
   useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, rtab]);
@@ -274,7 +439,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
       <span class="t-small muted" id="saved" title=${saved} style="display:inline-flex;align-items:center;gap:4px;opacity:.7">${saved === "Saved" ? "" : saved}</span>
       <div class="grow" />
-      <span class="t-small muted" id="auto-preview" title=${fresh ? "The player plays the rendered preview file of this version." : "The player plays the edit as it will render: cuts closed, captions, zooms, b-roll and graphics. Music plays in the rendered preview."}>${fresh ? `Playing the rendered preview (V${project.version})` : "Live edit"}</span>
+      <span class="t-small muted" id="auto-preview" title=${fresh ? "The player plays the rendered preview file of this version." : "The player plays the edit as it will render: every clip and video in order, J/L cuts, captions, zooms, b-roll and graphics. Music plays in the rendered preview."}>${fresh ? `Playing the rendered preview (V${project.version})` : "Live edit"}</span>
       ${!fresh && html`<${Btn} kind="ghost" size="sm" id="render-preview" icon="play" disabled=${saved !== "Saved" || !plan} onClick=${() => startRender("preview")}>Render preview<//>`}
       <${Btn} kind="secondary" size="sm" id="render-final" icon="film" onClick=${() => startRender("final")}>Render final<//>
       <${Btn} size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share for review<//>
@@ -289,35 +454,39 @@ function EditorInner({ project, reload, ai, keep }) {
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
           : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.video?.proxyUrl || undefined} videoFit="cover" rotate=${S.rotate || 0} framing=${S.framing} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} muted=${!!frame?.muted} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} />`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} aspect=${S.aspect} pb=${pb} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} />`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">
         <div class="row" style="gap:6px"><${Btn} kind="quiet" size="xs" icon=${pb.playing ? "pause" : "play"} aria-label=${pb.playing ? "Pause" : "Play"} onClick=${pb.toggle} />
           <span class="mono t-small tc-ro"><b>${fmtTime(pb.time, true)}</b><span class="muted"> / ${fmtTime(dur, true)}</span></span></div>
         <div class="tl-tools">
-          <button class="tool" id="split" onClick=${split}><${Icon} name="scissors" size="15" />Split<span class="kbd">S</span></button>
-          <button class="tool" id="rotate" title="Turn the footage 90° clockwise (footage filmed sideways)" onClick=${() => H.commit((s) => ({ ...s, rotate: ((s.rotate || 0) + 90) % 360 }))}><${Icon} name="refresh" size="15" />Rotate${S.rotate ? " " + S.rotate + "°" : ""}</button>
-          <span style="position:relative"><button class="tool" id="frame-btn" title="Position and scale of the footage" onClick=${() => setFrameOpen((o) => !o)}><${Icon} name="image" size="15" />Frame</button>
-            ${frameOpen && html`<div class="menu" id="frame-pop" style="left:0;right:auto;top:36px;min-width:240px;padding:12px;display:grid;gap:8px">${[["scale", "Scale", 0.5, 2, 0.01], ["x", "Left / right", -0.5, 0.5, 0.01], ["y", "Up / down", -0.5, 0.5, 0.01]].map(([k, l, lo, hi, st]) => html`<label key=${k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${(S.framing || { scale: 1, x: 0, y: 0 })[k]}</span><input type="range" data-frame=${k} min=${lo} max=${hi} step=${st} value=${(S.framing || { scale: 1, x: 0, y: 0 })[k]} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => H.replace((s) => { const f = { ...(s.framing || { scale: 1, x: 0, y: 0 }), [k]: +e.target.value }; return { ...s, framing: f.scale === 1 && f.x === 0 && f.y === 0 ? null : f }; })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}<${Btn} kind="ghost" size="xs" onClick=${() => H.commit((s) => ({ ...s, framing: null }))}>Reset<//></div>`}</span>
+          <span class="row tool-set" role="radiogroup" aria-label="Tool">${TOOLS.map(([k, key, label, hint]) => html`<button key=${k} class=${"tool" + (tool === k ? " on" : "")} id=${"tool-" + k} role="radio" aria-checked=${tool === k} title=${label + " (" + key + "): " + hint} onClick=${() => setTool(k)}>${label}<span class="kbd">${key}</span></button>`)}</span>
+          <button class="tool" id="snap" aria-pressed=${snapOn} title="Snapping (S): edges land on the playhead and on other clips' edges" onClick=${() => setSnapOn((x) => !x)}>${snapOn ? "Snap on" : "Snap off"}<span class="kbd">S</span></button>
+          <button class="tool" id="split" title="Split at the playhead (Cmd K)" onClick=${split}><${Icon} name="scissors" size="15" />Split<span class="kbd">⌘K</span></button>
+          <button class="tool" id="add-clip" title="Add a clip of any video to the sequence" onClick=${() => setAddOpen(true)}><${Icon} name="plus" size="15" />Add clip</button>
+          <button class="tool" id="rotate" title=${"Turn " + (selV1 ? "this clip" : "the footage") + " 90° clockwise (footage filmed sideways)"} onClick=${() => doOp({ op: "set_rotation", degrees: (rotNow + 90) % 360, clipIds: lookIds })}><${Icon} name="refresh" size="15" />Rotate${rotNow ? " " + rotNow + "°" : ""}</button>
+          <span style="position:relative"><button class="tool" id="frame-btn" title=${"Position and scale of " + (selV1 ? "this clip" : "the footage")} onClick=${() => setFrameOpen((o) => !o)}><${Icon} name="image" size="15" />Frame</button>
+            ${frameOpen && html`<div class="menu" id="frame-pop" style="left:0;right:auto;top:36px;min-width:240px;padding:12px;display:grid;gap:8px"><span class="t-small muted">${selV1 ? "This clip" : "Every clip of the footage"}</span>${[["scale", "Scale", 0.5, 2, 0.01], ["x", "Left / right", -0.5, 0.5, 0.01], ["y", "Up / down", -0.5, 0.5, 0.01]].map(([k, l, lo, hi, st]) => html`<label key=${k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${frNow[k]}</span><input type="range" data-frame=${k} min=${lo} max=${hi} step=${st} value=${frNow[k]} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => liveOp(H.state, { op: "set_framing", [k]: +e.target.value, clipIds: lookIds })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}<${Btn} kind="ghost" size="xs" onClick=${() => doOp({ op: "set_framing", scale: 1, x: 0, y: 0, clipIds: lookIds }, false)}>Reset<//></div>`}</span>
           <span class="row" style="gap:2px"><button class="tool" id="cut-silences" title="Cut pauses longer than the limit, and the silence at the start and end of every clip" onClick=${cutSilences}><${Icon} name="scissors" size="15" />Cut silences</button><select class="tool" id="silence-over" aria-label="Pauses longer than" value=${silOver} onChange=${(e) => setSilOver(+e.target.value)}>${[0.3, 0.5, 0.8, 1, 1.5].map((x) => html`<option key=${x} value=${x}>over ${x}s</option>`)}</select></span>
           <button class="tool" id="delete-clip" disabled=${!sel} onClick=${removeSel}><${Icon} name="trash" size="15" />Delete<span class="kbd">⌫</span></button>
-          ${selClip && (sel.track === "v1" || sel.track === "a1") && html`<button class="tool" id="link-clip" title="Alt-click a clip does the same" onClick=${() => toggleLink(sel.track, sel.id)}><${Icon} name="link" size="15" />${selClip.linkId ? "Unlink" : "Link"}</button>`}
+          ${selV1 && html`<button class="tool" id="mute-clip" title="Silence this clip's dialogue, or bring it back" onClick=${toggleMute}><${Icon} name="mic" size="15" />${selV1.audioMuted ? "Unmute" : "Mute"}</button>`}
           ${selClip && html`<span class="t-small muted" style="margin-left:4px">${selClip.label}</span>`}
         </div>
-        <div class="zoom"><button class="tool icon" aria-label="Zoom out" onClick=${() => setZoom((z) => Math.max(16, z - 8))}><${Icon} name="more" size="14" /></button><input id="tl-zoom" type="range" min="16" max="90" value=${zoom} onInput=${(e) => setZoom(+e.target.value)} aria-label="Timeline zoom" /><button class="tool icon" aria-label="Zoom in" onClick=${() => setZoom((z) => Math.min(90, z + 8))}><${Icon} name="plus" size="14" /></button><button class="tool" onClick=${() => setZoom(Math.max(16, Math.min(90, Math.floor(((canvasRef.current?.parentElement?.clientWidth || 900) - 40) / dur))))}>Fit</button></div>
+        <div class="zoom"><button class="tool icon" aria-label="Zoom out" onClick=${() => setZoom((z) => Math.max(16, z - 8))}><${Icon} name="more" size="14" /></button><input id="tl-zoom" type="range" min="16" max="90" value=${zoom} onInput=${(e) => setZoom(+e.target.value)} aria-label="Timeline zoom" /><button class="tool icon" aria-label="Zoom in" onClick=${() => setZoom((z) => Math.min(90, z + 8))}><${Icon} name="plus" size="14" /></button><button class="tool" id="zoom-fit" title="Zoom to fit (Shift Z)" onClick=${fit}>Fit</button></div>
       </div>
       <div class="tl-body">
         <div class="tl-labels">${TRACKS.map(([k, l]) => html`<div key=${k} class=${k[0]} title=${TRACK_HINT[k]}><b>${l}</b><span>${TRACK_HINT[k]}</span></div>`)}</div>
-        <div class="tl-scroll"><div class="tl-canvas" ref=${canvasRef} style=${{ width: canvasW }} id="timeline">
+        <div class="tl-scroll"><div class=${"tl-canvas tool-" + tool} ref=${canvasRef} style=${{ width: canvasW }} id="timeline">
           <div class="ruler" onPointerDown=${scrubTimeline}>${ticks.map((t) => html`<span key=${t} style=${{ left: px(t) }}>${fmtTime(t)}</span>`)}${Array.from({ length: Math.floor(dur) + 1 }).map((_, t) => html`<i key=${"m" + t} class="mt" style=${{ left: px(t) }} />`)}
             ${comments.filter((c) => c.time > 0).map((c) => html`<div key=${c.id} class="cm" title=${c.text} onPointerDown=${(e) => { e.stopPropagation(); pb.seek(c.time); setRtab("comments"); }} style=${{ left: px(c.time) }} />`)}</div>
           ${TRACKS.map(([k]) => html`<div key=${k} class=${"track " + k[0] + (k === "v1" ? " v1main" : "")} onPointerDown=${(e) => { setSel(null); scrubTimeline(e); }}>
-            ${lay.tracks[k].map((c) => { const gone = c.timelineEnd - c.timelineStart < 0.01; const main = k === "v1" || k === "a1";
-              return html`<div key=${c.id} class=${"clip " + (k === "v1" ? "video" : k[0] === "a" ? "audio" : c.kind === "zoom" ? "fx" : "title") + (isOn(k, c) ? " on" : "") + (gone ? " gone" : "") + (main ? (c.linkId ? " linked" : " unlinked") : "")} data-clip=${c.id} data-link=${c.linkId || undefined}
-                title=${gone ? "Not in the edit: its footage is cut" : main ? (c.linkId ? "Linked to its " + (k === "v1" ? "dialogue" : "picture") + ". Alt-click to unlink." : "Not linked. Alt-click to link.") : c.label}
-                style=${{ left: px(c.timelineStart), width: Math.max(gone ? 4 : 8, (c.timelineEnd - c.timelineStart) * zoom) }}
-                onPointerDown=${(e) => { e.stopPropagation(); if (e.altKey && main) toggleLink(k, c.id); else setSel({ track: k, id: c.id }); }}><span class="h l" onPointerDown=${trim(k, c, "l")} /><span class="cl">${main && c.linkId ? "⛓ " : ""}${c.label}</span><span class="h r" onPointerDown=${trim(k, c, "r")} /></div>`; })}
+            ${lay.tracks[k].map((c) => { const gone = c.end - c.start < 0.01; const other = k === "v1" && c.sourceVideoId !== main;
+              return html`<div key=${c.id} class=${"clip " + (k === "v1" ? "video" : k[0] === "a" ? "audio" : c.kind === "zoom" ? "fx" : "title") + (isOn(k, c) ? " on" : "") + (gone ? " gone" : "") + (other ? " other" : "") + (c.audioMuted ? " muted" : "")} data-clip=${c.id} data-track=${k}
+                title=${gone ? "Not in the edit: its footage is cut" : k === "a1" ? "Its V1 clip's dialogue. Alt-drag an edge for a J or L cut." : k === "v1" ? `${clipText(k, c)} · footage ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}s` : c.label}
+                style=${{ left: px(c.start), width: Math.max(gone ? 4 : 8, (c.end - c.start) * zoom) }}
+                onPointerDown=${clipDown(k, c)}><span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
+            ${k === "v1" && drop != null && html`<div class="drop" id="drop-marker" style=${{ left: px(drop) - 1 }} />`}
           </div>`)}
           <div class="playhead" id="playhead" style=${{ left: px(pb.time) - 1 }}><i /></div>
         </div></div>
@@ -331,7 +500,7 @@ function EditorInner({ project, reload, ai, keep }) {
         ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
           <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted">${S.cut.length} cut</span></div>
           ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
-          ${selWords().length > 0 && html`<div class="selpop" id="cut-pop"><span class="t-small">${selWords().length} ${selWords().length === 1 ? "word" : "words"}</span><${Btn} size="xs" icon="scissors" id="cut-selected" onClick=${() => { cutWords(selWords()); setWsel(null); }}>Remove from video<//><${Btn} kind="quiet" size="xs" icon="play" aria-label="Play selection" onClick=${() => { const ids = selWords(); const w = words.find((x) => x.id === ids[0]); if (w) { pb.seek(clock.toOutput(w.t)); pb.setPlaying(true); } }} /><${Btn} kind="quiet" size="xs" icon="x" aria-label="Clear selection" onClick=${() => setWsel(null)} /></div>`}
+          ${selWords().length > 0 && html`<div class="selpop" id="cut-pop"><span class="t-small">${selWords().length} ${selWords().length === 1 ? "word" : "words"}</span><${Btn} size="xs" icon="scissors" id="cut-selected" onClick=${() => { cutWords(selWords()); setWsel(null); }}>Remove from video<//><${Btn} kind="quiet" size="xs" icon="play" aria-label="Play selection" onClick=${() => { const ids = selWords(); const w = words.find((x) => x.id === ids[0]); if (w) { pb.seek(wordAt(w)); pb.setPlaying(true); } }} /><${Btn} kind="quiet" size="xs" icon="x" aria-label="Clear selection" onClick=${() => setWsel(null)} /></div>`}
         </div>`}
         ${rtab === "ai" && html`<div class="pb cmts" style="padding-top:12px">
           <div class="col" style="gap:10px;flex:1;min-height:0;overflow:auto" id="ai-thread">
@@ -382,6 +551,7 @@ function EditorInner({ project, reload, ai, keep }) {
         <div class="row">${render.hasFile ? html`<${Btn} id="upload-original" icon="upload" onClick=${() => sendOriginal(null)}>Upload original and export<//>` : html`<${Btn} id="pick-original" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the original file<//>`}<${Btn} kind="ghost" onClick=${() => setRender(null)}>Not now<//></div></div>`}
     <//>`}
     ${share && html`<${CreateLinkModal} projectId=${project.id} onClose=${() => setShare(false)} onCreated=${() => setStatus("In review")} />`}
+    ${addOpen && html`<${AddClipModal} main=${{ id: main, name: project.video?.name || "Footage", seconds: footDur }} at=${pb.time} onAdd=${addClip} onClose=${() => setAddOpen(false)} />`}
     ${help && html`<${Modal} title="Keyboard shortcuts" onClose=${() => setHelp(false)}><div class="list">${SHORTCUTS.map(([k, d]) => html`<div key=${k} class="row between" style="padding:6px 4px"><span>${d}</span><span class="kbd">${k}</span></div>`)}</div><//>`}
   </div>`;
 }

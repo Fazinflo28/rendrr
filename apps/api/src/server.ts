@@ -13,6 +13,7 @@ import reviews from "./routes/reviews";
 import { backfillOutputSeconds, refreshFillerFlags } from "./services/projects";
 import { removeDemoFootage } from "./services/cleanup";
 import { mergeDuplicateAccounts } from "./services/logins";
+import { migrateToSequences } from "./services/sequence";
 
 export async function buildServer() {
   const e = env();
@@ -94,6 +95,7 @@ export async function buildServer() {
 
   backfillOutputSeconds().catch(() => {});
   refreshFillerFlags().then((n) => { if (n) app.log.info({ transcripts: n }, "filler marks refreshed"); }, () => {});
+  migrateToSequences().then((r) => { if (r.converted || r.stayed.length) app.log.info({ converted: r.converted, stayed: r.stayed }, "timelines converted to sequences"); }, (e) => app.log.warn({ msg: (e as Error).message }, "sequence migration failed"));
   mergeDuplicateAccounts().then((r) => { if (r.merged.length || r.skipped.length) app.log.info(r, "duplicate accounts merged"); }, (e) => app.log.warn({ msg: (e as Error).message }, "duplicate account merge failed"));
   removeDemoFootage().then((r) => { if (r.removed || r.kept || r.fakeDriveConnections) app.log.info(r, "demo footage removed"); }, (e) => app.log.warn({ msg: (e as Error).message }, "demo footage cleanup failed"));
 

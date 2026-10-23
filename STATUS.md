@@ -53,6 +53,44 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Bug fixed in older work (Step 9, graphics):** graphics were encoded at VP9 crf 32 in realtime mode. Wherever a graphic stopped changing, faint ghosts of earlier frames stayed (a card's old rows showed through the next card). They are now encoded at crf 20, at the same speed, about 1.5× the file size. Cached template files are made again. Custom graphics recorded before this keep the old encoding until they are made again.
 - **One account per email.** A new login with a verified email that already has an account opens that account. At start-up the API merges duplicate accounts that share an email: only empty ones are removed, their logins move over, and each merge is logged.
 
+## Phase 2: the sequence (model B)
+
+- **V1 is a sequence.** It's an ordered list of clips from any of your videos, played back to back: repeats, several videos, any order. Every edit closes up by itself. Cut words still work on the main footage, wherever it plays.
+- **J and L cuts.** A clip's dialogue follows its picture. Its sound can start before its picture (J) or run into the next clip (L), or be muted. In the editor, Alt-drag an A1 edge. Through the connector, use `set_audio_offset`.
+- **Other tracks hang on a V1 clip.** Zooms, b-roll, graphics, music and sound effects move with their clip when it moves and keep their length. A music bed covers the whole edit.
+- **Turn and framing per clip.** Rotate and Frame apply to the selected clip, or to every clip of the footage.
+- **Connector ops.** Old ops take the same input as before. New ops, one line each in the tool text:
+  - `add_clip`, `move_clip`
+  - `set_audio_offset`
+  - `roll_edit`, `slip_clip`, `slide_clip`
+  - `edit: true` on any timed op (times are then seconds of the edit)
+
+  `get_project` lists the sequence: each clip's video, footage in/out, place in the edit, and J/L cuts.
+- **Render.** The plan uses one input per video. Each part is fitted, turned and framed on its own, and the dialogue is joined from its own parts. For finals, other videos use their original when Rendrr keeps one, else their 720p copy (the plan says so).
+- **Check.** It reads the sequence. A new line says how many clips and videos, moved clips, repeats, J/L cuts and muted clips. A muted clip is flagged once as picture without its dialogue.
+- **Editor.**
+  - Tools: Select (V: click, drag to reorder, drag an edge to trim), Razor (C), Ripple (B), Rolling (N), Slip (Y), Slide (U)
+  - Snapping (S), Zoom to fit (Shift Z), Split at playhead (Cmd/Ctrl K)
+  - Alt-drag a dialogue edge for J/L cuts
+  - Add clip (any video, at the playhead or at the end)
+  - Mute or unmute a clip
+- **Player.** One video element per video on V1 and a sound element per video for J/L cuts, all following the plan. A cut, or a drift over 0.15 s, seeks again. While the picture that should show is loading, the clock waits (at most 1.5 s).
+- **Migration.** At API start-up, each project still in model A is converted only if the new planner gives the same render, within one frame, as the old one. Its old timeline goes to `TimelineBackup` first, and its place in the list of edits is kept. A project that differs stays on A, renders exactly as before, and is logged. Old versions render with the old planner (`renderPlanA.ts`, unchanged) and convert when restored. Details: `docs/timeline-model.md`.
+- **Bug found in older work (Phase 1, editor):** on dialogue clips the label covered the left trim handle, so Alt-dragging that edge did nothing. The handles are now above the label.
+- **Changed key:** S used to split at the playhead. As in Premiere, S is now snapping and Cmd/Ctrl K splits. The Split button is unchanged.
+
+### Phase 2 tests
+
+| What | Result |
+|---|---|
+| Shared (sequence, ops, render plan, check, player clock, migration) | 86 pass |
+| 500 random model A edits convert to the same plan | all 500 |
+| Worker: the same edit rendered by the A graph and the B graph, decoded frame by frame and sample by sample | identical |
+| Worker: two videos (different size and frame rate), a J cut and a muted clip | right video at each moment, the early sound under the J cut, silence when muted, streams 10.0 s |
+| API: start-up migration (backup, same plan, list order kept, safe to repeat); AI adds another video's clip and a J cut and reads them back | 9 pass |
+| Browser, demo: every tool, add clip, undo | all work, no page errors |
+| Browser, real files: player across a cut between two videos, and a J cut | right element and moment; J cut plays the next clip's sound early |
+
 ## Reference-video test (23 October, live, through the connector only)
 
 The test: copy the edit of a finished reel (Glow Flow, 51 s, vertical) onto a raw talking-head video (77 s, 4K), using only the MCP connector, the way Claude would.
