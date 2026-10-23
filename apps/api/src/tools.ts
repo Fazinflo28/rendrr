@@ -1,11 +1,11 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
-// Every response is small text (plus an image only when it helps: the overview sheet, or frames asked for).
+// Every response is small text; images only when asked for (images: true, get_frames, get_preview_frames).
 // Every write goes through applyTimelineChange.
 import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   allWords, breakdownAsText, CreateGraphicInput, describeRules, editCheck, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, keptRanges, makeTimeMap, mergeRules, MUSIC_TRACKS, outputDuration, SFX,
-  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, type Breakdown, type EditOp, type FileLoudness, type Sheet, type Silence, type Snapshot, type StyleRules, type Transcript, type VideoKind,
+  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, type Breakdown, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { createProject, getOwnedProject } from "./services/projects";
 import { renderResult, startRender } from "./services/render";
@@ -52,22 +52,22 @@ export function breakdownOf(v: OwnedVideo): Breakdown | null {
 }
 
 /**
- * The breakdown text plus the pictures asked for: by default one overview sheet (16 frames across the whole video),
- * "sheets" for the frame sheets in from/to, "none" for text only. What an AI reads instead of watching.
+ * The breakdown text, and pictures only when asked for: images true attaches the overview sheet (16 frames across
+ * the whole video), or with from/to the frame sheets of that range. What an AI reads instead of watching.
  */
-async function videoAsCode(v: OwnedVideo, o: { from?: number; to?: number; pictures?: "overview" | "sheets" | "none" } = {}): Promise<{ text: string; images: string[] }> {
+async function videoAsCode(v: OwnedVideo, o: { from?: number; to?: number; images?: boolean } = {}): Promise<{ text: string; images: string[] }> {
   const b = breakdownOf(v);
   if (!b) {
-    const kf = o.pictures === "none" ? [] : ((v.analysis?.keyFrames as { t: number; key: string }[]) || []).slice(0, 3);
+    const kf = !o.images ? [] : ((v.analysis?.keyFrames as { t: number; key: string }[]) || []).slice(0, 3);
     return { text: `BREAKDOWN not ready yet for "${v.name}" (Rendrr makes it right after the transcript; ask again in a minute).${kf.length ? ` Key frames at ${kf.map((k) => k.t.toFixed(1) + "s").join(", ")} attached.` : ""}`, images: await Promise.all(kf.map((k) => signGet(k.key, 900))) };
   }
   const all = b.frames.sheets;
-  const more = 'More: pictures "sheets" with from/to, or get_frames.';
+  const more = "More: images true with from/to, or get_frames.";
   let pics: Sheet[] = [];
   let note: string;
   if (!all.length) note = "PICTURES none: the frame sheets went with the expired preview copy; the text still holds.";
-  else if (o.pictures === "none") note = 'PICTURES none attached (overview by default; pictures "sheets" for from/to).';
-  else if (o.pictures === "sheets") {
+  else if (!o.images) note = "IMAGES none (images true attaches the overview sheet, or the frame sheets of from/to).";
+  else if (o.from != null || o.to != null) {
     pics = sheetsIn(b, o.from ?? 0, o.to ?? 1e9, 4);
     const left = all.filter((s) => s.to >= (o.from ?? 0) && s.from <= (o.to ?? 1e9)).length - pics.length;
     note = `ATTACHED ${pics.map((s) => `sheet ${all.indexOf(s) + 1} ${fmtT(s.from)}-${fmtT(s.to)}`).join(", ")}${left > 0 ? `; ${left} more in this range: narrow from/to` : ""}.`;
@@ -148,15 +148,16 @@ async function renderOut(renderId: string): Promise<ToolOut> {
   const res = await renderResult(r);
   const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
   if (r.kind === "final") return { text: head, data: { renderId: r.id } };
-  return { text: `${head}\n${await checkOf(r.projectId, r.version, (r.plan as { loudness?: FileLoudness } | null)?.loudness ?? null)}`, data: { renderId: r.id } };
+  const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure } | null;
+  return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null)}`, data: { renderId: r.id } };
 }
 
-/** The measured check of one version of an edit (pauses over 0.4 s, whatever the style says: the AI knows what it asked for). */
-async function checkOf(projectId: string, version: number, loudness: FileLoudness | null): Promise<string> {
+/** The check of one version of an edit against its rendered file (pauses from 0.15 s, whatever the style says: the AI knows what it asked for). */
+async function checkOf(projectId: string, version: number, loudness: FileLoudness | null, measured: FileMeasure | null): Promise<string> {
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { video: { include: { analysis: true } } } });
   const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   const snap = (ver?.timeline ?? { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId }) as unknown as Snapshot;
-  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { pauseOver: 0.4, loudness });
+  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured });
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
@@ -183,12 +184,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     if (!v.analysis || !["ready", "expired"].includes(v.status)) return { text: `"${v.name}" is ${v.status}${v.error ? ": " + v.error : ""}. It can be read once it is ready.` };
     const isRef = v.kind === "reference";
     // A reference read before: its rules are saved as a style, so say that instead of sending it all again.
-    if (isRef && i.detail == null && i.pictures == null && i.from == null && i.to == null) {
+    if (isRef && i.detail == null && !i.images && i.from == null && i.to == null) {
       const saved = await prisma.style.findMany({ where: { ownerId: c.userId, sourceVideoId: v.id }, orderBy: { createdAt: "desc" }, take: 3 });
       if (saved.length) return { text: `REFERENCE "${v.name}" ${v.id} (${fmtClock(v.seconds)}) was read before. Saved as style ${saved.map((s) => `${s.id} "${s.name}": ${s.cutPace}; ${s.captionRule}; ${s.zoomRules}; ${s.musicVibe}`).join(" | ")}. Apply it with apply_edits [{"op":"apply_style","styleId":"${saved[0].id}"}]. To read the video again, pass detail "sentences".` };
     }
     if (i.detail === "json") { const b = breakdownOf(v); return { text: b ? clip(JSON.stringify(b)) : "The breakdown is not ready yet. Ask again in a minute." }; }
-    const code = await videoAsCode(v, { from: i.from, to: i.to, pictures: i.pictures });
+    const code = await videoAsCode(v, { from: i.from, to: i.to, images: i.images === true });
     let tr = v.analysis.transcript as unknown as Transcript;
     if (i.from != null || i.to != null) tr = tr.filter((l) => l.end >= (i.from ?? 0) && l.start <= (i.to ?? 1e9));
     const words = allWords(v.analysis.transcript as unknown as Transcript);
@@ -201,7 +202,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       ...(isRef ? ["REFERENCE: copy its rhythm, shot lengths, hook and look onto the user's footage, not its content. Then save_style with fromVideoId so it is not read again."] : []),
       code.text,
       `RAW FILE ${v.sample ? "Rendrr's sample" : v.source === "drive" ? "in Google Drive" : "on the user's computer"}${v.status === "expired" ? " | preview copy expired: rebuild it in the Library to edit or take frames" : ""}`,
-      `TRANSCRIPT (${v.analysis.transcriber === "stub" ? "SAMPLE: transcription is not set up" : "AssemblyAI"}) ${words.length} words. Line id [start] text${i.detail === "words" ? "; words as text(wordId@start)" : ""}:`,
+      `TRANSCRIPT (${v.analysis.transcriber === "stub" ? "SAMPLE: transcription is not set up" : "AssemblyAI"}) ${words.length} words. Line id [start] text${i.detail === "words" ? "; words as text(wordId@start-end)" : ""}:`,
       transcriptAsText(tr, undefined, i.detail === "words" ? "words" : "sentences") || "(no speech found)",
       `SILENCES 0.4s+ (${sil.length}): ${sil.slice(0, 80).map((s) => `${s.start.toFixed(1)}-${s.end.toFixed(1)}`).join(", ") || "none"}${sil.length > 80 ? ", …" : ""}`,
       `FILLERS ${fillers.length}${fillers.length ? " (" + Object.entries(counts).map(([k, n]) => `${k} x${n}`).join(", ") + ")" : ""}${i.detail === "words" && fillers.length ? ". Ids: " + fillers.slice(0, 200).map((f) => f.id).join(" ") : ""}`,
@@ -352,8 +353,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const done = await waitFor(async () => { const x = await prisma.graphic.findUnique({ where: { id: g.id } }); return x && (x.status === "ready" || x.status === "failed") ? x : null; }, 90_000);
     if (!done) return { text: `Graphic ${g.id} is still rendering. Call list_graphics in a little while to see its status.` };
     if (done.status === "failed") return { text: `The graphic did not render: ${done.error}. Fix the code and call create_graphic again.` };
-    const images = await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900)));
-    return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}). 4 check frames attached. Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };
+    const images = i.images === true ? await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
+    return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}).${images.length ? " 4 check frames attached." : ""} Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };
   },
 
   async link_account(c, i) {

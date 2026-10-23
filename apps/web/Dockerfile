@@ -4,7 +4,9 @@ RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/web/package.json apps/web/
+COPY packages/shared/package.json packages/shared/
 RUN pnpm install --frozen-lockfile --filter "@rendrr/web..."
+COPY packages/shared packages/shared
 COPY apps/web apps/web
 # Public settings baked into the browser bundle at build time (Railway passes service variables as build args).
 ARG NEXT_PUBLIC_API_URL

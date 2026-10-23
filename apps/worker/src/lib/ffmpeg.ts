@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { parseMeasureLog, type FileMeasure } from "@rendrr/shared";
 
 export class JobError extends Error {
   friendly = true;
@@ -73,12 +74,47 @@ export async function silences(input: string, signal?: AbortSignal): Promise<{ s
   return out;
 }
 
-/** Loudness of a finished file (EBU R128): integrated LUFS and true peak in dB. Nulls when it cannot be measured. */
-export async function loudnessOf(input: string, signal?: AbortSignal): Promise<{ lufs: number | null; peakDb: number | null }> {
-  const { stderr } = await runCapture("ffmpeg", ["-hide_banner", "-nostdin", "-nostats", "-i", input, "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], signal);
-  const summary = stderr.slice(stderr.lastIndexOf("Summary:"));
-  const num = (re: RegExp) => { const m = re.exec(summary); const n = m ? Number(m[1]) : NaN; return Number.isFinite(n) ? Math.round(n * 10) / 10 : null; };
-  return { lufs: num(/I:\s+(-?[\d.]+) LUFS/), peakDb: num(/Peak:\s+(-?[\d.]+) dBFS/) };
+/**
+ * Measures a rendered file in one decoding pass: each stream's length, black picture and silence from 0.15 s,
+ * integrated loudness and true peak. The after-render check compares this with the edit. Times out after
+ * `timeoutMs` and then throws, so a stuck measurement never holds the render.
+ */
+export async function measureFile(input: string, o: { signal?: AbortSignal; timeoutMs: number; picture?: boolean }): Promise<Omit<FileMeasure, "graphics">> {
+  const { stdout } = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_entries", "stream=codec_type,duration:format=duration", input], { signal: o.signal });
+  const j = JSON.parse(stdout) as { streams?: { codec_type?: string; duration?: string }[]; format?: { duration?: string } };
+  const len = (type: string) => { const st = (j.streams || []).find((x) => x.codec_type === type); const n = Number(st?.duration ?? (st ? j.format?.duration : NaN)); return Number.isFinite(n) ? Math.round(n * 1000) / 1000 : null; };
+  const videoSeconds = len("video"), audioSeconds = len("audio");
+  const ac = new AbortController();
+  const stop = () => ac.abort();
+  o.signal?.addEventListener("abort", stop, { once: true });
+  const timer = setTimeout(stop, o.timeoutMs);
+  try {
+    const { stderr } = await runCapture("ffmpeg", ["-hide_banner", "-nostdin", "-nostats", "-i", input,
+      ...(videoSeconds != null && o.picture !== false ? ["-vf", "blackdetect=d=0.15:pix_th=0.10"] : ["-vn"]),
+      ...(audioSeconds != null ? ["-af", "silencedetect=noise=-45dB:d=0.15,ebur128=peak=true"] : ["-an"]),
+      "-f", "null", "-"], ac.signal);
+    return { videoSeconds, audioSeconds, ...parseMeasureLog(stderr, audioSeconds ?? videoSeconds ?? 0) };
+  } catch (e) {
+    if (o.signal?.aborted) throw e;
+    throw new Error(ac.signal.aborted ? `measuring the file took longer than ${Math.round(o.timeoutMs / 1000)}s` : `measuring the file failed: ${(e as Error).message.slice(0, 200)}`);
+  } finally {
+    clearTimeout(timer);
+    o.signal?.removeEventListener("abort", stop);
+  }
+}
+
+/** How much of the frame a graphic file covers at time t (average alpha, 0-100). Opaque files count as 100. */
+export async function graphicCover(input: string, t: number, signal?: AbortSignal): Promise<number | null> {
+  try {
+    const { stderr } = await runCapture("ffmpeg", ["-hide_banner", "-nostdin", "-c:v", "libvpx-vp9", "-ss", Math.max(0, t).toFixed(3), "-i", input, "-frames:v", "1",
+      "-vf", "alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-"], signal);
+    const m = /signalstats\.YAVG=([\d.]+)/.exec(stderr);
+    return m ? Math.round((Number(m[1]) / 255) * 1000) / 10 : null;
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    // No alpha plane: the graphic is opaque and covers its whole box.
+    return /alpha|Requested planes not available|Invalid argument/i.test((e as Error).message) ? 100 : null;
+  }
 }
 
 /** Like run(), but keeps the whole stderr (silencedetect writes its findings there). */

@@ -100,10 +100,11 @@ describe("ops", () => {
     const b = applyOp(a.snap, { op: "restore_words", wordIds: [words[3].id] }, ctx);
     expect(b.snap.timeline.cut).toEqual([words[4].id]);
   });
-  it("cut_words by time range", () => {
+  it("cut_words by time range removes exactly that range", () => {
+    const before = outputDuration(snap().timeline, words);
     const a = applyOp(snap(), { op: "cut_words", from: 0, to: 2 }, ctx);
-    expect(a.snap.timeline.cut.length).toBeGreaterThan(0);
-    expect(a.summary).toMatch(/cut 0:00/);
+    expect(before - outputDuration(a.snap.timeline, words)).toBeCloseTo(2, 2);
+    expect(a.summary).toMatch(/cut 0.00s to 2.00s/);
   });
   it("refuses unknown words with a friendly message", () => {
     expect(() => applyOp(snap(), { op: "cut_words", wordIds: ["nope"] }, ctx)).toThrow(/None of those words/);

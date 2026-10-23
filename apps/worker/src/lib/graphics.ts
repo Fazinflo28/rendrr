@@ -1,13 +1,12 @@
 import { downloadFile, headObject, signGet, uploadFile } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { GRAPHIC_TEMPLATES, PREFIX, type V3Clip } from "@rendrr/shared";
+import { GRAPHIC_TEMPLATES, PREFIX, templateHtml, templateSize, withClock, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import puppeteer from "puppeteer-core";
 import { JobError, run } from "./ffmpeg";
-import { templateHtml } from "./templates";
 
 export const GRAPHIC_LIMITS = { maxSeconds: 15, maxLong: 1920, maxShort: 1080, killMs: 60_000, fps: 30 };
 
@@ -16,35 +15,6 @@ function chromiumPath() {
   const p = c.find((x) => existsSync(x));
   if (!p) throw new JobError("The graphics renderer is not installed on this server.", "no-chromium", false);
   return p;
-}
-
-// Runs inside the page before any of its code: time is virtual and moves only when we say so.
-const CLOCK = `(() => {
-  let now = 0; const start = 1700000000000; let rafs = [];
-  const perf = performance.now.bind(performance);
-  performance.now = () => now * 1000;
-  Date.now = () => start + now * 1000;
-  window.requestAnimationFrame = (cb) => { rafs.push(cb); return rafs.length; };
-  window.cancelAnimationFrame = () => {};
-  window.__rendrrAdvance = (t) => {
-    now = t;
-    const list = rafs; rafs = [];
-    for (const cb of list) { try { cb(t * 1000); } catch (e) { console.error(e); } }
-    for (const a of document.getAnimations()) { try { a.pause(); a.currentTime = t * 1000; } catch (e) {} }
-    if (typeof window.renderFrame === "function") window.renderFrame(t);
-    return perf();
-  };
-})();`;
-
-const wrap = (code: string, w: number, h: number) =>
-  /<html|<body/i.test(code) ? code : `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;width:${w}px;height:${h}px;overflow:hidden;background:transparent;font-family:Inter,system-ui,sans-serif}</style></head><body>${code}</body></html>`;
-
-/** The virtual clock must run before any of the page's own scripts, so it goes first in <head>. */
-function withClock(html: string) {
-  const tag = `<script>${CLOCK}</script>`;
-  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (m) => m + tag);
-  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (m) => m + "<head>" + tag + "</head>");
-  return tag + html;
 }
 
 /**
@@ -79,7 +49,7 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
     await page.setRequestInterception(true);
     page.on("request", (req) => { const u = req.url(); if (u.startsWith("data:") || u === "about:blank") req.continue(); else req.abort("blockedbyclient"); });
     page.on("pageerror", (e) => errors.push(String((e as Error).message || e).slice(0, 300)));
-    await page.setContent(withClock(wrap(html, w, h)), { waitUntil: "load", timeout: 15_000 });
+    await page.setContent(withClock(wrapGraphicHtml(html, w, h)), { waitUntil: "load", timeout: 15_000 });
     await page.evaluate(() => (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready);
     const cdp = await page.createCDPSession();
     if (o.transparent) await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
@@ -128,8 +98,7 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
   const tpl = GRAPHIC_TEMPLATES.find((t) => t.id === id);
   if (tpl) {
     // Drawn at up to 720p (short side), keeping the output's shape; the overlay scales it to the output size.
-    const k = Math.min(1, 1280 / Math.max(o.width, o.height), 720 / Math.min(o.width, o.height));
-    const w = Math.round(o.width * k), h = Math.round(o.height * k);
+    const { width: w, height: h } = templateSize(o.width, o.height);
     const logo = id === "gt_logo_reveal" ? await brandLogoDataUrl(o.userId) : null;
     const html = templateHtml(id, clip.params || {}, w, h, dur, logo);
     const hash = createHash("sha256").update(JSON.stringify([id, html, w, h, dur])).digest("hex").slice(0, 24);

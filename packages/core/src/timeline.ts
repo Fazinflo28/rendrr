@@ -1,6 +1,6 @@
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  allWords, applyOp, EditError, GRAPHIC_TEMPLATES, outputDuration, StyleRulesSchema, TimelineSchema,
+  allWords, applyOp, EditError, GRAPHIC_TEMPLATES, outputDuration, stripLayout, StyleRulesSchema, TimelineSchema,
   type Actor, type EditContext, type Op, type Silence, type Snapshot, type StyleLite, type Timeline, type Transcript,
 } from "@rendrr/shared";
 import { AppError, notFound } from "./errors";
@@ -37,6 +37,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
   const videos = await tx.video.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
   const graphics = await tx.graphic.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] }, select: { id: true, name: true, durationSec: true, status: true } });
   return {
+    videoId: video.id,
     transcript: (video.analysis?.transcript as unknown as Transcript) || [],
     silences: (video.analysis?.silences as unknown as Silence[]) || [],
     sceneCuts: (video.analysis?.sceneCuts as unknown as number[]) || [],
@@ -61,7 +62,8 @@ function stable(v: unknown): string {
   if (v && typeof v === "object") return "{" + Object.keys(v).filter((k) => (v as Record<string, unknown>)[k] !== undefined).sort().map((k) => JSON.stringify(k) + ":" + stable((v as Record<string, unknown>)[k])).join(",") + "}";
   return JSON.stringify(v) ?? "null";
 }
-const sameSnapshot = (a: Snapshot, b: Snapshot) => stable(a) === stable(b);
+// The derived clip fields (place in the edit, source, link) follow from the rest, so they never make a version.
+const sameSnapshot = (a: Snapshot, b: Snapshot) => stable({ ...a, timeline: stripLayout(a.timeline) }) === stable({ ...b, timeline: stripLayout(b.timeline) });
 
 export async function applyTimelineChange(projectId: string, change: Op, actor: ChangeActor, opts: { baseVersion?: number } = {}): Promise<ChangeResult> {
   const result = await prisma.$transaction(async (tx) => {

@@ -81,10 +81,12 @@ export async function projectFull(userId: string, id: string) {
   const preview = await latestRender(p.id, "preview");
   const final = await latestRender(p.id, "final");
   return {
+    ...(await playerMedia(userId, p.timeline as unknown as Snapshot["timeline"])),
     ...projectOut(p),
     style: style ? styleOut(style) : undefined,
     video: { ...(await videoOut(video)), proxyUrl: video.proxyKey && video.status !== "expired" ? await signGet(video.proxyKey, 6 * 3600) : null },
     transcript: (video.analysis?.transcript as unknown as Transcript) || [],
+    silences: (video.analysis?.silences as unknown as { start: number; end: number }[]) || [], // for Cut silences in the editor
     timeline: p.timeline,
     versions: versions.map((x) => ({ v: x.v, note: x.note, at: x.updatedAt.getTime(), by: x.createdBy })),
     comments,
@@ -92,6 +94,23 @@ export async function projectFull(userId: string, id: string) {
     previewUrl: preview?.outputKey ? await signGet(preview.outputKey, 6 * 3600) : null,
     previewVersion: preview?.version ?? null,
     finalUrl: final?.outputKey ? await signGet(final.outputKey, 6 * 3600) : null,
+  };
+}
+
+/**
+ * The files the editor's live player overlays, so it shows what the render will: b-roll videos (their preview
+ * copies) and custom graphics (their recorded transparent WebM), by id. Templates are drawn live from their HTML.
+ */
+async function playerMedia(userId: string, tl: Snapshot["timeline"]) {
+  const brollIds = Array.from(new Set(tl.tracks.v2.map((c) => (c as { videoId?: string }).videoId).filter(Boolean) as string[]));
+  const graphicIds = Array.from(new Set(tl.tracks.v3.map((c) => (c as { graphicId?: string }).graphicId).filter(Boolean) as string[]));
+  const [vids, gs] = await Promise.all([
+    brollIds.length ? prisma.video.findMany({ where: { id: { in: brollIds }, userId, proxyKey: { not: null } } }) : [],
+    graphicIds.length ? prisma.graphic.findMany({ where: { id: { in: graphicIds }, OR: [{ ownerId: userId }, { ownerId: null }], status: "ready", renderedKey: { not: null } } }) : [],
+  ]);
+  return {
+    brollMedia: Object.fromEntries(await Promise.all(vids.map(async (v) => [v.id, { url: await signGet(v.proxyKey!, 6 * 3600), seconds: v.seconds }] as const))),
+    graphicMedia: Object.fromEntries(await Promise.all(gs.map(async (g) => [g.id, { url: await signGet(g.renderedKey!, 6 * 3600), width: g.width, height: g.height, seconds: g.durationSec }] as const))),
   };
 }
 

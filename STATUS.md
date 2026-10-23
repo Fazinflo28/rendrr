@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 23 October 2026 (UTC). Live on Railway with the new design (V2). New today: the AI connector uses about two thirds fewer tokens per edit (one call for all changes, one overview image instead of four, a text check after each render), Rendrr runs no AI of its own, and your connector login is linked to your account.
+Last updated: 23 October 2026 (UTC). New: Phase 1 of the editor plan (docs/plans/phase-1.md). The timeline shows the edit as it renders, with no gaps. Picture and dialogue clips are linked and edit together. The player plays the real edit, or the rendered preview when it is up to date. The after-render check measures the file itself. The connector sends text only unless asked for images. One email is one account.
 
 ## 1. Links
 
@@ -20,6 +20,35 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
+
+## Phase 1: the editor plays what renders
+
+- **Edit time everywhere.** The timeline, the player, the comments and the playhead use seconds of the edit, not of the footage. Removed parts close up (ripple), so the timeline is as long as the output. The timeline logic lives in one module (`packages/shared/src/sequence.ts`). Every clip stores `sourceVideoId`, `sourceIn`, `sourceOut`, `timelineStart` and `timelineEnd`, ready for the sequence model B (`docs/timeline-model.md`).
+- **Linked clips.** A V1 clip and its A1 dialogue split, trim and delete together, in the editor and through the connector. Alt-click, or Link/Unlink in the toolbar, unlinks them. Alt-drag trims one side.
+- **Player = render.** The live player reads the render plan itself:
+  - cuts closed
+  - captions as the render times them
+  - zooms on the same curve
+  - b-roll
+  - graphics (templates drawn with the recorder's own HTML and clock; custom graphics from their recorded file)
+  - picture without dialogue plays muted
+
+  Music and sound effects play only in the rendered preview. When the preview is of the current version and nothing has changed since, the player plays that file instead. "Render preview" sits in the editor's top bar.
+- **The check measures the file.** After every preview render, the worker measures the file in one pass:
+  - the length of each stream
+  - black and silent stretches from 0.15 s
+  - loudness and true peak
+  - how much of the frame each graphic covers
+
+  render_preview's check prints this next to the edit and flags every disagreement (length, audio/video sync, black, silence where words should play, picture without dialogue, a missing or invisible graphic). "Flags: none" only appears when the file and the edit agree.
+- **Ops.**
+  - `cut_silences` also trims the silence at the start and end of every clip. There's also a Cut silences button in the editor.
+  - `cut_words` with `from`/`to` removes exactly that range, words or not.
+  - The transcript gives word end times.
+  - `set_clips` takes plain start/end, and A1 follows V1.
+  - New op `set_link`.
+- **Text first.** `get_footage` and `create_graphic` attach images only with `images: true`.
+- **One account per email.** A new login with a verified email that already has an account opens that account. At start-up the API merges duplicate accounts that share an email: only empty ones are removed, their logins move over, and each merge is logged.
 
 ## Every video as text and frames
 

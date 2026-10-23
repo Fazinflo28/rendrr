@@ -1,5 +1,6 @@
-// The six built-in graphic templates, as HTML + CSS animations. The recorder seeks every animation to the
-// exact frame time, so they render the same every time. Params are escaped; colours are validated.
+// The six built-in graphic templates, as HTML + CSS animations, and the virtual clock that drives any graphic.
+// The recorder (worker) and the editor's live player use the same HTML and clock, so a graphic looks the same in
+// both. The recorder seeks every animation to the exact frame time. Params are escaped; colours are validated.
 type P = Record<string, unknown>;
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 // A string for inline <script>: JSON, with "<" escaped so text like "</script>" cannot end the script early.
@@ -81,4 +82,51 @@ const o=t<0.25?t/0.25:t>dur-0.35?Math.max(0,(dur-t)/0.35):1;document.getElementB
     }
   }
   throw new Error("Unknown template " + id);
+}
+
+// Runs inside the page before any of its code: time is virtual and moves only when we say so.
+export const GRAPHIC_CLOCK = `(() => {
+  let now = 0; const start = 1700000000000; let rafs = [];
+  const perf = performance.now.bind(performance);
+  performance.now = () => now * 1000;
+  Date.now = () => start + now * 1000;
+  window.requestAnimationFrame = (cb) => { rafs.push(cb); return rafs.length; };
+  window.cancelAnimationFrame = () => {};
+  window.__rendrrAdvance = (t) => {
+    now = t;
+    const list = rafs; rafs = [];
+    for (const cb of list) { try { cb(t * 1000); } catch (e) { console.error(e); } }
+    for (const a of document.getAnimations()) { try { a.pause(); a.currentTime = t * 1000; } catch (e) {} }
+    if (typeof window.renderFrame === "function") window.renderFrame(t);
+    return perf();
+  };
+})();`;
+
+export const wrapGraphicHtml = (code: string, w: number, h: number) =>
+  /<html|<body/i.test(code) ? code : `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;width:${w}px;height:${h}px;overflow:hidden;background:transparent;font-family:Inter,system-ui,sans-serif}</style></head><body>${code}</body></html>`;
+
+/** The virtual clock must run before any of the page's own scripts, so it goes first in <head>. */
+export function withClock(html: string) {
+  const tag = `<script>${GRAPHIC_CLOCK}</script>`;
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (m) => m + tag);
+  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (m) => m + "<head>" + tag + "</head>");
+  return tag + html;
+}
+
+
+/** The size a template is drawn at: the output's shape, at most 720p (the overlay scales it to the output size). */
+export function templateSize(outW: number, outH: number) {
+  const k = Math.min(1, 1280 / Math.max(outW, outH), 720 / Math.min(outW, outH));
+  return { width: Math.round(outW * k), height: Math.round(outH * k) };
+}
+
+/**
+ * A template for the editor's live player: the recorder's exact HTML and clock, no network (CSP), and time set
+ * by the player with postMessage({ rendrrT: seconds }). Shown in a sandboxed iframe (scripts only).
+ */
+export function playerGraphicHtml(id: string, params: Record<string, unknown>, w: number, h: number, dur: number): string {
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">`;
+  const listen = `<script>addEventListener("message",function(e){var t=e.data&&e.data.rendrrT;if(typeof t==="number")window.__rendrrAdvance(t)});window.__rendrrAdvance(0);</script>`;
+  const html = withClock(templateHtml(id, params, w, h, dur, null));
+  return html.replace(/<head[^>]*>/i, (m) => m + csp).replace(/<\/body>/i, listen + "</body>");
 }

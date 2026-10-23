@@ -3,7 +3,7 @@
 import { AppError, redis } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { randomInt } from "node:crypto";
-import { clerk, forgetUser } from "../auth";
+import { clerk, forgetUser, verifiedEmail } from "../auth";
 
 const CODE_SECONDS = 15 * 60;
 const LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O or 1/I
@@ -15,7 +15,7 @@ export async function createLinkCode(userId: string) {
   return { code, expiresInMinutes: CODE_SECONDS / 60 };
 }
 
-/** Anything a person made in an account. An account with any of it is never removed by linking. */
+/** Anything a person made in an account (a folder beyond the first "My edits" counts). An account with any of it is never removed. */
 export async function hasOwnData(userId: string) {
   const counts = await Promise.all([
     prisma.video.count({ where: { userId } }),
@@ -26,6 +26,8 @@ export async function hasOwnData(userId: string) {
     prisma.review.count({ where: { userId } }),
     prisma.galleryItem.count({ where: { userId } }),
     prisma.driveConnection.count({ where: { userId, stub: false } }),
+    prisma.folder.count({ where: { userId, NOT: { name: "My edits" } } }),
+    prisma.folder.count({ where: { userId } }).then((n) => Math.max(0, n - 1)),
   ]);
   return counts.some((n) => n > 0);
 }
@@ -77,4 +79,40 @@ export async function unlinkLogin(userId: string, clerkId: string) {
   if (!l || l.userId !== userId) throw new AppError("That login is not linked to this account.", 404);
   await prisma.userLogin.delete({ where: { clerkId } });
   forgetUser(clerkId);
+}
+
+/**
+ * One account per email: accounts that share an email are merged into one. Only an EMPTY account is ever removed
+ * (nothing made in it, see hasOwnData); its logins move to the account that is kept, so they open the same edits.
+ * Kept: the one account with anything in it, else the oldest. Two accounts that both hold data are left alone and
+ * reported. A login is only moved when its email is verified (`isVerified`, Clerk by default). Safe to run again.
+ */
+export async function mergeDuplicateAccounts(isVerified: (clerkId: string, email: string) => Promise<boolean> = clerkVerified) {
+  const dup = await prisma.$queryRaw<{ email: string }[]>`SELECT lower(email) AS email FROM "User" WHERE email <> '' GROUP BY lower(email) HAVING count(*) > 1`;
+  const report = { merged: [] as { email: string; removed: string; into: string }[], skipped: [] as { email: string; reason: string }[] };
+  for (const { email } of dup) {
+    const users = await prisma.user.findMany({ where: { email: { equals: email, mode: "insensitive" } }, orderBy: { createdAt: "asc" }, select: { id: true, clerkId: true, email: true, createdAt: true } });
+    const withData = (await Promise.all(users.map(async (u) => ((await hasOwnData(u.id)) ? u : null)))).filter(Boolean) as typeof users;
+    if (withData.length > 1) { report.skipped.push({ email, reason: `${withData.length} accounts hold videos or edits; merge them by hand` }); continue; }
+    const keep = withData[0] ?? users[0];
+    for (const u of users) {
+      if (u.id === keep.id) continue;
+      if (!(await isVerified(u.clerkId, email))) { report.skipped.push({ email, reason: `login ${u.clerkId} has no verified email` }); continue; }
+      // Checked again inside the transaction's snapshot: something added meanwhile keeps the account.
+      const removed = await prisma.$transaction(async (tx) => {
+        const fresh = await tx.user.findUnique({ where: { id: u.id }, select: { id: true } });
+        if (!fresh || (await hasOwnData(u.id))) return false;
+        await tx.userLogin.updateMany({ where: { userId: u.id }, data: { userId: keep.id } });
+        await tx.user.delete({ where: { id: u.id } }); // cascades to its empty first folder
+        await tx.userLogin.upsert({ where: { clerkId: u.clerkId }, create: { clerkId: u.clerkId, userId: keep.id }, update: { userId: keep.id } });
+        return true;
+      });
+      if (removed) { forgetUser(u.clerkId); report.merged.push({ email, removed: u.id, into: keep.id }); }
+    }
+  }
+  return report;
+}
+
+async function clerkVerified(clerkId: string, email: string) {
+  try { return verifiedEmail(await clerk().users.getUser(clerkId)) === email.toLowerCase(); } catch { return false; }
 }

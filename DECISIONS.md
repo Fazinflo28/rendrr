@@ -147,3 +147,16 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 - **Saved styles.** `save_style` stores rules (on top of a base style) with `sourceVideoId` when they come from a reference; `get_footage` on that reference then answers in one line. `apply_style` accepts overrides, including a new zoom mode `count` (exactly N zooms on sentence starts spread over the edit).
 - **Several logins per account.** `UserLogin` maps extra Clerk users to an account; `ensureUser` checks it after `User.clerkId`. Linking is explicit (a 6-letter code from Connect AI, 15 minutes, once, kept in Redis), never by email: two Clerk users cannot share a verified email, and matching a stored email that changed would hand one person's account to another. An account that has anything in it is never removed by linking.
 - **The owner's case** was fixed in the migration itself: link `user_3L5M6UOmxsqiH8rJz6fCjKrcxDN` to the owner of edit `cmvkonv8t000nrw4lufqt1x3l`, and delete that login's own account only if it has no videos, edits, styles, graphics, references, reviews, gallery items or Drive connection. In any other database it does nothing.
+
+## Phase 1 (editor plan): model A, built for B
+
+| Question | Decision |
+|---|---|
+| Sequence model | Model A for now (clips are footage ranges; V1 plays back to back). Every clip also stores its source and its place in the edit, and all timeline logic is in `sequence.ts`, so model B replaces one module. Migration steps: `docs/timeline-model.md`. |
+| What the player plays | The render plan (`planRender`) itself, through `playback.ts`. When a preview of this exact version exists and nothing has changed, the player plays that file. Music and SFX are left out of the live player, and the up-to-date preview covers them. |
+| Linking rule | A V1 clip and the A1 clip with the same start and end are linked, unless marked `unlinked`. "Alt-click unlinks" toggles the mark. Alt-drag trims one side, which also unlinks them because their ends no longer match. |
+| `cut_words` range | `from`/`to` removes exactly that footage range from V1 and A1, words or not (it used to cut the words that start inside it, plus the pause after the last one). Undo brings it back; `restore_words` only restores word cuts. |
+| Clip edges in `cut_silences` | Silence over 0.3 s at a clip's start or end is trimmed to the speech, whatever `overSeconds` is (pads 0.1 s before and 0.15 s after). `edges: false` turns it off. |
+| Pauses in the check | Listed from 0.15 s, not flagged: how long a pause may be is the edit's choice (cut_silences leaves 0.16 s). Flags are kept for problems and for places where the file and the edit disagree. |
+| File measures | Previews: one decoding pass (blackdetect 0.15 s, silencedetect -45 dB 0.15 s, EBU R128). Finals: audio pass only, so a final takes no longer than before. A measurement that fails or times out is named in the check. |
+| Duplicate accounts | Merged at API start-up, every time (safe to repeat). Only an account with nothing in it is removed. A folder other than the first "My edits" counts as something. Two accounts that both hold data are left alone and logged. |

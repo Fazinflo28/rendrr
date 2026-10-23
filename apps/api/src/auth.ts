@@ -19,9 +19,16 @@ const cache = new Map<string, { user: ReqUser; until: number }>();
 
 const SELECT = { id: true, clerkId: true, email: true, name: true } as const;
 
+/** The login's email, only when Clerk has verified it (only a verified email may open an existing account). */
+export function verifiedEmail(cu: { primaryEmailAddress?: { emailAddress: string; verification?: { status?: string } | null } | null; emailAddresses: { emailAddress: string; verification?: { status?: string } | null }[] }): string | null {
+  const e = cu.primaryEmailAddress ?? cu.emailAddresses[0];
+  return e && e.verification?.status === "verified" ? e.emailAddress.trim().toLowerCase() : null;
+}
+
 /**
  * Finds the Rendrr user for a Clerk user: its own account, or the account this login was linked to (UserLogin).
- * A login Rendrr has never seen gets a new account (and a first folder).
+ * A login Rendrr has never seen opens the account that already has its verified email (the website and the AI
+ * connector then always share one account); otherwise it gets a new account (and a first folder).
  */
 export async function ensureUser(clerkId: string): Promise<ReqUser> {
   const c = cache.get(clerkId);
@@ -32,6 +39,13 @@ export async function ensureUser(clerkId: string): Promise<ReqUser> {
     const cu = await clerk().users.getUser(clerkId);
     const email = cu.primaryEmailAddress?.emailAddress || cu.emailAddresses[0]?.emailAddress || "";
     const name = [cu.firstName, cu.lastName].filter(Boolean).join(" ") || email.split("@")[0] || "You";
+    const same = verifiedEmail(cu);
+    const owner = same ? await sameEmailAccount(same) : null;
+    if (owner) {
+      await prisma.userLogin.upsert({ where: { clerkId }, create: { clerkId, userId: owner.id }, update: { userId: owner.id } });
+      cache.set(clerkId, { user: owner, until: Date.now() + 60_000 });
+      return owner;
+    }
     try {
       u = await prisma.user.create({ data: { clerkId, email, name }, select: SELECT });
     } catch {
@@ -45,6 +59,13 @@ export async function ensureUser(clerkId: string): Promise<ReqUser> {
   return u;
 }
 export function forgetUser(clerkId: string) { cache.delete(clerkId); }
+
+/** The account a verified email opens: the one with videos or edits in it, else the oldest. */
+async function sameEmailAccount(email: string): Promise<ReqUser | null> {
+  const users = await prisma.user.findMany({ where: { email: { equals: email, mode: "insensitive" } }, orderBy: { createdAt: "asc" }, take: 5, select: SELECT });
+  for (const u of users) if ((await prisma.video.count({ where: { userId: u.id } })) + (await prisma.project.count({ where: { userId: u.id } })) > 0) return u;
+  return users[0] ?? null;
+}
 
 /** Web app: Clerk session token. MCP server: internal secret + the Clerk user it verified. */
 export async function authenticate(req: FastifyRequest, _reply: FastifyReply) {

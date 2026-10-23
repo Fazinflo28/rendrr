@@ -3,7 +3,7 @@
 // ffmpegArgs() turns a plan + local file paths into one FFmpeg command (a single pass: fast and lossless between steps).
 import { catalogMusic, catalogSfx } from "./catalog";
 import type { Aspect, CaptionLook } from "./constants";
-import { cutRegions, keptRanges, makeTimeMap, mergeRanges, subtractRanges, type Range } from "./ops";
+import { cutRegions, keptRanges, makeTimeMap, mergeRanges, subtractRanges, type Range } from "./sequence";
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 

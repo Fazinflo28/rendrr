@@ -155,30 +155,54 @@ function Async({ q, skeleton, whenEmpty, children }) {
   return children(q.data);
 }
 
-// ---------- fake video player ----------
-// Plays a fake scene. `comments` show as dots on the scrub bar. onSeek/onClickVideo let parents hook in.
-// With a real <video> attached (Player `src`), the video is the clock; otherwise wall time, like before.
-function usePlayback(duration, { cuts = [] } = {}) {
+// ---------- video player ----------
+// Plays a fake scene, or a real <video> (Player `src`), which is then the clock. `comments` show as dots on the
+// scrub bar. With `clock` (keptClock from @rendrr/shared) the time is EDIT time: the footage plays its kept parts
+// back to back and the video jumps from part to part, so the player plays the edit as it will render.
+function usePlayback(duration, { cuts = [], clock = null } = {}) {
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const ref = useRef({ time: 0, playing: false, cuts, video: null });
-  ref.current.cuts = cuts;
+  const ref = useRef({ time: 0, playing: false, cuts, clock, video: null, part: 0 });
+  ref.current.cuts = cuts; ref.current.clock = clock && clock.kept.length ? clock : null;
   useEffect(() => { ref.current.time = time; }, [time]);
   useEffect(() => {
     if (!playing) return;
-    let last = performance.now();
-    const id = setInterval(() => {
-      const n = performance.now(); const el = ref.current.video;
-      let t = el ? (el.readyState >= 2 && !el.seeking ? el.currentTime : ref.current.time) : ref.current.time + (n - last) / 1000; last = n;
-      for (const c of ref.current.cuts) if (t >= c.start && t < c.end) { t = c.end; if (el) el.currentTime = t; } // skip cut parts
-      if (t >= duration || (el && el.ended)) { t = Math.min(duration, t); setPlaying(false); }
+    let last = performance.now(), id = 0;
+    const tick = () => {
+      const n = performance.now(); const el = ref.current.video; const ck = ref.current.clock;
+      let t;
+      if (ck) {
+        let i = Math.min(ref.current.part, ck.kept.length - 1);
+        if (el && el.readyState >= 2 && !el.seeking) {
+          const src = el.currentTime;
+          if (src >= ck.kept[i].end - 0.02) {
+            i += 1; // end of this part: on to the next one
+            if (i < ck.kept.length) { el.currentTime = ck.kept[i].start; ref.current.part = i; t = ck.offsets[i]; } else t = ck.total;
+          } else if (src < ck.kept[i].start - 0.3) { i = ck.partAt(ck.toOutput(src)); ref.current.part = i; t = ck.toOutput(src, i); }
+          else t = ck.toOutput(src, i);
+        } else if (!el) { t = ref.current.time + (n - last) / 1000; ref.current.part = ck.partAt(t); }
+        else t = ref.current.time;
+      } else {
+        t = el ? (el.readyState >= 2 && !el.seeking ? el.currentTime : ref.current.time) : ref.current.time + (n - last) / 1000;
+        for (const c of ref.current.cuts) if (t >= c.start && t < c.end) { t = c.end; if (el) el.currentTime = t; } // skip cut parts
+      }
+      last = n;
+      if (t >= duration - 0.01 || (el && el.ended)) { t = Math.min(duration, t); setPlaying(false); }
       ref.current.time = t; setTime(t);
-    }, 50);
-    return () => clearInterval(id);
+      id = requestAnimationFrame(tick);
+    };
+    id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
   }, [playing, duration]);
-  const seek = useCallback((t) => { const v = Math.min(duration, Math.max(0, t)); ref.current.time = v; setTime(v); const el = ref.current.video; if (el && Math.abs(el.currentTime - v) > 0.04) { try { el.currentTime = v; } catch {} } }, [duration]);
+  const toSource = useCallback((t) => (ref.current.clock ? ref.current.clock.toSource(t) : t), []);
+  const seek = useCallback((t) => {
+    const v = Math.min(duration, Math.max(0, t)); ref.current.time = v; setTime(v);
+    const ck = ref.current.clock; if (ck) ref.current.part = ck.partAt(v);
+    const el = ref.current.video; const s = toSource(v);
+    if (el && Math.abs(el.currentTime - s) > 0.04) { try { el.currentTime = s; } catch {} }
+  }, [duration]);
   const attach = useCallback((el) => { ref.current.video = el; }, []);
-  return { time, playing, setPlaying, seek, attach, toggle: () => setPlaying((p) => (ref.current.time >= duration ? (seek(0), true) : !p)) };
+  return { time, playing, setPlaying, seek, attach, toSource, toggle: () => setPlaying((p) => (ref.current.time >= duration - 0.01 ? (seek(0), true) : !p)) };
 }
 const QUALITIES = ["Auto", "720p", "480p"];
 // Draws the current fake frame to a canvas so a snapshot is a real image.
@@ -205,14 +229,17 @@ function drawVideoFrame(video, { caption, captionLook, zoom = 1, aspect }) {
   if (caption) { const fs = Math.round(W * .032); g.font = `600 ${fs}px Inter, system-ui, sans-serif`; g.textAlign = "center"; g.textBaseline = "middle"; const tw = Math.min(W * .8, g.measureText(caption).width + fs * 1.4); const y = H * .82; if (captionLook === "bold") { g.fillStyle = "#fcfdff"; g.beginPath(); g.roundRect((W - tw) / 2, y - fs, tw, fs * 2, fs); g.fill(); g.fillStyle = "#0a0a0a"; g.fillText(caption.toUpperCase(), W / 2, y); } else if (captionLook === "outline") { g.lineWidth = fs * .18; g.strokeStyle = "#000"; g.strokeText(caption, W / 2, y); g.fillStyle = "#fff"; g.fillText(caption, W / 2, y); } else { g.fillStyle = "rgba(0,0,0,.55)"; g.beginPath(); g.roundRect((W - tw) / 2, y - fs, tw, fs * 2, fs * .5); g.fill(); g.fillStyle = "#fff"; g.fillText(caption, W / 2, y); } }
   return c.toDataURL("image/png"); // throws when the video is from another origin without CORS
 }
-function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect = "16:9", marks = [], onMark, onClickVideo, showControls = true, style = {}, onSnapshot, children, src, videoFit = "contain", onVideoError }) {
+function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect = "16:9", marks = [], onMark, onClickVideo, showControls = true, style = {}, onSnapshot, children, src, videoFit = "contain", onVideoError, muted = false, overlay = null, zoomTransition = true }) {
   const ar = { "16:9": "16 / 9", "9:16": "9 / 16", "1:1": "1 / 1" }[aspect] || "16 / 9";
   const toast = useToast();
   // Real footage: the <video> follows the playback state; pb uses it as its clock.
   const videoRef = useRef(null);
   useEffect(() => { pb.attach?.(src ? videoRef.current : null); return () => pb.attach?.(null); }, [src]);
-  useEffect(() => { const el = videoRef.current; if (!el || !src) return; if (pb.playing) { if (Math.abs(el.currentTime - pb.time) > 0.3) el.currentTime = pb.time; el.play().catch(() => pb.setPlaying(false)); } else el.pause(); }, [pb.playing, src]);
-  useEffect(() => { const el = videoRef.current; if (!el || !src || pb.playing) return; if (Math.abs(el.currentTime - pb.time) > 0.04) { try { el.currentTime = pb.time; } catch {} } }, [pb.time, src]);
+  // pb.toSource: the footage moment for the player's time (edit time when the player plays an edit).
+  const srcTime = () => (pb.toSource ? pb.toSource(pb.time) : pb.time);
+  useEffect(() => { const el = videoRef.current; if (!el || !src) return; if (pb.playing) { if (Math.abs(el.currentTime - srcTime()) > 0.3) el.currentTime = srcTime(); el.play().catch(() => pb.setPlaying(false)); } else el.pause(); }, [pb.playing, src]);
+  useEffect(() => { const el = videoRef.current; if (!el || !src || pb.playing) return; if (Math.abs(el.currentTime - srcTime()) > 0.04) { try { el.currentTime = srcTime(); } catch {} } }, [pb.time, src]);
+  useEffect(() => { if (videoRef.current) videoRef.current.muted = !!muted; }, [muted, src]); // the render mutes picture without dialogue
   const [quality, setQuality] = useState("Auto"); const [qMenu, setQMenu] = useState(false); const [switching, setSwitching] = useState(false); const [snap, setSnap] = useState(null);
   const effective = quality === "Auto" ? "720p" : quality; // the player streams the 720p preview copy; finals are 1080p
   const pickQuality = (q) => { setQMenu(false); if (q === quality) return; setSwitching(true); setQuality(q); setTimeout(() => setSwitching(false), 650); };
@@ -225,10 +252,11 @@ function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect
   const fit = style && style.height === "100%";
   return html`<div class=${"pwrap" + (fit ? " fit" : "")} onClick=${() => qMenu && setQMenu(false)}><div class=${"player q" + (quality === "Auto" ? "auto" : effective.replace("p", ""))} style=${{ aspectRatio: ar, "--ar": { "9 / 16": 9 / 16, "1 / 1": 1 }[ar] || 16 / 9, ...(fit ? {} : style) }}>
     <div class="screen" onClick=${(e) => onClickVideo?.(e)} data-testid="screen">
-      ${src ? html`<video ref=${videoRef} src=${src} playsInline preload="auto" onLoadedMetadata=${(e) => { const el = e.currentTarget; if (Math.abs(el.currentTime - pb.time) > 0.1) { try { el.currentTime = pb.time; } catch {} } if (pb.playing) el.play().catch(() => pb.setPlaying(false)); }} onError=${() => onVideoError?.()} style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: videoFit, objectPosition: "50% 40%", background: "#000", transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: "transform .4s cubic-bezier(.2,.8,.2,1)" }} />` : html`<div class="scene" style=${{ transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: "transform .4s cubic-bezier(.2,.8,.2,1)" }}>
+      ${src ? html`<video ref=${videoRef} src=${src} playsInline preload="auto" onLoadedMetadata=${(e) => { const el = e.currentTarget; el.muted = !!muted; if (Math.abs(el.currentTime - srcTime()) > 0.1) { try { el.currentTime = srcTime(); } catch {} } if (pb.playing) el.play().catch(() => pb.setPlaying(false)); }} onError=${() => onVideoError?.()} style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: videoFit, objectPosition: "50% 40%", background: "#000", transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: zoomTransition ? "transform .4s cubic-bezier(.2,.8,.2,1)" : "none" }} />` : html`<div class="scene" style=${{ transform: `scale(${zoom})`, transformOrigin: "50% 40%", transition: "transform .4s cubic-bezier(.2,.8,.2,1)" }}>
         <div class="head" style=${{ transform: `translateX(calc(-50% + ${Math.sin(pb.time * 1.3) * 6}px))` }} />
         <div class="subject" style=${{ transform: `translateX(calc(-50% + ${Math.sin(pb.time * 1.3) * 4}px))` }} />
       </div>`}
+      ${overlay}
       ${caption && html`<div class=${"cap " + captionLook}>${caption}</div>`}
       <div class="tc mono">${fmtTime(pb.time, true)}<span class="q-badge">${effective}</span></div>
       ${switching && html`<div class="q-switch"><span class="dot brand pulse" />Switching to ${effective}</div>`}

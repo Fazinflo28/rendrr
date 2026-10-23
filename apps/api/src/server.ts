@@ -12,6 +12,7 @@ import render from "./routes/render";
 import reviews from "./routes/reviews";
 import { backfillOutputSeconds, refreshFillerFlags } from "./services/projects";
 import { removeDemoFootage } from "./services/cleanup";
+import { mergeDuplicateAccounts } from "./services/logins";
 
 export async function buildServer() {
   const e = env();
@@ -93,6 +94,7 @@ export async function buildServer() {
 
   backfillOutputSeconds().catch(() => {});
   refreshFillerFlags().then((n) => { if (n) app.log.info({ transcripts: n }, "filler marks refreshed"); }, () => {});
+  mergeDuplicateAccounts().then((r) => { if (r.merged.length || r.skipped.length) app.log.info(r, "duplicate accounts merged"); }, (e) => app.log.warn({ msg: (e as Error).message }, "duplicate account merge failed"));
   removeDemoFootage().then((r) => { if (r.removed || r.kept || r.fakeDriveConnections) app.log.info(r, "demo footage removed"); }, (e) => app.log.warn({ msg: (e as Error).message }, "demo footage cleanup failed"));
 
   await app.register(account);

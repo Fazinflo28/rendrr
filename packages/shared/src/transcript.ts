@@ -116,7 +116,8 @@ export function transcriptAsText(tr: Transcript, cut?: Set<string>, detail: "sen
     .map((l) => {
       const words = cut ? l.words.filter((w) => !cut.has(w.id)) : l.words;
       if (!words.length) return null;
-      if (detail === "words") return `${l.id} [${fmt(l.start)}] ` + words.map((w) => `${w.text}(${w.id}@${w.t.toFixed(2)}${w.filler ? ",filler" : ""})`).join(" ");
+      // Each word: text(id@start-end), seconds in the footage.
+      if (detail === "words") return `${l.id} [${fmt(l.start)}] ` + words.map((w) => `${w.text}(${w.id}@${w.t.toFixed(2)}-${w.end.toFixed(2)}${w.filler ? ",filler" : ""})`).join(" ");
       return `${l.id} [${fmt(l.start)}] ${words.map((w) => w.text).join(" ")}`;
     })
     .filter(Boolean)

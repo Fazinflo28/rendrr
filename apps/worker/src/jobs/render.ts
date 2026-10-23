@@ -1,13 +1,13 @@
 import { deleteObject, downloadFile, drive, publishRender, signGet, uploadFile, usage, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { PREFIX, renderTimeoutMs, StyleRulesSchema, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { PREFIX, renderTimeoutMs, StyleRulesSchema, type FileMeasure, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { ffmpegArgs, planRender, RenderPlanError, type PlanFiles } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { frameAt, JobError, loudnessOf, probe, run } from "../lib/ffmpeg";
+import { frameAt, graphicCover, JobError, measureFile, probe, run } from "../lib/ffmpeg";
 import { cachedAsset } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { throttle, type Ctx } from "../lib/job";
@@ -140,8 +140,27 @@ export async function renderJob(ctx: Ctx) {
     const prefix = kind === "final" ? PREFIX.finals : PREFIX.previews;
     const base = `${prefix}${video.userId}/${project.id}/${r.id}`;
     const outInfo = await probe(files.output, { signal });
-    // Measured once here so the AI's after-render check can read it as text.
-    const loudness = outInfo.hasAudio ? await loudnessOf(files.output, signal).catch(() => null) : null;
+    // The rendered file, measured once here so the AI's after-render check compares the file with the edit.
+    // A failed measurement is reported in the check (never silently left out).
+    let measured: FileMeasure;
+    try {
+      // Previews get the full check; a final (no check is shown for it) only its stream lengths and loudness, as before.
+      const base0 = await measureFile(files.output, { signal, timeoutMs: Math.max(60_000, plan.outputSeconds * 1000), picture: kind === "preview" });
+      const graphics: FileMeasure["graphics"] = [];
+      for (const gr of plan.graphics) {
+        const shown = Math.min(gr.end, base0.videoSeconds ?? gr.end) - gr.start;
+        if (shown <= 0) continue;
+        const file = files.graphics?.[gr.clipId];
+        const fileLen = file ? (await probe(file, { signal }).catch(() => null))?.seconds || shown : shown;
+        const on = Math.min(shown, fileLen); // eof_action=pass: a graphic shorter than its clip leaves when it ends
+        graphics.push({ clipId: gr.clipId, start: gr.start, end: Math.round((gr.start + on) * 1000) / 1000, coverPct: file ? await graphicCover(file, on / 2, signal) : null });
+      }
+      measured = { ...base0, graphics };
+    } catch (e) {
+      if (signal.aborted) throw e;
+      measured = { videoSeconds: null, audioSeconds: null, black: [], silences: [], lufs: null, peakDb: null, graphics: [], error: (e as Error).message.slice(0, 200) };
+    }
+    const loudness = { lufs: measured.lufs, peakDb: measured.peakDb };
     const size = await uploadFile(`${base}.mp4`, files.output, "video/mp4");
     await send(i, 0.6);
     const framesKeys: string[] = [];
@@ -158,7 +177,7 @@ export async function renderJob(ctx: Ctx) {
     }
     await prisma.render.update({ where: { id: r.id }, data: {
       status: "done", outputKey: `${base}.mp4`, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.kept.length, width: plan.width, height: plan.height, loudness } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.kept.length, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
     } });
     const fresh = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     await prisma.project.update({ where: { id: project.id }, data: {

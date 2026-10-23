@@ -77,3 +77,53 @@ describe("same email in the website and the AI connector", { skip: !ready && "ne
     assert.equal((await ensureUser(ids.other)).id, other.id);
   });
 });
+
+describe("one account per email: duplicates merge, empty ones only", { skip: !ready && "needs DATABASE_URL and REDIS_URL" }, async () => {
+  const { prisma } = await import("@rendrr/db");
+  const { ensureUser, verifiedEmail } = await import("../src/auth");
+  const { mergeDuplicateAccounts } = await import("../src/services/logins");
+  const r2 = Math.random().toString(36).slice(2, 8);
+  const mail = `Dup-${r2}@test.rendrr.dev`;
+  const ids = { web: `dup_web_${r2}`, mcp: `dup_mcp_${r2}`, other: `dup_other_${r2}`, unverified: `dup_unv_${r2}`, full1: `dup_f1_${r2}`, full2: `dup_f2_${r2}` };
+  const all = Object.values(ids);
+  after(async () => {
+    await prisma.userLogin.deleteMany({ where: { clerkId: { in: all } } });
+    await prisma.user.deleteMany({ where: { clerkId: { in: all } } });
+  });
+
+  it("uses only a verified email", () => {
+    assert.equal(verifiedEmail({ primaryEmailAddress: { emailAddress: "A@B.co", verification: { status: "verified" } }, emailAddresses: [] }), "a@b.co");
+    assert.equal(verifiedEmail({ primaryEmailAddress: { emailAddress: "a@b.co", verification: { status: "unverified" } }, emailAddresses: [] }), null);
+  });
+
+  it("moves the logins of empty duplicates to the account with the edits, and keeps unverified ones apart", async () => {
+    const web = await prisma.user.create({ data: { clerkId: ids.web, email: mail, name: "Web" } });
+    await prisma.video.create({ data: { userId: web.id, name: "mine", source: "local", status: "ready" } });
+    for (const k of ["mcp", "other", "unverified"] as const) {
+      const u = await prisma.user.create({ data: { clerkId: ids[k], email: mail.toLowerCase(), name: k } });
+      await prisma.folder.create({ data: { userId: u.id, name: "My edits", workspace: "x" } }); // made on first sight
+    }
+    const r = await mergeDuplicateAccounts(async (clerkId) => clerkId !== ids.unverified);
+    assert.equal(r.merged.filter((m) => m.into === web.id).length, 2);
+    assert.ok(r.skipped.some((s) => s.reason.includes(ids.unverified)));
+    for (const k of ["mcp", "other"] as const) {
+      assert.equal(await prisma.user.count({ where: { clerkId: ids[k] } }), 0, "empty duplicate removed");
+      assert.equal((await ensureUser(ids[k])).id, web.id, "its login opens the account with the edits");
+    }
+    assert.notEqual((await ensureUser(ids.unverified)).id, web.id);
+    assert.equal(await prisma.video.count({ where: { userId: web.id } }), 1);
+    const again = await mergeDuplicateAccounts(async (clerkId) => clerkId !== ids.unverified);
+    assert.equal(again.merged.length, 0, "safe to run again");
+  });
+
+  it("leaves two accounts that both hold data alone", async () => {
+    const m2 = `full-${r2}@test.rendrr.dev`;
+    for (const k of ["full1", "full2"] as const) {
+      const u = await prisma.user.create({ data: { clerkId: ids[k], email: m2, name: k } });
+      await prisma.video.create({ data: { userId: u.id, name: k, source: "local", status: "ready" } });
+    }
+    const r = await mergeDuplicateAccounts(async () => true);
+    assert.ok(r.skipped.some((s) => s.email === m2 && /merge them by hand/.test(s.reason)));
+    assert.equal(await prisma.user.count({ where: { email: m2 } }), 2);
+  });
+});
