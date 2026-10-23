@@ -1,12 +1,14 @@
-import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, listPrefix } from "@rendrr/core";
-import { prisma } from "@rendrr/db";
-import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderTimeoutMs, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
+import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix } from "@rendrr/core";
+import { prisma, type Prisma } from "@rendrr/db";
+import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderTimeoutMs, TEMP_ORIGINAL_HOURS, type Breakdown } from "@rendrr/shared";
 import { ensureAssets } from "../lib/assets";
 import type { Ctx } from "../lib/job";
+import { framesPrefix } from "./breakdown";
 
 /**
  * Daily retention (the storage rules in the brief):
- *  - preview copies, audio and key frames: 30 days, then the video is marked "expired"
+ *  - preview copies, audio, key frames and contact sheets: 30 days, then the video is marked "expired"
+ *    (the breakdown text and transcript stay; rebuilding the preview makes new sheets)
  *  - temp originals for export: 24 hours, no matter what
  *  - preview renders: 30 days (finals and graphics stay until the user deletes them)
  *  - stuck jobs: anything "in progress" for over an hour is failed with a clear message
@@ -19,8 +21,10 @@ export async function cleanup() {
   for (const v of expired) {
     const frames = ((v.analysis?.keyFrames as { key: string }[]) || []).map((k) => k.key);
     await deleteObjects([v.proxyKey, v.audioKey, v.thumbKey, ...frames]);
+    await deletePrefix(framesPrefix(v));
     await prisma.video.update({ where: { id: v.id }, data: { status: "expired", proxyKey: null, audioKey: null, thumbKey: null, previewSizeBytes: 0 } });
-    if (v.analysis) await prisma.footageAnalysis.update({ where: { videoId: v.id }, data: { keyFrames: [] } });
+    const b = v.analysis?.breakdown as unknown as Breakdown | null;
+    if (v.analysis) await prisma.footageAnalysis.update({ where: { videoId: v.id }, data: { keyFrames: [], ...(b?.frames ? { breakdown: { ...b, frames: { ...b.frames, sheets: [] } } as unknown as Prisma.InputJsonValue } : {}) } });
     out.expiredVideos++;
   }
 

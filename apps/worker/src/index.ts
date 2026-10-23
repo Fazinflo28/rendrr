@@ -1,9 +1,10 @@
-import { env, newRedis, queue, type MaintenanceJob } from "@rendrr/core";
-import { prisma } from "@rendrr/db";
+import { enqueue, env, newRedis, queue, type BreakdownJob, type MaintenanceJob } from "@rendrr/core";
+import { Prisma, prisma } from "@rendrr/db";
 import { processTimeoutMs, QUEUES, renderTimeoutMs } from "@rendrr/shared";
 import { Worker, type Job } from "bullmq";
 import { createServer } from "node:http";
 import { analyzeJob } from "./jobs/analyze";
+import { breakdownJob } from "./jobs/breakdown";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
 import { framesJob } from "./jobs/frames";
 import { maintenanceJob } from "./jobs/maintenance";
@@ -36,6 +37,7 @@ const workers = [
   new Worker(QUEUES.render.name, guarded("render", renderLimit, "The render", renderJob, (job, msg, code) => renderFailed((job.data as { renderId: string }).renderId, msg, code), renderUser), { connection: newRedis(), concurrency: conc("render", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.graphic.name, guarded("graphic", QUEUES.graphic.timeoutMs, "The graphic", graphicJob, (job, msg) => graphicFailed((job.data as { graphicId: string }).graphicId, msg)), { connection: newRedis(), concurrency: conc("graphic", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.frames.name, guarded("frames", QUEUES.frames.timeoutMs, "Taking frames", framesJob, async () => {}), { connection: newRedis(), concurrency: conc("frames", 2), lockDuration: 60_000 }),
+  new Worker(QUEUES.breakdown.name, guarded("breakdown", videoLimit, "Reading the frames", breakdownJob, async () => {}), { connection: newRedis(), concurrency: conc("breakdown", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),
 ];
 for (const w of workers) w.on("error", (e) => console.error(`[${w.name}] worker error:`, e.message));
@@ -43,6 +45,11 @@ for (const w of workers) w.on("error", (e) => console.error(`[${w.name}] worker 
 // Daily cleanup at 03:15 UTC, plus built-in media check on every start.
 await queue("maintenance").upsertJobScheduler("daily-cleanup", { pattern: "15 3 * * *" }, { name: "maintenance", data: { task: "cleanup" } satisfies MaintenanceJob });
 await queue("maintenance").add("maintenance", { task: "ensure-assets" } satisfies MaintenanceJob, { removeOnComplete: true, removeOnFail: 50, attempts: 2 });
+
+// Ready videos without a breakdown (analysed before breakdowns existed, or the breakdown failed): make them now.
+const missing = await prisma.video.findMany({ where: { status: "ready", proxyKey: { not: null }, analysis: { is: { breakdown: { equals: Prisma.DbNull } } } }, select: { id: true }, take: 200, orderBy: { createdAt: "desc" } }).catch(() => []);
+for (const v of missing) await enqueue<BreakdownJob>("breakdown", { videoId: v.id }, { jobId: `breakdown-${v.id}-${new Date().toISOString().slice(0, 10)}` }).catch(() => {});
+if (missing.length) console.log(`[worker] breakdown queued for ${missing.length} earlier videos`);
 
 // Tiny health endpoint so Railway can tell the worker is alive.
 const port = Number(process.env.PORT || 8080);

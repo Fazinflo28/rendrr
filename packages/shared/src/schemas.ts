@@ -27,12 +27,16 @@ export const UpdateProjectInput = z.object({
   baseVersion: z.number().int().min(0).optional(),
 });
 
-export const DriveAddInput = z.object({ fileIds: z.array(z.string().min(1).max(200)).min(1, "Pick at least one video.").max(50) });
+const kind = z.enum(["footage", "reference"]).optional(); // reference: a video whose style to copy
+export const DriveAddInput = z.object({ fileIds: z.array(z.string().min(1).max(200)).min(1, "Pick at least one video.").max(50), kind });
 export const ReconnectInput = z.object({ fileId: z.string().min(1, "Pick the file in Drive to reconnect it.").max(200) });
 
 export const LocalFilesInput = z.object({
   files: z.array(z.object({ name: z.string().min(1).max(300), size: z.number().int().min(1).max(200e9), type: z.string().max(100).optional() })).min(1).max(20),
+  kind,
 });
+export const SampleAddInput = z.object({ kind }).default({});
+export const VideoPatchInput = z.object({ kind: z.enum(["footage", "reference"]).optional(), name: z.string().trim().min(1, "Give the video a name.").max(200).optional() });
 export const LocalProgressInput = z.object({ status: z.enum(["previewing", "uploading", "paused", "failed"]), progress: z.number().min(0).max(100).optional(), error: z.string().max(300).optional() });
 export const LocalCompleteInput = z.object({
   seconds: z.number().min(0.1).max(24 * 3600),

@@ -1,11 +1,41 @@
 // Demo api: the design's own in-browser fake backend (from ui/rendrr-ui-v2.html), plus the few functions the
 // wired-up app calls that the design file did not have. Nothing leaves the browser.
 import { api } from "rendrr-fake-api";
+import { breakdownAsText, buildBreakdown } from "../../../packages/shared/src/breakdown.ts";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const playable = {}; // videoId -> blob URL of the file picked in this tab, so the editor can play it
 
 const getProject = api.getProject;
+const getVideo = api.getVideo, listVideos = api.listVideos, addFromDrive = api.addFromDrive, addFromComputer = api.addFromComputer;
+const kinds = {}; // videoId -> "footage" | "reference" (the design's fake backend has no references)
+const withKind = (v) => (v ? { ...v, kind: kinds[v.id] || "footage" } : v);
+
+// "What Claude sees" for demo footage: drawn contact sheets and a breakdown made by the real shared code.
+const COLOURS = ["#3b3f52", "#5a4648", "#2f4a44", "#4b3f5c", "#53483a", "#334455"];
+function sheetImage(times, shotOf) {
+  const c = document.createElement("canvas"); c.width = 1292; c.height = 732;
+  const g = c.getContext("2d"); g.fillStyle = "#181818"; g.fillRect(0, 0, c.width, c.height);
+  times.forEach((t, i) => {
+    const x = (i % 4) * 324, y = Math.floor(i / 4) * 184;
+    g.fillStyle = COLOURS[shotOf(t) % COLOURS.length]; g.fillRect(x, y, 320, 180);
+    g.fillStyle = "rgba(255,220,200,.85)"; g.beginPath(); g.arc(x + 160, y + 70, 24, 0, 7); g.fill(); g.fillRect(x + 118, y + 104, 84, 76);
+    g.fillStyle = "#000"; g.fillRect(x, y, 58, 22); g.fillStyle = "#fff"; g.font = "13px sans-serif";
+    g.fillText(Math.floor(t / 60) + ":" + (t % 60).toFixed(1).padStart(4, "0"), x + 6, y + 15);
+  });
+  return c.toDataURL("image/jpeg", 0.8);
+}
+function demoBreakdown(v) {
+  const seconds = Math.max(5, v.seconds || 30), cuts = v.sceneCuts.filter((t) => t < seconds - 0.5);
+  const shotOf = (t) => cuts.filter((c) => c <= t).length;
+  const step = [0.5, 1, 2, 3].find((x) => seconds / x <= 64) || 5; // same spacing as the real analyzer
+  const times = Array.from({ length: Math.min(400, Math.floor(seconds / step)) }, (_, i) => i * step);
+  const sheets = []; for (let i = 0; i < times.length; i += 16) sheets.push({ file: "s" + i, times: times.slice(i, i + 16), cols: 4, rows: Math.ceil(times.slice(i, i + 16).length / 4), tile: [320, 180] });
+  const measured = { interval: step, size: [1280, 720], samples: times.map((t) => ({ t, shot: shotOf(t), b: 0.32, s: 0.2, m: 0.004, c: [COLOURS[shotOf(t) % COLOURS.length], "#a89fac"] })), sheets, loudness: times.map((t) => -15 - (t % 4)), tempo: null };
+  const b = buildBreakdown({ video: { id: v.id, name: v.name, kind: kinds[v.id] || "footage", seconds, width: 1280, height: 720, orientation: v.orientation || "Landscape", fps: 30, hasAudio: true }, transcript: v.transcript || [], silences: [], sceneCuts: cuts, measured, sheetKeys: sheets.map((s) => s.file) });
+  return { pacing: b.pacing, hook: b.hook, shots: b.shots, beat: null, musicLikely: false, frames: { interval: step, count: times.length },
+    sheets: b.frames.sheets.map((s) => ({ ...s, url: sheetImage(s.times, shotOf) })), text: breakdownAsText(b) };
+}
 const getReview = api.getReview;
 const logout = api.logout;
 let signedIn = false;
@@ -35,6 +65,11 @@ Object.assign(api, {
   getReviewMedia: async (t) => (await api.getReview(t)).media,
   watchProject: () => () => {},
   saveFinalToDrive: async () => { await wait(900); return { ok: true, message: "Saved to your Google Drive (demo)." }; },
+  getVideo: async (id) => { const v = withKind(await getVideo(id)); return { ...v, breakdown: v.status === "ready" ? demoBreakdown(v) : null }; },
+  listVideos: async () => { const vs = await listVideos(); return Array.isArray(vs) ? vs.map(withKind) : vs; },
+  updateVideo: async (id, body) => { await wait(300); if (body.kind) kinds[id] = body.kind; return withKind(await getVideo(id)); },
+  addFromDrive: async (ids, kind) => { const out = await addFromDrive(ids); if (kind) out.forEach((v) => { kinds[v.id] = kind; }); return out.map(withKind); },
+  addFromComputer: async (files, onProgress, kind) => { const out = await addFromComputer(files, onProgress); if (kind) (out || []).forEach((v) => { kinds[v.id] = kind; }); return (out || []).map(withKind); },
   getProject: async (id) => {
     const p = await getProject(id);
     const src = playable[p.videoId];

@@ -106,7 +106,7 @@ function Shell({ children }) {
         ? html`<button key=${l} class=${"mtab" + (isOn(p) || (p === "/settings" && ["/usage", "/billing", "/connect"].some((x) => route.startsWith(x))) ? " on" : "")} data-mtab=${l} onClick=${() => go(p)}><${Icon} name=${i} size="20" /><span>${l}</span></button>`
         : html`<button key=${l} class="mtab add" data-mtab="Add" aria-label="Add footage" onClick=${openAdd}><i><${Icon} name="plus" size="20" /></i></button>`)}
     </nav>`}
-    ${addOpen && html`<${AddFootageModal} onClose=${closeAdd} />`}
+    ${addOpen && html`<${AddFootageModal} onClose=${closeAdd} initialKind=${addOpen.kind} />`}
   </div>`;
 }
 
@@ -130,19 +130,21 @@ function DrivePicker({ onAdd, single, addLabel }) {
     <div class="row between"><span class="t-small muted">Your raw files stay in your Drive. We only keep a light preview copy.</span><${Btn} id="drive-add" disabled=${sel.length === 0 || busy} onClick=${async () => { setBusy(true); try { await onAdd(sel); } finally { setBusy(false); } }}>${addLabel || ("Add " + (sel.length || "") + (sel.length === 1 ? " video" : " videos"))}<//></div>
   </div>`;
 }
-function AddFootageModal({ onClose }) {
+function AddFootageModal({ onClose, initialKind = "footage" }) {
   const { startUpload, addFromDrive, addSample } = useApp();
   const [tab, setTab] = useState("drive"); const [over, setOver] = useState(false); const fileRef = useRef();
-  return html`<${Modal} title="Add footage" sub="Raw files never come to us. We only keep a light preview and your final exports." onClose=${onClose} wide>
+  const [asRef, setAsRef] = useState(initialKind === "reference"); const kind = asRef ? "reference" : undefined;
+  return html`<${Modal} title=${asRef ? "Add a reference" : "Add footage"} sub=${asRef ? "A video whose style you want to copy. Rendrr reads it the same way, so the AI can match its cuts and look." : "Raw files never come to us. We only keep a light preview and your final exports."} onClose=${onClose} wide>
+    <div class="row between card flat" id="as-ref-row" style="gap:12px;padding:10px 14px"><div><b class="t-label">Add as a reference</b><p class="t-small muted">For a video to copy the style of, not to edit.</p></div><${Toggle} id="as-ref" on=${asRef} onChange=${setAsRef} label="Add as a reference" /></div>
     <div class="srcpick">
       <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick videos from your Drive</span></span><span class="tag accent">Recommended</span></button>
       <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="src-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>From your computer</b><span class="t-small muted">Pick files or drag and drop</span></span></button>
     </div>
-    ${tab === "drive" ? html`<${DrivePicker} onAdd=${addFromDrive} />` : html`<div class="col" style="gap:12px">
-      <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs)); e.target.value = ""; }} />
-      <div class=${"drop" + (over ? " over" : "")} id="local-drop" style="padding:40px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs)); else addSample(); }}>
+    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind)} />` : html`<div class="col" style="gap:12px">
+      <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs), kind); e.target.value = ""; }} />
+      <div class=${"drop" + (over ? " over" : "")} id="local-drop" style="padding:40px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs), kind); else addSample(kind); }}>
         <div class="ico"><${Icon} name="laptop" /></div><b class="t-heading">Drop videos here</b><p class="muted t-small">Files stay on your computer. We make a light preview in your browser.</p>
-        <div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>Choose files<//><${Btn} kind="ghost" id="sample" onClick=${(e) => { e.stopPropagation(); addSample(); }}>Add sample footage<//></div></div>
+        <div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>Choose files<//><${Btn} kind="ghost" id="sample" onClick=${(e) => { e.stopPropagation(); addSample(kind); }}>Add sample footage<//></div></div>
       <div class="row" style="gap:8px"><${Icon} name="clock" size="14" /><span class="t-small muted">Keep this tab open while we prepare your preview.</span></div>
     </div>`}
   <//>`;
@@ -220,17 +222,18 @@ function LibraryPage() {
   const onDrop = (e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs)); else addSample(); };
   const dropProps = { onDragOver: (e) => { e.preventDefault(); setOver(true); }, onDragLeave: () => setOver(false), onDrop };
   const act = async (e, fn, msg) => { e.stopPropagation(); try { await fn(); if (msg) toast(msg); q.reload(); } catch (er) { toast(er.message); } };
-  const filt = (v) => filter === "All" || (filter === "Ready" && v.status === "ready") || (filter === "In progress" && BUSY.includes(v.status)) || (filter === "Needs attention" && ATTN.includes(v.status));
+  const filt = (v) => filter === "All" || (filter === "Ready" && v.status === "ready") || (filter === "In progress" && BUSY.includes(v.status)) || (filter === "Needs attention" && ATTN.includes(v.status)) || (filter === "References" && v.kind === "reference");
   return html`<div class="page wide" ...${dropProps}>
     <div class="page-head"><div><h1 class="t-title">Library</h1><p class="muted">Raw files stay in your Drive or on your computer. We keep a light preview for 30 days.</p></div>
       <div class="row"><div class="search" style="width:240px"><${Icon} name="search" /><input class="input sm" placeholder="Find footage" value=${search} onInput=${(e) => setSearch(e.target.value)} aria-label="Find footage" /></div>
-      <${Seg} size="sm" value=${filter} options=${["All", "Ready", "In progress", "Needs attention"]} onChange=${setFilter} /></div></div>
+      <${Seg} size="sm" value=${filter} options=${["All", "Ready", "In progress", "Needs attention", "References"]} onChange=${setFilter} /></div></div>
     <${Async} q=${q} skeleton=${html`<${GridSkeleton} />`} whenEmpty=${html`<div class=${"drop" + (over ? " over" : "")} id="drop" onClick=${openAdd}><div class="ico"><${Icon} name="plus" /></div><h2 class="t-heading">Add your first footage</h2><p class="muted">Link videos from Google Drive, or pick files from your computer. Raw files never come to us.</p><div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); openAdd(); }}>Add footage<//><${Btn} kind="ghost" id="sample" onClick=${(e) => { e.stopPropagation(); addSample(); }}>Add sample footage<//></div></div>`}>
       ${(videos) => {
         const list = videos.filter((v) => filt(v) && v.name.toLowerCase().includes(search.toLowerCase()));
         return html`<div class="col" style="gap:16px">
           ${over && html`<div class="drop over"><div class="ico"><${Icon} name="laptop" /></div><h2 class="t-heading">Drop to add from your computer</h2></div>`}
-          ${list.length === 0 ? html`<${EmptyState} icon="search" title="No footage matches" text="Try another filter or clear the search." action=${html`<${Btn} kind="secondary" size="sm" onClick=${() => { setFilter("All"); setSearch(""); }}>Clear filters<//>`} />` : html`<div class="grid">
+          ${list.length === 0 ? (filter === "References" && !search ? html`<${EmptyState} icon="spark" title="No references yet" text="Add a video whose style you want to copy. Rendrr reads it like footage, and the AI matches its cuts and look." action=${html`<${Btn} size="sm" icon="plus" id="add-reference" onClick=${() => openAdd("reference")}>Add a reference<//>`} />`
+            : html`<${EmptyState} icon="search" title="No footage matches" text="Try another filter or clear the search." action=${html`<${Btn} kind="secondary" size="sm" onClick=${() => { setFilter("All"); setSearch(""); }}>Clear filters<//>`} />`) : html`<div class="grid">
             ${list.map((v) => html`<button key=${v.id} class=${"vcard" + (v.status !== "ready" ? " busy" : "")} data-id=${v.id} data-status=${v.status} onClick=${() => v.status === "ready" && go("/library/" + v.id)} aria-label=${v.name}>
               <div class="thumb"><${Thumb} src=${v.thumb} art=${v.art} /><div class="ori"><${OriIcon} o=${v.orientation} /></div><div class="len"><${Chip} tone="neutral" size="sm" style="background:rgba(0,0,0,.5);color:#fff">${fmtLen(v.seconds)}<//></div>
                 ${BUSY.includes(v.status) && html`<div class="veil"><span class="dot brand pulse" /><b class="t-small">${v.stepName}${v.progress != null && (v.status === "previewing" || v.status === "uploading") ? " " + v.progress + "%" : ""}</b>${(v.status === "previewing" || v.status === "uploading") && html`<div class="bar"><i style=${{ width: v.progress + "%" }} /></div>`}<span class="t-small" style="opacity:.7">Step ${v.idx + 1} of ${v.total}</span></div>`}
@@ -240,7 +243,7 @@ function LibraryPage() {
                 ${v.status === "expired" && html`<div class="veil"><${Icon} name="clock" size="22" /><b class="t-small">Preview expired</b><span class="t-small" style="opacity:.7">30 days passed</span></div>`}
               </div>
               <div class="meta"><div class="row between"><b class="t-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.name}</b><${StatusChip} status=${v.status} /></div>
-                <div class="row between" style="gap:8px"><${SourceBadge} source=${v.source} />
+                <div class="row between" style="gap:8px"><span class="row" style="gap:6px;min-width:0"><${SourceBadge} source=${v.source} />${v.kind === "reference" && html`<span class="tag accent" data-ref=${v.id}>Reference</span>`}</span>
                   ${v.status === "failed" ? html`<${Btn} kind="ghost" size="xs" onClick=${(e) => act(e, () => api.retryVideo(v.id), "Trying again")}>Retry<//>`
                   : v.status === "paused" ? html`<${Btn} size="xs" icon="play" data-resume=${v.id} onClick=${(e) => act(e, () => api.resumeLocalPreview(v.id), "Resumed")}>Resume<//>`
                   : v.status === "missing" ? html`<${Btn} size="xs" icon="drive" data-reconnect=${v.id} onClick=${(e) => { e.stopPropagation(); setReconnect(v); }}>Reconnect file<//>`
@@ -258,11 +261,40 @@ function LibraryPage() {
   </div>`;
 }
 
+/* ---------- What Claude sees: the video as text ("video code") and contact sheets ---------- */
+const pctOf = (x) => Math.round((x || 0) * 100) + "%";
+function ClaudeSees({ v, pb, onChanged }) {
+  const toast = useToast(); const [busy, setBusy] = useState(false); const [showCode, setShowCode] = useState(false);
+  const b = v.breakdown; const dur = Math.max(0.1, v.seconds);
+  const isRef = v.kind === "reference";
+  const flip = async () => { setBusy(true); try { await api.updateVideo(v.id, { kind: isRef ? "footage" : "reference" }); toast(isRef ? "Now footage you can edit" : "Marked as a reference. The AI can copy its style.", { icon: "check", tone: "brand" }); onChanged(); } catch (e) { toast(e.message); } finally { setBusy(false); } };
+  const copy = async () => { try { await navigator.clipboard.writeText(b.text); toast("Copied the video code", { icon: "check", tone: "brand" }); } catch { setShowCode(true); toast("Select the text below to copy it.", { ms: 3500 }); } };
+  // A click on a contact sheet jumps to the frame under the pointer.
+  const jump = (s) => (e) => { const r = e.currentTarget.getBoundingClientRect(); const col = Math.min(s.cols - 1, Math.floor(((e.clientX - r.left) / r.width) * s.cols)); const row = Math.min(s.rows - 1, Math.floor(((e.clientY - r.top) / r.height) * s.rows)); const t = s.times[row * s.cols + col]; if (t != null) pb.seek(t); };
+  const stat = (label, value) => html`<div class="sb-cell"><span class="t-small muted">${label}</span><b class="t-label">${value}</b></div>`;
+  return html`<div class="card col" id="claude-sees" style="gap:16px">
+    <div class="row between" style="gap:12px;flex-wrap:wrap"><div style="min-width:0"><b class="t-heading row" style="gap:8px"><${Icon} name="eye" size="18" />What Claude sees</b><p class="t-small muted">Rendrr turned this ${isRef ? "reference" : "video"} into text and frames, so Claude reads it instead of watching it. Claude only does the thinking; Rendrr does the rendering.</p></div>
+      <div class="row" style="gap:8px">${b && html`<${Btn} kind="secondary" size="sm" icon="copy" id="copy-code" onClick=${copy}>Copy as text<//>`}<${Btn} kind="ghost" size="sm" id="flip-kind" disabled=${busy} onClick=${flip}>${isRef ? "Use as footage" : "Mark as reference"}<//></div></div>
+    ${!b ? html`<div class="row" style="gap:8px"><span class="dot brand pulse" /><span class="t-small muted">${v.status === "ready" ? "Reading the frames. This takes about a minute; the page updates on its own." : "Ready once the video has been prepared."}</span></div>` : html`
+      <div class="card tight statrow" id="pacing">${stat("Shots", b.pacing.shots + " · avg " + b.pacing.avgShotSec + "s")}${stat("Cuts per minute", b.pacing.cutsPerMin)}${stat("Words per minute", b.pacing.wordsPerMin)}${stat("Speech", pctOf(b.pacing.speechShare))}${stat("Beat", b.beat ? Math.round(b.beat.bpm) + " BPM" : b.musicLikely ? "Music, no steady beat" : "None")}</div>
+      <div><div class="row between" style="padding:0 4px 8px"><b class="t-label">Shots</b><span class="t-small muted">Click to jump</span></div>
+        <div class="shotbar" id="shotbar">${b.shots.map((s) => html`<button key=${s.id} title=${s.id + " · " + fmtTime(s.start) + "–" + fmtTime(s.end) + " · " + s.light + ", " + s.motion + (s.says ? " · “" + s.says + "”" : "")} aria-label=${"Shot " + s.id + " at " + fmtTime(s.start)} onClick=${() => pb.seek(s.start)} style=${{ flex: Math.max(0.2, s.sec) + " 1 0", background: s.colours[0] || "var(--raised)" }} class=${pb.time >= s.start && pb.time < s.end ? "on" : ""} />`)}</div></div>
+      <div><div class="row between" style="padding:0 4px 8px"><b class="t-label">Frames Claude reads</b><span class="t-small muted">${b.frames.count} frames on ${b.sheets.length} ${b.sheets.length === 1 ? "sheet" : "sheets"} · click a frame to jump</span></div>
+        ${b.sheets.length ? html`<div class="sheets" id="sheets">${b.sheets.map((s, i) => html`<figure key=${i} class="sheet"><img src=${s.url} alt=${"Frames " + fmtTime(s.from) + " to " + fmtTime(s.to)} loading="lazy" onClick=${jump(s)} style=${{ aspectRatio: "auto " + s.cols * (v.width || 16) + " / " + s.rows * (v.height || 9) }} /><figcaption class="t-small muted">${fmtTime(s.from)}–${fmtTime(s.to)}</figcaption></figure>`)}</div>`
+          : html`<p class="t-small muted">The frames went with the expired preview copy. Rebuild the preview to read them again; the text below still holds.</p>`}</div>
+      <div><button class="row between codehead" id="show-code" aria-expanded=${showCode} onClick=${() => setShowCode(!showCode)}><b class="t-label">Video code</b><span class="t-small muted row" style="gap:4px">${showCode ? "Hide" : "Show"}<${Icon} name="down" size="14" /></span></button>
+        ${showCode && html`<pre class="code" id="video-code" style="margin-top:8px;max-height:360px;overflow:auto">${b.text}</pre>`}</div>`}
+  </div>`;
+}
+
 /* ---------- /library/:id (footage) ---------- */
 function FootagePage({ id }) {
   const { go } = useNav(); const toast = useToast();
   const q = useAsync(() => api.getVideo(id), [id]);
   const v = q.data; const dur = v ? Math.max(0.1, v.seconds) : 60;
+  // The breakdown is made right after the footage is ready: look again (quietly, for up to 5 minutes) until it is there.
+  const polls = useRef(0);
+  useEffect(() => { if (!v || (v.breakdown && v.status === "ready") || ["failed", "missing", "expired"].includes(v.status) || polls.current > 75) return; const t = setTimeout(() => { polls.current++; api.getVideo(id).then((x) => q.setData(x)).catch(() => {}); }, 4000); return () => clearTimeout(t); }, [v]);
   const pb = usePlayback(dur);
   const [busy, setBusy] = useState(false);
   const start = async () => { setBusy(true); try { const p = await api.createProject({ videoId: id }); toast("Project created", { icon: "check", tone: "brand" }); go("/editor/" + p.id); } catch (e) { toast(e.message); setBusy(false); } };
@@ -280,7 +312,7 @@ function FootagePage({ id }) {
   return html`<div class="page">
     <div class="row"><${Btn} kind="quiet" size="sm" icon="back" onClick=${() => go("/library")}>Library<//></div>
     <${Async} q=${q} skeleton=${html`<div class="two"><div class="skeleton" style="aspect-ratio:16/9;border-radius:20px" /><${Skeleton} rows=${6} /></div>`}>${(v) => html`
-      <div class="page-head" style="padding-top:0"><div><h1 class="t-title">${v.name}</h1><p class="muted row" style="gap:8px"><${SourceBadge} source=${v.source} /> ${fmtLen(v.seconds)} · ${v.size} · ${v.orientation} · Added ${fmtAgo(v.date)}</p></div>
+      <div class="page-head" style="padding-top:0"><div><h1 class="t-title">${v.name}</h1><p class="muted row" style="gap:8px;flex-wrap:wrap"><${SourceBadge} source=${v.source} />${v.kind === "reference" && html`<span class="tag accent">Reference</span>`} ${fmtLen(v.seconds)} · ${v.size} · ${v.orientation} · Added ${fmtAgo(v.date)}</p></div>
         <${Btn} id="start-edit" icon="spark" disabled=${busy || v.status !== "ready"} onClick=${start}>${busy ? "Creating…" : "Start an edit"}<//></div>
       ${v.status !== "ready" && html`<div class="card flat row"><span class="dot brand pulse" />This footage is not ready yet (${v.stepName || v.status}). You can start an edit once it is ready.</div>`}
       <div class="card tight storagebox" id="storage-box"><div class="sb-cell"><span class="t-small muted">Raw file location</span><b class="t-label row" style="gap:6px"><${Icon} name=${v.source === "drive" ? "drive" : "laptop"} size="14" />${v.source === "drive" ? "Google Drive · " + (v.driveFile?.folder || "My Drive") : "This computer · " + (v.originalName || v.name)}</b></div>
@@ -301,7 +333,8 @@ function FootagePage({ id }) {
           <div class="pb words" id="footage-words"><p class="t-small muted" style="line-height:18px;margin-bottom:12px">Click a word to jump. Drag over words to remove them from the video.</p>${v.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap" title="Silence">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (w.filler ? " filler" : "") + (w === current ? " now" : "") + (inWsel(i) ? " sel" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
             ${selIds.length > 0 && html`<div class="selpop" id="footage-selpop"><span class="t-small">${selIds.length} ${selIds.length === 1 ? "word" : "words"} selected</span><${Btn} size="xs" icon="scissors" id="start-without" disabled=${busy} onClick=${startWithout}>Remove and start an edit<//><${Btn} kind="quiet" size="xs" icon="x" aria-label="Clear selection" onClick=${() => setWsel(null)} /></div>`}
           </div></div>
-      </div>`}<//>
+      </div>
+      <${ClaudeSees} v=${v} pb=${pb} onChanged=${() => api.getVideo(id).then((x) => q.setData(x)).catch(() => {})} />`}<//>
   </div>`;
 }
 

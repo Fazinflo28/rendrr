@@ -26,7 +26,9 @@ export type AnalyzeJob = { videoId: string };
 export type RenderJob = { renderId: string };
 export type GraphicJob = { graphicId: string };
 export type MaintenanceJob = { task: "cleanup" | "ensure-assets" };
-export type FramesJob = { renderId: string; times: number[] };
+/** Frames at given times: from a render (output times) or from footage / a reference (original times). */
+export type FramesJob = { renderId?: string; videoId?: string; times: number[] };
+export type BreakdownJob = { videoId: string };
 
 export async function enqueue<T extends object>(name: QueueName, data: T, opts: JobsOptions = {}) {
   const def = QUEUES[name];

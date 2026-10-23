@@ -56,7 +56,7 @@ async function callApi(w: Who, path: string, body?: unknown, method = "POST"): P
 
 async function imageContent(urls: string[] = []) {
   const out: { type: "image"; data: string; mimeType: string }[] = [];
-  for (const u of urls.slice(0, 5)) {
+  for (const u of urls.slice(0, 8)) {
     try {
       const r = await fetch(u);
       if (!r.ok) continue;
@@ -70,7 +70,7 @@ async function imageContent(urls: string[] = []) {
 
 function buildServer(w: Who) {
   const server = new McpServer({ name: "rendrr", version: "1.0.0", title: "Rendrr" }, {
-    instructions: "Rendrr edits video. You decide the edit with small instructions; Rendrr renders. Start with list_footage and read rendrr://how-to-edit. All clip times are seconds in the ORIGINAL footage.",
+    instructions: "Rendrr edits video. You decide the edit with small instructions; Rendrr renders. Rendrr has already turned every video (footage and reference videos) into text and frames: get_footage returns its breakdown and contact sheets, get_frames any exact moment, get_reference a reference video to copy the style of. Start with list_footage and read rendrr://how-to-edit. All clip times are seconds in the ORIGINAL footage.",
   });
 
   for (const def of MCP_TOOLS) {

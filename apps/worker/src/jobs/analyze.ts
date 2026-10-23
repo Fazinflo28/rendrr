@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JobError, run, silences } from "../lib/ffmpeg";
 import type { Ctx } from "../lib/job";
+import { breakdownVideo } from "./breakdown";
 
 const SCENES_PY = join(dirname(fileURLToPath(import.meta.url)), "../../python/scenes.py");
 const PYTHON = process.env.PYTHON_BIN || "python3";
@@ -21,7 +22,7 @@ async function sceneCuts(path: string, signal: AbortSignal): Promise<number[]> {
   }
 }
 
-// Steps match the UI: Transcribing, Finding silences, Finding scene cuts.
+// Steps match the UI: Transcribing, Finding silences, Finding scene cuts, Reading the frames.
 export async function analyzeJob(ctx: Ctx) {
   const { videoId } = ctx.job.data as AnalyzeJob;
   const v = await prisma.video.findUnique({ where: { id: videoId } });
@@ -51,10 +52,18 @@ export async function analyzeJob(ctx: Ctx) {
   await downloadFile(v.proxyKey, proxy);
   const cuts = await sceneCuts(proxy, ctx.signal);
 
-  await prisma.footageAnalysis.upsert({
+  const an = await prisma.footageAnalysis.upsert({
     where: { videoId: v.id },
     create: { videoId: v.id, transcriber: by, transcript: transcript as unknown as Prisma.InputJsonValue, silences: sil, sceneCuts: cuts },
     update: { transcriber: by, transcript: transcript as unknown as Prisma.InputJsonValue, silences: sil, sceneCuts: cuts },
+  });
+
+  // The video as text and frames for the AI. If it fails the footage still becomes ready (editing does not need
+  // it); the worker tries again on its next start (see index.ts).
+  await step(3);
+  await breakdownVideo(ctx, v, an, proxy, audio).catch((e) => {
+    if (ctx.signal.aborted) throw e;
+    console.error(`[analyze] breakdown failed for ${v.id}, continuing:`, (e as Error).message.slice(0, 300));
   });
   await prisma.video.update({ where: { id: v.id }, data: { status: "ready", step: null, progress: null, error: null, previewExpiresAt: new Date(Date.now() + PREVIEW_RETENTION_DAYS * DAY_MS) } });
 }

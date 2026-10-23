@@ -1,6 +1,6 @@
-import { AppError, deleteObjects, drive, enqueue, env, features, headObject, notFound, signGet, signPut, type ProxyJob, type AnalyzeJob, encrypt } from "@rendrr/core";
+import { AppError, deleteObjects, deletePrefix, drive, enqueue, env, features, headObject, notFound, signGet, signPut, type ProxyJob, type AnalyzeJob, encrypt } from "@rendrr/core";
 import { prisma, type Video } from "@rendrr/db";
-import { DAY_MS, DriveAddInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, fmtSize, orientationOf, type Transcript } from "@rendrr/shared";
+import { breakdownAsText, DAY_MS, DriveAddInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
@@ -10,6 +10,7 @@ import { purgeProjectFiles } from "../services/projects";
 const ART = ["c", "d", "e", "f", "a", "b"];
 const randomArt = () => ART[Math.floor(Math.random() * ART.length)];
 const stripExt = (n: string) => n.replace(/\.[^.]+$/, "");
+const framesPrefix = (v: { userId: string; id: string }) => `${PREFIX.frames}${v.userId}/${v.id}/`;
 
 async function ownedVideo(userId: string, id: string): Promise<Video> {
   const v = await prisma.video.findUnique({ where: { id } });
@@ -79,6 +80,15 @@ export default async function library(app: FastifyInstance) {
         driveFile = f ? { id: f.id, name: f.name, size: fmtSize(f.sizeBytes), seconds: f.seconds, date: f.date, folder, webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view` } : { id: v.driveFileId, folder, webViewLink: `https://drive.google.com/file/d/${v.driveFileId}/view` };
       }
       const keyFrames = await Promise.all(((an?.keyFrames as { t: number; key: string }[]) || []).slice(0, 5).map(async (k, i) => ({ t: k.t, art: ["a", "b", "c", "d", "e"][i % 5], url: await signGet(k.key, 3600) })));
+      // What the AI reads instead of watching: the breakdown as text, plus its contact sheets.
+      const b0 = an?.breakdown as unknown as Breakdown | null;
+      const b = b0?.v ? { ...b0, video: { ...b0.video, name: v.name, kind: v.kind as VideoKind } } : null;
+      const breakdown = b ? {
+        pacing: b.pacing, hook: b.hook, shots: b.shots, beat: b.audio.beat ? { bpm: b.audio.beat.bpm, confidence: b.audio.beat.confidence } : null, musicLikely: b.audio.musicLikely,
+        frames: { interval: b.frames.interval, count: b.frames.count },
+        sheets: await Promise.all(b.frames.sheets.map(async (s) => ({ from: s.from, to: s.to, times: s.times, cols: s.cols, rows: s.rows, url: await signGet(s.key, 3600) }))),
+        text: breakdownAsText(b),
+      } : null;
       return {
         ...(await videoOut(v)), driveFile,
         transcript: (an?.transcript as unknown as Transcript) || [],
@@ -87,7 +97,15 @@ export default async function library(app: FastifyInstance) {
         keyFrames,
         proxyUrl: v.proxyKey && v.status !== "expired" ? await signGet(v.proxyKey, 6 * 3600) : null,
         transcriber: an?.transcriber,
+        breakdown,
       };
+    });
+
+    // Rename, or switch between footage and reference (a video whose style to copy).
+    a.patch("/videos/:id", async (req) => {
+      const v = await ownedVideo(req.user!.id, (req.params as { id: string }).id);
+      const b = VideoPatchInput.parse(req.body);
+      return videoOut(await prisma.video.update({ where: { id: v.id }, data: { ...(b.kind ? { kind: b.kind } : {}), ...(b.name ? { name: b.name } : {}) } }));
     });
 
     a.post("/videos/:id/retry", async (req) => {
@@ -110,6 +128,7 @@ export default async function library(app: FastifyInstance) {
       if (used) throw new AppError(`This footage is used by ${used} ${used === 1 ? "edit" : "edits"}. Delete ${used === 1 ? "it" : "them"} first.`, 409, "in-use");
       const an = await prisma.footageAnalysis.findUnique({ where: { videoId: v.id } });
       await deleteObjects([v.proxyKey, v.audioKey, v.thumbKey, ...(((an?.keyFrames as { key: string }[]) || []).map((k) => k.key))]);
+      await deletePrefix(framesPrefix(v)); // key frames, contact sheets, frames taken for the AI
       await purgeProjectFiles({ videoId: v.id, deletedAt: { not: null } });
       await prisma.project.deleteMany({ where: { videoId: v.id, deletedAt: { not: null } } });
       await prisma.video.delete({ where: { id: v.id } });
@@ -117,7 +136,7 @@ export default async function library(app: FastifyInstance) {
     });
 
     a.post("/videos/drive", async (req) => {
-      const { fileIds } = DriveAddInput.parse(req.body);
+      const { fileIds, kind } = DriveAddInput.parse(req.body);
       const userId = req.user!.id;
       const conn = await driveConn(userId);
       const out: Video[] = [];
@@ -126,7 +145,7 @@ export default async function library(app: FastifyInstance) {
         if (!f) continue;
         const v = await prisma.video.create({ data: {
           userId, name: stripExt(f.name), seconds: f.seconds, sizeBytes: BigInt(f.sizeBytes || 0), originalSize: BigInt(f.sizeBytes || 0), originalName: f.name,
-          orientation: f.width && f.height ? orientationOf(f.width, f.height) : "Landscape", source: "drive", driveFileId: f.id, status: "linking", art: randomArt(),
+          orientation: f.width && f.height ? orientationOf(f.width, f.height) : "Landscape", source: "drive", driveFileId: f.id, status: "linking", art: randomArt(), kind: kind || "footage",
           sourceKey: conn.stub ? (f as { sampleKey?: string }).sampleKey ?? null : null,
         } });
         await enqueue<ProxyJob>("proxy", { videoId: v.id });
@@ -138,7 +157,8 @@ export default async function library(app: FastifyInstance) {
 
     // Built-in sample footage: processed on the server, original kept so exports work without asking.
     a.post("/videos/sample", async (req) => {
-      const v = await prisma.video.create({ data: {
+      const { kind } = SampleAddInput.parse(req.body ?? {});
+      const v = await prisma.video.create({ data: { kind: kind || "footage",
         userId: req.user!.id, name: "Sample footage", seconds: 41, sizeBytes: BigInt(989_324), originalSize: BigInt(989_324), originalName: "sample-footage.mp4",
         orientation: "Landscape", source: "local", sample: true, sourceKey: drive.SAMPLE_KEYS.talking, status: "previewing", progress: 0, art: randomArt(),
       } });
@@ -148,8 +168,8 @@ export default async function library(app: FastifyInstance) {
 
     // ---------------- local files: the browser makes the preview, we only receive it ----------------
     a.post("/videos/local", async (req) => {
-      const { files } = LocalFilesInput.parse(req.body);
-      const made = await Promise.all(files.map((f) => prisma.video.create({ data: {
+      const { files, kind } = LocalFilesInput.parse(req.body);
+      const made = await Promise.all(files.map((f) => prisma.video.create({ data: { kind: kind || "footage",
         userId: req.user!.id, name: stripExt(f.name).slice(0, 200), sizeBytes: BigInt(f.size), originalSize: BigInt(f.size), originalName: f.name,
         source: "local", status: "previewing", progress: 0, art: randomArt(),
       } })));

@@ -63,6 +63,7 @@ model Video {
   width            Int?
   height           Int?
   hasAudio         Boolean   @default(true)
+  kind             String    @default("footage") // footage | reference (a video whose style to copy)
   source           String    // drive | local
   sample           Boolean   @default(false) // built-in sample footage: original kept in our storage
   driveFileId      String?
@@ -100,6 +101,7 @@ model FootageAnalysis {
   musicBeats  Json?
   faces       Json?
   ocrText     Json?
+  breakdown   Json?    // the video as text + contact sheets for the AI (shared/breakdown.ts)
   createdAt   DateTime @default(now())
 }
 

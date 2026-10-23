@@ -4,7 +4,7 @@
 import { localJobs } from "./local";
 import { BASE, DEV, NETWORK_MSG, clerk, del, demo, emptyIf, enc, fail, get, patch, post, readEvents, req, wait } from "./http";
 
-const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts"];
+const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts", "Reading the frames"];
 const DRIVE_STEPS = ["Linking", "Making preview", ...PROC_STEPS];
 const LOCAL_STEPS = ["Making preview in your browser", "Uploading preview", ...PROC_STEPS];
 
@@ -127,6 +127,7 @@ export const api: any = {
   // ---- library ----
   listVideos: async () => emptyIf((await get("/videos")).map(remember)),
   getVideo: async (id: string) => remember(await get(`/videos/${enc(id)}`)),
+  updateVideo: async (id: string, body: { kind?: string; name?: string }) => remember(await patch(`/videos/${enc(id)}`, body)),
   retryVideo: async (id: string) => {
     const v = remember(await post(`/videos/${enc(id)}/retry`));
     if (v.source === "local" && !v.sample && v.status === "previewing") {
@@ -169,12 +170,13 @@ export const api: any = {
   completeDrive: (code: string, state: string) => post("/drive/complete", { code, state }),
   disconnectDrive: () => post("/drive/disconnect"),
   listDriveFiles: (folderId = "root") => get(`/drive/files?folderId=${enc(folderId)}`),
-  addFromDrive: async (fileIds: string[]) => (await post("/videos/drive", { fileIds })).map(remember),
-  addFromComputer: async (files: File[] | null, onProgress?: (p: any) => void) => {
+  // kind "reference": a video whose style to copy (Rendrr reads it like footage; the AI matches it).
+  addFromDrive: async (fileIds: string[], kind?: string) => (await post("/videos/drive", { fileIds, ...(kind ? { kind } : {}) })).map(remember),
+  addFromComputer: async (files: File[] | null, onProgress?: (p: any) => void, kind?: string) => {
     const list = files && files.length ? Array.from(files) : null;
-    if (!list) return (await post("/videos/sample")).map(remember); // "Add sample footage"
+    if (!list) return (await post("/videos/sample", kind ? { kind } : {})).map(remember); // "Add sample footage"
     if (DEV && (demo.failNextUpload || list.some((f) => /fail/i.test(f.name)))) { demo.failNextUpload = false; throw fail("One of the files could not be read."); }
-    const made = (await post("/videos/local", { files: list.map((f) => ({ name: f.name, size: f.size, type: f.type })) })).map(remember);
+    const made = (await post("/videos/local", { files: list.map((f) => ({ name: f.name, size: f.size, type: f.type })), ...(kind ? { kind } : {}) })).map(remember);
     made.forEach((v: any, i: number) => { localJobs.hold(v.id, list[i]); localJobs.start(v.id); });
     onProgress?.({ percent: 5 });
     return made;

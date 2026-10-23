@@ -1,5 +1,5 @@
 // Names the UI shows. These strings are part of the contract with ui/rendrr-ui.html: do not reword them.
-export const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts"] as const;
+export const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts", "Reading the frames"] as const;
 export const DRIVE_STEPS = ["Linking", "Making preview", ...PROC_STEPS] as const;
 export const LOCAL_STEPS = ["Making preview in your browser", "Uploading preview", ...PROC_STEPS] as const;
 
@@ -31,6 +31,7 @@ export const QUEUES = {
   graphic: { name: "graphic", timeoutMs: 2 * 60_000, attempts: 3 },
   maintenance: { name: "maintenance", timeoutMs: 10 * 60_000, attempts: 1 },
   frames: { name: "frames", timeoutMs: 60_000, attempts: 1 },
+  breakdown: { name: "breakdown", timeoutMs: 10 * 60_000, attempts: 1 },
 } as const;
 export const PREVIEW_TIMEOUT_MS = 3 * 60_000;
 export const FINAL_TIMEOUT_MS = 15 * 60_000;

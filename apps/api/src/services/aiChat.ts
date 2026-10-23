@@ -15,7 +15,7 @@ const AI_NAME = "Claude";
 const HISTORY = 20; // earlier chat messages sent along, oldest dropped first
 // Editing tools only: no renders (the editor makes previews), no new projects, no review links.
 const CHAT_TOOLS = [
-  "get_project", "get_footage", "list_footage", "list_styles", "get_style", "list_graphics", "get_comments",
+  "get_project", "get_footage", "get_frames", "list_footage", "list_references", "get_reference", "list_styles", "get_style", "list_graphics", "get_comments",
   "apply_style", "cut_words", "restore_words", "cut_silences", "remove_fillers", "set_clips", "split_clip", "trim_clip", "delete_clip",
   "add_zoom", "add_broll", "set_captions", "edit_caption", "add_music", "add_graphic", "set_aspect", "rename_project", "undo", "resolve_comment",
 ];
@@ -25,7 +25,8 @@ const SYSTEM = `You are the editing assistant inside Rendrr, a video editor. The
 How to work:
 - Make the change with the tools. Every write tool saves a new version, and the user can undo it.
 - The tools always work on the open edit; you never pass a project id.
-- Start with get_project to see the clips, and get_footage (detail "words" when you need word ids) before cutting words or placing things at a moment.
+- Start with get_project to see the clips, and get_footage (detail "words" when you need word ids) before cutting words or placing things at a moment. get_footage gives the video's breakdown (every shot with light, colour, motion, loudness and what is said; pacing; beat) and contact sheets of its frames; get_frames shows exact moments.
+- When the user talks about a reference video (a video whose style to copy), find it with list_references and read it with get_reference, then match its rhythm and look with their footage.
 - Times in the tools are seconds in the ORIGINAL footage, not the edited output.
 - Do only what was asked. If the request is unclear or the tools cannot do it, say so in one sentence and change nothing.
 - Do not render. The editor makes its own previews.
@@ -76,6 +77,21 @@ function toolSchema(name: string) {
 }
 const TOOL_SPECS = CHAT_TOOLS.map(toolSchema);
 
+/** Frames and contact sheets go to Claude as images next to the tool's text. */
+async function imageBlocks(urls: string[] = []): Promise<Anthropic.Beta.BetaImageBlockParam[]> {
+  const out: Anthropic.Beta.BetaImageBlockParam[] = [];
+  for (const u of urls.slice(0, 5)) {
+    try {
+      const r = await fetch(u);
+      if (!r.ok) continue;
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (!buf.length || buf.length > 3_500_000) continue;
+      out.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: buf.toString("base64") } });
+    } catch { /* skip that image */ }
+  }
+  return out;
+}
+
 /** One line per tool call for the "Workflow" list under the reply. */
 function stepLine(title: string, write: boolean | undefined, text: string) {
   const first = text.split("\n")[0].trim();
@@ -117,7 +133,8 @@ export async function sendChat(userId: string, projectId: string, text: string):
         const input = def.input.parse(scoped ? { ...(args as object), projectId } : args);
         const out = await TOOL_HANDLERS[def.name](ctx, input);
         steps.push(stepLine(def.title, def.write, out.text));
-        return clip(out.text);
+        const images = await imageBlocks(out.images);
+        return images.length ? [{ type: "text" as const, text: clip(out.text) }, ...images] : clip(out.text);
       } catch (e) {
         return `Error: ${toFriendly(e).message}`;
       }

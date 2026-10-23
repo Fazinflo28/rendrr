@@ -121,6 +121,17 @@ async function main() {
   });
   if (!ready) return finish();
 
+  await step("Breakdown: the video as text and frames for the AI", async () => {
+    const b = ready.breakdown;
+    if (!b) throw new Error("no breakdown on the footage");
+    if (!b.shots.length || !b.sheets.length) throw new Error(`shots ${b.shots.length}, sheets ${b.sheets.length}`);
+    if (!/PACING shots=/.test(b.text)) throw new Error("breakdown text is missing PACING");
+    const img = await fetch(b.sheets[0].url);
+    const bytes = (await img.arrayBuffer()).byteLength;
+    if (!img.ok || !/image\/jpeg/.test(img.headers.get("content-type") || "") || bytes < 5000) throw new Error(`contact sheet did not load (${img.status}, ${bytes} bytes)`);
+    return [b, `${b.shots.length} shots, ${b.pacing.cutsPerMin} cuts/min, ${b.pacing.wordsPerMin} words/min, ${b.frames.count} frames on ${b.sheets.length} sheets, beat ${b.beat ? b.beat.bpm + " BPM" : "none"}`];
+  });
+
   const folder = await step("Create a project folder", async () => { const f = await api("/folders", { method: "POST", json: { name: "Smoke test " + new Date().toISOString().slice(0, 16) } }); return [f, f.name]; });
   const project = await step("Create an edit (style rules applied as the first pass)", async () => {
     const p = await api("/projects", { method: "POST", json: { videoId: video.id, styleId: "s1", folderId: folder?.id } });
@@ -130,6 +141,17 @@ async function main() {
   if (!project) return finish();
 
   if (INTERNAL) {
+    await step("AI: read the footage as text + contact sheets (get_footage)", async () => {
+      const r = await tool("get_footage", { videoId: video.id });
+      if (!/PACING shots=/.test(r.text) || !/SHOTS/.test(r.text) || !/TRANSCRIPT/.test(r.text)) throw new Error("breakdown text missing");
+      if (!r.images?.length) throw new Error("no contact sheets attached");
+      return [r, `${String(r.text).length} chars, ${r.images.length} sheets attached`];
+    });
+    await step("AI: look at exact moments (get_frames)", async () => {
+      const r = await tool("get_frames", { videoId: video.id, times: [2, 20.5] });
+      if ((r.images || []).length !== 2) throw new Error(`${(r.images || []).length} frames came back`);
+      return [r, String(r.text).split("\n")[0]];
+    });
     await step("AI: apply style (via the MCP tool path)", async () => { const r = await tool("apply_style", { projectId: project.id, styleId: "s4" }); return [r, String(r.text).split("\n")[0]]; });
     await step("AI: cut silences over 0.5s", async () => { const r = await tool("cut_silences", { projectId: project.id, overSeconds: 0.5 }); return [r, String(r.text).split("\n")[0]]; });
   }
@@ -182,6 +204,26 @@ async function main() {
       return [r, "project status Approved"];
     });
   }
+  const ref = await step("Add a reference video (read like footage)", async () => {
+    const [v0] = await api("/videos/sample", { method: "POST", json: { kind: "reference" } });
+    const t0 = Date.now(); let v: any;
+    while (Date.now() - t0 < 6 * 60_000) { v = await api(`/videos/${v0.id}`); if (v.status === "ready" || v.status === "failed") break; await sleep(2000); }
+    if (v.status !== "ready") throw new Error("still " + v.status + (v.error ? ": " + v.error : ""));
+    if (v.kind !== "reference") throw new Error("kind is " + v.kind);
+    if (!v.breakdown?.sheets?.length) throw new Error("reference has no breakdown");
+    return [v, `${v.id}, ${v.breakdown.shots.length} shots, ${v.breakdown.sheets.length} sheets`];
+  });
+  if (ref && INTERNAL) {
+    await step("AI: find and read the reference (list_references, get_reference)", async () => {
+      const l = await tool("list_references", {});
+      if (!String(l.text).includes(ref.id)) throw new Error("reference not listed");
+      const r = await tool("get_reference", { referenceId: ref.id });
+      if (!/VIDEO REFERENCE/.test(r.text) || !r.images?.length) throw new Error("reference breakdown or sheets missing");
+      return [r, `${r.images.length} sheets, ${String(r.text).length} chars`];
+    });
+  }
+  if (ref) await step("Delete the reference (its frames go with it)", async () => { await api(`/videos/${ref.id}`, { method: "DELETE" }); const left = await fetch(ref.breakdown.sheets[0].url); if (left.ok) throw new Error("contact sheet still there"); return [true, `sheet now HTTP ${left.status}`]; });
+
   await step("Usage page numbers", async () => { const u = await api("/account/usage"); return [u, `${u.renderMinutes} render min, ${u.storageUsedGB} GB used`]; });
   void preview;
   return finish();

@@ -7,19 +7,25 @@ One command checks the whole product end to end and prints **PASS** or **FAIL** 
 1. API is healthy (database and Redis reachable)
 2. Logs in as the test user (a real Clerk session)
 3. Adds the built-in sample footage
-4. Waits for analysis: preview copy, transcript (AssemblyAI), silences, scene cuts, key frames
-5. Creates a project folder
-6. Creates an edit with style **Bold Talking Head** (the style's rules run as the first pass)
-7. AI tools, through the same path the MCP server uses: `apply_style` (Fast UGC Ad) and `cut_silences`
-8. Editor autosave (timeline replace with version check)
-9. Renders a **preview** and follows the live progress stream (the same one the editor's progress bar uses), then checks the file plays
-10. Renders the **final** (1080p) and checks size and length
-11. Creates a password-protected **review link**
-12. Opens it as the client (locked, then unlocked with the password), checks the video link
-13. Client adds a comment at 0:04
-14. Editor resolves the comment
-15. Client approves (project status becomes Approved)
-16. Usage page numbers
+4. Waits for analysis: preview copy, transcript (AssemblyAI), silences, scene cuts, key frames, reading the frames
+5. Checks the **breakdown**: shots, pacing, beat, and that a contact sheet loads
+6. Creates a project folder
+7. Creates an edit with style **Bold Talking Head** (the style's rules run as the first pass)
+8. AI tools, through the same path the MCP server uses: `get_footage` (breakdown text + contact sheets), `get_frames` (two exact moments), `apply_style` (Fast UGC Ad) and `cut_silences`
+9. Editor autosave (timeline replace with version check)
+10. Renders a **preview** and follows the live progress stream (the same one the editor's progress bar uses), then checks the file plays
+11. Renders the **final** (1080p) and checks size and length
+12. Creates a password-protected **review link**
+13. Opens it as the client (locked, then unlocked with the password), checks the video link
+14. Client adds a comment at 0:04
+15. Editor resolves the comment
+16. Client approves (project status becomes Approved)
+17. Adds a **reference video** and waits until it is read like footage
+18. AI: `list_references` finds it, `get_reference` returns its breakdown and sheets
+19. Deletes the reference and checks its contact sheets are gone
+20. Usage page numbers
+
+The AI steps need `INTERNAL_API_SECRET`; without it the test has 18 steps.
 
 ## Run it
 

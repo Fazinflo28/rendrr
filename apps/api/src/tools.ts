@@ -1,15 +1,15 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
-// Every response is small text (plus at most 5 frames). Every write goes through applyTimelineChange.
+// Every response is small text (plus a few images: frames or contact sheets). Every write goes through applyTimelineChange.
 import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signGet, type ChangeActor, type GraphicJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import {
-  allWords, CreateGraphicInput, findMusic, fmtClock, GRAPHIC_TEMPLATES, keptRanges, makeTimeMap, MCP_TOOLS, MUSIC_TRACKS, outputDuration, SFX,
-  summarizeTimeline, transcriptAsText, type Op, type Silence, type Snapshot, type Transcript,
+  allWords, breakdownAsText, CreateGraphicInput, findMusic, fmtClock, fmtT, GRAPHIC_TEMPLATES, keptRanges, makeTimeMap, MCP_TOOLS, MUSIC_TRACKS, outputDuration, SFX,
+  sheetsIn, summarizeTimeline, transcriptAsText, type Breakdown, type Op, type Silence, type Snapshot, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { createProject, getOwnedProject } from "./services/projects";
 import { renderResult, startRender } from "./services/render";
 import { createReviewLink } from "./routes/reviews";
-import { framesFor } from "./services/frames";
+import { framesFor, videoFramesFor } from "./services/frames";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
 export type ToolCtx = { userId: string; ai: "claude" | "chatgpt" | null; aiName?: string; via?: "chat" };
@@ -21,8 +21,29 @@ const actorFor = (c: Ctx, toolName: string, input: unknown): ChangeActor => ({ k
 
 async function ownedVideo(userId: string, id: string) {
   const v = await prisma.video.findUnique({ where: { id }, include: { analysis: true } });
-  if (!v || v.userId !== userId) throw notFound("That footage is not in the library. Use list_footage for the ids.");
+  if (!v || v.userId !== userId) throw notFound("That video is not in the library. Use list_footage for the ids.");
   return v;
+}
+type OwnedVideo = Awaited<ReturnType<typeof ownedVideo>>;
+
+/** The stored breakdown with the video's current name and kind (both can change after it was made). */
+export function breakdownOf(v: OwnedVideo): Breakdown | null {
+  const b = v.analysis?.breakdown as unknown as Breakdown | null;
+  return b?.v ? { ...b, video: { ...b.video, name: v.name, kind: (v.kind as VideoKind) || "footage" } } : null;
+}
+
+/** The breakdown text plus its contact sheets for a time range: what an AI reads instead of watching. */
+async function videoAsCode(v: OwnedVideo, from?: number, to?: number, maxSheets = 4): Promise<{ text: string; images: string[] }> {
+  const b = breakdownOf(v);
+  if (!b) {
+    const kf = ((v.analysis?.keyFrames as { t: number; key: string }[]) || []).slice(0, 5);
+    return { text: `BREAKDOWN not ready yet for "${v.name}" (Rendrr makes it right after the transcript; ask again in a minute). Key frames at ${kf.map((k) => k.t.toFixed(1) + "s").join(", ") || "none"} attached.`, images: await Promise.all(kf.map((k) => signGet(k.key, 900))) };
+  }
+  const sheets = sheetsIn(b, from ?? 0, to ?? 1e9, maxSheets);
+  const all = b.frames.sheets.length;
+  const note = !all ? "Contact sheets are gone with the expired preview copy; the text above still holds."
+    : `Attached: ${sheets.map((s) => `sheet ${b.frames.sheets.indexOf(s) + 1} (${fmtT(s.from)}-${fmtT(s.to)})`).join(", ")}${all > sheets.length ? `. ${all - sheets.length} more sheet${all - sheets.length === 1 ? "" : "s"}: ask with from/to` : ""}.`;
+  return { text: `${breakdownAsText(b, { from, to })}\n${note}`, images: await Promise.all(sheets.map((s) => signGet(s.key, 900))) };
 }
 
 async function edit(c: Ctx, name: string, projectId: string, op: Op, input: unknown): Promise<ToolOut> {
@@ -54,32 +75,59 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async list_footage(c) {
     const vs = await prisma.video.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 100 });
     if (!vs.length) return { text: "No footage yet. Ask the user to add some in Rendrr (Library > Add footage), from Google Drive or their computer." };
-    return { text: "Footage (id | name | length | shape | status | raw file):\n" + vs.map((v) => `${v.id} | ${v.name} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${v.sample ? "sample" : v.source === "drive" ? "Google Drive" : "user's computer"}`).join("\n") };
+    return { text: "Videos (id | name | kind | length | shape | status | raw file). kind reference = a video whose style to copy, not to edit:\n" + vs.map((v) => `${v.id} | ${v.name} | ${v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${v.sample ? "sample" : v.source === "drive" ? "Google Drive" : "user's computer"}`).join("\n") };
   },
 
   async get_footage(c, i) {
     const v = await ownedVideo(c.userId, i.videoId);
-    if (v.status !== "ready" || !v.analysis) return { text: `"${v.name}" is ${v.status}${v.error ? ": " + v.error : ""}. It can be edited once it is ready.` };
+    if (!v.analysis || !["ready", "expired"].includes(v.status)) return { text: `"${v.name}" is ${v.status}${v.error ? ": " + v.error : ""}. It can be read and edited once it is ready.` };
+    if (i.detail === "json") { const b = breakdownOf(v); return { text: b ? clip(JSON.stringify(b)) : "The breakdown is not ready yet. Ask again in a minute." }; }
+    const code = await videoAsCode(v, i.from, i.to);
     let tr = v.analysis.transcript as unknown as Transcript;
     if (i.from != null || i.to != null) tr = tr.filter((l) => l.end >= (i.from ?? 0) && l.start <= (i.to ?? 1e9));
     const words = allWords(v.analysis.transcript as unknown as Transcript);
     const fillers = words.filter((w) => w.filler);
     const sil = (v.analysis.silences as unknown as Silence[]).filter((s) => s.end - s.start >= 0.4);
     const cuts = (v.analysis.sceneCuts as number[]) || [];
-    const kf = ((v.analysis.keyFrames as { t: number; key: string }[]) || []).slice(0, 5);
-    const images = await Promise.all(kf.map((k) => signGet(k.key, 900)));
     const counts: Record<string, number> = {};
     for (const f of fillers) { const k = f.text.toLowerCase().replace(/[^a-z' ]/g, ""); counts[k] = (counts[k] || 0) + 1; }
     const lines = [
-      `Footage "${v.name}" (${v.id}): ${v.seconds.toFixed(1)}s, ${v.orientation} ${v.width}x${v.height}, ${v.fps ?? 30} fps, raw file ${v.sample ? "is Rendrr's built-in sample" : v.source === "drive" ? "in Google Drive" : "on the user's computer"}.`,
-      `Transcript (${v.analysis.transcriber === "stub" ? "SAMPLE transcript: transcription is not set up" : "AssemblyAI"}), ${words.length} words. Line id [start] text${i.detail === "words" ? "; words as text(wordId@start)" : ""}:`,
+      code.text,
+      `RAW FILE ${v.sample ? "Rendrr's built-in sample" : v.source === "drive" ? "in Google Drive" : "on the user's computer"}${v.status === "expired" ? " | preview copy expired: rebuild it in the Library to edit or take frames" : ""}`,
+      `TRANSCRIPT (${v.analysis.transcriber === "stub" ? "SAMPLE transcript: transcription is not set up" : "AssemblyAI"}), ${words.length} words. Line id [start] text${i.detail === "words" ? "; words as text(wordId@start)" : ""}:`,
       transcriptAsText(tr, undefined, i.detail === "words" ? "words" : "sentences") || "(no speech found)",
-      `Silences of 0.4s or more (${sil.length}): ${sil.slice(0, 80).map((s) => `${s.start.toFixed(1)}-${s.end.toFixed(1)}`).join(", ") || "none"}${sil.length > 80 ? ", …" : ""}`,
-      `Filler words: ${fillers.length}${fillers.length ? " (" + Object.entries(counts).map(([k, n]) => `${k} x${n}`).join(", ") + ")" : ""}${i.detail === "words" && fillers.length ? ". Ids: " + fillers.slice(0, 200).map((f) => f.id).join(" ") : ""}`,
-      `Scene cuts (${cuts.length}): ${cuts.slice(0, 100).map((t) => t.toFixed(1)).join(", ") || "none"}`,
-      `Key frames at: ${kf.map((k) => k.t.toFixed(1) + "s").join(", ")} (images attached).`,
+      `SILENCES of 0.4s or more (${sil.length}): ${sil.slice(0, 80).map((s) => `${s.start.toFixed(1)}-${s.end.toFixed(1)}`).join(", ") || "none"}${sil.length > 80 ? ", …" : ""}`,
+      `FILLERS ${fillers.length}${fillers.length ? " (" + Object.entries(counts).map(([k, n]) => `${k} x${n}`).join(", ") + ")" : ""}${i.detail === "words" && fillers.length ? ". Ids: " + fillers.slice(0, 200).map((f) => f.id).join(" ") : ""}`,
+      `SCENE CUTS (${cuts.length}): ${cuts.slice(0, 100).map((t) => t.toFixed(1)).join(", ") || "none"}`,
     ];
-    return { text: clip(lines.join("\n")), images };
+    return { text: clip(lines.join("\n")), images: code.images };
+  },
+
+  async get_frames(c, i) {
+    const v = await ownedVideo(c.userId, i.videoId);
+    if (!v.proxyKey || !["ready"].includes(v.status)) return { text: `"${v.name}" has no preview copy to take frames from (${v.status}).${v.status === "expired" ? " Ask the user to rebuild the preview in the Library." : ""}` };
+    let times: number[] = (i.times || []).slice(0, 8);
+    if (!times.length) {
+      const from = Math.max(0, i.from ?? 0), to = Math.min(v.seconds, i.to ?? v.seconds), n = Math.min(8, i.count ?? 4);
+      times = Array.from({ length: n }, (_, k) => (n === 1 ? (from + to) / 2 : from + ((to - from) * k) / (n - 1)));
+    }
+    times = times.map((t) => Math.round(Math.min(Math.max(0, t), Math.max(0, v.seconds - 0.05)) * 100) / 100);
+    const images = await videoFramesFor(v.id, times);
+    if (!images.length) return { text: "No frames came back. Try again in a moment." };
+    const b = breakdownOf(v);
+    const where = (t: number) => b?.shots.find((s) => t >= s.start && t < s.end)?.id;
+    return { text: `Frames of "${v.name}" at ${times.map((t) => `${fmtT(t)}${where(t) ? ` (${where(t)})` : ""}`).join(", ")} attached, in that order.`, images };
+  },
+
+  async list_references(c) {
+    const [vs, saved] = await Promise.all([
+      prisma.video.findMany({ where: { userId: c.userId, kind: "reference" }, orderBy: { createdAt: "desc" }, take: 100 }),
+      prisma.reference.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 }),
+    ]);
+    if (!vs.length && !saved.length) return { text: "No references yet. The user can add one in Rendrr: Library > Add footage > \"Add as a reference\" (a video whose style to copy). Any video in list_footage also works with get_reference." };
+    return { text: ["References (id | name | type | length | status):",
+      ...vs.map((v) => `${v.id} | ${v.name} | reference video | ${fmtClock(v.seconds)} | ${v.status}`),
+      ...saved.map((r) => `${r.id} | ${r.name} | saved gallery recipe | - | ready`)].join("\n") };
   },
 
   async list_styles(c) {
@@ -115,7 +163,15 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   async get_reference(c, i) {
-    // Your own references, or a gallery video whose author allows recreating it.
+    // A video of the user's (marked reference or not): its breakdown and contact sheets.
+    const rv = await prisma.video.findUnique({ where: { id: i.referenceId }, include: { analysis: true } });
+    if (rv && rv.userId === c.userId) {
+      if (!rv.analysis || !["ready", "expired"].includes(rv.status)) return { text: `The reference "${rv.name}" is ${rv.status}. Rendrr reads it once it is ready.` };
+      const code = await videoAsCode(rv);
+      const tr = (rv.analysis.transcript as unknown as Transcript) || [];
+      return { text: clip(`Reference video: match its rhythm, shot lengths, hook and look with the user's own footage; do not copy its content.\n${code.text}\nTRANSCRIPT\n${transcriptAsText(tr) || "(no speech)"}`), images: code.images };
+    }
+    // Your own saved recipes, or a gallery video whose author allows recreating it.
     const g0 = await prisma.galleryItem.findUnique({ where: { id: i.referenceId } });
     const shared = !!g0 && (g0.userId === c.userId || g0.allowRecreate);
     const r0 = await prisma.reference.findUnique({ where: { id: i.referenceId } });

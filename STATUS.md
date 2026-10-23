@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 23 October 2026, morning (UTC). Live on Railway with the new design (V2).
+Last updated: 23 October 2026 (UTC). Live on Railway with the new design (V2). New: every video is broken down into text and frames for the AI, and reference videos.
 
 ## 1. Links
 
@@ -19,6 +19,18 @@ Checked on the live servers on 23 October: smoke test 17/17, and the AI connecto
 
 - **Domains**: in GoDaddy, add TXT `_railway-verify.app` = `railway-verify=ad274ce6e10f75604a4704e9128c2c4a1a22f7f8768ee841aaeb020ae39f89db` and TXT `_railway-verify.api` = `railway-verify=571ecbd5a97b54b7850f632cc07a92451353b4e6bfc516cac3b9f475469a289c`. Type only that much in the Name box: GoDaddy adds `.rendrr.live` itself. Once Railway sees them, the web and API settings switch to the rendrr.live addresses.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
+
+## Every video as text and frames
+
+Rendrr does the seeing and rendering; Claude only does the thinking. Right after the transcript, every video is read once ("Reading the frames", the last processing step). That covers footage and reference videos, from Google Drive, a computer or the sample:
+
+- **Breakdown ("video code")**: every shot with its times, light, colour, motion, loudness and what is said; pacing (cuts per minute, words per minute, speech and silence share); the hook (first 3 seconds); loudness per second; the music beat. Claude reads it as a few lines of text.
+- **Contact sheets**: frames every 0.5 to 5 seconds plus one in the middle of every shot, 16 to an image, with the time printed on each frame. A 40-second clip is 3 images.
+- **Exact moments**: Claude can ask for any frame (`get_frames`), and Rendrr takes it from the preview copy.
+- **Reference videos**: in Library › Add footage, switch on "Add as a reference" for a video whose style to copy. The Library has a References filter, and any video can be switched on its page. Claude finds references with `list_references` and reads them with `get_reference`.
+- **Where Claude gets it**: the connector's `get_footage` and `get_reference` return the breakdown with its contact sheets. The editor's AI chat has the same tools, and now receives the images too.
+- **Where you see it**: every footage page has a **What Claude sees** section with the pacing, a shot strip, the contact sheets (click a frame to jump there) and the video code, plus Copy as text.
+- Videos added before this got their breakdown automatically when the worker started. Videos added from a computer now also get key frames and a thumbnail; before, they had none.
 
 ## New design (V2)
 
