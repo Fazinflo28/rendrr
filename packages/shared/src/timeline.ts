@@ -48,6 +48,10 @@ export const TracksSchema = z.object({
   a3: z.array(A3ClipSchema).max(500),
 });
 
+/** Clockwise turn of the footage, for footage filmed sideways (applied before it is fitted to the shape). */
+export const RotationSchema = z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]);
+export type Rotation = z.infer<typeof RotationSchema>;
+
 export const TimelineSchema = z.object({
   duration: z.number().finite().min(0).max(24 * 3600),
   cut: z.array(id).max(200_000),
@@ -55,6 +59,7 @@ export const TimelineSchema = z.object({
   captionLook: z.enum(CAPTION_LOOKS),
   captionText: z.record(z.string().max(2000)),
   tracks: TracksSchema,
+  rotate: RotationSchema.optional(),
 });
 
 export type Clip = z.infer<typeof ClipSchema>;

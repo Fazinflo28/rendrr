@@ -5,7 +5,7 @@ import {
   playerGraphicHtml, STYLES, stripLayout, stubTranscript, transcriptAsText, zoomAt,
   type Clip, type EditContext, type FileMeasure, type Snapshot, type Transcript,
 } from "../src/index";
-import { planRender, zoomExpr } from "../src/renderPlan";
+import { ffmpegArgs, planRender, zoomExpr } from "../src/renderPlan";
 
 const tr = stubTranscript(40);
 const words = tr.flatMap((l) => l.words);
@@ -211,5 +211,23 @@ describe("connector: text first", () => {
     const s = applyOp(snap(), { op: "cut_silences", overSeconds: 0.4 }, ctx).snap;
     const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source });
     expect(plan.kept.length).toBe(keptRanges(s.timeline, words).length);
+  });
+});
+
+describe("footage filmed sideways", () => {
+  it("set_rotation turns the footage before the fit, and 0 puts it back", () => {
+    const s = applyOp(snap(), { op: "set_rotation", degrees: 90 }, ctx);
+    expect(s.snap.timeline.rotate).toBe(90);
+    expect(s.summary).toMatch(/turned the footage 90° clockwise/);
+    const plan = planRender({ kind: "preview", snapshot: { ...s.snap, aspect: "9:16" }, transcript: tr, source });
+    expect(plan.rotate).toBe(90);
+    expect(plan.operations.join("\n")).toMatch(/Turn the footage 90° clockwise, then fit to 9:16/);
+    const graph = ffmpegArgs(plan, { source: "in.mp4", output: "out.mp4" }, source).filterGraph;
+    expect(graph).toMatch(/\[vcat\]transpose=1,fps=30,scale=/);
+    expect(editCheck(s.snap, tr)).toMatch(/footage turned 90°/);
+    const back = applyOp(s.snap, { op: "set_rotation", degrees: 0 }, ctx).snap;
+    expect(back.timeline).not.toHaveProperty("rotate");
+    expect(ffmpegArgs(planRender({ kind: "preview", snapshot: back, transcript: tr, source }), { source: "a", output: "b" }, source).filterGraph).not.toMatch(/transpose|hflip/);
+    expect(ffmpegArgs(planRender({ kind: "preview", snapshot: applyOp(snap(), { op: "set_rotation", degrees: 270 }, ctx).snap, transcript: tr, source }), { source: "a", output: "b" }, source).filterGraph).toMatch(/transpose=2,/);
   });
 });

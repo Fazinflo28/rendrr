@@ -60,4 +60,28 @@ describe("the check agrees with the rendered file", () => {
     assert.match(check, /of picture without its dialogue/);
     assert.match(check, /where words should play/);
   });
+
+  it("footage filmed sideways comes out upright when turned 90° clockwise", async () => {
+    // A landscape source whose LEFT half is red and right half blue: turned clockwise, red must be on top.
+    const side = join(dir, "side.mp4");
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", `color=red:s=320x180:r=30:d=${SECONDS}`, "-f", "lavfi", "-i", `color=blue:s=320x180:r=30:d=${SECONDS}`,
+      "-f", "lavfi", "-i", `sine=f=300:d=${SECONDS}:sample_rate=48000`, "-filter_complex", "[0:v]crop=160:180:0:0[l];[1:v]crop=160:180:160:0[r];[l][r]hstack[v]", "-map", "[v]", "-map", "2:a",
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", side]);
+    const s0: Snapshot = { timeline: buildInitialTimeline(tr, SECONDS, "clean"), name: "t", aspect: "9:16", styleId: "s2" };
+    const s = applyOp(s0, { op: "batch", ops: [{ op: "set_rotation", degrees: 90 }, { op: "set_captions", on: false }] }, ctx).snap;
+    const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source: { ...source, width: 320, height: 180 } });
+    const out = join(dir, "turned.mp4");
+    const { args, filterGraph } = ffmpegArgs(plan, { source: side, output: out }, { ...source, width: 320, height: 180 });
+    await writeFile(join(dir, "turned.txt"), filterGraph);
+    await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? join(dir, "turned.txt") : a)));
+    // Colour of a small patch at height y: red has a high V (Cr), blue a high U (Cb).
+    const px = async (y: number) => {
+      const { stderr } = await run("ffmpeg", ["-hide_banner", "-ss", "1", "-i", out, "-frames:v", "1", "-vf", `crop=16:16:iw/2-8:ih*${y},signalstats,metadata=print`, "-f", "null", "-"]);
+      const v = (k: string) => Number(new RegExp(`signalstats\\.${k}=([\\d.]+)`).exec(stderr)?.[1]);
+      return { u: v("UAVG"), v: v("VAVG") };
+    };
+    const [top, bottom] = [await px(0.2), await px(0.8)];
+    assert.ok(top.v > 180 && top.u < 128, `top should be red, got ${JSON.stringify(top)}`);
+    assert.ok(bottom.u > 180 && bottom.v < 128, `bottom should be blue, got ${JSON.stringify(bottom)}`);
+  });
 });

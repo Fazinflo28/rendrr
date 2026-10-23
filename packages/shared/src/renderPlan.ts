@@ -34,6 +34,7 @@ export type RenderPlan = {
   aspect: Aspect;
   kept: Range[];
   outputSeconds: number;
+  rotate: 0 | 90 | 180 | 270; // clockwise turn of the footage before it is fitted
   zooms: ZoomOp[];
   broll: OverlayOp[];
   graphics: OverlayOp[];
@@ -240,7 +241,7 @@ export function planRender(input: PlanInput): RenderPlan {
   const cutCount = cutRegions(words, new Set(tl.cut)).length;
   const operations = [
     `Keep ${kept.length} ${kept.length === 1 ? "part" : "parts"} of the footage (${cutCount} word cuts, V1 gaps removed): ${total.toFixed(2)}s out of ${input.source.seconds.toFixed(2)}s`,
-    `Fit to ${snapshot.aspect} at ${width}x${height}, 30 fps`,
+    `${tl.rotate ? `Turn the footage ${tl.rotate}° clockwise, then fit` : "Fit"} to ${snapshot.aspect} at ${width}x${height}, 30 fps`,
     zooms.length ? `Zoom: ${zooms.length} (${zooms.filter((z) => z.mode === "punch").length} punch, ${zooms.filter((z) => z.mode === "push").length} slow push)` : "Zoom: none",
     broll.length ? `B-roll overlays: ${broll.length}` : "B-roll overlays: none",
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
@@ -248,7 +249,7 @@ export function planRender(input: PlanInput): RenderPlan {
     `Audio: dialogue${dialogueMutes.length ? ` (${dialogueMutes.length} muted gaps)` : ""}${audio.some((a) => a.kind === "music") ? " + music ducked under speech" : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}`,
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
   ];
-  return { kind, width, height, fps: 30, aspect: snapshot.aspect, kept, outputSeconds: total, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, ass, operations };
+  return { kind, width, height, fps: 30, aspect: snapshot.aspect, kept, outputSeconds: total, rotate: tl.rotate ?? 0, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, ass, operations };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -316,7 +317,9 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   // 2. Fit to the output shape (fill and centre-crop), constant 30 fps. HDR originals are tone-mapped to SDR
   // BT.709 exactly like the preview copy, so the final looks like the preview that was approved.
   const tone = source.hdr ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "";
-  g.push(`[vcat]${tone}fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1[vfit]`);
+  // Footage filmed sideways is turned first (transpose=1 is 90° clockwise, 2 is 90° anticlockwise).
+  const turn = plan.rotate === 90 ? "transpose=1," : plan.rotate === 270 ? "transpose=2," : plan.rotate === 180 ? "hflip,vflip," : "";
+  g.push(`[vcat]${turn}${tone}fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1[vfit]`);
   let v = "vfit";
 
   // 3. Zooms: scale per frame, crop back to size.

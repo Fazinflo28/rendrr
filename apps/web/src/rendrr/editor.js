@@ -96,12 +96,12 @@ function EditorInner({ project, reload, ai, keep }) {
     return project.transcript.map((l) => { const ws = l.words.map((w) => { const nx = all[++i]; return w.end != null ? w : { ...w, end: r2(Math.min(nx ? nx.t : w.t + 0.6, w.t + 0.6)) }; }); return { ...l, words: ws, end: l.end ?? (ws.length ? ws[ws.length - 1].end : l.start) }; });
   }, [project]);
   const tl = project.timeline; const words = useMemo(() => transcript.flatMap((l) => l.words), [transcript]);
-  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText });
+  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, rotate: tl.rotate || 0, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText });
   const S = H.state; const footDur = tl.duration;
   // The edit as the server and the renderer see it, the place of every clip in it, and the render plan the live
   // player draws from. Times on the timeline and in the player are EDIT seconds (gaps closed: what renders).
   const initial = useRef(S).current;
-  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText });
+  const tlOf = (s) => { const { rotate: _r, ...base } = tl; return { ...base, ...(s.rotate ? { rotate: s.rotate } : {}), cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText }; };
   const timeline = useMemo(() => tlOf(S), [S]);
   const lay = useMemo(() => layoutTimeline(timeline, words, project.videoId), [timeline, words]);
   const media = useMemo(() => ({ broll: project.brollMedia || {}, graphics: project.graphicMedia || {} }), [project]);
@@ -142,7 +142,7 @@ function EditorInner({ project, reload, ai, keep }) {
 
   // Autosave after each change.
   const first = useRef(true);
-  useEffect(() => { if (first.current) { first.current = false; return; } setSaved("Saving…"); const t = setTimeout(() => api.updateProject(project.id, { name: S.name, styleId: S.styleId, aspect: S.aspect, timeline: { ...tl, cut: S.cut, tracks: S.tracks, captionsOn: S.captionsOn, captionLook: S.captionLook, captionText: S.captionText } }).then(() => { setSaved("Saved"); }).catch((e) => { if (e.code === "stale") { toast(e.message, { icon: "spark" }); reload(); } else { setSaved("Not saved"); } }), 600); return () => clearTimeout(t); }, [S]);
+  useEffect(() => { if (first.current) { first.current = false; return; } setSaved("Saving…"); const t = setTimeout(() => api.updateProject(project.id, { name: S.name, styleId: S.styleId, aspect: S.aspect, timeline: tlOf(S) }).then(() => { setSaved("Saved"); }).catch((e) => { if (e.code === "stale") { toast(e.message, { icon: "spark" }); reload(); } else { setSaved("Not saved"); } }), 600); return () => clearTimeout(t); }, [S]);
 
   // Derived playback bits: what the render shows at this moment of the edit.
   const frame = plan && !fresh ? liveFrame(plan, pb.time, clock) : null;
@@ -288,7 +288,7 @@ function EditorInner({ project, reload, ai, keep }) {
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
           : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.video?.proxyUrl || undefined} videoFit="cover" caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} muted=${!!frame?.muted} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} />`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.video?.proxyUrl || undefined} videoFit="cover" rotate=${S.rotate || 0} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} muted=${!!frame?.muted} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} />`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">
@@ -296,6 +296,7 @@ function EditorInner({ project, reload, ai, keep }) {
           <span class="mono t-small tc-ro"><b>${fmtTime(pb.time, true)}</b><span class="muted"> / ${fmtTime(dur, true)}</span></span></div>
         <div class="tl-tools">
           <button class="tool" id="split" onClick=${split}><${Icon} name="scissors" size="15" />Split<span class="kbd">S</span></button>
+          <button class="tool" id="rotate" title="Turn the footage 90° clockwise (footage filmed sideways)" onClick=${() => H.commit((s) => ({ ...s, rotate: ((s.rotate || 0) + 90) % 360 }))}><${Icon} name="refresh" size="15" />Rotate${S.rotate ? " " + S.rotate + "°" : ""}</button>
           <span class="row" style="gap:2px"><button class="tool" id="cut-silences" title="Cut pauses longer than the limit, and the silence at the start and end of every clip" onClick=${cutSilences}><${Icon} name="scissors" size="15" />Cut silences</button><select class="tool" id="silence-over" aria-label="Pauses longer than" value=${silOver} onChange=${(e) => setSilOver(+e.target.value)}>${[0.3, 0.5, 0.8, 1, 1.5].map((x) => html`<option key=${x} value=${x}>over ${x}s</option>`)}</select></span>
           <button class="tool" id="delete-clip" disabled=${!sel} onClick=${removeSel}><${Icon} name="trash" size="15" />Delete<span class="kbd">⌫</span></button>
           ${selClip && (sel.track === "v1" || sel.track === "a1") && html`<button class="tool" id="link-clip" title="Alt-click a clip does the same" onClick=${() => toggleLink(sel.track, sel.id)}><${Icon} name="link" size="15" />${selClip.linkId ? "Unlink" : "Link"}</button>`}

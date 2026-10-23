@@ -122,8 +122,8 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
 
   const lines = [
     m && !m.error && m.videoSeconds != null
-      ? `CHECK file ${m.videoSeconds.toFixed(2)}s, edit ${total.toFixed(2)}s of ${tl.duration.toFixed(1)}s footage | ${snap.aspect} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`
-      : `CHECK ${total.toFixed(1)}s of ${tl.duration.toFixed(1)}s footage | ${snap.aspect} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`,
+      ? `CHECK file ${m.videoSeconds.toFixed(2)}s, edit ${total.toFixed(2)}s of ${tl.duration.toFixed(1)}s footage | ${snap.aspect}${tl.rotate ? ` | footage turned ${tl.rotate}°` : ""} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`
+      : `CHECK ${total.toFixed(1)}s of ${tl.duration.toFixed(1)}s footage | ${snap.aspect}${tl.rotate ? ` | footage turned ${tl.rotate}°` : ""} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`,
     ...fileLines,
     `Pauses over ${over}s: ${pauses.length ? list(pauses.map((p) => `${fmtT(p.at)} (${p.len.toFixed(1)}s)`)) : "none"}`,
     `Fillers left: ${fillers.length ? list(fillers.map((w) => `"${w.text.replace(/[^\w'-]/g, "")}" ${at(w.t)}`)) : "none"}`,

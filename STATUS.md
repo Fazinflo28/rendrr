@@ -48,6 +48,7 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
   - `set_clips` takes plain start/end, and A1 follows V1.
   - New op `set_link`.
 - **Text first.** `get_footage` and `create_graphic` attach images only with `images: true`.
+- **Footage filmed sideways** (found by the reference-video test). New op `set_rotation` and a Rotate button in the editor turn the footage 90°, 180° or 270° clockwise before it is fitted to the shape. It works the same way in the render, the live player and the check.
 - **One account per email.** A new login with a verified email that already has an account opens that account. At start-up the API merges duplicate accounts that share an email: only empty ones are removed, their logins move over, and each merge is logged.
 
 ## Every video as text and frames
