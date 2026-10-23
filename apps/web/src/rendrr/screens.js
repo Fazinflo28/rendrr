@@ -112,7 +112,7 @@ function Shell({ children }) {
 
 /* ---------- Add footage: Google Drive (recommended) or this computer ---------- */
 const SourceBadge = ({ source, size = "sm" }) => html`<span class=${"tag src " + (source === "drive" ? "drive" : "local")} title=${source === "drive" ? "Raw file stays in your Google Drive" : "Raw file stays on your computer"}><${Icon} name=${source === "drive" ? "drive" : "laptop"} size="12" />${source === "drive" ? "Google Drive" : "This computer"}</span>`;
-function DrivePicker({ onAdd, single, addLabel }) {
+function DrivePicker({ onAdd, single, addLabel, onLocal }) {
   const toast = useToast();
   const dq = useAsync(() => api.getDriveStatus(), []);
   const [folder, setFolder] = useState("root"); const [sel, setSel] = useState([]); const [busy, setBusy] = useState(false);
@@ -120,6 +120,7 @@ function DrivePicker({ onAdd, single, addLabel }) {
   const connect = async () => { setBusy(true); try { const d = await api.connectDrive(); dq.setData(d); toast("Google Drive connected", { icon: "drive", tone: "brand" }); } catch (e) { toast(e.message); } finally { setBusy(false); } };
   const toggle = (id) => setSel((x) => (single ? [id] : x.includes(id) ? x.filter((i) => i !== id) : [...x, id]));
   if (dq.status === "loading") return html`<${Skeleton} rows=${3} card=${false} />`;
+  if (!dq.data?.connected && dq.data?.available === false) return html`<div class="state" id="drive-off" style="padding:32px 16px"><div class="ico"><${Icon} name="drive" /></div><b class="t-heading">Google Drive is not set up yet</b><p>Rendrr needs its Google sign-in keys before it can open your Drive. Add videos from your computer for now.</p>${onLocal && html`<${Btn} icon="laptop" onClick=${onLocal}>Use my computer<//>`}</div>`;
   if (!dq.data?.connected) return html`<div class="state" style="padding:32px 16px"><div class="ico"><${Icon} name="drive" /></div><b class="t-heading">Connect Google Drive</b><p>Pick videos straight from your Drive. We never copy the raw file.</p><${Btn} id="connect-drive" icon="drive" disabled=${busy} onClick=${connect}>${busy ? "Connecting…" : "Connect Google Drive"}<//></div>`;
   return html`<div class="col" style="gap:12px">
     <div class="row between"><span class="t-small muted"><${Icon} name="drive" size="13" /> Connected as <b style="color:var(--ink)">${dq.data.email}</b></span>${sel.length > 0 && html`<span class="t-small">${sel.length} selected</span>`}</div>
@@ -131,20 +132,21 @@ function DrivePicker({ onAdd, single, addLabel }) {
   </div>`;
 }
 function AddFootageModal({ onClose, initialKind = "footage" }) {
-  const { startUpload, addFromDrive, addSample } = useApp();
+  const { startUpload, addFromDrive } = useApp();
   const [tab, setTab] = useState("drive"); const [over, setOver] = useState(false); const fileRef = useRef();
   const [asRef, setAsRef] = useState(initialKind === "reference"); const kind = asRef ? "reference" : undefined;
+  useEffect(() => { api.getDriveStatus().then((s) => { if (!s.connected && s.available === false) setTab("local"); }).catch(() => {}); }, []);
   return html`<${Modal} title=${asRef ? "Add a reference" : "Add footage"} sub=${asRef ? "A video whose style you want to copy. Rendrr reads it the same way, so the AI can match its cuts and look." : "Raw files never come to us. We only keep a light preview and your final exports."} onClose=${onClose} wide>
     <div class="row between card flat" id="as-ref-row" style="gap:12px;padding:10px 14px"><div><b class="t-label">Add as a reference</b><p class="t-small muted">For a video to copy the style of, not to edit.</p></div><${Toggle} id="as-ref" on=${asRef} onChange=${setAsRef} label="Add as a reference" /></div>
     <div class="srcpick">
       <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick videos from your Drive</span></span><span class="tag accent">Recommended</span></button>
       <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="src-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>From your computer</b><span class="t-small muted">Pick files or drag and drop</span></span></button>
     </div>
-    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind)} />` : html`<div class="col" style="gap:12px">
+    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind)} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
       <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs), kind); e.target.value = ""; }} />
-      <div class=${"drop" + (over ? " over" : "")} id="local-drop" style="padding:40px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs), kind); else addSample(kind); }}>
+      <div class=${"drop" + (over ? " over" : "")} id="local-drop" style="padding:40px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs), kind); }}>
         <div class="ico"><${Icon} name="laptop" /></div><b class="t-heading">Drop videos here</b><p class="muted t-small">Files stay on your computer. We make a light preview in your browser.</p>
-        <div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>Choose files<//><${Btn} kind="ghost" id="sample" onClick=${(e) => { e.stopPropagation(); addSample(kind); }}>Add sample footage<//></div></div>
+        <div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>Choose files<//></div></div>
       <div class="row" style="gap:8px"><${Icon} name="clock" size="14" /><span class="t-small muted">Keep this tab open while we prepare your preview.</span></div>
     </div>`}
   <//>`;
@@ -155,6 +157,7 @@ function RecreateModal({ g, onClose }) {
   const { go } = useNav(); const toast = useToast();
   const [step, setStep] = useState("source"); const [tab, setTab] = useState("drive"); const [video, setVideo] = useState(null); const [busy, setBusy] = useState(false); const [over, setOver] = useState(false);
   const [folder, setFolder] = useState(""); const [newName, setNewName] = useState(""); const fileRef = useRef();
+  useEffect(() => { api.getDriveStatus().then((s) => { if (!s.connected && s.available === false) setTab("local"); }).catch(() => {}); }, []);
   const fq = useAsync(() => (step === "project" ? api.listFoldersLite() : Promise.resolve(null)), [step]);
   useEffect(() => { if (fq.data?.length && !folder) setFolder(fq.data[0].id); }, [fq.data]);
   const alive = useRef(true); useEffect(() => () => { alive.current = false; }, []);
@@ -172,7 +175,7 @@ function RecreateModal({ g, onClose }) {
     }
   };
   const fromDrive = async (ids) => { const out = await api.addFromDrive(ids.slice(0, 1)); picked(out[0]); };
-  const fromFiles = async (files) => { setBusy(true); try { const out = await api.addFromComputer(files ? [files[0]] : null); picked(out[0]); } catch (e) { toast(e.message, { icon: "alert" }); } finally { setBusy(false); } };
+  const fromFiles = async (files) => { if (!files?.length) return; setBusy(true); try { const out = await api.addFromComputer([files[0]]); picked(out[0]); } catch (e) { toast(e.message, { icon: "alert" }); } finally { setBusy(false); } };
   const create = async () => {
     setBusy(true);
     try { let fid = folder; if (fid === "new") fid = madeFolder.current || (madeFolder.current = (await api.createFolder(newName)).id);
@@ -188,11 +191,11 @@ function RecreateModal({ g, onClose }) {
         <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="rc-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick a video from your Drive</span></span><span class="tag accent">Recommended</span></button>
         <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="rc-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>From your computer</b><span class="t-small muted">Pick a file or drag and drop</span></span></button>
       </div>
-      ${tab === "drive" ? html`<${DrivePicker} single addLabel="Use this video" onAdd=${fromDrive} />` : html`<div class="col" style="gap:12px">
+      ${tab === "drive" ? html`<${DrivePicker} single addLabel="Use this video" onAdd=${fromDrive} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
         <input type="file" accept="video/*" ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) fromFiles(Array.from(fs)); e.target.value = ""; }} />
-        <div class=${"drop" + (over ? " over" : "")} id="rc-drop" style="padding:36px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); const fs = e.dataTransfer.files; fromFiles(fs?.length ? Array.from(fs) : null); }}>
+        <div class=${"drop" + (over ? " over" : "")} id="rc-drop" style="padding:36px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); const fs = e.dataTransfer.files; if (fs?.length) fromFiles(Array.from(fs)); }}>
           <div class="ico"><${Icon} name="laptop" /></div><b class="t-heading">Drop a video here</b><p class="muted t-small">Files stay on your computer. We make a light preview in your browser.</p>
-          <div class="row"><${Btn} disabled=${busy} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>Choose a file<//><${Btn} kind="ghost" id="rc-sample" disabled=${busy} onClick=${(e) => { e.stopPropagation(); fromFiles(null); }}>${busy ? "Preparing…" : "Use sample footage"}<//></div></div>
+          <div class="row"><${Btn} disabled=${busy} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>${busy ? "Preparing…" : "Choose a file"}<//></div></div>
         <div class="row" style="gap:8px"><${Icon} name="clock" size="14" /><span class="t-small muted">Keep this tab open while we prepare your preview.</span></div>
       </div>`}`
     : html`
@@ -211,7 +214,7 @@ function RecreateModal({ g, onClose }) {
 const BUSY = ["linking", "preview", "previewing", "uploading", "processing"];
 const ATTN = ["failed", "missing", "expired", "paused"];
 function LibraryPage() {
-  const { go } = useNav(); const { startUpload, addSample, openAdd } = useApp(); const toast = useToast();
+  const { go } = useNav(); const { startUpload, openAdd } = useApp(); const toast = useToast();
   const q = useAsync(() => api.listVideos(), []);
   const [filter, setFilter] = useState("All"); const [search, setSearch] = useState(""); const [over, setOver] = useState(false); const [reconnect, setReconnect] = useState(null);
   useEffect(() => { const k = () => q.reload(); window.addEventListener("rendrr:library", k); return () => window.removeEventListener("rendrr:library", k); }, []);
@@ -219,7 +222,7 @@ function LibraryPage() {
   useEffect(() => { const vis = () => { if (document.hidden) { api.pauseLocalPreviews(); } q.reload(); }; document.addEventListener("visibilitychange", vis); window.addEventListener("pagehide", api.pauseLocalPreviews); return () => { document.removeEventListener("visibilitychange", vis); window.removeEventListener("pagehide", api.pauseLocalPreviews); }; }, []);
   // Poll while anything is in progress so cards move on their own.
   useEffect(() => { const busy = q.data?.some((v) => BUSY.includes(v.status)); if (!busy) return; const t = setTimeout(q.reload, 1000); return () => clearTimeout(t); }, [q.data]);
-  const onDrop = (e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs)); else addSample(); };
+  const onDrop = (e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs)); };
   const dropProps = { onDragOver: (e) => { e.preventDefault(); setOver(true); }, onDragLeave: () => setOver(false), onDrop };
   const act = async (e, fn, msg) => { e.stopPropagation(); try { await fn(); if (msg) toast(msg); q.reload(); } catch (er) { toast(er.message); } };
   const filt = (v) => filter === "All" || (filter === "Ready" && v.status === "ready") || (filter === "In progress" && BUSY.includes(v.status)) || (filter === "Needs attention" && ATTN.includes(v.status)) || (filter === "References" && v.kind === "reference");
@@ -227,7 +230,7 @@ function LibraryPage() {
     <div class="page-head"><div><h1 class="t-title">Library</h1><p class="muted">Raw files stay in your Drive or on your computer. We keep a light preview for 30 days.</p></div>
       <div class="row"><div class="search" style="width:240px"><${Icon} name="search" /><input class="input sm" placeholder="Find footage" value=${search} onInput=${(e) => setSearch(e.target.value)} aria-label="Find footage" /></div>
       <${Seg} size="sm" value=${filter} options=${["All", "Ready", "In progress", "Needs attention", "References"]} onChange=${setFilter} /></div></div>
-    <${Async} q=${q} skeleton=${html`<${GridSkeleton} />`} whenEmpty=${html`<div class=${"drop" + (over ? " over" : "")} id="drop" onClick=${openAdd}><div class="ico"><${Icon} name="plus" /></div><h2 class="t-heading">Add your first footage</h2><p class="muted">Link videos from Google Drive, or pick files from your computer. Raw files never come to us.</p><div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); openAdd(); }}>Add footage<//><${Btn} kind="ghost" id="sample" onClick=${(e) => { e.stopPropagation(); addSample(); }}>Add sample footage<//></div></div>`}>
+    <${Async} q=${q} skeleton=${html`<${GridSkeleton} />`} whenEmpty=${html`<div class=${"drop" + (over ? " over" : "")} id="drop" onClick=${openAdd}><div class="ico"><${Icon} name="plus" /></div><h2 class="t-heading">Add your first footage</h2><p class="muted">Link videos from Google Drive, or pick files from your computer. Raw files never come to us.</p><div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); openAdd(); }}>Add footage<//></div></div>`}>
       ${(videos) => {
         const list = videos.filter((v) => filt(v) && v.name.toLowerCase().includes(search.toLowerCase()));
         return html`<div class="col" style="gap:16px">

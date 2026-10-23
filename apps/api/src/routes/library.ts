@@ -20,9 +20,10 @@ async function ownedVideo(userId: string, id: string): Promise<Video> {
 
 async function driveConn(userId: string) {
   const c = await prisma.driveConnection.findUnique({ where: { userId } });
-  if (!c) throw new AppError("Connect Google Drive first.", 400, "drive");
+  if (!c || c.stub) throw new AppError("Connect Google Drive first.", 400, "drive");
   return c;
 }
+const DRIVE_OFF = "Google Drive is not set up on Rendrr yet. Add videos from your computer for now.";
 
 // OAuth state: who started the flow, which web page to report back to, when. Signed, valid 15 minutes.
 const stateSecret = () => env().ENCRYPTION_KEY || env().CLERK_SECRET_KEY || "dev";
@@ -246,7 +247,8 @@ export default async function library(app: FastifyInstance) {
     // ---------------- Google Drive ----------------
     a.get("/drive/status", async (req) => {
       const c = await prisma.driveConnection.findUnique({ where: { userId: req.user!.id } });
-      return { connected: !!c, email: c?.googleEmail || null, stub: c ? c.stub : !features().drive };
+      const real = c && !c.stub ? c : null;
+      return { connected: !!real, email: real?.googleEmail || null, stub: false, available: features().drive };
     });
     a.post("/drive/connect", async (req) => {
       const userId = req.user!.id;
@@ -255,9 +257,8 @@ export default async function library(app: FastifyInstance) {
         if (!origin) throw new AppError("Open Rendrr from its own address to connect Google Drive.", 400, "drive");
         return { connected: false, authUrl: drive.authUrl(signState(userId, origin)) };
       }
-      // TODO(key): GOOGLE_CLIENT_ID/SECRET unset, so this connects the fake Drive with sample files.
-      const c = await prisma.driveConnection.upsert({ where: { userId }, create: { userId, googleEmail: req.user!.email || "demo@drive", refreshToken: "", scopes: "stub", stub: true }, update: {} });
-      return { connected: true, email: c.googleEmail, stub: true };
+      // TODO(key): GOOGLE_CLIENT_ID/SECRET unset. No fake Drive: the user is told Drive is not set up yet.
+      throw new AppError(DRIVE_OFF, 409, "drive-off");
     });
     // Second half of the Google consent: only the Rendrr account that started it can finish it.
     a.post("/drive/complete", async (req) => {

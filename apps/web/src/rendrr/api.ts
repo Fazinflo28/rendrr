@@ -174,7 +174,7 @@ export const api: any = {
   addFromDrive: async (fileIds: string[], kind?: string) => (await post("/videos/drive", { fileIds, ...(kind ? { kind } : {}) })).map(remember),
   addFromComputer: async (files: File[] | null, onProgress?: (p: any) => void, kind?: string) => {
     const list = files && files.length ? Array.from(files) : null;
-    if (!list) return (await post("/videos/sample", kind ? { kind } : {})).map(remember); // "Add sample footage"
+    if (!list) throw fail("Pick a video file first.");
     if (DEV && (demo.failNextUpload || list.some((f) => /fail/i.test(f.name)))) { demo.failNextUpload = false; throw fail("One of the files could not be read."); }
     const made = (await post("/videos/local", { files: list.map((f) => ({ name: f.name, size: f.size, type: f.type })), ...(kind ? { kind } : {}) })).map(remember);
     made.forEach((v: any, i: number) => { localJobs.hold(v.id, list[i]); localJobs.start(v.id); });

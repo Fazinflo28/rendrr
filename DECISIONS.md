@@ -92,7 +92,7 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 - Template renders are cached in storage by a hash of everything that changes the picture.
 - `get_preview_frames` takes frames at exact output times through a small `frames` queue on the worker (the API has no FFmpeg).
 - Built-in sample footage is processed by the worker like Drive footage but shows the local steps in the UI, and keeps its original in storage so finals work without asking for a file.
-- The fake Drive (no Google keys) lists the UI's demo folders, backed by the built-in samples.
+- ~~The fake Drive (no Google keys) lists the UI's demo folders, backed by the built-in samples.~~ Removed on 23 October (see "No dummy data").
 
 ### Storage
 - One private bucket with prefixes (`proxies/`, `audio/`, `frames/`, `previews/`, `finals/`, `temp-raw/`, `graphics/`, `brand/`, `assets/`, `samples/`). Retention is enforced by the worker's daily cleanup at 03:15 UTC (Railway Buckets have no lifecycle rules), plus deleting the temp original right after a successful final.
@@ -115,7 +115,7 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 - **Merged, not rewritten.** The V2 design was merged into the existing Next.js port with a three-way merge (old design → V2 design, applied on top of the wired-up port), so every earlier fix (real footage, autosave conflicts, live AI reloads, honest stubs) stays.
 - **Browse without an account.** `/`, `/explore`, `/create/:category` and `/styles` work signed out: `GET /styles`, `/styles/filters`, `/styles/:id` and `/gallery` answer without a login, and a valid login adds the user's own styles and likes. Everything that changes something (like, recreate, add footage, use a style) opens the login modal first, then carries on.
 - **Categories** are a fixed list in the web client (each groups a few style types, exactly as the design).
-- **Example videos**: the gallery starts with two examples per built-in style, posted by a "Rendrr" system user (`clerkId = system:rendrr`), with zero likes and views. No invented people or numbers.
+- ~~**Example videos**~~ (removed on 23 October, see "No dummy data"): the gallery started with two examples per built-in style, posted by a "Rendrr" system user (`clerkId = system:rendrr`), with zero likes and views. No invented people or numbers.
 - **Editor notes** are their own table (`ProjectComment`), separate from client review comments; the editor shows both in video order. The AI tools `get_comments` and `resolve_comment` cover both.
 - **Editor AI chat** runs on the API with the Anthropic SDK's tool runner: model `claude-opus-5-5`, effort from `AI_CHAT_EFFORT` (default `medium`), 16 000 max tokens, up to 16 tool rounds, prompt caching on, and server-side fallbacks (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`) so a request the model's safety filter declines is retried on Anthropic's recommended fallback model instead of failing. It gets 26 editing tools (the connector's tools minus renders, new edits and review links), always scoped to the open edit (the project id is filled in by the server). Each change is a normal version (`ai_actions.via = "chat"`), so it can be undone. The last 20 messages are sent as history. Without `ANTHROPIC_API_KEY` the chat replies with a note on how to turn it on and saves nothing.
 - **Connector edits in the chat**: changes made through the Claude or ChatGPT connector are shown in the same thread, grouped per sitting ("Made 3 changes through the Claude connector", with the list).
@@ -132,3 +132,9 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 - **Videos added from a computer** now get their five key frames and thumbnail in the same step (before, their preview was made in the browser and they had none).
 - **Storage**: sheets and frames live under `frames/<user>/<video>/` and count toward the preview copy; they are deleted with the video and when the preview copy expires (the breakdown text and transcript stay; rebuilding the preview makes new sheets).
 - **The editor's AI chat now sees images**: tool results carry the sheets and frames to Claude as images (before, the chat got text only).
+
+### No dummy data (23 October)
+- **Explore** shows only videos people publish. The seed no longer posts example videos and removes the old ones (and the "Rendrr" system user) on every start.
+- **No fake Google Drive.** Without the Google keys, `POST /drive/connect` answers "Google Drive is not set up on Rendrr yet" and the Drive tab says so, with a button to use the computer instead; the Add dialog opens on "From your computer". Old fake Drive connections are deleted.
+- **No sample footage in the app.** The "Add sample footage" buttons are gone. `POST /videos/sample` stays for the automated test, which deletes everything it made at the end.
+- **Clean-up at start** (`apps/api/src/services/cleanup.ts`): videos from the fake Drive and sample videos are deleted with their files, unless an edit still uses them (so no edit breaks).

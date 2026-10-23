@@ -24,8 +24,9 @@ One command checks the whole product end to end and prints **PASS** or **FAIL** 
 18. AI: `list_references` finds it, `get_reference` returns its breakdown and sheets
 19. Deletes the reference and checks its contact sheets are gone
 20. Usage page numbers
+21. Cleans up: deletes the test folder (its edits, renders and review links go with it) and the footage
 
-The AI steps need `INTERNAL_API_SECRET`; without it the test has 18 steps.
+The AI steps need `INTERNAL_API_SECRET`; without it the test has 19 steps. The test uses the API's built-in sample footage (`POST /videos/sample`), which the web app no longer offers.
 
 ## Run it
 

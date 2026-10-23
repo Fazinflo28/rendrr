@@ -38,7 +38,7 @@ Rendrr does the seeing and rendering; Claude only does the thinking. Right after
 The web app now uses `ui/rendrr-ui-v2.html`, wired to the real backend:
 
 - **Explore** (the new start page), **Create** pages per category (Clipping, Talking head, Ads, …) and **Styles** work without logging in. Liking, recreating, adding footage or using a style opens the login window first, then carries on.
-- Explore starts with **example videos posted by Rendrr** (two per style). Real videos appear once you publish edits.
+- Explore shows only videos people publish; it starts empty ("The gallery is empty", with Publish a video). There is no dummy content: no example videos, no fake Google Drive, no sample footage buttons.
 - **Editor**: the new AI tab is a chat. You type a change, Claude makes it with the same editing tools as the AI connector, and shows the steps it took. Every change is a new version you can undo. Changes made through the Claude or ChatGPT connector show up in the same thread.
 - **Editor notes**: leave a note at any moment of the video; it sits next to your client's review comments.
 - **Billing** page: plans, card and invoices (payments are not switched on yet, see below).
@@ -63,7 +63,7 @@ Earlier, on a full local copy of the system (Postgres, Redis, S3-compatible stor
 - **First start on an empty database and empty bucket** (what Railway will do): migrations, seed, built-in media generation and the full smoke test all pass from the Docker images.
 - **Smoke test: 17/17 steps pass** (log in → add footage → transcript, silences, scene cuts, key frames → create an edit with a style → AI edits → autosave → preview render with live progress → 1080p final → password review link → client comment → resolve → approve → usage).
 - **AI connector**: log in like Claude does (dynamic client registration, PKCE, Clerk login, consent screen), then every main tool: list and read footage, apply a style, cut silences, add zooms, music, graphics, captions, render a preview and look at its frames, make a custom animated graphic, create a review link, read comments, undo.
-- Footage: built-in sample, local files (preview copy made in the browser, original uploaded once for a full-quality export), Drive (fake Drive until Google keys exist).
+- Footage: files from your computer (preview copy made in the browser, original uploaded once for a full-quality export) and Google Drive once its keys are set (until then the Drive tab says it is not set up yet). The automated test still uses the API's built-in sample clip.
 - Editing: every change goes through one function with version history, AI changes are undoable, the editor pulls AI changes in live and refuses to overwrite them.
 - Rendering: 540p previews in about 6–12 s and 1080p finals in about 13–17 s for a 30 s edit; captions in three looks, zooms, b-roll, graphics with transparency, music ducked under speech, sound effects.
 - Reviews: password, expiry, download on/off, comments at a time, approve, request changes, folder reviews.
@@ -76,7 +76,7 @@ Earlier, on a full local copy of the system (Postgres, Redis, S3-compatible stor
 
 | Stub | What happens now | Key that unblocks it | Where it goes |
 |---|---|---|---|
-| Google Drive | A fake Drive shows the UI's demo folders, backed by the built-in sample videos | `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (Google Cloud → OAuth client, Drive API on, redirect URI `https://api-production-2428.up.railway.app/drive/callback`) | Railway → `api` and `worker` → Variables |
+| Google Drive | The Drive tab says Google Drive is not set up yet (the fake Drive with demo folders is gone) | `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (Google Cloud → OAuth client, Drive API on, redirect URI `https://api-production-2428.up.railway.app/drive/callback`) | Railway → `api` and `worker` → Variables |
 | Billing | The Billing page shows Free / Pro / Studio. Switching changes the plan name and storage figure only; there is no card, no invoices and no limits | `STRIPE_SECRET_KEY` (plus product setup, not built yet) | Railway → `api` |
 | Editor AI chat | Replies that it needs a key, and points to the Connect AI page | `ANTHROPIC_API_KEY` (console.anthropic.com → API keys). Optional: `AI_CHAT_EFFORT` = low, medium (default), high | Railway → `api` |
 | Save final to Google Drive | Says it is not switched on yet; Save to this computer works | Same Google keys as Drive (above) | Railway → `api` |
@@ -96,7 +96,7 @@ API_URL=https://api-production-2428.up.railway.app CLERK_SECRET_KEY=sk_test_... 
 ```
 
 It prints PASS or FAIL for each of the 17 steps. Details and the AI connector test: [SMOKE_TEST.md](SMOKE_TEST.md).
-To try it by hand: open the web app, sign up, press "Add sample footage" in the Library, wait for Ready, then make an edit.
+To try it by hand: open the web app, sign up, add a short video from your computer in the Library, wait for Ready, then make an edit.
 To try the AI: in Claude, Settings → Connectors → Add custom connector → `https://mcp-production-7fa0.up.railway.app/mcp`.
 
 ## 5. Changes to the UI, and why
@@ -104,12 +104,12 @@ To try the AI: in Claude, Settings → Connectors → Add custom connector → `
 | Change | Why |
 |---|---|
 | Phone and tablet layout (bottom tab bar, bottom sheets, stacked editor) | The design was desktop only; on a phone it was shrunk to a tiny page |
-| Explore shows example videos posted by "Rendrr" instead of the design's invented creators, likes and views | No made-up people or numbers in a real app |
+| Explore shows only real published videos (no example videos, no invented creators, likes or views) | No dummy data in a real app |
 | Billing: "No card on file. Payments are not switched on yet…", "No invoices yet.", PDF button only for a real invoice | Payments are stubbed |
 | The editor's AI chat is real Claude; without a key it says what to set | The design's chat gave canned replies |
 | Changes made through the Claude/ChatGPT connector appear in the editor's AI thread | So you see in the editor what an outside AI changed |
 | The hint on "Preview up to date" now says the player shows changes live and a preview render burns in captions, zooms and music | Previews are not rendered after every change |
-| "Save to Google Drive" says it is not switched on until the Google keys are set | Drive is the fake Drive for now |
+| "Save to Google Drive" says it is not switched on until the Google keys are set | Google Drive is not set up yet |
 | Logging in with Google and logging out land on Explore | Explore is the new start page |
 | Connect page: the sentence about a private URL now says it is one URL for everyone with a login | The connector uses OAuth (Phase 0 answer) |
 | "720p preview" text now says 540p | Previews render at 540p (Phase 0 answer) |

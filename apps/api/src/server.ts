@@ -11,6 +11,7 @@ import projects from "./routes/projects";
 import render from "./routes/render";
 import reviews from "./routes/reviews";
 import { backfillOutputSeconds } from "./services/projects";
+import { removeDemoFootage } from "./services/cleanup";
 
 export async function buildServer() {
   const e = env();
@@ -91,6 +92,7 @@ export async function buildServer() {
     .then(() => app.log.info({ origins: corsOrigins }, "bucket CORS set"), (e) => app.log.warn({ msg: (e as Error).message }, "could not set bucket CORS: browser uploads will fail"));
 
   backfillOutputSeconds().catch(() => {});
+  removeDemoFootage().then((r) => { if (r.removed || r.kept || r.fakeDriveConnections) app.log.info(r, "demo footage removed"); }, (e) => app.log.warn({ msg: (e as Error).message }, "demo footage cleanup failed"));
 
   await app.register(account);
   await app.register(explore);

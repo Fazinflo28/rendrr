@@ -225,6 +225,14 @@ async function main() {
   if (ref) await step("Delete the reference (its frames go with it)", async () => { await api(`/videos/${ref.id}`, { method: "DELETE" }); const left = await fetch(ref.breakdown.sheets[0].url); if (left.ok) throw new Error("contact sheet still there"); return [true, `sheet now HTTP ${left.status}`]; });
 
   await step("Usage page numbers", async () => { const u = await api("/account/usage"); return [u, `${u.renderMinutes} render min, ${u.storageUsedGB} GB used`]; });
+  // Leave nothing behind: the folder (its edits, renders and review links go with it), then the footage.
+  await step("Clean up (test folder, edits and footage deleted)", async () => {
+    if (folder) await api(`/folders/${folder.id}`, { method: "DELETE" });
+    await api(`/videos/${video.id}`, { method: "DELETE" });
+    const left = (await api("/videos").catch(() => [])).filter((v: any) => v.id === video.id).length;
+    if (left) throw new Error("footage still listed");
+    return [true, "nothing left from this run"];
+  });
   void preview;
   return finish();
 }

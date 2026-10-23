@@ -90,14 +90,14 @@ function App() {
   // From your computer: the file stays on the machine, we make a light preview in the browser.
   const startUpload = useCallback(async (files, kind) => {
     go("/library"); setAddOpen(false); const list = files ? (files.length != null ? Array.from(files) : [files]) : null;
-    toast(list ? "Preparing " + (list.length === 1 ? list[0].name : list.length + " files") + (kind === "reference" ? " as a reference" : "") : "Preparing sample footage" + (kind === "reference" ? " as a reference" : ""), { icon: "laptop" });
+    if (!list?.length) return;
+    toast("Preparing " + (list.length === 1 ? list[0].name : list.length + " files") + (kind === "reference" ? " as a reference" : ""), { icon: "laptop" });
     const job = api.addFromComputer(list, undefined, kind); setTimeout(ping, 50);
     try { await job; toast("Keep this tab open while we prepare your preview.", { icon: "clock", ms: 3500 }); }
     catch (e) { toast(e.message, { icon: "alert", ms: 4000 }); }
     ping();
   }, [go]);
   const addFromDrive = useCallback(async (ids, kind) => { try { const out = await api.addFromDrive(ids, kind); setAddOpen(false); go("/library"); toast(out.length + (out.length === 1 ? " video" : " videos") + " linked from Drive" + (kind === "reference" ? " as references" : ""), { icon: "drive", tone: "brand" }); ping(); } catch (e) { toast(e.message, { icon: "alert" }); } }, [go]);
-  const addSample = useCallback((kind) => startUpload(null, typeof kind === "string" ? kind : undefined), [startUpload]);
 
   const match = ROUTES.find(([re]) => re.test(route)) || NOT_FOUND;
   const m = route.match(match[0]) || []; const opts = match[2] || {};
@@ -107,7 +107,7 @@ function App() {
   useEffect(() => { if (pathname === "/login" && auth === "out") setLogin({ after: null, mode: "login" }); }, [pathname, auth]);
   const requireUser = useCallback((fn) => { if (user) fn(); else setLogin({ after: () => setTimeout(fn, 0), mode: "login" }); }, [user]);
   const page = guarded ? (auth === "checking" ? null : html`<${HomePage} />`) : match[1](m);
-  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addSample, addFromDrive, theme, setTheme, addOpen, openAdd: (kind) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage" })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser };
+  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addFromDrive, theme, setTheme, addOpen, openAdd: (kind) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage" })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser };
   // Closing the login on a private page goes back to Explore.
   const onCloseLogin = () => { const leave = login?.leave; setLogin(null); if (leave || pathname === "/login") go("/explore"); };
   return html`<${NavCtx.Provider} value=${{ route, go }}><${AppCtx.Provider} value=${ctx}>
