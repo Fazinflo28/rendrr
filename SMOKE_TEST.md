@@ -35,6 +35,7 @@ pnpm smoke
 - `CLERK_SECRET_KEY` (Clerk dashboard → API keys) lets the test create its own test user and session. It only works on a Clerk **development** instance.
 - `INTERNAL_API_SECRET` (Railway → api service → Variables) is optional; it adds the AI tool steps.
 - Needs `ffprobe` on your machine to check the rendered files.
+- Behind an HTTPS proxy (for example a cloud sandbox), add `NODE_USE_ENV_PROXY=1 http_proxy=$HTTPS_PROXY`: Node's fetch and ffprobe do not read `HTTPS_PROXY` by themselves, and without it every step fails with "fetch failed".
 
 Against a local stack (`pnpm dev:api`, `pnpm dev:worker`, with Postgres, Redis and an S3-compatible store set in `.env`):
 

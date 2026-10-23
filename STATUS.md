@@ -1,27 +1,24 @@
 # Status
 
-Last updated: 21 October 2026, afternoon (UTC). The app now uses the new design (V2).
+Last updated: 23 October 2026, morning (UTC). Live on Railway with the new design (V2).
 
 ## 1. Links
 
 | What | Address | Live? |
 |---|---|---|
-| Web app | https://web-production-9ef14.up.railway.app | Not yet (see "One thing you need to do") |
-| API health | https://api-production-2428.up.railway.app/health | Not yet |
-| AI connector (MCP) | https://mcp-production-7fa0.up.railway.app/mcp | Not yet |
+| Web app | https://web-production-9ef14.up.railway.app | Yes (since 23 October, 05:37 UTC) |
+| API health | https://api-production-2428.up.railway.app/health | Yes |
+| AI connector (MCP) | https://mcp-production-7fa0.up.railway.app/mcp | Yes |
+| app.rendrr.live, api.rendrr.live | Added on Railway, CNAMEs correct | Not yet: Railway cannot see the two `_railway-verify` TXT records |
 
-The Railway project `rendrr` is fully set up: Postgres, Redis, a private file bucket, the four services (`web`, `api`, `worker`, `mcp`), their settings, domains and health checks, all in **US East** next to the bucket.
-What is missing is the code: Railway is not allowed to read the GitHub repo yet, so nothing has been built there.
+The Railway project `rendrr` runs Postgres, Redis, a private file bucket and the four services (`web`, `api`, `worker`, `mcp`), all in **US East**. Each service builds from the branch `claude/rendrr-backend-mcp-1vbkgg`, so every push redeploys it.
 
-### What you need to do
+Checked on the live servers on 23 October: smoke test 17/17, and the AI connector's full login and tools (see section 2).
 
-1. Open https://github.com/settings/installations.
-2. Find **Railway** and press **Configure**.
-3. Under "Repository access", add **rendrr** (or pick "All repositories") and **Save**.
-4. In claude.ai → Settings → Connectors, reconnect **Railway** (it asked to log in again on 21 October).
-5. Tell me (or any Claude session with the Railway connector) "Railway can see the repo now". The four services then get connected to the branch `claude/rendrr-backend-mcp-1vbkgg` and build by themselves (about 5 minutes). Every later push redeploys automatically.
+### Still to do
 
-If you prefer to do it yourself in the Railway dashboard: for each of `api`, `worker`, `mcp`, `web` → Settings → Source → Connect repo `Fazinflo28/rendrr`, branch `claude/rendrr-backend-mcp-1vbkgg`. The Dockerfile paths and everything else are already set.
+- **Domains**: in GoDaddy, add TXT `_railway-verify.app` = `railway-verify=ad274ce6e10f75604a4704e9128c2c4a1a22f7f8768ee841aaeb020ae39f89db` and TXT `_railway-verify.api` = `railway-verify=571ecbd5a97b54b7850f632cc07a92451353b4e6bfc516cac3b9f475469a289c`. Type only that much in the Name box: GoDaddy adds `.rendrr.live` itself. Once Railway sees them, the web and API settings switch to the rendrr.live addresses.
+- **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
 ## New design (V2)
 
@@ -46,7 +43,9 @@ In the preview you can log in with any email and password, browse Explore and th
 
 ## 2. What works end to end
 
-Checked tonight on a full local copy of the system (Postgres, Redis, S3-compatible storage, real Clerk login, real AssemblyAI), and again **from the exact Docker images Railway will build**:
+**On the live Railway servers (23 October)**: smoke test 17/17 (transcript by AssemblyAI in 12–25 s, 540p preview in 4.5 s, 1080p final in 13.5 s). The AI connector logs in like Claude does and lists 36 tools; apply_style, cut_silences, cut_words, add_zoom and add_music each save a new version. The web app loads Explore (29 examples) and the login window on desktop and phone.
+
+Earlier, on a full local copy of the system (Postgres, Redis, S3-compatible storage, real Clerk login, real AssemblyAI), and again **from the exact Docker images Railway will build**:
 
 - **First start on an empty database and empty bucket** (what Railway will do): migrations, seed, built-in media generation and the full smoke test all pass from the Docker images.
 - **Smoke test: 17/17 steps pass** (log in → add footage → transcript, silences, scene cuts, key frames → create an edit with a style → AI edits → autosave → preview render with live progress → 1080p final → password review link → client comment → resolve → approve → usage).
