@@ -70,11 +70,21 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
     await browser.close().catch(() => browser.process()?.kill("SIGKILL"));
   }
   const out = join(o.dir, `g-${Math.random().toString(36).slice(2, 7)}.webm`);
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-framerate", String(fps), "-i", join(fdir, "f%05d.png"), "-r", String(GRAPHIC_LIMITS.fps),
-    "-c:v", "libvpx-vp9", "-pix_fmt", o.transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "32", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0", out], { signal: o.signal });
+  await encodeFrames(fdir, fps, out, o.transparent, o.signal);
   const pick = [0, Math.floor(frames / 3), Math.floor((2 * frames) / 3), frames - 1].map((i) => join(fdir, `f${String(Math.min(frames - 1, i)).padStart(5, "0")}.png`));
   return { path: out, checkFrames: pick, seconds: frames / fps, width: w, height: h };
 }
+
+/**
+ * Recorded frames (f00000.png…) as a WebM at 30 fps, transparent when asked. crf 20: at crf 32 the realtime encoder
+ * left ghosts of earlier frames wherever the picture stopped changing (a card's old rows showed through the next).
+ */
+export async function encodeFrames(fdir: string, fps: number, out: string, transparent: boolean, signal?: AbortSignal) {
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-framerate", String(fps), "-i", join(fdir, "f%05d.png"), "-r", String(GRAPHIC_LIMITS.fps),
+    "-c:v", "libvpx-vp9", "-pix_fmt", transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "20", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0", out], { signal });
+}
+/** Changes when the encoding does, so cached template files are recorded again. */
+export const GRAPHIC_ENCODER = "vp9-crf20";
 
 async function brandLogoDataUrl(userId: string): Promise<string | null> {
   const u = await prisma.user.findUnique({ where: { id: userId } });
@@ -101,7 +111,7 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
     const { width: w, height: h } = templateSize(o.width, o.height);
     const logo = id === "gt_logo_reveal" ? await brandLogoDataUrl(o.userId) : null;
     const html = templateHtml(id, clip.params || {}, w, h, dur, logo);
-    const hash = createHash("sha256").update(JSON.stringify([id, html, w, h, dur])).digest("hex").slice(0, 24);
+    const hash = createHash("sha256").update(JSON.stringify([id, html, w, h, dur, GRAPHIC_ENCODER])).digest("hex").slice(0, 24);
     const key = `${PREFIX.graphics}${o.userId}/tpl-${hash}.webm`;
     if (await headObject(key)) { await downloadFile(key, local); return local; }
     const r = await recordHtml(html, { width: w, height: h, durationSec: dur, transparent: true, dir: o.dir, signal: o.signal });
