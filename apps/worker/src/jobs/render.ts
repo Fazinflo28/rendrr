@@ -202,7 +202,7 @@ export async function renderJob(ctx: Ctx) {
     }
     await prisma.render.update({ where: { id: r.id }, data: {
       status: "done", outputKey: `${base}.mp4`, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
     } });
     const fresh = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     await prisma.project.update({ where: { id: project.id }, data: {

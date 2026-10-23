@@ -149,17 +149,17 @@ async function renderOut(renderId: string): Promise<ToolOut> {
   const res = await renderResult(r);
   const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
   if (r.kind === "final") return { text: head, data: { renderId: r.id } };
-  const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure } | null;
-  return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null)}`, data: { renderId: r.id } };
+  const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number } | null;
+  return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null, plan?.outputSeconds ?? null)}`, data: { renderId: r.id } };
 }
 
 /** The check of one version of an edit against its rendered file (pauses from 0.15 s, whatever the style says: the AI knows what it asked for). */
-async function checkOf(projectId: string, version: number, loudness: FileLoudness | null, measured: FileMeasure | null): Promise<string> {
+async function checkOf(projectId: string, version: number, loudness: FileLoudness | null, measured: FileMeasure | null, planned: number | null = null): Promise<string> {
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { video: { include: { analysis: true } } } });
   const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   const snap = (ver?.timeline ?? { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId }) as unknown as Snapshot;
   const others = await otherSources(p.userId, snap.timeline, p.videoId);
-  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, videoId: p.videoId, transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
+  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, videoId: p.videoId, transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {

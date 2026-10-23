@@ -289,3 +289,13 @@ describe("migration A -> B", () => {
     expect(sequenceView(b, words).total).toBeGreaterThan(0);
   });
 });
+
+describe("the check measures the file against the render's own length", () => {
+  it("a few frames of alignment over many parts are not a flag; a real difference is", () => {
+    const s = edit(snap(), { op: "cut_silences", overSeconds: 0.3 }).snap;
+    const p = plan(s);
+    const ok = { videoSeconds: p.outputSeconds, audioSeconds: p.outputSeconds, black: [], silences: [], lufs: -14, peakDb: -2, graphics: [] };
+    expect(editCheck(s, tr, { measured: ok, planned: p.outputSeconds })).not.toMatch(/file is/);
+    expect(editCheck(s, tr, { measured: { ...ok, videoSeconds: p.outputSeconds - 0.5 }, planned: p.outputSeconds })).toMatch(/file is .* but the render planned/);
+  });
+});

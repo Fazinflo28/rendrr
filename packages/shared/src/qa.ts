@@ -64,8 +64,9 @@ function sequenceLine(tl: Timeline, view: SequenceView): string {
 /**
  * pauseOver: pauses longer than this are listed (default 0.15 s). measured: the rendered file (render_preview).
  * transcripts: other videos on V1 (their words count as spoken). videoId: the project's footage (an old timeline).
+ * planned: the length the render planned (every part on a frame); the file is measured against it.
  */
-export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: number | null; loudness?: FileLoudness | null; measured?: FileMeasure | null; transcripts?: Record<string, Transcript>; videoId?: string } = {}): string {
+export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: number | null; loudness?: FileLoudness | null; measured?: FileMeasure | null; transcripts?: Record<string, Transcript>; videoId?: string; planned?: number | null } = {}): string {
   const words = allWords(tr);
   const tl = layoutTimeline(asSequence(snap.timeline, words, opts.videoId), words);
   const view = sequenceView(tl, words);
@@ -133,7 +134,9 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
   for (const r of mergeRanges(view.sound.filter((x) => x.muted).map((x) => ({ start: x.start, end: x.end })))) if (r.end - r.start >= 0.1) flags.push(`${(r.end - r.start).toFixed(1)}s of picture without its dialogue at ${fmtT(r.start)} (clip muted)`);
   if (m && !m.error) {
     const v = m.videoSeconds, a = m.audioSeconds;
-    if (v != null && Math.abs(v - total) > 0.1) flags.push(`file is ${v.toFixed(2)}s but the edit is ${total.toFixed(2)}s`);
+    // The render puts every part on a frame of the output, so its length can differ from the edit's by a few frames.
+    const want = opts.planned ?? total;
+    if (v != null && Math.abs(v - want) > 0.1) flags.push(`file is ${v.toFixed(2)}s but the ${opts.planned != null ? "render planned" : "edit is"} ${want.toFixed(2)}s`);
     if (v != null && a != null && Math.abs(v - a) > 0.1) flags.push(`audio ${a.toFixed(2)}s vs video ${v.toFixed(2)}s (out of sync at the end)`);
     for (const b of m.black) flags.push(`black ${(b.end - b.start).toFixed(2)}s at ${fmtT(b.start)}`);
     // Silent in the file while the edit has someone speaking: a lost stretch of dialogue (muted clips are flagged above).
@@ -156,7 +159,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
 
   const lines = [
     m && !m.error && m.videoSeconds != null
-      ? `CHECK file ${m.videoSeconds.toFixed(2)}s, edit ${total.toFixed(2)}s of ${tl.duration.toFixed(1)}s footage | ${head}`
+      ? `CHECK file ${m.videoSeconds.toFixed(2)}s, edit ${(opts.planned ?? total).toFixed(2)}s of ${tl.duration.toFixed(1)}s footage | ${head}`
       : `CHECK ${total.toFixed(1)}s of ${tl.duration.toFixed(1)}s footage | ${head}`,
     ...fileLines,
     sequenceLine(tl, view),
