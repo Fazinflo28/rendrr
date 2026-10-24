@@ -158,7 +158,8 @@ async function renderOut(renderId: string): Promise<ToolOut> {
     return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). Call get_render in a little while.` };
   }
   const res = await renderResult(r);
-  const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
+  const took = res.renderSeconds != null ? `, rendered in ${res.renderSeconds < 60 ? `${Math.round(res.renderSeconds)} s` : `${Math.floor(res.renderSeconds / 60)} min ${Math.round(res.renderSeconds % 60)} s`}` : "";
+  const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s${took}. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
   if (r.kind === "final") return { text: head, data: { renderId: r.id } };
   const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number; operations?: string[] } | null;
   // Phase 6: what the render itself said about HDR and missing LUTs goes into the check.
