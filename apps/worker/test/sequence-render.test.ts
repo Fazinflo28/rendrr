@@ -53,9 +53,12 @@ describe("sequence renders", () => {
   };
 
   it("model A and its sequence render the same frames and the same sound", async () => {
-    // Cut words, a removed range, a zoom and captions, as an edit stored in model A.
+    // Cut words, a removed range and a zoom, as an edit stored in model A.
     let a = buildInitialTimelineA(tr, SECONDS, "clean", [words[2].id, words[3].id, words[9].id]);
     a = normalizeTimeline({ ...a, tracks: { ...a.tracks, v1: a.tracks.v1.map((c) => ({ ...c, end: Math.min(c.end, 10.4) })), a1: a.tracks.a1.map((c) => ({ ...c, end: Math.min(c.end, 10.4) })), v2: [{ id: "z1", start: 6, end: 7.5, label: "Zoom", kind: "zoom", zoom: 1.3 } as Clip] } });
+    // Captions off in both: since Phase 4 a sequence draws captions with the shared layout and the bundled fonts, model A
+    // keeps its old look. Their words and times are compared for 500 edits in the shared migration test.
+    a = { ...a, captionsOn: false };
     const snapA: Snapshot = { timeline: a, name: "t", aspect: "9:16", styleId: "s2" };
     // Loudness off: the comparison is about the picture and the dialogue (Phase 3 sets loudness on top).
     const snapB: Snapshot = { ...snapA, timeline: { ...toModelB(a, words, "v", { seconds: SECONDS }), audio: { loudness: null, declick: 0 } } };

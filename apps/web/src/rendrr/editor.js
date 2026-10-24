@@ -7,7 +7,7 @@ import { StyleArt, CreateLinkModal } from "./screens";
 import { api } from "./api";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
-import { applyOp, asSequence, audioAt, audioSettings, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, dbToLin, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { applyOp, asSequence, audioAt, audioSettings, CAPTION_FONTS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, TEXT_ANIMS, TEXT_PRESETS, textPreset, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -67,13 +67,121 @@ function TemplateFrame({ graphicId, params, start, end, t, aspect }) {
   return html`<div ref=${box} style="position:absolute;inset:0;overflow:hidden;pointer-events:none"><iframe ref=${fr} title="graphic" sandbox="allow-scripts" srcDoc=${doc} onLoad=${post} style=${{ width: w, height: h, border: 0, background: "transparent", colorScheme: "light", transform: `scale(${k})`, transformOrigin: "0 0" }} /></div>`;
 }
 
-// What the render lays over the footage at this moment: b-roll, then graphics (captions come on top, in Player).
-function LiveOverlays({ frame, clips, media, aspect, playing }) {
+// What the render lays over the footage at this moment: b-roll, then graphics, then text layers and captions.
+function LiveOverlays({ frame, clips, media, aspect, playing, plan }) {
   if (!frame) return null;
   const b = frame.broll && media.broll[frame.broll.videoId];
   return html`${b && html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} />`}
     ${frame.graphics.map((g) => { const m = media.graphics[g.graphicId]; const c = clips.find((x) => x.id === g.clipId);
-      return m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`; })}`;
+      return m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`; })}
+    ${plan && html`<${TextLayers} plan=${plan} frame=${frame} />`}`;
+}
+
+// Text layers and captions (Phase 4), drawn from the same layout the render draws with libass: a stage the size of the
+// output (plan.width x plan.height pixels) scaled to the player, the same font files, the lines the plan broke.
+let fontsLoaded = false;
+const rgba = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${a})`;
+function fontCss(d) {
+  return { fontFamily: `"${d.face.family}", sans-serif`, fontSize: cssSize(d.face, d.size) + "px", lineHeight: d.size + "px", fontWeight: 400, color: d.color, whiteSpace: "pre",
+    ...(d.stroke ? { WebkitTextStroke: `${2 * d.stroke.px}px ${d.stroke.color}`, paintOrder: "stroke fill" } : {}),
+    ...(d.shadow && !d.box ? { textShadow: `${d.shadow.x}px ${d.shadow.y}px 0 ${rgba(d.shadow.color, d.shadow.opacity)}` } : {}) };
+}
+const boxCss = (d) => (d.box ? { background: rgba(d.box.color, d.box.opacity), padding: `0 ${d.box.pad}px`, boxShadow: `0 ${-d.box.pad}px 0 ${rgba(d.box.color, d.box.opacity)}, 0 ${d.box.pad}px 0 ${rgba(d.box.color, d.box.opacity)}${d.shadow ? `, ${d.shadow.x}px ${d.shadow.y + d.box.pad}px 0 ${rgba(d.shadow.color, d.shadow.opacity)}` : ""}`, boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" } : {});
+function TextLayers({ plan, frame }) {
+  const ref = useRef(); const [k, setK] = useState(0);
+  useEffect(() => { if (fontsLoaded) return; fontsLoaded = true; const st = document.createElement("style"); st.id = "rc-fonts"; st.textContent = fontFaceCss("/fonts/"); document.head.appendChild(st); }, []);
+  useEffect(() => { const el = ref.current; if (!el) return; const f = () => setK(el.clientWidth / plan.width); f(); const ro = new ResizeObserver(f); ro.observe(el); return () => ro.disconnect(); }, [plan.width]);
+  const W = plan.width, H = plan.height;
+  const cs = plan.captionStyle, cd = cs && drawnOf(cs, W, H);
+  return html`<div ref=${ref} class="tlayers" data-k=${k} data-captions=${plan.styledCaptions?.length ?? 0} data-texts=${plan.texts?.length ?? 0}><div class="stage" style=${{ width: W + "px", height: H + "px", transform: `scale(${k})` }}>
+    ${frame.texts.map(({ layer: l, opacity, scale, dy }) => { const d = drawnOf(l.style, W, H); const ax = l.style.align === "left" ? 0 : l.style.align === "right" ? 100 : 50;
+      return html`<div key=${l.clipId} data-text=${l.clipId}>
+        ${l.card && html`<div class="tcard" style=${{ background: rgba(l.card.color, l.card.opacity), opacity }} />`}
+        <div class="tblock" style=${{ left: l.style.x * W + "px", top: l.style.y * H + dy + "px", transform: `translate(${-ax}%, -50%) scale(${scale})`, transformOrigin: `${ax}% 50%`, textAlign: l.style.align, opacity }}>
+          ${l.lines.map((line, i) => html`<div key=${i}><span style=${{ ...fontCss(d), ...boxCss(d) }}>${l.style.case === "upper" ? line.toUpperCase() : l.style.case === "lower" ? line.toLowerCase() : line}</span></div>`)}
+        </div></div>`; })}
+    ${frame.captionLines && cd && html`<div class="tblock cap-layer" id="caption-layer" style=${{ left: cs.x * W + "px", top: cs.y * H + "px", transform: "translate(-50%, -100%)", textAlign: "center" }}>
+      ${frame.captionLines.map((line, i) => html`<div key=${i}><span style=${{ ...fontCss(cd), ...boxCss(cd) }}>${line.map((w, j) => html`${j ? " " : ""}<span key=${j} data-active=${w.active ? "1" : null} style=${w.active ? { color: cs.highlight } : null}>${w.text}</span>`)}</span></div>`)}
+    </div>`}
+  </div></div>`;
+}
+
+// A colour field that changes the edit live while it is picked and makes one undo step when it closes.
+function OpColor({ id, value, opFor, H, liveOp }) {
+  const base = useRef(null);
+  const start = () => { if (!base.current) base.current = H.state; };
+  const end = () => { if (base.current) { H.commitFrom(base.current); base.current = null; } };
+  return html`<input type="color" class="swatch" id=${id} value=${value} onFocus=${start} onInput=${(e) => { start(); liveOp(H.state, opFor(e.target.value)); }} onBlur=${end} onChange=${() => {}} />`;
+}
+
+// Style controls shared by the caption style and a text layer: font, weight, size, colour, box, stroke, shadow,
+// position, case (and for captions the active word and the word counts; for text the alignment, animation, card).
+function StyleControls({ kind, style, card, anim, opFor, doOp, H, liveOp, idp }) {
+  const sl = { H, liveOp };
+  const set = (patch) => doOp(opFor(patch), false);
+  const ws = FONT_WEIGHTS[style.font] || [400];
+  const toggle = (on, def, key) => html`<input type="checkbox" checked=${on} id=${idp + "-" + key} onChange=${(e) => set({ [key]: e.target.checked ? def : null })} />`;
+  return html`<div class="col" style="gap:8px">
+    <div class="row" style="gap:8px">
+      <label class="t-small grow" style="display:grid;gap:4px">Font<select class="input sm" id=${idp + "-font"} value=${style.font} onChange=${(e) => { const f = e.target.value; const fw = FONT_WEIGHTS[f] || [400]; set({ font: f, weight: fw.reduce((b, x) => (Math.abs(x - style.weight) < Math.abs(b - style.weight) ? x : b), fw[0]) }); }}>${CAPTION_FONTS.map((f) => html`<option key=${f} value=${f}>${f}</option>`)}</select></label>
+      <label class="t-small" style="display:grid;gap:4px">Weight<select class="input sm" id=${idp + "-weight"} value=${String(style.weight)} onChange=${(e) => set({ weight: +e.target.value })}>${ws.map((w) => html`<option key=${w} value=${String(w)}>${w}</option>`)}</select></label>
+      <label class="t-small" style="display:grid;gap:4px">Colour<${OpColor} id=${idp + "-color"} value=${style.color} opFor=${(c) => opFor({ color: c })} ...${sl} /></label>
+    </div>
+    <${OpSlider} id=${idp + "-size"} label="Size" value=${style.size} min=${2} max=${kind === "text" ? 20 : 14} step=${0.1} show=${(x) => x + "% of the frame"} opFor=${(x) => opFor({ size: x })} ...${sl} />
+    <div class="row" style="gap:12px"><div class="grow"><${OpSlider} id=${idp + "-x"} label="Across" value=${style.x} min=${0} max=${1} step=${0.01} show=${(x) => Math.round(x * 100) + "%"} opFor=${(x) => opFor({ x })} ...${sl} /></div>
+      <div class="grow"><${OpSlider} id=${idp + "-y"} label="Down" value=${style.y} min=${0} max=${1} step=${0.01} show=${(x) => Math.round(x * 100) + "%"} opFor=${(y) => opFor({ y })} ...${sl} /></div></div>
+    <div class="row wrap" style="gap:12px">
+      <label class="t-small row" style="gap:6px">${toggle(!!style.box, { color: "#000000", opacity: 0.6, padding: 25 }, "box")}Box</label>
+      ${!style.box && html`<label class="t-small row" style="gap:6px">${toggle(!!style.stroke, { color: "#000000", width: 8 }, "stroke")}Stroke</label>`}
+      <label class="t-small row" style="gap:6px">${toggle(!!style.shadow, { color: "#000000", opacity: 0.6, x: 0, y: 6 }, "shadow")}Shadow</label>
+      <label class="t-small row" style="gap:6px">Case<select class="input sm" id=${idp + "-case"} value=${style.case} onChange=${(e) => set({ case: e.target.value })}>${["none", "upper", "lower"].map((c) => html`<option key=${c} value=${c}>${c === "none" ? "As typed" : c === "upper" ? "UPPER" : "lower"}</option>`)}</select></label>
+    </div>
+    ${style.box && html`<div class="row" style="gap:12px;align-items:flex-end"><${OpColor} id=${idp + "-box-color"} value=${style.box.color} opFor=${(c) => opFor({ box: { ...style.box, color: c } })} ...${sl} />
+      <div class="grow"><${OpSlider} id=${idp + "-box-opacity"} label="Box opacity" value=${style.box.opacity} min=${0} max=${1} step=${0.05} show=${(x) => Math.round(x * 100) + "%"} opFor=${(x) => opFor({ box: { ...style.box, opacity: x } })} ...${sl} /></div>
+      <div class="grow"><${OpSlider} id=${idp + "-box-padding"} label="Padding" value=${style.box.padding} min=${0} max=${80} step=${1} show=${(x) => x + "%"} opFor=${(x) => opFor({ box: { ...style.box, padding: x } })} ...${sl} /></div></div>`}
+    ${!style.box && style.stroke && html`<div class="row" style="gap:12px;align-items:flex-end"><${OpColor} id=${idp + "-stroke-color"} value=${style.stroke.color} opFor=${(c) => opFor({ stroke: { ...style.stroke, color: c } })} ...${sl} />
+      <div class="grow"><${OpSlider} id=${idp + "-stroke-width"} label="Stroke" value=${style.stroke.width} min=${0} max=${30} step=${0.5} show=${(x) => x + "%"} opFor=${(x) => opFor({ stroke: { ...style.stroke, width: x } })} ...${sl} /></div></div>`}
+    ${style.shadow && html`<div class="row" style="gap:12px;align-items:flex-end"><${OpColor} id=${idp + "-shadow-color"} value=${style.shadow.color} opFor=${(c) => opFor({ shadow: { ...style.shadow, color: c } })} ...${sl} />
+      <div class="grow"><${OpSlider} id=${idp + "-shadow-y"} label="Shadow distance" value=${style.shadow.y} min=${-30} max=${30} step=${1} show=${(x) => x + "%"} opFor=${(x) => opFor({ shadow: { ...style.shadow, y: x } })} ...${sl} /></div></div>`}
+    ${kind === "caption" && html`<div class="col" style="gap:8px">
+      <div class="row" style="gap:8px;align-items:center"><label class="t-small row" style="gap:6px">${toggle(!!style.highlight, "#FFD400", "highlight")}Colour the spoken word</label>${style.highlight && html`<${OpColor} id=${idp + "-highlight-color"} value=${style.highlight} opFor=${(c) => opFor({ highlight: c })} ...${sl} />`}</div>
+      <${OpSlider} id=${idp + "-words"} label="Words at once" value=${style.wordsAtOnce} min=${1} max=${12} step=${1} show=${(x) => String(x)} opFor=${(x) => opFor({ wordsAtOnce: x })} ...${sl} />
+        <div class="row" style="gap:12px"><div class="grow"><${OpSlider} id=${idp + "-perline"} label="Words a line" value=${style.wordsPerLine} min=${1} max=${12} step=${1} show=${(x) => String(x)} opFor=${(x) => opFor({ wordsPerLine: x })} ...${sl} /></div>
+        <div class="grow"><${OpSlider} id=${idp + "-lines"} label="Lines" value=${style.lines} min=${1} max=${3} step=${1} show=${(x) => String(x)} opFor=${(x) => opFor({ lines: x })} ...${sl} /></div></div></div>`}
+    ${kind === "text" && html`<div class="row wrap" style="gap:12px;align-items:center">
+      <label class="t-small row" style="gap:6px">Align<select class="input sm" id=${idp + "-align"} value=${style.align} onChange=${(e) => set({ align: e.target.value })}>${["left", "center", "right"].map((a) => html`<option key=${a} value=${a}>${a}</option>`)}</select></label>
+      <label class="t-small row" style="gap:6px">Animation<select class="input sm" id=${idp + "-anim"} value=${anim} onChange=${(e) => set({ anim: e.target.value })}>${TEXT_ANIMS.map((a) => html`<option key=${a} value=${a}>${a}</option>`)}</select></label>
+      <label class="t-small row" style="gap:6px"><input type="checkbox" id=${idp + "-card"} checked=${!!card} onChange=${(e) => set({ card: e.target.checked ? { color: "#0A0A0C", opacity: 1 } : null })} />Card behind</label>
+      ${card && html`<${OpColor} id=${idp + "-card-color"} value=${card.color} opFor=${(c) => opFor({ card: { ...card, color: c } })} ...${sl} />`}</div>`}
+  </div>`;
+}
+
+// The Text tab: the caption style and the text layers (title cards, callouts).
+function TextTab({ timeline, aspect, captionRules, textClips, selText, onSelect, at, dur, doOp, H, liveOp }) {
+  const style = captionStyleOf(timeline, aspect, captionRules);
+  const cap = (patch) => ({ op: "set_caption_style", ...patch });
+  const [draft, setDraft] = useState(selText?.text || "");
+  useEffect(() => { setDraft(selText?.text || ""); }, [selText?.id]);
+  const txt = (patch) => ({ op: "set_text", clipId: selText.id, ...patch });
+  return html`<div class="pb" id="text-panel" style="padding-top:16px"><div class="col" style="gap:16px">
+    <div class="col" style="gap:10px">
+      <div class="row between"><b class="t-label">Captions</b><label class="t-small row" style="gap:6px"><input type="checkbox" id="captions-on" checked=${timeline.captionsOn} onChange=${(e) => doOp({ op: "set_captions", on: e.target.checked })} />On</label></div>
+      <label class="t-small" style="display:grid;gap:4px">Start from<select class="input sm" id="caption-look" value=${timeline.captionStyle ? "own" : timeline.captionLook} onChange=${(e) => e.target.value !== "own" && doOp({ op: "set_captions", on: timeline.captionsOn, look: e.target.value })}>${timeline.captionStyle && html`<option value="own">Own style</option>`}${["clean", "bold", "outline"].map((l) => html`<option key=${l} value=${l}>${l[0].toUpperCase() + l.slice(1)} look</option>`)}</select></label>
+      <${StyleControls} kind="caption" idp="cap" style=${style} opFor=${cap} doOp=${doOp} H=${H} liveOp=${liveOp} />
+    </div>
+    <div class="col" style="gap:10px" id="text-layers">
+      <div class="row between"><b class="t-label">Text layers</b><span class="row" style="gap:4px">${TEXT_PRESETS.map((p) => html`<${Btn} key=${p} kind="ghost" size="xs" id=${"add-text-" + p} onClick=${() => { const had = new Set(textClips.map((c) => c.id)); const r = doOp({ op: "add_text", text: p === "title" ? "Your title" : p === "callout" ? "Look here" : p === "lower-third" ? "Name, role" : "Text", start: Math.max(0, Math.min(at, dur - 0.5)), end: Math.min(dur, at + 3), edit: true, preset: p }); const made = r && r.state.tracks.v3.find((c) => c.kind === "text" && !had.has(c.id)); if (made) onSelect(made.id); }}>+ ${p}<//>`)}</span></div>
+      ${textClips.length === 0 ? html`<p class="t-small muted">No text layers. Add one at the playhead, or select a text clip on V3.</p>`
+        : html`<div class="col" style="gap:4px">${textClips.map((c) => html`<button key=${c.id} class=${"tlist" + (selText?.id === c.id ? " on" : "")} data-text-clip=${c.id} onClick=${() => onSelect(c.id)}><span class="mono t-small muted">${fmtTime(c.start)}</span> ${c.text.split("\n")[0]}</button>`)}</div>`}
+      ${selText && html`<div class="col card flat" style="gap:8px;padding:12px" id="text-edit">
+        <textarea class="input" id="text-content" rows="2" value=${draft} onInput=${(e) => setDraft(e.target.value)} onBlur=${() => draft.trim() && draft !== selText.text && doOp(txt({ text: draft }), false)} />
+        <div class="row" style="gap:4px">${TEXT_PRESETS.map((p) => html`<${Btn} key=${p} kind="ghost" size="xs" onClick=${() => doOp(txt({ preset: p }), false)}>${p}<//>`)}</div>
+        <${StyleControls} kind="text" idp="txt" style=${selText.style || textPreset("plain").style} card=${selText.card} anim=${selText.anim || "fade"} opFor=${txt} doOp=${doOp} H=${H} liveOp=${liveOp} />
+        <${Btn} kind="ghost" size="xs" icon="trash" onClick=${() => doOp({ op: "delete_clip", track: "v3", clipId: selText.id })}>Remove this text<//>
+      </div>`}
+    </div>
+    <p class="t-small muted" id="text-note">Captions and text are drawn here exactly as the render lays them out: same fonts, same lines, same sizes.</p>
+  </div></div>`;
 }
 
 // The sequence's picture and sound, from the render plan: one <video> per video on V1 (the one playing shows, turned
@@ -238,12 +346,12 @@ function EditorInner({ project, reload, ai, keep }) {
   const footDur = project.timeline.duration;
   // The edit is a sequence. A project stored before Phase 2 is shown converted (the server stores it so at the next save).
   const tl = useMemo(() => asSequence(project.timeline, words, project.videoId, project.video?.seconds || footDur), [project, words]);
-  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, audio: tl.audio });
+  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, captionStyle: tl.captionStyle, audio: tl.audio });
   const S = H.state;
   // The edit as the server and the renderer see it, the place of every clip in it, and the render plan the live
   // player draws from. Times on the timeline and in the player are EDIT seconds.
   const initial = useRef(S).current;
-  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, audio: s.audio });
+  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio });
   const timeline = useMemo(() => tlOf(S), [S]);
   const lay = useMemo(() => layoutTimeline(timeline, words), [timeline, words]);
   const view = useMemo(() => sequenceView(lay, words), [lay, words]);
@@ -308,7 +416,7 @@ function EditorInner({ project, reload, ai, keep }) {
     getGraphic: (id) => { const g = GRAPHIC_TEMPLATES.find((x) => x.id === id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
     sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others]);
   const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
-  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); return { state: { ...s, cut: r.snap.timeline.cut, tracks: r.snap.timeline.tracks, audio: r.snap.timeline.audio }, summary: r.summary }; };
+  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle }, summary: r.summary }; };
   const say = (t) => t.charAt(0).toUpperCase() + t.slice(1);
   const doOp = (op, tell = true) => { try { const r = opOn(H.state, op); H.commit(r.state); if (tell) toast(say(r.summary), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
   const liveOp = (base, op) => { try { H.replace(opOn(base, op).state); return true; } catch { return false; } };
@@ -532,7 +640,7 @@ function EditorInner({ project, reload, ai, keep }) {
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
           : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} />`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} />`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">
@@ -574,7 +682,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
 
       <div class="panel">
-        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["audio", "Audio"], ["style", "Style"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
+        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["audio", "Audio"], ["text", "Text"], ["style", "Style"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
         ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
           <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted">${S.cut.length} cut</span></div>
           ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
@@ -608,6 +716,7 @@ function EditorInner({ project, reload, ai, keep }) {
           </form>
         </div>`}
         ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
+        ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "style" && html`<div class="pb" style="padding-top:16px">
           ${style && html`<div class="col" style="gap:12px">
             <${StyleArt} s=${style} />
@@ -634,4 +743,4 @@ function EditorInner({ project, reload, ai, keep }) {
     ${help && html`<${Modal} title="Keyboard shortcuts" onClose=${() => setHelp(false)}><div class="list">${SHORTCUTS.map(([k, d]) => html`<div key=${k} class="row between" style="padding:6px 4px"><span>${d}</span><span class="kbd">${k}</span></div>`)}</div><//>`}
   </div>`;
 }
-export { EditorPage };
+export { EditorPage, TextLayers };

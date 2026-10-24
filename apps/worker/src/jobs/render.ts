@@ -5,6 +5,7 @@ import { ffmpegArgs, planRender, RenderPlanError, type PlanFiles, type SourceInf
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { frameAt, graphicCover, JobError, measureFile, probe, run } from "../lib/ffmpeg";
@@ -13,7 +14,9 @@ import { renderGraphicClip } from "../lib/graphics";
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
 
-const FONTS_DIR = process.env.FONTS_DIR || "/usr/share/fonts";
+// The caption and text fonts (Phase 4): the same files the web app serves, so libass and the editor draw alike.
+// The worker image copies them to the same place in the repo layout; system fonts are the fallback (fontconfig).
+const FONTS_DIR = process.env.FONTS_DIR || fileURLToPath(new URL("../../../web/public/fonts", import.meta.url));
 
 export async function renderJob(ctx: Ctx) {
   const { renderId } = ctx.job.data as RenderJob;

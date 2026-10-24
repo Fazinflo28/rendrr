@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CaptionStyleSchema, styleText } from "./captions";
 import { CAPTION_LOOKS } from "./constants";
 
 // Machine-readable style rules. The text fields (cutPace, captionRule, ...) are what people read;
@@ -13,6 +14,8 @@ export const StyleRulesSchema = z.object({
     wordsAtOnce: z.number().int().min(1).max(20), // words shown together on screen
     upper: z.boolean().default(false),
     maxLines: z.number().int().min(1).max(3).default(1),
+    /** A full caption style (Phase 4): any video that gets this style gets exactly these captions. */
+    style: CaptionStyleSchema.optional(),
   }),
   zoom: z.object({
     mode: z.enum(["none", "newSentence", "interval", "slowPush", "count"]), // count: exactly `count` zooms, spread over the edit
@@ -56,7 +59,7 @@ export function describeRules(r: StyleRules): { cutPace: string; captionRule: st
   const z = r.zoom;
   return {
     cutPace: [r.cutSilencesOver != null ? `Cut every pause over ${r.cutSilencesOver}s` : "Keep the pauses", r.removeFillers ? "remove filler words" : "", r.trimEdges ? "trim the start and end" : ""].filter(Boolean).join(", "),
-    captionRule: r.captions.on ? `${r.captions.look} captions, ${r.captions.wordsAtOnce} words at a time${r.captions.upper ? ", upper case" : ""}` : "No captions",
+    captionRule: !r.captions.on ? "No captions" : r.captions.style ? `Captions: ${styleText(r.captions.style)}` : `${r.captions.look} captions, ${r.captions.wordsAtOnce} words at a time${r.captions.upper ? ", upper case" : ""}`,
     zoomRules: z.mode === "none" ? "No zooms" : z.mode === "count" ? `${z.count ?? 3} zooms at ${Math.round(z.scale * 100)}%, spread over the edit`
       : z.mode === "interval" ? `Zoom to ${Math.round(z.scale * 100)}% every ${z.everySec ?? 3}s` : z.mode === "slowPush" ? `Slow push to ${Math.round(z.scale * 100)}% on each part` : `Zoom to ${Math.round(z.scale * 100)}% on every new sentence`,
     musicVibe: r.music.mood ? `${r.music.mood} music at ${r.music.gainDb}dB` : "No music",

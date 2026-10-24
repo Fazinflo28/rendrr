@@ -193,3 +193,17 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Manual cleanup | Each preset is a set of numbers (`CLEANUP_PRESETS`), and the chain is built from them, so hand-set values and presets go through one path. Five values can be set by hand; the rest (noise floor, compressor timing) follow the preset. |
 | Noise left | The median momentary loudness (EBU, 400 ms) of the windows wholly inside pauses between words, from the file. Reported, not flagged: what counts as too noisy depends on the room and the music. |
 | Music files in the editor | Signed URLs of the catalog keys the edit uses (`audioMedia`), looked up from the catalog, never from the clip. |
+
+## Phase 4: captions and text
+
+| Question | Decision |
+|---|---|
+| How the editor matches the render | One layout in shared code (`captions.ts`) decides lines, sizes and positions in output pixels. libass and the editor draw it. libass in the browser (JASSUB) would match pixel for pixel, but it carries LGPL and GPL parts, and the plan allows MIT and Apache code only. |
+| Line breaks | Made by us, never by libass (WrapStyle 2): words a line first, then by width with the fonts' real advance widths (`fontMetrics.ts`, generated from the files). A caption that needs more lines than allowed becomes two captions when each still stays 0.3 s on screen. |
+| Fonts | 14 OFL families from Google Fonts, static weights, in `apps/web/public/fonts`. Each file is renamed to "RC <Family> <weight>", one face per family, so libass (fontsdir) and the browser (@font-face) pick exactly that file. The worker image copies the same folder. |
+| Font size | ASS size = line height (libass scales so winAscent + winDescent = size). The editor uses font-size = size x unitsPerEm / (winAscent + winDescent), with ascent-override and descent-override set to the win metrics, so baselines match. Measured: within 2 px. |
+| Box | libass BorderStyle 3: a square box per line, the box padding is the outline width. So a box has no stroke and no rounded corners, in the render and the editor alike. |
+| The spoken word | One ASS event per word with that word's colour changed (`\1c`), so it is exact to the centisecond; the editor colours the word whose start has come. |
+| Text layer animations | Linear, from ASS tags: fade (`\fad`), pop (`\fscx80` to 100 over 150 ms, `\fad(100,…)`), slide (`\move` from 4% lower over 250 ms). The editor evaluates the same curves (`textAnimAt`). |
+| The three looks | Presets of the caption style with their old sizes, colours and boxes. Only line breaking changed: by words and width instead of libass's own wrapping. |
+

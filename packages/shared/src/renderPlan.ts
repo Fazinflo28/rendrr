@@ -10,6 +10,7 @@ import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
 import { audioSettings, type AudioMixSettings } from "./timeline";
+import { buildStyledAss, captionStyleOf, layoutCaptions, styleText, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean };
@@ -73,6 +74,10 @@ export type RenderPlan = {
   dialogueMutes: Range[];
   captions: CaptionEvent[];
   captionLook: CaptionLook;
+  /** Sequences: the caption style, the captions with their lines and word times, the text layers (Phase 4). */
+  captionStyle?: CaptionStyle;
+  styledCaptions?: StyledCaption[];
+  texts?: TextLayer[];
   ass: string | null;
   operations: string[];
 };
@@ -173,6 +178,41 @@ function tidyEvents(events: CaptionEvent[]): CaptionEvent[] {
  * forward); each run captions the lines spoken in it, so a line that plays twice is captioned twice. Main footage
  * lines use the edit's caption text and caption clips; other videos show their own words.
  */
+/** The words each caption group shows, timed in edit seconds: one group per transcript line where it plays (as
+ *  sequenceCaptions decides what plays). Phase 4 lays them out with a caption style (layoutCaptions). */
+export function sequenceCaptionGroups(input: PlanInput, view: SequenceView): { text: string; start: number; end: number }[][] {
+  const tl = input.snapshot.timeline;
+  if (!tl.captionsOn) return [];
+  const main = view.mainVideoId;
+  const cut = new Set(tl.cut);
+  const capClips = (tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "caption" || (!c.kind && c.lineId));
+  const visible = capClips.length ? new Set(capClips.map((c) => c.lineId).filter(Boolean) as string[]) : null;
+  const runs: SoundPart[][] = [];
+  for (const s of view.sound) {
+    const run = runs[runs.length - 1], prev = run?.[run.length - 1];
+    if (prev && prev.videoId === s.videoId && s.srcIn >= prev.srcOut - 1e-6) run.push(s);
+    else runs.push([s]);
+  }
+  const groups: { text: string; start: number; end: number }[][] = [];
+  for (const run of runs) {
+    const vid = run[0].videoId;
+    const lines = vid === main ? input.transcript : input.transcripts?.[vid];
+    if (!lines?.length) continue;
+    const inKept = (t: number) => run.some((s) => t >= s.srcIn && t < s.srcOut);
+    const toOutput = (src: number) => {
+      for (const s of run) { if (src < s.srcIn) return r3(s.start); if (src <= s.srcOut) return r3(s.start + (src - s.srcIn)); }
+      return r3(run[run.length - 1].end);
+    };
+    for (const line of lines) {
+      if (vid === main && visible && !visible.has(line.id)) continue;
+      const text = (vid === main ? tl.captionText[line.id] : undefined) ?? line.words.map((w) => w.text).join(" ");
+      const toks = captionTokens(line.words, text, vid === main ? cut : new Set(), inKept);
+      if (toks.length) groups.push(toks.map((x) => ({ text: x.text, start: toOutput(x.t), end: toOutput(x.end) })));
+    }
+  }
+  return groups.sort((a, b) => a[0].start - b[0].start);
+}
+
 export function sequenceCaptions(input: PlanInput, view: SequenceView, total: number, rules: CaptionRules): CaptionEvent[] {
   const tl = input.snapshot.timeline;
   if (!tl.captionsOn) return [];
@@ -322,9 +362,19 @@ export function planRender(input: PlanInput): RenderPlan {
   const dialogueMutes = mergeRanges(view.sound.filter((x) => x.muted).map((x) => ({ start: r3(x.start), end: r3(x.end) })).filter((g) => g.end > g.start));
 
   const look = tl.captionLook;
-  const rules: CaptionRules = { ...DEFAULT_CAPTION_RULES[look], ...(input.captionRules || {}) };
-  const captions = sequenceCaptions(input, view, total, rules);
-  const ass = captions.length ? buildAss(captions, look, width, height) : null;
+  // Captions and text layers (Phase 4): laid out once here, drawn by libass and by the editor from the same layout.
+  const captionStyle = captionStyleOf(tl as { captionLook: CaptionLook; captionStyle?: CaptionStyle }, snapshot.aspect, input.captionRules);
+  const styledCaptions = layoutCaptions(sequenceCaptionGroups(input, view), captionStyle, width, height, total);
+  const captions: CaptionEvent[] = styledCaptions.map((c) => ({ start: c.start, end: c.end, text: c.lines.map((l) => l.map((w) => w.text).join(" ")).join(" ") })); // lines: styledCaptions
+  const texts: TextLayer[] = [];
+  for (const c of tl.tracks.v3 as (V3Clip & Attached & { text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim })[]) {
+    if (c.kind !== "text" || !c.text?.trim()) continue;
+    const sp = placed(c);
+    if (!sp) continue;
+    const def = textPreset("plain");
+    texts.push({ clipId: c.id, start: Math.round(sp.start * 100) / 100, end: Math.round(sp.end * 100) / 100, lines: c.text.split("\n"), style: c.style ?? def.style, card: c.card ?? null, anim: c.anim ?? def.anim });
+  }
+  const ass = buildStyledAss({ captions: styledCaptions, captionStyle, texts, width, height });
 
   const parts = view.picture.map((p) => ({ ...p, start: r3(p.start), end: r3(p.end) }));
   const sound = view.sound.map((x) => ({ ...x, start: r3(x.start), end: r3(x.end) }));
@@ -343,14 +393,15 @@ export function planRender(input: PlanInput): RenderPlan {
     zooms.length ? `Zoom: ${zooms.length} (${zooms.filter((z) => z.mode === "punch").length} punch, ${zooms.filter((z) => z.mode === "push").length} slow push)` : "Zoom: none",
     broll.length ? `B-roll overlays: ${broll.length}` : "B-roll overlays: none",
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
-    captions.length ? `Captions: ${captions.length} word-timed events, look ${look}` : "Captions: off",
+    captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
+    texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${cleanupText(settings) !== "none" ? `, cleanup ${cleanupText(settings)}` : ""}${settings.declick ? `, ${Math.round(settings.declick * 1000)} ms fade at every cut` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
     settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
   ];
   return {
     model: "B", kind, width, height, fps: 30, aspect: snapshot.aspect, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })), parts, sound, sources, videos,
-    outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, ass, operations, audioMix,
+    outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, captionStyle, styledCaptions, texts, ass, operations, audioMix,
   };
 }
 

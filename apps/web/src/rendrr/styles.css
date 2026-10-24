@@ -906,3 +906,12 @@ a { color: var(--accent-ink); }
 .clip .fd.out { right: 0; background: linear-gradient(to bottom left, currentColor 50%, transparent 50%); }
 .fine summary { cursor: pointer; color: var(--muted); list-style: none; }
 .fine summary::before { content: "▸ "; } .fine[open] summary::before { content: "▾ "; }
+/* Phase 4: text layers and captions drawn from the render's layout, on a stage the size of the output. */
+.tlayers { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.tlayers .stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.tlayers .tblock { position: absolute; white-space: nowrap; }
+.tlayers .tcard { position: absolute; inset: 0; }
+input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: none; cursor: pointer; }
+.tlist { display: flex; gap: 8px; align-items: baseline; text-align: left; padding: 6px 8px; border-radius: 8px; font-size: 13px; }
+.tlist.on, .tlist:hover { background: var(--raised); }
+#text-panel select.input.sm { min-width: 84px; }

@@ -96,4 +96,17 @@ describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL 
     assert.deepEqual(Object.keys(full.audioMedia), ["assets/music/m_lofi.m4a"]);
     assert.match(full.audioMedia["assets/music/m_lofi.m4a"], /^https?:\/\/.+m_lofi\.m4a/);
   });
+
+  it("Phase 4: save_style keeps a full caption style; apply_style gives it to an edit; text layers read back", async () => {
+    const { presetStyle } = await import("@rendrr/shared");
+    const saved = await TOOL_HANDLERS.save_style(c(), { name: `Yellow words ${run}`, rules: { captions: { on: true, look: "bold", style: { ...presetStyle("bold", "16:9"), font: "Montserrat", weight: 900, highlight: "#FFD400" } } } });
+    assert.match(saved.text, /Captions: Montserrat 900, [\d.]+% size, #0A0A0C, box #FCFDFF 100%, upper case, active word #FFD400/);
+    const styleId = (saved.data as { styleId: string }).styleId;
+    const r = await TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "apply_style", styleId }, { op: "add_text", text: "Hello", start: 1, end: 3, preset: "callout" }] });
+    assert.match(r.text, /Done \(v4/);
+    const read = await TOOL_HANDLERS.get_project(c(), { projectId });
+    assert.match(read.text, /Captions on \(own style: Montserrat 900/);
+    assert.match(read.text, /text="Hello" \(Inter 800, 5% size, #0A0A0C, box #FFD400 100%/);
+    await prisma.style.delete({ where: { id: styleId } });
+  });
 });

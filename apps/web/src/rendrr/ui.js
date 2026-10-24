@@ -245,7 +245,7 @@ function turnedVideoStyle(rotate, aspect) {
   if (rotate === 180) return { position: "absolute", inset: 0, width: "100%", height: "100%", transform: "rotate(180deg)", objectPosition: "50% 60%" };
   return { position: "absolute", left: "50%", top: "50%", width: `${100 / ar}%`, height: `${100 * ar}%`, transform: `translate(-50%, -50%) rotate(${rotate}deg)`, objectPosition: rotate === 90 ? "40% 50%" : "60% 50%" };
 }
-function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect = "16:9", marks = [], onMark, onClickVideo, showControls = true, style = {}, onSnapshot, children, src, videoFit = "contain", onVideoError, muted = false, overlay = null, zoomTransition = true, rotate = 0, framing = null, media = null }) {
+function Player({ pb, duration, caption, captionDrawn = false, captionLook = "clean", zoom = 1, aspect = "16:9", marks = [], onMark, onClickVideo, showControls = true, style = {}, onSnapshot, children, src, videoFit = "contain", onVideoError, muted = false, overlay = null, zoomTransition = true, rotate = 0, framing = null, media = null }) {
   const ar = { "16:9": "16 / 9", "9:16": "9 / 16", "1:1": "1 / 1" }[aspect] || "16 / 9";
   const toast = useToast();
   // Real footage: the <video> follows the playback state; pb uses it as its clock.
@@ -273,7 +273,7 @@ function Player({ pb, duration, caption, captionLook = "clean", zoom = 1, aspect
         <div class="subject" style=${{ transform: `translateX(calc(-50% + ${Math.sin(pb.time * 1.3) * 4}px))` }} />
       </div>`}
       ${overlay}
-      ${caption && html`<div class=${"cap " + captionLook}>${caption}</div>`}
+      ${caption && !captionDrawn && html`<div class=${"cap " + captionLook}>${caption}</div>`}
       <div class="tc mono">${fmtTime(pb.time, true)}<span class="q-badge">${effective}</span></div>
       ${switching && html`<div class="q-switch"><span class="dot brand pulse" />Switching to ${effective}</div>`}
       ${!pb.playing && !switching && html`<div class="big"><button aria-label="Play" onClick=${(e) => { e.stopPropagation(); pb.toggle(); }}><${Icon} name="play" /></button></div>`}

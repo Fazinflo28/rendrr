@@ -185,6 +185,44 @@ Three items of the plan were not fully built in the first pass. They are now:
   - Check wording: "2 clips have its own gain" now reads "their own".
 - **Bug you found (from Phase 2), fixed:** adding footage from the computer was broken. Phase 2 styled the timeline's reorder marker with the class `.drop`, which the file drop zones already used. Every drop zone (Add footage, Recreate, the library's empty state, drag-over overlay and add tile) became a 3 px yellow strip that ignored clicks and drops, so "Choose files" could not be clicked. The marker is now `.tl-drop`, scoped to the timeline. A check of every CSS rule added since Phase 1 found no other shared class. A browser pass over every page and modal, desktop and phone: Choose files opens the picker and the file is added, drag-and-drop adds the file, nothing overflows or is squeezed, no page errors.
 
+## Phase 4: captions and text
+
+- **Caption styles.** A caption style sets:
+  - font (14 bundled fonts) and weight, size (share of the frame's short side), colour
+  - stroke, shadow, box (colour, opacity, padding), position (x, y of the caption's bottom centre)
+  - words at once, words a line, lines, case (as typed, upper, lower), the spoken word's colour
+
+  The three looks (clean, bold, outline) are presets of it, with the same sizes, colours and boxes as before. The connector's `set_caption_style` changes any field, and `set_captions{look}` goes back to a preset.
+- **Text layers.** Title cards and callouts are text clips on V3, not HTML graphics:
+  - text with line breaks, the same style fields, alignment, a full-frame card behind, an animation (none, fade, pop, slide)
+  - presets: title, callout, lower-third, plain
+
+  They hang on a V1 clip like graphics. Ops: `add_text`, `set_text`.
+- **save_style keeps a full caption style.** `save_style{rules: {captions: {style: {...}}}}` stores it. `apply_style`, or `set_captions{styleId}`, gives any video exactly those captions in one step.
+- **One caption layer.** One caption is on screen at a time, with up to `lines` lines. Text layers stack in V3 order under the captions.
+- **The editor draws what the render draws.**
+  - Shared code lays out every caption and text layer in output pixels: the lines (by words a line, then by width using the fonts' own glyph widths), sizes, positions, boxes, strokes, shadows, the spoken word and the animation at each moment.
+  - libass draws that layout from one ASS file. Lines are broken by us (WrapStyle 2), so libass never re-wraps.
+  - The editor draws the same layout on a stage the size of the output, scaled to the player.
+  - Both use the same font files (OFL, in `apps/web/public/fonts`). Each file has its own family name, so neither side fakes a weight. The browser is given the font metrics libass uses (`ascent-override`), so lines sit at the same height.
+- **Check.** The Captions line names the style. A new Text line lists the layers. New flags: text that does not fit in the frame, and text that covers the captions while someone speaks.
+- **Editor.** A Text tab:
+  - caption on/off, the look to start from, font, weight, size, colour, box, stroke, shadow, position, case, the spoken word's colour, words at once, words a line, lines
+  - text layers: add one at the playhead (title, callout, lower-third, plain), edit its text and every style field, alignment, animation, card; remove it
+
+  Text clips show on V3.
+- **Bug found in older work (demo data):** the demo's caption clips named no transcript line, so the demo editor never showed captions. The demo now gives each its line.
+
+### Phase 4 tests
+
+| What | Result |
+|---|---|
+| Shared: presets equal the old looks, set_caption_style, faces and widths, line breaking (words, width, two captions when too many lines), spoken word, text layers (presets, set_text, animation curves = ASS tags), the ASS file, live frame, apply_style / set_captions{styleId}, check lines and flags | 118 pass |
+| Worker: a render with a custom caption style and a text layer, read back | libass uses the bundled fonts by name; the caption box and the text box are within 1 to 2 px of the layout; the yellow spoken word moves word by word under the right word |
+| Editor vs render (`apps/web/demo/caption-match.mjs`): the editor's own TextLayers component and the rendered frame, 16:9 and 9:16, two-line captions, box, stroke, Bebas Neue | every box within 2 px |
+| API: save_style with a full caption style, apply_style, add_text, get_project reads both | 11 pass |
+| Browser, demo build: Text tab (font, weight, spoken word, size), captions drawn with the bundled fonts, add a title, edit text, animation and card, undo, phone width | all work, no page errors |
+
 ## Reference-video test (23 October, live, through the connector only)
 
 The test: copy the edit of a finished reel (Glow Flow, 51 s, vertical) onto a raw talking-head video (77 s, 4K), using only the MCP connector, the way Claude would.

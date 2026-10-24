@@ -79,7 +79,9 @@ Object.assign(api, {
     const src = playable[p.videoId];
     // The design's music clips name no catalog track: give them one, as add_music does, so they play and render.
     const a2 = (p.timeline?.tracks?.a2 || []).map((c) => (c.trackId || c.assetKey ? c : { ...c, trackId: "m_lofi" }));
-    const q = p.timeline ? { ...p, timeline: { ...p.timeline, tracks: { ...p.timeline.tracks, a2 } } } : p;
+    // Its caption clips (cap0, cap1, ...) name no transcript line: give each its line, as the real timeline does.
+    const v3 = (p.timeline?.tracks?.v3 || []).map((c) => (c.kind === "caption" && !c.lineId && /^cap\d+$/.test(c.id) ? { ...c, lineId: p.transcript?.[Number(c.id.slice(3))]?.id } : c));
+    const q = p.timeline ? { ...p, timeline: { ...p.timeline, tracks: { ...p.timeline.tracks, a2, v3 } } } : p;
     return { ...(src ? { ...q, video: { ...q.video, proxyUrl: src } } : q), audioMedia: { ...sounds } };
   },
 });

@@ -5,6 +5,7 @@ import { fmtT } from "./breakdown";
 import { audioText, lookText } from "./ops";
 import { asSequence, isSequence, layoutTimeline, mergeRanges, sequenceView, type Range, type SeqClip, type SequenceView } from "./sequence";
 import { audioSettings, type Clip, type Snapshot, type Timeline } from "./timeline";
+import { captionStyleOf, drawnOf, styleText, textPreset, textRect, type CaptionStyle, type Card, type TextAnim, type TextStyle } from "./captions";
 import { allWords, type Transcript, type Word } from "./transcript";
 
 export type FileLoudness = { lufs: number | null; peakDb: number | null };
@@ -191,6 +192,22 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
   } else if (ld?.peakDb != null && ld.peakDb > -1) flags.push(`peak ${ld.peakDb}dB (may clip)`);
   if (ld?.lufs != null && ld.lufs < -40) flags.push("sound is almost silent");
 
+  // Text layers (Phase 4): where they sit at the preview size; one that does not fit or covers the captions is flagged.
+  const [W, H] = snap.aspect === "9:16" ? [540, 960] : snap.aspect === "1:1" ? [540, 540] : [960, 540];
+  const texts = (tl.tracks.v3 as (Clip & { kind?: string; text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim })[])
+    .filter((c) => c.kind === "text" && c.text?.trim() && c.end - c.start >= 0.05)
+    .map((c) => ({ c, lines: c.text!.split("\n"), style: c.style ?? textPreset("plain").style, card: c.card ?? null, anim: c.anim ?? "fade" }));
+  const capStyle: CaptionStyle = captionStyleOf(tl, snap.aspect);
+  const capD = drawnOf(capStyle, W, H);
+  const capPad = capD.box?.pad ?? capD.stroke?.px ?? 0;
+  const capRect = { x: W * 0.08, y: capStyle.y * H - capStyle.lines * capD.size - capPad, w: W * 0.84, h: capStyle.lines * capD.size + 2 * capPad };
+  for (const x of texts) {
+    const r = textRect(x, W, H);
+    if (r.x < -1 || r.y < -1 || r.x + r.w > W + 1 || r.y + r.h > H + 1) flags.push(`text "${x.lines[0].slice(0, 30)}" at ${fmtT(x.c.start)} does not fit in the frame`);
+    const talks = tl.captionsOn && spoken.some((w) => w.at < x.c.end && w.end > x.c.start);
+    if (talks && r.x < capRect.x + capRect.w && r.x + r.w > capRect.x && r.y < capRect.y + capRect.h && r.y + r.h > capRect.y) flags.push(`text "${x.lines[0].slice(0, 30)}" at ${fmtT(x.c.start)} covers the captions`);
+  }
+
   // Where the edit and the file disagree. Each one is a flag; "Flags: none" only when they agree.
   const fileLines: string[] = [];
   const gShown = graphics.map((g) => ({ g, on: m?.graphics.find((x) => x.clipId === g.id) }));
@@ -230,7 +247,8 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     sequenceLine(tl, view),
     `Pauses over ${over}s: ${pauses.length ? list(pauses.map((p) => `${fmtT(p.at)} (${p.len.toFixed(1)}s)`)) : "none"}`,
     `Fillers left: ${fillers.length ? list(fillers.map((x) => `"${x.w.text.replace(/[^\w'-]/g, "")}" ${fmtT(x.at)}`)) : "none"}`,
-    `Captions: ${tl.captionsOn ? `on (${tl.captionLook}), ${coverPct}% of spoken words` : "off"}`,
+    `Captions: ${tl.captionsOn ? `on (${tl.captionStyle ? "own style: " + styleText(tl.captionStyle) : tl.captionLook}), ${coverPct}% of spoken words` : "off"}`,
+    `Text: ${texts.length ? `${texts.length} ${texts.length === 1 ? "layer" : "layers"}: ` + list(texts.map((x) => `${fmtT(x.c.start)}-${fmtT(x.c.end)} ${JSON.stringify(x.lines.join(" / ").slice(0, 40))}${x.card ? " (card)" : ""}${x.anim !== "none" ? ` ${x.anim}` : ""}`), 6) : "none"}`,
     `Zooms ${zooms.length}${zooms.length ? ": " + list(zooms.map((z) => `${fmtT(z.start)} ${Math.round(Number(z.zoom || 1) * 100)}%`)) : ""} | B-roll ${broll.length}${broll.length ? ": " + list(broll.map((b) => fmtT(b.start))) : ""} | Graphics ${graphics.length}${m && !m.error ? ` (${gShown.filter((x) => x.on).length} on screen)` : ""}${graphics.length ? ": " + list(gText) : ""}`,
     `Music: ${music.length ? `${list(music.map((c) => `${c.label} ${c.gainDb ?? -18}dB`), 3)}, under ${Math.round(musicCover * 100)}% of the edit` : "none"}`,
     `Sound: ${legacy ? "mixed before Phase 3 (limiter only)" : audioText(sound)}${clipSound ? `; ${clipSound} ${clipSound === 1 ? "clip has its" : "clips have their"} own gain or fades` : ""}`,

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { catalogMusic, catalogSfx } from "./catalog";
+import { CaptionStyleSchema, CardSchema, TEXT_ANIMS, TextStyleSchema } from "./captions";
 import { ASPECTS, CAPTION_LOOKS } from "./constants";
 
 // The shared timeline. Same shape as timelineFor() in ui/rendrr-ui.html.
@@ -25,10 +26,15 @@ export const V2ClipSchema = ClipSchema.extend({
 });
 
 export const V3ClipSchema = ClipSchema.extend({
-  kind: z.enum(["caption", "graphic"]).optional(),
+  kind: z.enum(["caption", "graphic", "text"]).optional(),
   lineId: z.string().max(80).optional(),
   graphicId: z.string().max(80).optional(),
   params: z.record(z.unknown()).optional(),
+  /** Text layers (kind "text"): the text (line breaks with \n), its style, a full-frame card behind it, its animation. */
+  text: z.string().max(1000).optional(),
+  style: TextStyleSchema.optional(),
+  card: CardSchema.nullable().optional(),
+  anim: z.enum(TEXT_ANIMS).optional(),
 });
 
 export const A2ClipSchema = ClipSchema.extend({
@@ -108,6 +114,8 @@ export const TimelineSchema = z.object({
   captionsOn: z.boolean(),
   captionLook: z.enum(CAPTION_LOOKS),
   captionText: z.record(z.string().max(2000)),
+  /** The edit's own caption style (Phase 4). Missing = the look's preset (with the project style's word counts). */
+  captionStyle: CaptionStyleSchema.optional(),
   tracks: TracksSchema,
   rotate: RotationSchema.optional(),
   framing: FramingSchema.optional(),

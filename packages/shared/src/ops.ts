@@ -8,6 +8,7 @@ import {
   type AudioSettings, type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
 } from "./timeline";
 import { autoMusicFades, CLEANUP_KNOBS, cleanupText } from "./audio";
+import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema, presetStyle, styleText, TEXT_ANIMS, TEXT_PRESETS, textPreset, TextStylePatchSchema, TextStyleSchema, type Card, type TextAnim, type TextStyle } from "./captions";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, isPlainSequence, layoutTimeline, mainVideoOf, mergeRanges, moveSeqClip, newSeqClipId,
@@ -46,7 +47,8 @@ const EDIT_OPS = [
   z.object({ op: z.literal("set_link"), track: TrackNameSchema, clipId, linked: z.boolean() }),
   z.object({ op: z.literal("add_zoom"), start: t, end: t, scale: z.number().min(1.01).max(2), edit }),
   z.object({ op: z.literal("add_broll"), videoId: z.string().max(80), start: t, end: t, sourceStart: t.default(0), label: z.string().max(200).optional(), edit }),
-  z.object({ op: z.literal("set_captions"), on: z.boolean(), look: CaptionLookSchema.optional() }),
+  // look: back to that look's preset style. styleId: the captions of that style (its full caption style if it has one).
+  z.object({ op: z.literal("set_captions"), on: z.boolean(), look: CaptionLookSchema.optional(), styleId: z.string().max(80).optional() }),
   z.object({ op: z.literal("edit_caption"), lineId: z.string().max(40), text: z.string().max(2000) }),
   z.object({ op: z.literal("add_music"), trackId: z.string().max(80), gainDb: z.number().min(-40).max(6).optional(), start: t.optional(), end: t.optional(), edit }),
   z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), label: z.string().max(200).optional(), edit }),
@@ -73,6 +75,14 @@ const EDIT_OPS = [
   z.object({ op: z.literal("slip_clip"), clipId, by }),
   // Slide: same footage, `by` seconds later in the edit (the clip before gets longer, the one after shorter).
   z.object({ op: z.literal("slide_clip"), clipId, by }),
+  // ---- captions and text (Phase 4) ----
+  // The caption style, field by field; look: start from that look's preset. Sizes in % (font size of the frame's
+  // short side; stroke, shadow and box padding of the font size); x, y: the caption's bottom centre (shares of the frame).
+  z.object({ op: z.literal("set_caption_style"), look: CaptionLookSchema.optional(), ...CaptionStylePatchSchema.shape }),
+  // A text layer on V3 (title card, callout): text with \n line breaks, a preset to start from, any style field,
+  // a full-frame card behind it, an animation. x, y: the point it hangs on.
+  z.object({ op: z.literal("add_text"), text: z.string().min(1).max(1000), start: t, end: t, edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), label: z.string().max(200).optional(), ...TextStylePatchSchema.shape }),
+  z.object({ op: z.literal("set_text"), clipId, text: z.string().min(1).max(1000).optional(), start: t.optional(), end: t.optional(), edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), ...TextStylePatchSchema.shape }),
   // ---- sound ----
   // The edit's sound: dialogue cleanup preset, loudness target (LUFS, null = off), true-peak ceiling (dBTP), how many
   // dB music goes down under speech (0 = off), fades of the whole mix. Fields left out keep their value.
@@ -304,8 +314,11 @@ function applyStyleRules(snap: Snapshot, style: StyleLite, ctx: EditContext): { 
   const musicClips = music ? [{ id: rid("m"), start: 0, end: r2(total), label: music.name, trackId: music.id, assetKey: music.key, gainDb: rules.music.gainDb, auto: true, fill: true }] : [];
   if (music) did.push(`music ${music.name}`);
 
+  // A style with a full caption style gives exactly those captions; otherwise the look's preset (with its word counts).
+  const { captionStyle: _cs, ...noStyle } = tl;
   tl = {
-    ...tl,
+    ...noStyle,
+    ...(rules.captions.style ? { captionStyle: rules.captions.style } : {}),
     captionsOn: rules.captions.on,
     captionLook: rules.captions.look,
     tracks: { ...tl.tracks, v2: [...tl.tracks.v2, ...zooms], a2: [...tl.tracks.a2, ...musicClips], a3: [...tl.tracks.a3, ...sfxClips] },
@@ -553,8 +566,47 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, c]) }, summary: `added b-roll ${v.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}` };
     }
     case "set_captions": {
+      if (op.styleId) {
+        const st = ctx.getStyle(op.styleId);
+        if (!st) throw new EditError("That style does not exist. Use list_styles to see the ids.");
+        const style = st.rules.captions.style ?? captionStyleOf({ captionLook: st.rules.captions.look }, snap.aspect, st.rules.captions);
+        const next = { ...tl, captionsOn: op.on, captionLook: st.rules.captions.look, captionStyle: style };
+        return { snap: { ...snap, timeline: next }, summary: `captions ${op.on ? "on" : "off"}, style of ${st.name}: ${styleText(style)}` };
+      }
       const next = { ...tl, captionsOn: op.on, captionLook: op.look ?? tl.captionLook };
-      return { snap: { ...snap, timeline: next }, summary: op.on ? `captions on (${next.captionLook})` : "captions off" };
+      if (op.look) delete next.captionStyle;
+      return { snap: { ...snap, timeline: next }, summary: op.on ? `captions on (${next.captionStyle ? "own style" : next.captionLook})` : "captions off" };
+    }
+    case "set_caption_style": {
+      const { op: _o, look: lk, ...fields } = op;
+      const rules = ctx.getStyle(snap.styleId)?.rules.captions;
+      const base = lk ? presetStyle(lk, snap.aspect) : captionStyleOf(tl, snap.aspect, rules);
+      const style = CaptionStyleSchema.parse({ ...base, ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) });
+      if (fields.wordsAtOnce != null && fields.wordsPerLine == null) style.wordsPerLine = Math.min(style.wordsAtOnce, Math.max(style.wordsPerLine, Math.ceil(style.wordsAtOnce / style.lines)));
+      return { snap: { ...snap, timeline: { ...tl, captionStyle: style, ...(lk ? { captionLook: lk } : {}) } }, summary: `caption style: ${styleText(style)}` };
+    }
+    case "add_text": {
+      if (!(op.end > op.start)) throw new EditError("A text layer must end after it starts.");
+      const s0 = toEdit(op.start, op.edit), e0 = toEdit(op.end, op.edit);
+      if (e0 - s0 < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
+      const p = textPreset(op.preset ?? "plain");
+      const style = TextStyleSchema.parse({ ...p.style, ...pickStyle(op) });
+      const c = attachAt(view(), { id: rid("t"), start: 0, end: 0, label: op.label || op.text.split("\n")[0].slice(0, 60), kind: "text" as const, text: op.text, style, card: op.card ?? null, anim: op.anim ?? p.anim } as Clip, s0, e0);
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added text "${op.text.split("\n")[0].slice(0, 40)}" at ${op.edit ? "edit " : ""}${fmtClock(op.start)} (${styleText(style)})` };
+    }
+    case "set_text": {
+      const c = findClip(tl, "v3", op.clipId) as Clip & { kind?: string; text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim };
+      if (c.kind !== "text") throw new EditError(`Clip "${op.clipId}" on V3 is not a text layer.`);
+      const p = op.preset ? textPreset(op.preset) : null;
+      const style = TextStyleSchema.parse({ ...(p ? p.style : c.style ?? textPreset("plain").style), ...pickStyle(op) });
+      let x: Clip = { ...c, style, ...(op.text ? { text: op.text, label: op.text.split("\n")[0].slice(0, 60) } : {}), ...(op.card !== undefined ? { card: op.card } : {}), ...(op.anim || p ? { anim: op.anim ?? p!.anim } : {}) } as Clip;
+      if (op.start != null || op.end != null) {
+        const cur = placeOf(view(), c as Attached);
+        const s0 = op.start != null ? toEdit(op.start, op.edit) : cur.s, e0 = op.end != null ? toEdit(op.end, op.edit) : cur.e;
+        if (e0 - s0 < 0.05) throw new EditError("A text layer must end after it starts, inside the edit.");
+        x = attachAt(view(), x, s0, e0);
+      }
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", (tl.tracks.v3 as Clip[]).map((y) => (y.id === c.id ? x : y))) }, summary: `changed text "${String((x as { text?: string }).text ?? "").split("\n")[0].slice(0, 40)}"` };
     }
     case "edit_caption": {
       const line = ctx.transcript.find((l) => l.id === op.lineId);
@@ -766,6 +818,12 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
   }
 }
 
+/** The style fields of an op (add_text, set_text), leaving out the ones not sent. */
+function pickStyle(op: Record<string, unknown>): Partial<TextStyle> {
+  const keys = Object.keys(TextStyleSchema.shape);
+  return Object.fromEntries(Object.entries(op).filter(([k, v]) => keys.includes(k) && v !== undefined)) as Partial<TextStyle>;
+}
+
 /** "cleanup voice, -14 LUFS / -1 dBTP, music 12 dB down under speech, fades in 0.5s out 1s" */
 export function audioText(a: ReturnType<typeof audioSettings>): string {
   return [
@@ -840,7 +898,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
   const look = lookText(tl);
   const lines: string[] = [];
   lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${view.total.toFixed(1)}s, aspect ${snap.aspect}${look ? ", " + look : ""}, style ${snap.styleId}.`);
-  lines.push(`Cut words: ${tl.cut.length}. Captions ${tl.captionsOn ? "on (" + tl.captionLook + ")" : "off"}. Edited caption lines: ${Object.entries(tl.captionText).filter(([id, txt]) => { const l = tr.find((x) => x.id === id); return l && l.words.map((w) => w.text).join(" ") !== txt; }).length}.`);
+  lines.push(`Cut words: ${tl.cut.length}. Captions ${tl.captionsOn ? "on (" + (tl.captionStyle ? "own style: " + styleText(tl.captionStyle) : tl.captionLook) + ")" : "off"}. Edited caption lines: ${Object.entries(tl.captionText).filter(([id, txt]) => { const l = tr.find((x) => x.id === id); return l && l.words.map((w) => w.text).join(" ") !== txt; }).length}.`);
   lines.push(`Sound: ${audioText(audioSettings(tl))}.`);
   lines.push("V1 plays in this order, back to back: id video footageIn-footageOut @editStart-editEnd. Ops on a V1 clip take its own footage seconds. Its dialogue (A1) follows it; J/L cuts and mutes are shown on it. Other tracks: id @editStart-editEnd on <V1 clip> at <its footage second>; they move with that clip. Their op times are main-footage seconds (where it first plays), or edit seconds with edit:true.");
   const v1 = tl.tracks.v1 as SeqClip[];
@@ -867,7 +925,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
       const auto = k === "a2" ? autoMusicFades(c.end - c.start) : { fadeIn: 0, fadeOut: 0 };
       const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
       const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
-      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
+      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
       const on = c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "";
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;
     });

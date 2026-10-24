@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates openssl bash \
     && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir scenedetect==0.7.2 opencv-python-headless==5.0.0.93 numpy==2.5.3
-ENV PYTHON_BIN=/opt/venv/bin/python CHROMIUM_PATH=/usr/bin/chromium FONTS_DIR=/usr/share/fonts
+ENV PYTHON_BIN=/opt/venv/bin/python CHROMIUM_PATH=/usr/bin/chromium
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
@@ -16,6 +16,8 @@ COPY apps/worker/package.json apps/worker/
 RUN PUPPETEER_SKIP_DOWNLOAD=1 pnpm install --frozen-lockfile --filter "@rendrr/worker..."
 COPY packages packages
 COPY apps/worker apps/worker
+# The caption and text fonts the web app serves (render.ts reads them from here).
+COPY apps/web/public/fonts apps/web/public/fonts
 RUN cd packages/db && npx prisma generate
 ENV NODE_ENV=production PORT=8080
 EXPOSE 8080

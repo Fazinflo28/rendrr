@@ -5,6 +5,7 @@
 import type { PicturePart, Range, SoundPart } from "./sequence";
 import type { RenderPlan, ZoomOp } from "./renderPlan";
 import { dbToLin, dialogueGain, duckFactor, fadeFactor } from "./audio";
+import { activeWord, textAnimAt, type TextLayer } from "./captions";
 
 /** The zoom at edit time t: the same curve as zoomExpr() draws in the render (punch ramps, slow push). */
 export function zoomAt(zooms: ZoomOp[], t: number): number {
@@ -71,6 +72,10 @@ export type LiveFrame = {
   /** The dialogue that plays: its video and moment (another clip's sound during a J/L cut). */
   sound: { videoId: string; src: number; muted: boolean } | null;
   caption: string | null;
+  /** The caption's lines as the render draws them, and which word is being spoken (when the style highlights it). */
+  captionLines: { text: string; active: boolean }[][] | null;
+  /** Text layers on screen, bottom first, with their animation at t (opacity, scale, px down). */
+  texts: { layer: TextLayer; opacity: number; scale: number; dy: number }[];
   zoom: number;
   muted: boolean;              // the dialogue is silent here
   broll: { clipId: string; videoId: string; src: number } | null;
@@ -81,6 +86,8 @@ const inside = (t: number, r: { start: number; end: number }) => t >= r.start &&
 
 export function liveFrame(plan: RenderPlan, t: number, clock = sequenceClock(plan)): LiveFrame {
   const cap = plan.captions.find((c) => inside(t, c));
+  const sc = plan.styledCaptions?.find((c) => inside(t, c)) ?? null;
+  const act = sc && plan.captionStyle?.highlight ? activeWord(sc, t) : null;
   // The last b-roll overlay drawn wins, as in the render (each one is laid over the ones before).
   const br = [...plan.broll].reverse().find((b) => inside(t, b) && b.videoId);
   const pic = clock.picture(t), snd = clock.soundAt(t);
@@ -90,6 +97,8 @@ export function liveFrame(plan: RenderPlan, t: number, clock = sequenceClock(pla
     part: pic ? pic.i : 0,
     sound: snd ? { videoId: snd.videoId, src: snd.src, muted: snd.muted } : null,
     caption: cap ? cap.text : null,
+    captionLines: sc ? sc.lines.map((l, i) => l.map((w, j) => ({ text: w.text, active: !!act && act[0] === i && act[1] === j }))) : null,
+    texts: (plan.texts ?? []).filter((x) => inside(t, x)).map((x) => ({ layer: x, ...textAnimAt(x.anim, t - x.start, x.end - x.start, plan.height) })),
     zoom: zoomAt(plan.zooms, t),
     muted: plan.dialogueMutes.some((m) => inside(t, m)),
     broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start) } : null,

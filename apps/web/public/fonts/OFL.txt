@@ -1,0 +1,5 @@
+The fonts in this folder are licensed under the SIL Open Font License, Version 1.1 (https://openfontlicense.org).
+They come from Google Fonts (fonts.google.com): Inter, Montserrat, Poppins, Roboto, Oswald, Bebas Neue, Anton,
+Archivo Black, Lilita One, Bangers, Permanent Marker, Playfair Display, DM Serif Display, Space Grotesk.
+Each file's family name was changed to "RC <Family> <weight>" (scripts/make-font-metrics.py), which the OFL allows
+for modified versions; the original copyright notices in each file are kept. Downloaded by scripts/fetch-fonts.sh.

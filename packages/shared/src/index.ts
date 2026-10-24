@@ -13,3 +13,4 @@ export * from "./qa";
 export * from "./graphicHtml";
 export * from "./playback";
 export * from "./audio";
+export * from "./captions";
