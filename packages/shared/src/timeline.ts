@@ -127,7 +127,12 @@ export const audioSettings = (tl: { audio?: AudioSettings }): AudioMixSettings =
 
 /** How the final file is made (Phase 6: HDR; Phase 7 adds size, codec and frame rate). hdr: "keep" (default) keeps
  *  HDR footage HDR (10-bit, BT.2020, its own transfer); "sdr" converts the edit to SDR. */
-export const ExportSchema = z.object({ hdr: z.enum(["keep", "sdr"]).optional() });
+/** Phase 7: the final's size (short side 720, 1080 or 2160 in the edit's shape) and codec. HDR kept is always HEVC. */
+export const RESOLUTIONS = ["720p", "1080p", "4k"] as const;
+export const CODECS = ["h264", "hevc"] as const;
+export type Resolution = (typeof RESOLUTIONS)[number];
+export type Codec = (typeof CODECS)[number];
+export const ExportSchema = z.object({ hdr: z.enum(["keep", "sdr"]).optional(), resolution: z.enum(RESOLUTIONS).optional(), codec: z.enum(CODECS).optional() });
 export type ExportSettings = z.infer<typeof ExportSchema>;
 
 export const TimelineSchema = z.object({

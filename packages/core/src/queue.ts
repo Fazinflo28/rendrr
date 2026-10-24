@@ -46,7 +46,8 @@ export async function enqueue<T extends object>(name: QueueName, data: T, opts: 
 }
 
 // ---- live progress (renders, footage processing, project edits) ----
-export type RenderProgress = { status: "queued" | "running" | "done" | "failed"; step: number; steps: string[]; percent: number; error?: string; code?: string };
+/** etaSec (Phase 7): seconds left, estimated; null while there is nothing to estimate from yet. */
+export type RenderProgress = { status: "queued" | "running" | "done" | "failed"; step: number; steps: string[]; percent: number; etaSec?: number | null; error?: string; code?: string };
 export const renderChannel = (id: string) => `render:${id}`;
 export const projectChannel = (id: string) => `project:${id}`;
 

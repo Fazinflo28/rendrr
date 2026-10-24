@@ -54,13 +54,15 @@ async function runRender(kind: "preview" | "final", projectId: string, onProgres
   const started = await post(`/projects/${enc(projectId)}/renders`, { kind });
   const id = started.renderId as string;
   const steps = started.steps || [];
-  onProgress?.({ step: 0, steps, percent: 0 });
+  onProgress?.({ step: 0, steps, percent: 0, etaSec: null, quality: started.quality });
   let final: any = null;
-  const deadline = Date.now() + (kind === "final" ? 17 : 5) * 60_000;
+  // Phase 7: as long as the server's own limit for this render (it fails loudly when that passes), plus a margin. A
+  // long or 4K final can take far longer than the old fixed 17 minutes.
+  const deadline = Date.now() + (Number(started.limitMs) || (kind === "final" ? 17 : 5) * 60_000) + 3 * 60_000;
   // Live stream first; if it drops, fall back to polling until the render ends.
   try {
     await readEvents(`/renders/${enc(id)}/events`, (ev, data) => {
-      if (ev === "progress") onProgress?.({ step: data.step, steps: data.steps?.length ? data.steps : steps, percent: data.percent });
+      if (ev === "progress") onProgress?.({ step: data.step, steps: data.steps?.length ? data.steps : steps, percent: data.percent, etaSec: data.etaSec ?? null, quality: started.quality });
       if (ev === "done" || ev === "failed") { final = data; return true; }
     });
   } catch { /* poll below */ }
@@ -69,7 +71,7 @@ async function runRender(kind: "preview" | "final", projectId: string, onProgres
     const s = await get(`/renders/${enc(id)}`).catch(() => null);
     if (!s) continue;
     if (s.status === "done" || s.status === "failed") final = s;
-    else onProgress?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent });
+    else onProgress?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent, etaSec: s.etaSec ?? null, quality: started.quality });
   }
   if (!final) throw fail((kind === "preview" ? "Preview render" : "Final render") + " took too long. Try again.", "timeout");
   if (final.status === "failed") throw fail(final.error || "Render did not finish. Nothing was lost. Try again.", final.code);

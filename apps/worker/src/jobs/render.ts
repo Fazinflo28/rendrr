@@ -1,6 +1,6 @@
 import { deleteObject, downloadFile, drive, getText, publishRender, signGet, uploadFile, usage, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { isSequence, mainVideoOf, parseCube, PREFIX, renderTimeoutMs, StyleRulesSchema, type ClipLook, type FileMeasure, type HdrTransfer, type Lut, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { isSequence, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, StyleRulesSchema, type ClipLook, type FileMeasure, type HdrTransfer, type Lut, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, planRender, RenderPlanError, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
@@ -37,7 +37,22 @@ export async function renderJob(ctx: Ctx) {
   const pt = kind === "preview" ? setTimeout(() => { previewTimedOut = true; ac.abort(); }, renderTimeoutMs("preview", video.seconds)) : null;
   const signal = ac.signal;
 
-  const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)) });
+  // Phase 7: the time left. Before the encode it comes from this user's last renders of the same kind and quality
+  // (seconds of work per second of output); during the encode from its own speed, plus the packing after it. Never
+  // made up: null (the UI says "Estimating") until one of the two exists.
+  const t0 = Date.now();
+  const prior = await workPerSecond(video.userId, kind, r.quality);
+  const est = { outSeconds: video.seconds || 0, encStart: 0, encFrac: 0, encEnd: 0 };
+  const etaSec = (): number | null => {
+    const now = Date.now();
+    if (est.encEnd) { const enc = (est.encEnd - est.encStart) / 1000; return Math.max(2, Math.round(enc * 0.12 + 5 - (now - est.encEnd) / 1000)); }
+    if (est.encStart && (est.encFrac >= 0.02 || now - est.encStart > 8000) && est.encFrac > 0) {
+      const spent = (now - est.encStart) / 1000, total = spent / est.encFrac;
+      return Math.max(2, Math.round(total - spent + total * 0.12 + 5));
+    }
+    return prior != null ? Math.max(5, Math.round(prior * est.outSeconds - (now - t0) / 1000)) : null;
+  };
+  const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)), etaSec: etaSec() });
   const sendThrottled = throttle(send, 400);
   await prisma.render.update({ where: { id: r.id }, data: { status: "running", startedAt: new Date(), error: null, errorCode: null } });
   let i = 0;
@@ -86,7 +101,7 @@ export async function renderJob(ctx: Ctx) {
     const brollIds = Array.from(new Set(snapshot.timeline.tracks.v2.map((c) => (c as { videoId?: string }).videoId).filter(Boolean) as string[]));
     const brollVideos = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId: video.userId, proxyKey: { not: null } } }) : [];
     const graphicClips = (snapshot.timeline.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId);
-    const files: PlanFiles = { source: src, output: join(ctx.dir, "out.mp4"), assPath: join(ctx.dir, "captions.ass"), fontsDir: FONTS_DIR, broll: {}, graphics: {}, audio: {}, videos: {}, under: {}, looks: {} };
+    const files: PlanFiles = { source: src, output: join(ctx.dir, "out.mp4"), assPath: join(ctx.dir, "captions.ass"), fontsDir: FONTS_DIR, broll: {}, graphics: {}, graphicSeconds: {}, audio: {}, videos: {}, under: {}, looks: {} };
     const sourceInfo: SourceInfo = { width: info.width, height: info.height, fps: info.fps, seconds: info.seconds || video.seconds, hasAudio: info.hasAudio, hdr: !!info.hdr, ...(info.transfer ? { transfer: info.transfer } : {}) };
     // Phase 6: a final reads the original, so it learns whether the footage is HDR (previews say so from then on).
     if (kind === "final" && (video.hdr ?? null) !== (info.transfer ?? null)) await prisma.video.update({ where: { id: video.id }, data: { hdr: info.transfer ?? null } }).catch(() => {});
@@ -127,19 +142,25 @@ export async function renderJob(ctx: Ctx) {
     // A first plan tells us the output size, so graphics can be drawn at the right resolution.
     const first = planRender(planBase);
     const graphicsReady: Record<string, boolean> = {};
+    const graphicErrors: string[] = [];
     // Only graphics that are still in the edit, each drawn for the time it is on screen.
     for (const sp of first.graphics) {
       const c = graphicClips.find((x) => x.id === sp.clipId);
       if (!c) continue;
       try {
-        const path = await renderGraphicClip(c, { width: first.width, height: first.height, dir: ctx.dir, userId: video.userId, signal, durationSec: sp.end - sp.start });
-        if (path) { files.graphics![c.id] = path; graphicsReady[c.id] = true; }
+        // A long graphic is recorded here (Phase 7): its progress moves this step.
+        const got = await renderGraphicClip(c, { width: first.width, height: first.height, dir: ctx.dir, userId: video.userId, signal, durationSec: sp.end - sp.start, onProgress: (f) => sendThrottled(i, 0.2 + 0.7 * f) });
+        if (got) { files.graphics![c.id] = got.path; files.graphicSeconds![c.id] = got.seconds; graphicsReady[c.id] = true; }
       } catch (e) {
         if (signal.aborted) throw e;
+        // Left out, and said so in the plan (the check repeats it), never silently.
         console.error("[render] graphic skipped:", c.graphicId, (e as Error).message.slice(0, 200));
+        graphicErrors.push(`Graphic ${c.id} left out: ${(e as Error).message.slice(0, 300)}`);
       }
     }
     const plan = planRender({ ...planBase, graphicsReady });
+    plan.operations.push(...graphicErrors);
+    est.outSeconds = plan.outputSeconds;
     if (copies.length) plan.operations.push(`Other videos without an original in Rendrr use their 720p copy: ${copies.join(", ")}`);
     for (const b of [...plan.broll, ...(plan.under ?? [])]) {
       const bv = brollVideos.find((x) => x.id === b.videoId);
@@ -177,10 +198,12 @@ export async function renderJob(ctx: Ctx) {
     const span = endStep - i;
     const onProgress = (sec: number) => {
       const p = Math.min(1, sec / Math.max(0.1, plan.outputSeconds));
+      est.encFrac = p;
       const pos = p * span;
       sendThrottled(i + Math.min(span - 1, Math.floor(pos)), pos - Math.min(span - 1, Math.floor(pos)));
     };
     const withGraph = (a: string[]) => a.map((x) => (x === "__FILTER_SCRIPT__" ? graphPath : x));
+    est.encStart = Date.now();
     try {
       try {
         await run("ffmpeg", withGraph(args), { signal, onProgress });
@@ -196,6 +219,7 @@ export async function renderJob(ctx: Ctx) {
       throw new JobError(`Render failed at '${steps[Math.min(endStep - 1, i)]}'. Nothing was lost. Try again.`, "ffmpeg", true);
     }
     i = endStep;
+    est.encEnd = Date.now();
     await send(i, 0.1);
 
     // ---- Packing: upload, check frames, clean up ----
@@ -214,8 +238,9 @@ export async function renderJob(ctx: Ctx) {
         if (shown <= 0) continue;
         const file = files.graphics?.[gr.clipId];
         const fileLen = file ? (await probe(file, { signal }).catch(() => null))?.seconds || shown : shown;
-        const on = Math.min(shown, fileLen); // eof_action=pass: a graphic shorter than its clip leaves when it ends
-        graphics.push({ clipId: gr.clipId, start: gr.start, end: Math.round((gr.start + on) * 1000) / 1000, coverPct: file ? await graphicCover(file, on / 2, signal) : null });
+        // Phase 7: a file shorter than its clip holds its last frame to the clip's end (the plan pads it).
+        const on = shown;
+        graphics.push({ clipId: gr.clipId, start: gr.start, end: Math.round((gr.start + on) * 1000) / 1000, coverPct: file ? await graphicCover(file, Math.min(on, fileLen) / 2, signal) : null });
       }
       measured = { ...base0, graphics };
     } catch (e) {
@@ -239,7 +264,7 @@ export async function renderJob(ctx: Ctx) {
     }
     await prisma.render.update({ where: { id: r.id }, data: {
       status: "done", outputKey: `${base}.mp4`, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? (plan.hdr ? "1080p HDR" : "1080p") : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
     } });
     const fresh = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     await prisma.project.update({ where: { id: project.id }, data: {
@@ -274,3 +299,10 @@ export async function renderFailed(renderId: string, message: string, code?: str
 }
 
 export const ensureDir = (d: string) => mkdir(d, { recursive: true });
+
+/** Seconds of work per second of output in this user's last finished renders of this kind and quality (median), or null. */
+async function workPerSecond(userId: string, kind: string, quality: string | null): Promise<number | null> {
+  const done = await prisma.render.findMany({ where: { userId, kind, status: "done", quality: quality ?? undefined, startedAt: { not: null }, finishedAt: { not: null }, seconds: { gt: 1 } }, orderBy: { createdAt: "desc" }, take: 8, select: { startedAt: true, finishedAt: true, seconds: true } });
+  const rates = done.map((x) => (x.finishedAt!.getTime() - x.startedAt!.getTime()) / 1000 / x.seconds).filter((x) => x > 0 && Number.isFinite(x)).sort((a, b) => a - b);
+  return rates.length ? rates[Math.floor(rates.length / 2)] : null;
+}

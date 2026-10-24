@@ -36,10 +36,21 @@ export const QUEUES = {
 export const PREVIEW_TIMEOUT_MS = 3 * 60_000;
 export const FINAL_TIMEOUT_MS = 15 * 60_000;
 
-/** Render limits grow with the footage: the brief's 3 and 15 minutes hold footage up to 10 minutes long. */
-export function renderTimeoutMs(kind: "preview" | "final", sourceSeconds: number): number {
+/**
+ * Render limits grow with the footage: the brief's 3 and 15 minutes hold footage up to 10 minutes long. Phase 7: a
+ * final's limit also grows with its quality label (renders.quality): 4K x3, HEVC x2 (x265 is the slow encoder).
+ */
+export function renderTimeoutMs(kind: "preview" | "final", sourceSeconds: number, quality?: string | null): number {
   const s = Math.max(0, Number(sourceSeconds) || 0);
-  return kind === "preview" ? Math.max(PREVIEW_TIMEOUT_MS, Math.round(s * 300)) : Math.max(FINAL_TIMEOUT_MS, Math.round(s * 1500));
+  if (kind === "preview") return Math.max(PREVIEW_TIMEOUT_MS, Math.round(s * 300));
+  const k = (/4K/i.test(quality || "") ? 3 : 1) * (/HEVC/i.test(quality || "") ? 2 : 1);
+  return Math.max(FINAL_TIMEOUT_MS * k, Math.round(s * 1500 * k));
+}
+
+/** Phase 7: a final's quality label, e.g. "1080p", "4K HEVC", "1080p HEVC HDR" (HDR kept is always HEVC). */
+export function qualityLabel(o: { resolution?: string | null; codec?: string | null; hdr?: boolean }): string {
+  const res = o.resolution === "4k" ? "4K" : o.resolution === "720p" ? "720p" : "1080p";
+  return [res, o.hdr || o.codec === "hevc" ? "HEVC" : null, o.hdr ? "HDR" : null].filter(Boolean).join(" ");
 }
 /** Preview copy and analysis limits: 10 minutes, or more for footage longer than about 17 minutes. */
 export function processTimeoutMs(sourceSeconds: number): number {

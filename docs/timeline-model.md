@@ -102,6 +102,20 @@ Colour and compositing (Phase 6, `look.ts`):
   - SDR parts, b-roll, graphics and caption colours go through the SDR-into-HDR LUT (SDR white at 203 nits).
   - A graded or keyed HDR clip is tone-mapped first and graded as SDR (the editor shows it that way).
 
+Graphics and export (Phase 7):
+- **`timeline.export`** holds `{hdr?, resolution?: 720p|1080p|4k, codec?: h264|hevc}`, set by `set_export`. Defaults (HDR kept, 1080p, H.264) are not stored.
+- **Size.** `outputSize(aspect, kind, resolution)`: a final's short side is 720, 1080 or 2160 in the edit's shape; previews stay 540.
+- **Frame rate.**
+  - `outputRate(kind, sourceFps)`: a final plays at its main footage's rate, snapped to the nearest standard rate within 0.5% and capped at 60; previews are 30.
+  - The plan carries it (`plan.fps`, `plan.rate` as FFmpeg's fraction). The sequence is aligned to it, so every part is a whole number of output frames.
+  - The graph's `fps=`, `r=`, `settb=` and frame counts and the encoder's `-r`/`-g` all use it. At 30 every string is as before.
+- **Codec.** HEVC is libx265 with `hvc1` and BT.709 tags (`fast`, `faster` at 4K). HDR kept is always HEVC 10-bit.
+- **Graphics of any length.**
+  - Up to 15 s a graphic is recorded frame by frame. Longer ones are sampled every 0.5 s on the virtual clock: the same picture is held, a small change (under 0.2% of the pixels) is shown from the sample, and a bigger change is recorded frame by frame for that half second.
+  - The WebM keeps each picture's time (variable frame rate).
+  - A file shorter than its clip holds its last frame (`files.graphicSeconds`): the render pads it, and the player's `<video>` holds it the same way.
+- **Check.** `exportText` gives the `Export (final): ...` line in get_project and in render_preview's check: size, codec, frame rate, and a note when the final is scaled up or capped.
+
 ## Model A (before Phase 2)
 
 Clip times were seconds in the project's one footage. V1 played in footage order minus cut words. A1 holes muted the picture, and other tracks were pinned to footage moments. `renderPlanA.ts` keeps that planner unchanged: an old version, or a project the migration left on A, renders exactly as before.

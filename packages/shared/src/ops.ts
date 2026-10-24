@@ -4,14 +4,14 @@ import type { Aspect } from "./constants";
 import { mergeRules, StyleRulesPatchSchema, type StyleRules } from "./styles";
 import {
   AspectSchema, audioSettings, CaptionLookSchema, CLEANUPS, ClipSchema, FramingSchema, isCaptionMarker, RotationSchema, SnapshotSchema, TimelineSchema, TrackNameSchema,
-  normalizeTimeline, timelineProblems,
+  normalizeTimeline, timelineProblems, RESOLUTIONS, CODECS,
   type AudioSettings, type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
 } from "./timeline";
 import { autoMusicFades, CLEANUP_KNOBS, cleanupText } from "./audio";
 import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema, presetStyle, styleText, TEXT_ANIMS, TEXT_PRESETS, textPreset, TextStylePatchSchema, TextStyleSchema, type Card, type TextAnim, type TextStyle } from "./captions";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
 import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
-import { planTransitions } from "./renderPlan";
+import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutRefSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, type ChromaKey, type ClipLook, type Grade, type Lut } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, isPlainSequence, layoutTimeline, mainVideoOf, mergeRanges, moveSeqClip, newSeqClipId, normalSpeed,
@@ -126,7 +126,7 @@ const EDIT_OPS = [
   // A b-roll clip behind V1 (shows where V1 is keyed, masked, framed smaller or moved away) or back over it.
   z.object({ op: z.literal("set_under"), clipId, under: z.boolean() }),
   // How the final file is made: hdr keep (HDR footage stays HDR) or sdr (converted).
-  z.object({ op: z.literal("set_export"), hdr: z.enum(["keep", "sdr"]).optional() }),
+  z.object({ op: z.literal("set_export"), hdr: z.enum(["keep", "sdr"]).optional(), resolution: z.enum(RESOLUTIONS).optional(), codec: z.enum(CODECS).optional() }),
 ] as const;
 export const EditOpSchema = z.discriminatedUnion("op", [...EDIT_OPS]);
 export const EDIT_OP_NAMES = EDIT_OPS.map((o) => o.shape.op.value) as [EditOp["op"], ...EditOp["op"][]];
@@ -1017,11 +1017,19 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, timeline: next }, summary: `${name(c)}: ${op.under ? "behind V1 (shows where V1 is keyed, masked, framed smaller or moved)" : "over V1"}` };
     }
     case "set_export": {
+      if (!op.hdr && !op.resolution && !op.codec) throw new EditError("set_export needs hdr, resolution or codec.");
       const ex = { ...(tl.export ?? {}) };
       if (op.hdr) ex.hdr = op.hdr;
+      if (op.resolution) ex.resolution = op.resolution;
+      if (op.codec) ex.codec = op.codec;
+      // Defaults are not stored (HDR kept, 1080p, H.264), so an edit at the defaults has no export field.
+      if (ex.hdr === "keep") delete ex.hdr;
+      if (ex.resolution === "1080p") delete ex.resolution;
+      if (ex.codec === "h264") delete ex.codec;
       const next: Timeline = { ...tl, export: ex };
-      if (!Object.keys(ex).length || (ex.hdr === "keep" && Object.keys(ex).length === 1)) delete next.export;
-      return { snap: { ...snap, timeline: next }, summary: `export: HDR ${ex.hdr === "sdr" ? "converted to SDR" : "kept when the footage is HDR"}` };
+      if (!Object.keys(ex).length) delete next.export;
+      const said = [op.resolution && `final ${op.resolution === "4k" ? "4K" : op.resolution}`, op.codec && (op.codec === "hevc" ? "HEVC" : "H.264"), op.hdr && `HDR ${op.hdr === "sdr" ? "converted to SDR" : "kept when the footage is HDR"}`].filter(Boolean);
+      return { snap: { ...snap, timeline: next }, summary: `export: ${said.join(", ")}` };
     }
   }
 }
@@ -1141,7 +1149,7 @@ export function lookText(tl: Timeline): string {
   return out.join(", ");
 }
 
-export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60, mainVideoId?: string, lutName?: (id: string) => string | undefined): string {
+export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60, mainVideoId?: string, lutName?: (id: string) => string | undefined, footage?: FootageInfo): string {
   const words = allWords(tr);
   const tl = layoutTimeline(asSequence(snap.timeline, words, mainVideoId), words);
   const view = sequenceView(tl, words);
@@ -1151,6 +1159,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
   lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${view.total.toFixed(1)}s, aspect ${snap.aspect}${look ? ", " + look : ""}, style ${snap.styleId}.`);
   lines.push(`Cut words: ${tl.cut.length}. Captions ${tl.captionsOn ? "on (" + (tl.captionStyle ? "own style: " + styleText(tl.captionStyle) : tl.captionLook) + ")" : "off"}. Edited caption lines: ${Object.entries(tl.captionText).filter(([id, txt]) => { const l = tr.find((x) => x.id === id); return l && l.words.map((w) => w.text).join(" ") !== txt; }).length}.`);
   lines.push(`Sound: ${audioText(audioSettings(tl))}.`);
+  lines.push(exportText(snap, footage) + ".");
   lines.push("V1 plays in this order, back to back: id video footageIn-footageOut @editStart-editEnd. Ops on a V1 clip take its own footage seconds. Its dialogue (A1) follows it; J/L cuts and mutes are shown on it. Other tracks: id @editStart-editEnd on <V1 clip> at <its footage second>; they move with that clip. Their op times are main-footage seconds (where it first plays), or edit seconds with edit:true.");
   const v1 = tl.tracks.v1 as SeqClip[];
   const vName = (v: string) => (v === main ? "main" : v);

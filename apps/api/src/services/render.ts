@@ -1,6 +1,6 @@
 import { AppError, enqueue, publishRender, readRender, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
-import { FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, renderTimeoutMs } from "@rendrr/shared";
+import { FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, qualityLabel, renderTimeoutMs } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
 
 export function stepsFor(kind: "preview" | "final", source: string, sample: boolean): string[] {
@@ -30,7 +30,11 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   if (running) return running;
 
   const steps = stepsFor(kind, video.source, video.sample);
-  const r = await prisma.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality: kind === "final" ? "1080p" : "540p" } });
+  // Phase 7: the final's quality from its version's export settings (its time limit follows it); HDR is learnt by the
+  // worker from the original and added then.
+  const ex = (exists.timeline as unknown as { timeline?: { export?: { resolution?: string; codec?: string } } })?.timeline?.export;
+  const quality = kind === "final" ? qualityLabel({ resolution: ex?.resolution, codec: ex?.codec, hdr: !!video.hdr && ((ex as { hdr?: string })?.hdr ?? "keep") === "keep" }) : "540p";
+  const r = await prisma.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality } });
   // Review states (In review, Changes requested, Approved) stay put while rendering; the render has its own progress.
   // A finished final still moves the edit to "Final ready", as in the UI.
   const reviewState = ["In review", "Changes requested", "Approved"].includes(p.status);
@@ -59,7 +63,7 @@ export async function renderStatus(r: Render) {
   return {
     id: r.id, kind: r.kind, projectId: r.projectId, version: r.version,
     status: r.status === "done" || r.status === "failed" ? r.status : base.status,
-    step: base.step, steps: base.steps.length ? base.steps : steps, percent: r.status === "done" ? 100 : base.percent,
+    step: base.step, steps: base.steps.length ? base.steps : steps, percent: r.status === "done" ? 100 : base.percent, etaSec: r.status === "done" || r.status === "failed" ? null : base.etaSec ?? null,
     error: r.error ?? base.error ?? undefined, code: r.errorCode ?? base.code ?? undefined,
     result: r.status === "done" ? await renderResult(r) : undefined,
   };

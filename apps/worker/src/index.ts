@@ -13,6 +13,7 @@ import { maintenanceJob } from "./jobs/maintenance";
 import { proxyJob } from "./jobs/proxy";
 import { renderFailed, renderJob } from "./jobs/render";
 import { filterThreads } from "./lib/ffmpeg";
+import { recordLimitMs } from "./lib/graphics";
 import { guarded } from "./lib/job";
 
 env(); // fail fast on missing settings
@@ -29,8 +30,13 @@ const renderUser = async (job: Job) => (await prisma.render.findUnique({ where: 
 // Limits that grow with the footage (see renderTimeoutMs / processTimeoutMs).
 const videoLimit = async (job: Job) => processTimeoutMs((await prisma.video.findUnique({ where: { id: (job.data as { videoId: string }).videoId }, select: { seconds: true } }))?.seconds ?? 0);
 const renderLimit = async (job: Job) => {
-  const r = await prisma.render.findUnique({ where: { id: (job.data as { renderId: string }).renderId }, select: { kind: true, project: { select: { video: { select: { seconds: true } } } } } });
-  return renderTimeoutMs(r?.kind === "preview" ? "preview" : "final", r?.project.video.seconds ?? 0) + 60_000;
+  const r = await prisma.render.findUnique({ where: { id: (job.data as { renderId: string }).renderId }, select: { kind: true, quality: true, project: { select: { video: { select: { seconds: true } } } } } });
+  return renderTimeoutMs(r?.kind === "preview" ? "preview" : "final", r?.project.video.seconds ?? 0, r?.quality) + 60_000;
+};
+// Phase 7: a custom graphic's limit grows with its length (long ones are sampled; see recordLong).
+const graphicLimit = async (job: Job) => {
+  const g = await prisma.graphic.findUnique({ where: { id: (job.data as { graphicId: string }).graphicId }, select: { durationSec: true } });
+  return Math.max(QUEUES.graphic.timeoutMs, recordLimitMs(g?.durationSec ?? 0) + 60_000);
 };
 
 const conc = (name: string, d: number) => Math.max(1, Math.floor(Number(process.env[`CONCURRENCY_${name.toUpperCase()}`]) || d));
@@ -38,7 +44,7 @@ const workers = [
   new Worker(QUEUES.proxy.name, guarded("proxy", videoLimit, "Making the preview", proxyJob, videoFailed, videoUser), { connection: newRedis(), concurrency: conc("proxy", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.analyze.name, guarded("analyze", videoLimit, "Processing", analyzeJob, videoFailed, videoUser), { connection: newRedis(), concurrency: conc("analyze", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.render.name, guarded("render", renderLimit, "The render", renderJob, (job, msg, code) => renderFailed((job.data as { renderId: string }).renderId, msg, code), renderUser), { connection: newRedis(), concurrency: conc("render", 1), lockDuration: 60_000 }),
-  new Worker(QUEUES.graphic.name, guarded("graphic", QUEUES.graphic.timeoutMs, "The graphic", graphicJob, (job, msg) => graphicFailed((job.data as { graphicId: string }).graphicId, msg)), { connection: newRedis(), concurrency: conc("graphic", 1), lockDuration: 60_000 }),
+  new Worker(QUEUES.graphic.name, guarded("graphic", graphicLimit, "The graphic", graphicJob, (job, msg) => graphicFailed((job.data as { graphicId: string }).graphicId, msg)), { connection: newRedis(), concurrency: conc("graphic", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.frames.name, guarded("frames", QUEUES.frames.timeoutMs, "Taking frames", framesJob, async () => {}), { connection: newRedis(), concurrency: conc("frames", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.breakdown.name, guarded("breakdown", videoLimit, "Reading the frames", breakdownJob, async () => {}), { connection: newRedis(), concurrency: conc("breakdown", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),

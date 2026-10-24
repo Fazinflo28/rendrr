@@ -24,7 +24,7 @@ export async function videoOut(v: Video) {
     originalName: v.originalName ?? undefined, originalSize: num(v.originalSize) ?? undefined,
     previewSize: fmtSize(v.previewSizeBytes), previewExpires: expires,
     previewDays: expires != null && v.status !== "expired" ? Math.max(0, Math.ceil((expires - Date.now()) / DAY_MS)) : v.status === "expired" ? 0 : null,
-    width: v.width ?? undefined, height: v.height ?? undefined, fps: v.fps ?? undefined,
+    width: v.width ?? undefined, height: v.height ?? undefined, fps: v.fps ?? undefined, hdr: v.hdr ?? undefined,
     thumb: v.thumbKey ? await signGet(v.thumbKey, 3600) : null,
     ...stepInfo(v),
   };

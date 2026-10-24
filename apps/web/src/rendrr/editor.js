@@ -7,6 +7,7 @@ import { StyleArt, CreateLinkModal } from "./screens";
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
 import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./color";
+import { ExportModal, timeLeft } from "./export";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { applyOp, asSequence, audioAt, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, TEXT_ANIMS, TEXT_PRESETS, textPreset, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
@@ -63,7 +64,8 @@ function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = nu
 // A built-in graphic template drawn live with the recorder's own HTML and clock, at the size the render draws it.
 function TemplateFrame({ graphicId, params, start, end, t, aspect }) {
   const out = outputSize(aspect, "preview"); const { width: w, height: h } = templateSize(out.width, out.height);
-  const dur = Math.min(15, Math.max(0.5, end - start));
+  // Phase 7: drawn over the clip's whole length, as the render records it (no longer stopped at 15 s).
+  const dur = Math.max(0.5, end - start);
   const doc = useMemo(() => playerGraphicHtml(graphicId, params || {}, w, h, dur), [graphicId, JSON.stringify(params || {}), w, h, dur]);
   const box = useRef(null); const fr = useRef(null); const [k, setK] = useState(0);
   useEffect(() => { const el = box.current; if (!el) return; const ro = new ResizeObserver(() => setK(el.clientWidth / w)); ro.observe(el); setK(el.clientWidth / w); return () => ro.disconnect(); }, [w]);
@@ -471,7 +473,7 @@ function EditorInner({ project, reload, ai, keep }) {
   const [zoom, setZoom] = useState(36);
   const [tool, setTool] = useState("select"); const [snapOn, setSnapOn] = useState(true); const [addOpen, setAddOpen] = useState(false);
   const [render, setRender] = useState(null);
-  const [share, setShare] = useState(false); const [help, setHelp] = useState(false);
+  const [share, setShare] = useState(false); const [help, setHelp] = useState(false); const [exportOpen, setExportOpen] = useState(false);
   const [viewVer, setViewVer] = useState(null);
   const [comments, setComments] = useState(project.comments);
   const [saved, setSaved] = useState("Saved");
@@ -756,7 +758,7 @@ function EditorInner({ project, reload, ai, keep }) {
       <div class="grow" />
       <span class="t-small muted" id="auto-preview" title=${fresh ? "The player plays the rendered preview file of this version." : "The player plays the edit as it will render: every clip and video in order, J/L cuts, captions, zooms, b-roll, graphics, music and sound effects at their levels. Dialogue cleanup and loudness are heard in the rendered preview."}>${fresh ? `Playing the rendered preview (V${project.version})` : "Live edit"}</span>
       ${!fresh && html`<${Btn} kind="ghost" size="sm" id="render-preview" icon="play" disabled=${saved !== "Saved" || !plan} onClick=${() => startRender("preview")}>Render preview<//>`}
-      <${Btn} kind="secondary" size="sm" id="render-final" icon="film" onClick=${() => startRender("final")}>Render final<//>
+      <${Btn} kind="secondary" size="sm" id="render-final" icon="film" onClick=${() => setExportOpen(true)}>Render final<//>
       <${Btn} size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share for review<//>
     </div>
 
@@ -857,10 +859,10 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
     </div>
 
-    ${render && html`<${Modal} title=${render.kind === "preview" ? "Rendering preview" : "Rendering final"} sub=${render.status === "running" && render.kind === "preview" ? "540p, everything burned in." : render.status === "running" ? (project.video?.source === "drive" ? "Full quality. We fetch the raw file from your Drive, then delete it." : "Full quality. This one takes a little longer.") : null} onClose=${render.status !== "running" ? () => setRender(null) : undefined}>
-      ${render.status === "running" && html`<div class="col" style="gap:16px"><div class="bar big"><i style=${{ width: render.progress.percent + "%" }} /></div><div class="row between"><span class="t-small muted" id="render-step">${render.progress.steps[render.progress.step] || "Starting…"}</span><span class="t-small mono muted">${render.progress.percent}%</span></div>
+    ${render && html`<${Modal} title=${render.kind === "preview" ? "Rendering preview" : "Rendering final"} sub=${render.status === "running" && render.kind === "preview" ? "540p, everything burned in." : render.status === "running" ? (project.video?.source === "drive" ? `Full quality${render.progress.quality ? ` (${render.progress.quality})` : ""}. We fetch the raw file from your Drive, then delete it.` : `Full quality${render.progress.quality ? ` (${render.progress.quality})` : ""}. This one takes a little longer.`) : null} onClose=${render.status !== "running" ? () => setRender(null) : undefined}>
+      ${render.status === "running" && html`<div class="col" style="gap:16px"><div class="bar big"><i style=${{ width: render.progress.percent + "%" }} /></div><div class="row between"><span class="t-small muted" id="render-step">${render.progress.steps[render.progress.step] || "Starting…"}</span><span class="t-small mono muted"><span id="render-eta">${timeLeft(render.progress.etaSec)}</span> · ${render.progress.percent}%</span></div>
         <div class="steps">${render.progress.steps.map((s, i) => html`<div key=${s} class=${"step" + (i < render.progress.step ? " done" : i === render.progress.step ? " now" : "")}><span class="ck">${i < render.progress.step && html`<${Icon} name="check" />`}</span>${s}</div>`)}</div></div>`}
-      ${render.status === "done" && html`<div class="state" style="padding:24px 0;box-shadow:none;background:none"><div class="ico"><${Icon} name="check" /></div><h3 class="t-heading" id="render-done">Final is ready</h3><p id="render-note">${render.result.note + " · 1080p · " + render.result.size}</p>
+      ${render.status === "done" && html`<div class="state" style="padding:24px 0;box-shadow:none;background:none"><div class="ico"><${Icon} name="check" /></div><h3 class="t-heading" id="render-done">Final is ready</h3><p id="render-note">${render.result.note + " · " + (render.result.quality || "1080p") + " · " + render.result.size}</p>
         <div class="row"><${Btn} icon="laptop" id="download" onClick=${() => { if (render.result.downloadUrl) { window.open(render.result.downloadUrl, "_blank", "noopener"); toast("Saving " + (render.result.fileName || "the final") + " to this computer", { icon: "download", tone: "brand" }); } }}>Save to this computer<//><${Btn} kind="secondary" icon="drive" id="save-drive" onClick=${async () => { try { const r = await api.saveFinalToDrive(render.result.renderId); toast(r.message, { icon: "drive", tone: "brand" }); } catch (e) { toast(e.message); } }}>Save to Google Drive<//><${Btn} kind="ghost" onClick=${() => setRender(null)}>Close<//></div></div>`}
       ${render.status === "error" && html`<div class="state" role="alert" style="padding:24px 0;box-shadow:none;background:none"><div class="ico err"><${Icon} name="alert" /></div><h3 class="t-heading" id="render-error">${render.code === "drive" ? "Drive file out of reach" : "Render did not finish"}</h3><p>${render.error}</p><div class="row">${render.code === "drive" && html`<${Btn} id="render-reconnect" icon="drive" onClick=${reconnectDrive}>Reconnect<//>`}<${Btn} kind=${render.code === "drive" ? "secondary" : "primary"} id="render-retry" icon="refresh" onClick=${() => startRender(render.kind)}>Try again<//><${Btn} kind="ghost" onClick=${() => setRender(null)}>Close<//></div></div>`}
       ${render.status === "original" && html`<div class="col" style="gap:16px" id="need-original"><div class="card flat row" style="gap:12px;align-items:flex-start"><${Icon} name="laptop" size="18" /><div><b class="t-label">Full quality needs your original file once.</b><p class="t-small muted">We delete it within 24 hours of the export. Your preview copy stays.</p></div></div>
@@ -869,6 +871,7 @@ function EditorInner({ project, reload, ai, keep }) {
         <input type="file" accept="video/*" class="hide" id="original-file" onChange=${(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) sendOriginal(f); }} />
         <div class="row">${render.hasFile ? html`<${Btn} id="upload-original" icon="upload" onClick=${() => sendOriginal(null)}>Upload original and export<//>` : html`<${Btn} id="pick-original" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the original file<//>`}<${Btn} kind="ghost" onClick=${() => setRender(null)}>Not now<//></div></div>`}
     <//>`}
+    ${exportOpen && html`<${ExportModal} snap=${{ timeline, aspect: S.aspect }} video=${project.video} doOp=${doOp} onRender=${() => { setExportOpen(false); startRender("final"); }} onClose=${() => setExportOpen(false)} />`}
     ${share && html`<${CreateLinkModal} projectId=${project.id} onClose=${() => setShare(false)} onCreated=${() => setStatus("In review")} />`}
     ${addOpen && html`<${AddClipModal} main=${{ id: main, name: project.video?.name || "Footage", seconds: footDur }} at=${pb.time} onAdd=${addClip} onClose=${() => setAddOpen(false)} />`}
     ${help && html`<${Modal} title="Keyboard shortcuts" onClose=${() => setHelp(false)}><div class="list">${SHORTCUTS.map(([k, d]) => html`<div key=${k} class="row between" style="padding:6px 4px"><span>${d}</span><span class="kbd">${k}</span></div>`)}</div><//>`}

@@ -9,7 +9,7 @@ import {
 } from "@rendrr/shared";
 import { otherSources } from "./services/sequence";
 import { createProject, getOwnedProject } from "./services/projects";
-import { renderResult, startRender } from "./services/render";
+import { renderResult, renderStatus, startRender } from "./services/render";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
@@ -151,15 +151,25 @@ async function waitFor<T>(fn: () => Promise<T | null>, ms: number, every = 1000)
 async function renderOut(renderId: string): Promise<ToolOut> {
   const r = await prisma.render.findUniqueOrThrow({ where: { id: renderId } });
   if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Render final; the app will ask for the original file." : ""}` };
-  if (r.status !== "done") return { text: `The ${r.kind} render is still running (render id ${r.id}). Call get_render in a little while.` };
+  if (r.status !== "done") {
+    // Phase 7: where it is and the time left (the worker's estimate), so the AI can say when to look again.
+    const st = await renderStatus(r);
+    const left = st.etaSec != null ? `, about ${fmtLeft(st.etaSec)} left` : ", estimating the time left";
+    return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). Call get_render in a little while.` };
+  }
   const res = await renderResult(r);
   const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
   if (r.kind === "final") return { text: head, data: { renderId: r.id } };
   const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number; operations?: string[] } | null;
   // Phase 6: what the render itself said about HDR and missing LUTs goes into the check.
-  const notes = (plan?.operations ?? []).filter((l) => l.startsWith("HDR:") || /^Color: LUT .* left out/.test(l));
+  const notes = (plan?.operations ?? []).filter((l) => l.startsWith("HDR:") || /^Color: LUT .* left out/.test(l) || /^Graphic \S+ left out/.test(l));
   return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null, plan?.outputSeconds ?? null, notes)}`, data: { renderId: r.id } };
 }
+
+/** The footage facts the Export line needs (Phase 7). */
+const footageOf = (v: { fps: number | null; width: number | null; height: number | null; hdr: string | null }) => ({ fps: v.fps, width: v.width, height: v.height, hdr: !!v.hdr });
+/** 40 s, 3 min, 1 h 05 min. */
+const fmtLeft = (s: number) => (s < 60 ? `${Math.max(1, Math.round(s / 5) * 5)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h ${String(Math.round((s % 3600) / 60)).padStart(2, "0")} min`);
 
 /** The check of one version of an edit against its rendered file (pauses from 0.15 s, whatever the style says: the AI knows what it asked for). */
 async function checkOf(projectId: string, version: number, loudness: FileLoudness | null, measured: FileMeasure | null, planned: number | null = null, renderNotes: string[] = []): Promise<string> {
@@ -168,7 +178,7 @@ async function checkOf(projectId: string, version: number, loudness: FileLoudnes
   const snap = (ver?.timeline ?? { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId }) as unknown as Snapshot;
   const others = await otherSources(p.userId, snap.timeline, p.videoId);
   const luts = await prisma.lut.findMany({ where: { userId: p.userId }, select: { id: true, name: true } });
-  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, renderNotes, videoId: p.videoId, lutName: (id) => luts.find((l) => l.id === id)?.name, transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
+  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, renderNotes, videoId: p.videoId, lutName: (id) => luts.find((l) => l.id === id)?.name, footage: footageOf(p.video), transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
@@ -270,7 +280,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     // Phase 6: the user's imported LUTs (for set_grade lut) and whether the footage is HDR, only when there are any.
     const luts = await prisma.lut.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, name: true } });
     return { text: clip([`Edit "${p.name}" (${p.id}) on footage ${v.id} "${v.name}"${v.hdr ? ` (HDR ${v.hdr === "pq" ? "PQ" : "HLG"}: the final keeps it unless set_export hdr sdr)` : ""}. ${p.status}, v${p.currentVersion}, style ${style?.name ?? p.styleId}.`,
-      summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || [], 60, p.videoId, (id) => luts.find((l) => l.id === id)?.name),
+      summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || [], 60, p.videoId, (id) => luts.find((l) => l.id === id)?.name, footageOf(v)),
       ...(luts.length ? [`Your LUTs (set_grade lut id): ${luts.map((l) => `${l.id} "${l.name}"`).join(", ")}`] : []),
       preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet."].join("\n")) };
   },

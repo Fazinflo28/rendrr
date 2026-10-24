@@ -6,7 +6,7 @@ import { catalogMusic, catalogSfx } from "./catalog";
 import type { Aspect, CaptionLook } from "./constants";
 import { cutRegions, editOf, isSequence, mainVideoOf, mergeRanges, normalSpeed, rateOf, sequenceView, srcAt, type Attached, type PicturePart, type Range, type SeqClip, type SequenceView, type SoundPart } from "./sequence";
 import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
-import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing } from "./timeline";
+import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing, Resolution, Codec } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
@@ -73,6 +73,9 @@ export type RenderPlan = {
   model: "A" | "B";
   kind: RenderKind;
   width: number; height: number; fps: number;
+  /** Phase 7: the output's exact frame rate for FFmpeg (e.g. "30000/1001"; missing = 30) and its codec. */
+  rate?: string;
+  codec?: Codec;
   aspect: Aspect;
   /** Footage ranges of the picture parts, in edit order (each part's video is in `parts`). */
   kept: Range[];
@@ -119,14 +122,31 @@ export class RenderPlanError extends Error {
 }
 
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
-/** A time on the 30 fps output's frame grid. */
-const onFrame = (t: number) => Math.round(t * 30) / 30;
 const sameFraming = (a: Framing | null, b: Framing | null) => (!a && !b) || (!!a && !!b && a.scale === b.scale && a.x === b.x && a.y === b.y);
-const FPS = 30;
+/** Phase 7: the standard frame rates a final snaps to (within 0.5%), as FFmpeg fractions. */
+const STANDARD_RATES: [number, string][] = [[24000 / 1001, "24000/1001"], [24, "24"], [25, "25"], [30000 / 1001, "30000/1001"], [30, "30"], [48, "48"], [50, "50"], [60000 / 1001, "60000/1001"], [60, "60"]];
+/**
+ * The frame rate a final plays at: the footage's own (snapped to a standard rate within 0.5%; above 60, 60). A rate
+ * off the list keeps three decimals. Previews are always 30 (the preview copy is 30 fps).
+ */
+export function outputRate(kind: RenderKind, sourceFps: number | null | undefined): { fps: number; rate: string; capped: boolean } {
+  const f = Number(sourceFps) || 30;
+  if (kind === "preview") return { fps: 30, rate: "30", capped: false };
+  if (f > 60.5) return { fps: 60, rate: "60", capped: true };
+  const hit = [...STANDARD_RATES].sort((a, b) => Math.abs(f - a[0]) - Math.abs(f - b[0]))[0];
+  if (Math.abs(f - hit[0]) / hit[0] <= 0.005) return { fps: hit[0], rate: hit[1], capped: false };
+  const k = Math.max(1, Math.round(f * 1000));
+  return { fps: k / 1000, rate: k % 1000 === 0 ? String(k / 1000) : `${k}/1000`, capped: false };
+}
+/** FFmpeg's time base for a rate: 1/30, 1001/30000. */
+export const timeBase = (rate: string) => { const [n, d] = rate.split("/"); return d ? `${d}/${n}` : `1/${n}`; };
+/** A rate for people: 29.97, 23.976, 25. */
+export const rateText = (fps: number) => (Math.abs(fps - Math.round(fps)) < 1e-6 ? String(Math.round(fps)) : (Math.round(fps * 1000) / 1000).toString());
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
-export function outputSize(aspect: Aspect, kind: RenderKind) {
-  const short = kind === "preview" ? 540 : 1080;
+export function outputSize(aspect: Aspect, kind: RenderKind, resolution?: Resolution | null) {
+  // Phase 7: a final's short side follows its export resolution (720, 1080 or 2160); previews stay 540.
+  const short = kind === "preview" ? 540 : resolution === "4k" ? 2160 : resolution === "720p" ? 720 : 1080;
   if (aspect === "9:16") return { width: short, height: even((short * 16) / 9) };
   if (aspect === "1:1") return { width: short, height: short };
   return { width: even((short * 16) / 9), height: short };
@@ -329,11 +349,15 @@ export function planRender(input: PlanInput): RenderPlan {
   const used = Array.from(new Set([main, ...(tl.tracks.v1 as unknown as { sourceVideoId: string }[]).map((c) => c.sourceVideoId)]));
   const missing = used.filter((v) => !infoOf(v));
   if (missing.length) throw new RenderPlanError(`A clip on V1 plays a video that is no longer in your library (${missing.join(", ")}). Remove that clip, then render again.`);
-  // Every part starts and ends on a frame of the 30 fps output; footage beyond a file's real length is left out.
-  const view = sequenceView(tl, words, { align: FPS, seconds: Object.fromEntries(used.map((v) => [v, infoOf(v)!.seconds])) });
+  // Every part starts and ends on a frame of the output (30 fps; a final at its footage's rate, Phase 7), so each part
+  // is a whole number of frames and picture and sound stay together however many cuts there are. Footage beyond a
+  // file's real length is left out.
+  const out = outputRate(kind, input.source.fps);
+  const onFrame = (t: number) => Math.round(t * out.fps) / out.fps;
+  const view = sequenceView(tl, words, { align: out.fps, seconds: Object.fromEntries(used.map((v) => [v, infoOf(v)!.seconds])) });
   if (!view.picture.length) throw new RenderPlanError("Nothing is left to render. Every part of the video is cut. Restore some words or clips, then try again.");
   const total = r3(view.total);
-  const { width, height } = outputSize(snapshot.aspect, kind);
+  const { width, height } = outputSize(snapshot.aspect, kind, tl.export?.resolution);
   // A clip on another track hangs on its V1 clip and keeps its length.
   const placed = (c: Attached): { start: number; end: number } | null => {
     let s: number, e: number;
@@ -355,7 +379,7 @@ export function planRender(input: PlanInput): RenderPlan {
     const at = (k: Key) => (c.freeze ? Math.min(p.end - p.start, Math.max(0, k.t - c.sourceIn)) : (view.editAt(c.id, k.t) ?? p.start) - p.start);
     clipMotion[c.id] = { start: r3(p.start), end: r3(p.end), keys: c.keys.map((k) => ({ ...k, t: r3(at(k)) })).sort((a, b) => a.t - b.t) };
   }
-  const transitions = planTransitions(view, clipById, (vid) => infoOf(vid)?.seconds);
+  const transitions = planTransitions(view, clipById, (vid) => infoOf(vid)?.seconds, out.fps);
 
   const zooms: ZoomOp[] = [];
   for (const t of transitions) if (t.type === "zoom" && t.end > t.start) zooms.push({ start: t.start, end: t.end, scale: ZOOM_PEAK, mode: "through" });
@@ -440,6 +464,8 @@ export function planRender(input: PlanInput): RenderPlan {
   const lookFiles: Record<string, LookFile> = {};
   const file = (spec: LookFile) => { const name = `${spec.kind}_${hashOf(spec)}.${spec.kind === "mask" || spec.kind === "area" ? "pgm" : "cube"}`; lookFiles[name] = spec; return name; };
   const hdr = hdrT ? { transfer: hdrT, lut: file({ kind: "hdr", hdr: hdrT }) } : null;
+  // Phase 7: a final's codec (HDR kept is always HEVC 10-bit); previews are H.264.
+  const codec: Codec = kind === "final" && (hdr || tl.export?.codec === "hevc") ? "hevc" : "h264";
   const looks: Record<string, LookOp> = {};
   const missingLuts = new Set<string>();
   const lookFor = (c: ClipLook & { id: string }) => {
@@ -465,8 +491,8 @@ export function planRender(input: PlanInput): RenderPlan {
   const jl = { j: live.filter((c, i) => i > 0 && c.soundStart < c.start - 1e-6).length, l: live.filter((c, i) => i > 0 && c.soundStart > c.start + 1e-6).length, muted: (tl.tracks.v1 as unknown as { audioMuted?: boolean }[]).filter((c) => c.audioMuted).length };
   const turned = new Set(parts.map((p) => p.rotate)), framings = parts.filter((p) => p.framing);
   const lookText = parts.every((p) => p.rotate === parts[0].rotate && sameFraming(p.framing, parts[0].framing))
-    ? `${parts[0].rotate ? `Turn the footage ${parts[0].rotate}° clockwise, then fit` : "Fit"} to ${snapshot.aspect} at ${width}x${height}, 30 fps${parts[0].framing ? `; frame it: scale ${parts[0].framing.scale}, offset ${parts[0].framing.x}, ${parts[0].framing.y}` : ""}`
-    : `Fit each part to ${snapshot.aspect} at ${width}x${height}, 30 fps (turned ${Array.from(turned).join("/")}°, ${framings.length} framed parts)`;
+    ? `${parts[0].rotate ? `Turn the footage ${parts[0].rotate}° clockwise, then fit` : "Fit"} to ${snapshot.aspect} at ${width}x${height}, ${rateText(out.fps)} fps${parts[0].framing ? `; frame it: scale ${parts[0].framing.scale}, offset ${parts[0].framing.x}, ${parts[0].framing.y}` : ""}`
+    : `Fit each part to ${snapshot.aspect} at ${width}x${height}, ${rateText(out.fps)} fps (turned ${Array.from(turned).join("/")}°, ${framings.length} framed parts)`;
   const operations = [
     `Play ${parts.length} ${parts.length === 1 ? "part" : "parts"} from ${sources.length} ${sources.length === 1 ? "video" : "videos"} (${live.length} clips, ${cutCount} word cuts): ${total.toFixed(2)}s`,
     lookText,
@@ -479,14 +505,42 @@ export function planRender(input: PlanInput): RenderPlan {
     ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr"),
     `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${cleanupText(settings) !== "none" ? `, cleanup ${cleanupText(settings)}` : ""}${settings.declick ? `, ${Math.round(settings.declick * 1000)} ms fade at every cut` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
     settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
-    kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : hdr ? `Encode final: HEVC 10-bit HDR (${hdr.transfer === "pq" ? "PQ" : "HLG"}, BT.2020), ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
+    kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : hdr ? `Encode final: HEVC 10-bit HDR (${hdr.transfer === "pq" ? "PQ" : "HLG"}, BT.2020), ${width}x${height}, ${rateText(out.fps)} fps` : `Encode final: ${codec === "hevc" ? "HEVC" : "H.264"}, ${width}x${height}, ${rateText(out.fps)} fps`,
+    // Phase 7: what the final keeps and what it cannot (the check repeats these).
+    ...(kind === "final" ? exportNotes(out, width, height, input.source) : []),
   ];
   return {
-    model: "B", kind, width, height, fps: 30, aspect: snapshot.aspect, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })), parts, sound, sources, videos,
+    model: "B", kind, width, height, fps: out.fps, rate: out.rate, codec, aspect: snapshot.aspect, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })), parts, sound, sources, videos,
     outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, captionStyle, styledCaptions, texts, ass, operations, audioMix,
     transitions, clipMotion,
     looks, lookFiles, under, hdr, ...(hdr && ass ? { ass: hdrAss(ass, hdr.transfer) } : {}),
   };
+}
+
+/** Footage facts the export line needs (from the Video row): frame rate, size, HDR. */
+export type FootageInfo = { fps?: number | null; width?: number | null; height?: number | null; hdr?: boolean };
+/**
+ * Phase 7: the final's settings as one line, for get_project and the check: "Export (final): 1080p 1920x1080 16:9,
+ * H.264, 29.97 fps (the footage's)", plus a note when it is scaled up or capped.
+ */
+export function exportText(snap: Snapshot, footage?: FootageInfo): string {
+  const ex = snap.timeline.export ?? {};
+  const { width, height } = outputSize(snap.aspect, "final", ex.resolution);
+  const codec = footage?.hdr && (ex.hdr ?? "keep") === "keep" ? "HEVC 10-bit HDR" : ex.codec === "hevc" ? "HEVC" : "H.264";
+  const r = footage?.fps ? outputRate("final", footage.fps) : null;
+  const rate = !r ? "the footage's frame rate" : r.capped ? `60 fps (the footage is ${rateText(footage!.fps!)}; finals go up to 60)` : `${rateText(r.fps)} fps (the footage's)`;
+  const fw = footage?.width ?? 0, fh = footage?.height ?? 0;
+  const up = fw && fh && Math.min(width, height) > Math.min(fw, fh) * 1.05 ? `, scaled up from the footage's ${fw}x${fh}` : "";
+  const res = ex.resolution === "4k" ? "4K" : ex.resolution ?? "1080p";
+  return `Export (final): ${res} ${width}x${height} ${snap.aspect}, ${codec}, ${rate}${up}`;
+}
+
+/** Phase 7: a final's frame rate (kept, or capped at 60) and whether its size is above the footage's (scaled up). */
+function exportNotes(out: { fps: number; capped: boolean }, width: number, height: number, src: SourceInfo): string[] {
+  const lines = [out.capped ? `Frame rate: 60 fps (the footage is ${rateText(src.fps)} fps; finals go up to 60)` : `Frame rate: ${rateText(out.fps)} fps, the footage's`];
+  const srcShort = Math.min(src.width, src.height), outShort = Math.min(width, height);
+  if (srcShort > 0 && outShort > srcShort * 1.05) lines.push(`Size: scaled up from the footage's ${src.width}x${src.height} to ${width}x${height}`);
+  return lines;
 }
 
 /** The render plan's Phase 6 lines: colour, key, masks, blur, under layers, HDR. */
@@ -536,7 +590,7 @@ export function lookFileData(spec: LookFile, plan: { width: number; height: numb
  * when a clip next to it is short (a clip with transitions at both ends gives each half of itself) or, for those that
  * show both sides at once, when a side has less footage past the cut than half the transition.
  */
-export function planTransitions(view: SequenceView, clipById: Map<string, SeqClip>, secondsOf: (videoId: string) => number | undefined): TransitionOp[] {
+export function planTransitions(view: SequenceView, clipById: Map<string, SeqClip>, secondsOf: (videoId: string) => number | undefined, FPS = 30): TransitionOp[] {
   const out: TransitionOp[] = [];
   const live = view.clips.filter((c) => c.pieces.length);
   const pic = view.picture;
@@ -614,6 +668,9 @@ export type PlanFiles = {
   /** Phase 6: b-roll drawn behind V1, by clip id; the look files (LUTs, mask pictures), by file name. */
   under?: Record<string, string>;
   looks?: Record<string, string>;
+  /** Phase 7: how long each graphic's file plays (seconds, by clip id). A clip longer than its file holds the last
+   *  frame, as the player does with a custom graphic's recording. */
+  graphicSeconds?: Record<string, number>;
 };
 
 const q = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "'\\''").replace(/:/g, "\\:")}'`;
@@ -657,6 +714,8 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   const g: string[] = [];
   let idx = 0;
   const W = plan.width, H = plan.height;
+  // Phase 7: the output's frame rate (30 for previews; a final keeps its footage's). At 30 every string is as before.
+  const FPS = plan.fps || 30, R = plan.rate || String(FPS), TB = timeBase(R), fr = { fps: FPS, rate: R };
   const main = plan.sources[0];
   const info = (vid: string): { hasAudio: boolean; hdr: boolean; transfer?: HdrTransfer } => plan.videos?.[vid] ?? { hasAudio: vid === main ? source.hasAudio : true, hdr: vid === main ? !!source.hdr : false, transfer: vid === main ? source.transfer : undefined };
   // Phase 6: an HDR output keeps 10 bits all the way (PF); SDR pictures enter it through the SDR-into-HDR LUT.
@@ -666,7 +725,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   const lookPath = (name: string) => { const x = files.looks?.[name]; if (!x) throw new RenderPlanError(`A colour file of this edit is missing (${name}). Render again.`); return x; };
   /** A look picture (mask or area, .pgm) as a grey stream `frames` long. */
   const picture = (name: string, frames: number, tag: string) => {
-    inputs.push("-loop", "1", "-framerate", String(FPS), "-t", n3(frames / FPS + 1), "-i", lookPath(name));
+    inputs.push("-loop", "1", "-framerate", R, "-t", n3(frames / FPS + 1), "-i", lookPath(name));
     g.push(`[${idx++}:v]format=gray,setsar=1,trim=end_frame=${frames}[lp${tag}]`);
     return `lp${tag}`;
   };
@@ -721,18 +780,18 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   const underClips = plan.under ?? [];
   const baseOf = (start: number, frames: number, tag: string) => {
     const end = start + frames / FPS;
-    g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(frames / FPS + 1)},format=${PF},trim=end_frame=${frames}[bs${tag}]`);
+    g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(frames / FPS + 1)},format=${PF},trim=end_frame=${frames}[bs${tag}]`);
     let cur = `bs${tag}`;
     underClips.filter((u) => u.start < end - 1e-6 && u.end > start + 1e-6).forEach((u, j) => {
       const path = files.under?.[u.clipId];
       if (!path) return;
       const s = Math.max(start, u.start), e = Math.min(end, u.end), n = Math.max(1, Math.round((e - s) * FPS)), t = `${tag}u${j}`;
       inputs.push("-ss", n3(u.sourceStart + (s - u.start)), "-t", n3(e - s + 0.25), "-i", path);
-      g.push(`[${idx++}:v]fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[ua${t}]`);
+      g.push(`[${idx++}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[ua${t}]`);
       const c = colorChain(`ua${t}`, looks[u.clipId], "sdr", n, t);
       let ov = c.out;
-      if (u.keys?.length) { motionChain(g, ov, `um${t}`, u.keys, s - u.start, n, W, H, false, t, { hdr: !!hdr }); ov = `um${t}`; }
-      g.push(`[${ov}]settb=1/${FPS},setpts=PTS-STARTPTS+${Math.round((s - start) * FPS)}[ub${t}]`);
+      if (u.keys?.length) { motionChain(g, ov, `um${t}`, u.keys, s - u.start, n, W, H, false, t, { hdr: !!hdr, fr }); ov = `um${t}`; }
+      g.push(`[${ov}]settb=${TB},setpts=PTS-STARTPTS+${Math.round((s - start) * FPS)}[ub${t}]`);
       g.push(`[${cur}][ub${t}]overlay=eof_action=pass:format=auto,format=${PF}[bu${t}]`);
       cur = `bu${t}`;
     });
@@ -748,7 +807,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     inOf[vid] = idx++;
   }
   const splitOf = (kind: "v" | "a", vid: string, n: number, name: (i: number) => string) => {
-    if (kind === "v") g.push(`[${inOf[vid]}:v]fps=${FPS}${n > 1 ? `,split=${n}${Array.from({ length: n }, (_, i) => `[${name(i)}]`).join("")}` : `[${name(0)}]`}`);
+    if (kind === "v") g.push(`[${inOf[vid]}:v]fps=${R}${n > 1 ? `,split=${n}${Array.from({ length: n }, (_, i) => `[${name(i)}]`).join("")}` : `[${name(0)}]`}`);
     else g.push(`[${inOf[vid]}:a]aresample=48000${n > 1 ? `,asplit=${n}${Array.from({ length: n }, (_, i) => `[${name(i)}]`).join("")}` : `[${name(0)}]`}`);
   };
 
@@ -763,14 +822,14 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     const toneOf = (vid: string, dom: "sdr" | "hdr" = "sdr") => (info(vid).hdr && dom === "sdr" ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "");
     /** Where a clip's picture lives: HDR (10-bit, the output's transfer) or SDR (graded, keyed, other transfer, or SDR). */
     const domOf = (vid: string, look: LookOp | undefined): "sdr" | "hdr" => (hdr && info(vid).hdr && (info(vid).transfer ?? "pq") === hdr.transfer && !look?.grade && !look?.key ? "hdr" : "sdr");
-    const fit = `fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1`;
+    const fit = `fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1`;
     const frame = (from: string, f: Framing, to: string, tag: string, canvas: "black" | "clear" | { base: string } = "black") => {
       // The fitted picture is scaled about its centre and moved over a black frame (Phase 6: over what is behind V1, or
       // a clear frame when keyframes move it next).
       const sw = even(W * f.scale), sh = even(H * f.scale);
       const ox = Math.round((W - sw) / 2 + f.x * W), oy = Math.round((H - sh) / 2 + f.y * H);
-      if (canvas === "black") g.push(`color=c=black:s=${W}x${H}:r=${FPS}${hdr ? `,format=${PF}` : ""}[fcanvas${tag}]`);
-      else if (canvas === "clear") g.push(`color=c=black@0:s=${W}x${H}:r=${FPS},format=${PFA}[fcanvas${tag}]`);
+      if (canvas === "black") g.push(`color=c=black:s=${W}x${H}:r=${R}${hdr ? `,format=${PF}` : ""}[fcanvas${tag}]`);
+      else if (canvas === "clear") g.push(`color=c=black@0:s=${W}x${H}:r=${R},format=${PFA}[fcanvas${tag}]`);
       g.push(`[${from}]scale=${sw}:${sh},setsar=1[fscaled${tag}]`);
       g.push(`[${typeof canvas === "object" ? canvas.base : `fcanvas${tag}`}][fscaled${tag}]overlay=x=${ox}:y=${oy}:shortest=1${canvas === "clear" ? `:format=auto,format=${PFA}` : `,format=${PF}`}[${to}]`);
     };
@@ -791,10 +850,10 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       const look = `${turnOf(x.rotate)}${toneOf(x.videoId, dom)}${fit}`;
       // tpad clones a frame at the link's frame rate: without a rate (after trim) FFmpeg 7 gives the clones one
       // timestamp and they are dropped, so the stream is put on the 30 fps grid first.
-      const pad = `,fps=${FPS},tpad=stop_mode=clone:stop=2,trim=end_frame=${N}`;
+      const pad = `,fps=${R},tpad=stop_mode=clone:stop=2,trim=end_frame=${N}`;
       // At another speed output frame n shows source frame floor(rate x n) of the stretch (in play order): frame j goes to
       // tick ceil(j / rate) and fps keeps the last frame of each tick. The player shows the same frame (showAt).
-      const pick = (rate: number) => `settb=1/${FPS},setpts=ceil(N/${rate}-0.000001),fps=${FPS}`;
+      const pick = (rate: number) => `settb=${TB},setpts=ceil(N/${rate}-0.000001),fps=${R}`;
       let chain: string;
       if (r < 0) {
         const parts: string[] = [];
@@ -802,11 +861,11 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
           const a = Math.max(x.srcIn, b - 1), M = Math.max(1, Math.round((b - a) * FPS));
           inputs.push("-ss", n6(a), "-t", n3(b - a + 0.25), "-i", pathOf(x.videoId));
           const ii = idx++;
-          g.push(`[${ii}:v]fps=${FPS},trim=end_frame=${M},${look},reverse,setpts=PTS-STARTPTS[rc${tag}_${j}]`);
+          g.push(`[${ii}:v]fps=${R},trim=end_frame=${M},${look},reverse,setpts=PTS-STARTPTS[rc${tag}_${j}]`);
           parts.push(`[rc${tag}_${j}]`);
         }
         chain = `${parts.join("")}concat=n=${parts.length}:v=1:a=0,${pick(-r)}${pad}`;
-      } else if (r === 0) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${FPS},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
+      } else if (r === 0) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
       else if (r !== 1) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
       else chain = `[${branch(x.videoId)}]${vt(x)}${exact ? pad : ""},${look}`;
       const clipId = x.clipId ?? (x.clipIds?.length === 1 ? x.clipIds[0] : undefined);
@@ -819,12 +878,12 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       // Phase 6: what shows around or through the clip is what is behind V1 (black, or b-roll laid under it).
       const behind = () => (underClips.length ? baseOf(x.start, N, tag) : null);
       if (!x.framing && !m) {
-        if (c.alpha) { const b = behind(); if (b) g.push(`[${b}][${cur}]overlay=format=auto,format=${PF}[${out}]`); else { g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(N / FPS + 1)},format=${PF},trim=end_frame=${N}[pb${tag}]`); g.push(`[pb${tag}][${cur}]overlay=format=auto,format=${PF}[${out}]`); } }
+        if (c.alpha) { const b = behind(); if (b) g.push(`[${b}][${cur}]overlay=format=auto,format=${PF}[${out}]`); else { g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(N / FPS + 1)},format=${PF},trim=end_frame=${N}[pb${tag}]`); g.push(`[pb${tag}][${cur}]overlay=format=auto,format=${PF}[${out}]`); } }
         else g.push(`[${cur}]format=${PF}[${out}]`);
         return;
       }
       if (x.framing) { const b = m ? null : behind(); frame(cur, x.framing, `pg${tag}`, tag, m ? "clear" : b ? { base: b } : "black"); cur = `pg${tag}`; }
-      if (m) { motionChain(g, cur, out, m.keys, x.start - m.start, N, W, H, true, tag, { base: behind() ?? undefined, hdr: !!hdr }); return; }
+      if (m) { motionChain(g, cur, out, m.keys, x.start - m.start, N, W, H, true, tag, { base: behind() ?? undefined, hdr: !!hdr, fr }); return; }
       g.push(`[${cur}]format=${PF}[${out}]`);
     };
 
@@ -836,7 +895,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
     // concat's output counts in microseconds, a hair before each frame's exact time; back on the 1/30 s grid so every
     // overlay below lines up with its own frame (else each one shows a frame late).
-    g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0${uniform ? "" : `,settb=1/${FPS}`}[vcat]`);
+    g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0${uniform ? "" : `,settb=${TB}`}[vcat]`);
     v = "vcat";
     if (uniform) {
       const p0 = plan.parts[0], lk = looks[p0.clipIds[0]], dom = domOf(p0.videoId, lk);
@@ -846,7 +905,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       const all = Math.max(1, Math.round(plan.outputSeconds * FPS));
       const c = colorChain(v, lk, dom, all, "u");
       v = c.out;
-      if (c.alpha && !p0.framing) { g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(all / FPS + 1)},format=${PF},trim=end_frame=${all}[ubk]`); g.push(`[ubk][${v}]overlay=format=auto,format=${PF}[vlook]`); v = "vlook"; }
+      if (c.alpha && !p0.framing) { g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(all / FPS + 1)},format=${PF},trim=end_frame=${all}[ubk]`); g.push(`[ubk][${v}]overlay=format=auto,format=${PF}[vlook]`); v = "vlook"; }
       if (p0.framing) { frame(v, p0.framing, "vframed", ""); v = "vframed"; }
     }
 
@@ -860,7 +919,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
         const up = t.at - t.start, down = t.end - t.at;
         // In an HDR output white is SDR white (203 nits), as everything SDR is placed.
         const white = hdr ? "0x" + sdrToHdr(1, 1, 1, hdr.transfer).map((x) => Math.round(x * 255).toString(16).padStart(2, "0")).join("").toUpperCase() : "0xFFFFFF";
-        g.push(`color=c=${t.type === "dip-black" ? "0x000000" : white}:s=${W}x${H}:r=${FPS}:d=${n6(D)},format=${PFA}${up > 1e-6 ? `,fade=t=in:st=0:d=${n6(up)}:alpha=1` : ""},fade=t=out:st=${n6(up)}:d=${n6(down)}:alpha=1,setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[dp${i}]`);
+        g.push(`color=c=${t.type === "dip-black" ? "0x000000" : white}:s=${W}x${H}:r=${R}:d=${n6(D)},format=${PFA}${up > 1e-6 ? `,fade=t=in:st=0:d=${n6(up)}:alpha=1` : ""},fade=t=out:st=${n6(up)}:d=${n6(down)}:alpha=1,setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[dp${i}]`);
         g.push(`[${v}][dp${i}]overlay=${span}${hdr ? `:format=auto,format=${PF}` : ""}[vd${i}]`);
         v = `vd${i}`;
         return;
@@ -880,16 +939,16 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
         // Whip: both sides move together, blurred along the move (strongest at the cut).
         const e = smoothExpr(p);
         const cmds = Array.from({ length: Math.round(D * FPS) }, (_, k) => `${n3(k / FPS)} gblur@wp${i} ${dx ? "sigma" : "sigmaV"} ${Math.max(0.01, (dx ? W : H) * WHIP_BLUR * Math.sin((Math.PI * k) / (D * FPS))).toFixed(2)}`).join(";");
-        g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(D)}${hdr ? `,format=${PF}` : ""}[wc${i}]`);
+        g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(D)}${hdr ? `,format=${PF}` : ""}[wc${i}]`);
         g.push(`[wc${i}][${a}]overlay=x='${dx * W}*${e}':y='${dy * H}*${e}':eval=frame${hdr ? ":format=auto" : ""}[wa${i}]`);
         g.push(`[wa${i}][${b}]overlay=x='${dx * W}*(${e}-1)':y='${dy * H}*(${e}-1)':eval=frame${hdr ? ":format=auto" : ""},sendcmd=c='${cmds}',gblur@wp${i}=sigma=0.01:sigmaV=0.01,format=${PF}[tx${i}]`);
       }
-      g.push(`[tx${i}]settb=1/${FPS},setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[txo${i}]`);
+      g.push(`[tx${i}]settb=${TB},setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[txo${i}]`);
       g.push(`[${v}][txo${i}]overlay=${span}${hdr ? `:format=auto,format=${PF}` : ""}[vt${i}]`);
       v = `vt${i}`;
     });
     // Each video's decoder, split into the branches its segments took.
-    for (const [vid, ls] of Object.entries(branches)) g.push(`[${inOf[vid]}:v]fps=${FPS}${ls.length > 1 ? `,split=${ls.length}${ls.map((l) => `[${l}]`).join("")}` : `[${ls[0]}]`}`);
+    for (const [vid, ls] of Object.entries(branches)) g.push(`[${inOf[vid]}:v]fps=${R}${ls.length > 1 ? `,split=${ls.length}${ls.map((l) => `[${l}]`).join("")}` : `[${ls[0]}]`}`);
   }
 
   // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts and parts silent at their speed,
@@ -936,7 +995,8 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
  * multiplies its alpha. The curves are the same tables the player reads (motion.ts). opaque: laid on black (V1);
  * otherwise it keeps its alpha (b-roll, graphics). `offset`: seconds into the clip at the picture's first frame.
  */
-export function motionChain(g: string[], inp: string, out: string, keys: Key[], offset: number, frames: number, W: number, H: number, opaque: boolean, tag: string, o: { base?: string; hdr?: boolean } = {}) {
+export function motionChain(g: string[], inp: string, out: string, keys: Key[], offset: number, frames: number, W: number, H: number, opaque: boolean, tag: string, o: { base?: string; hdr?: boolean; fr?: { fps: number; rate: string } } = {}) {
+  const FPS = o.fr?.fps ?? 30, RATE = o.fr?.rate ?? String(FPS);
   const tracks = keyTracks(keys);
   if (!tracks) { g.push(`[${inp}]null[${out}]`); return; }
   // A picture that only ever gets small is scaled down first (a proper scaler), so the corner mapping does not alias.
@@ -956,7 +1016,7 @@ export function motionChain(g: string[], inp: string, out: string, keys: Key[], 
   let cur = `mv${tag}`;
   if (tracks.opacity) {
     // The opacity curve on a 2x2 grey picture (cheap per frame), stretched over the frame and multiplied into the alpha.
-    g.push(`color=c=white:s=2x2:r=${FPS}:d=${n6(frames / FPS + 1)},format=gray,geq=lum='255*clip(${motionExpr(tracks, "opacity", `(T+${n6(offset)})`)},0,1)',scale=${W}:${H},trim=end_frame=${frames}[mk${tag}]`);
+    g.push(`color=c=white:s=2x2:r=${RATE}:d=${n6(frames / FPS + 1)},format=gray,geq=lum='255*clip(${motionExpr(tracks, "opacity", `(T+${n6(offset)})`)},0,1)',scale=${W}:${H},trim=end_frame=${frames}[mk${tag}]`);
     g.push(`[${cur}]split[ma${tag}][mb${tag}]`);
     g.push(`[ma${tag}]alphaextract[mc${tag}]`);
     g.push(`[mc${tag}][mk${tag}]blend=all_mode=multiply[md${tag}]`);
@@ -965,7 +1025,7 @@ export function motionChain(g: string[], inp: string, out: string, keys: Key[], 
   }
   if (opaque) {
     // Over black, or (Phase 6) over what is behind V1.
-    if (!o.base) g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(frames / FPS + 1)},trim=end_frame=${frames}[mbg${tag}]`);
+    if (!o.base) g.push(`color=c=black:s=${W}x${H}:r=${RATE}:d=${n6(frames / FPS + 1)},trim=end_frame=${frames}[mbg${tag}]`);
     g.push(`[${o.base ?? `mbg${tag}`}][${cur}]overlay=format=auto,format=${o.hdr ? "yuv420p10le" : "yuv420p"}[${out}]`);
   } else g.push(`[${cur}]null[${out}]`);
 }
@@ -974,6 +1034,7 @@ type ColorCtx = { colorChain: (inp: string, look: LookOp | undefined, dom: "sdr"
 /** Zooms, b-roll, graphics, captions on [v]; returns the label of the finished picture ([vout]). */
 function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string, cc: ColorCtx): string {
   const W = plan.width, H = plan.height;
+  const FPS = plan.fps || 30, R = plan.rate || String(FPS), TB = timeBase(R), fr = { fps: FPS, rate: R };
   let v = v0;
   // 3. Zooms: scale per frame, crop back to size.
   if (plan.zooms.length) {
@@ -994,12 +1055,12 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     if (b.keys?.length || look || plan.hdr) {
       // Keyframed b-roll: moved, scaled, turned and faded over the picture (picture-in-picture). Phase 6: its look
       // (grade, key, masks, blur) first; in an HDR output it goes in as SDR.
-      g.push(`[${bi}:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[bk${i}]`);
+      g.push(`[${bi}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[bk${i}]`);
       let cur = cc.colorChain(`bk${i}`, look, "sdr", n, `b${i}`).out;
-      if (b.keys?.length) { motionChain(g, cur, `bm${i}`, b.keys, 0, n, W, H, false, `b${i}`, { hdr: !!plan.hdr }); cur = `bm${i}`; }
-      g.push(`[${cur}]settb=1/30,setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
+      if (b.keys?.length) { motionChain(g, cur, `bm${i}`, b.keys, 0, n, W, H, false, `b${i}`, { hdr: !!plan.hdr, fr }); cur = `bm${i}`; }
+      g.push(`[${cur}]settb=${TB},setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
     } else
-    g.push(`[${bi}:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,settb=1/30,setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
+    g.push(`[${bi}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,settb=${TB},setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
     g.push(`[${v}][br${i}]overlay=0:0:enable='between(t,${n6(b.start)},${n6(b.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vb${i}]`);
     v = `vb${i}`;
   });
@@ -1011,14 +1072,16 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     const gi = next();
     // HDR output: the graphic's colours as the same light at SDR white (16-bit RGB through the SDR-into-HDR LUT).
     const toHdr = cc.hdrLut ? `,scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrap16le,lut3d=file=${q(cc.hdrLut)}:interp=trilinear,scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd,format=${cc.PFA}` : "";
+    const n = Math.max(1, Math.round((gr.end - gr.start) * FPS));
+    // Phase 7: a file shorter than its clip (a custom graphic placed longer than its recording) holds its last frame.
+    const hold = (files.graphicSeconds?.[gr.clipId] ?? Infinity) < gr.end - gr.start - 0.5 / FPS;
     if (gr.keys?.length) {
       // Keyframed graphic: centred on a transparent frame, then moved, scaled, turned and faded.
-      const n = Math.max(1, Math.round((gr.end - gr.start) * FPS));
-      g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=30,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}${toHdr}[gk${i}]`);
-      motionChain(g, `gk${i}`, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`, { hdr: !!plan.hdr });
+      g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=${R},tpad=stop_mode=clone:stop=${hold ? -1 : 2},trim=end_frame=${n}${toHdr}[gk${i}]`);
+      motionChain(g, `gk${i}`, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`, { hdr: !!plan.hdr, fr });
       g.push(`[gm${i}]setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     } else
-    g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease${toHdr},setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
+    g.push(`[${gi}:v]${hold ? `fps=${R},tpad=stop_mode=clone:stop=-1,trim=end_frame=${n},` : ""}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease${toHdr},setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n6(gr.start)},${n6(gr.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vg${i}]`);
     v = `vg${i}`;
   });
@@ -1099,9 +1162,14 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
   const preview = plan.kind === "preview";
   const trc = plan.hdr ? (plan.hdr.transfer === "pq" ? "smpte2084" : "arib-std-b67") : "";
   // HDR (Phase 6): HEVC Main 10 with BT.2020 and the source's transfer in the stream and the container.
+  // Phase 7: the output's frame rate (a final keeps its footage's), a keyframe every 2 s, and the export's codec. HEVC
+  // carries the hvc1 tag so Apple devices play it; at 4K x265 runs one preset faster.
+  const R = plan.rate || "30", gop = String(Math.round((plan.fps || 30) * 2)), x265Preset = plan.width * plan.height > 4e6 ? "faster" : "fast";
   const video = plan.hdr
-    ? ["-c:v", "libx265", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1", "-x265-params", `log-level=error:colorprim=bt2020:transfer=${trc}:colormatrix=bt2020nc:range=limited:repeat-headers=1${plan.hdr.transfer === "pq" ? ":hdr10=1:hdr10-opt=1" : ""}`, "-r", "30", "-g", "60", "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", trc]
-    : ["-c:v", "libx264", "-preset", preview ? "ultrafast" : "veryfast", "-crf", preview ? "28" : "20", "-pix_fmt", "yuv420p", "-r", "30", "-g", "60", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+    ? ["-c:v", "libx265", "-preset", x265Preset, "-crf", "20", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1", "-x265-params", `log-level=error:colorprim=bt2020:transfer=${trc}:colormatrix=bt2020nc:range=limited:repeat-headers=1${plan.hdr.transfer === "pq" ? ":hdr10=1:hdr10-opt=1" : ""}`, "-r", R, "-g", gop, "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", trc]
+    : plan.codec === "hevc"
+      ? ["-c:v", "libx265", "-preset", x265Preset, "-crf", "22", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-x265-params", "log-level=error:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+      : ["-c:v", "libx264", "-preset", preview ? "ultrafast" : "veryfast", "-crf", preview ? "28" : "20", "-pix_fmt", "yuv420p", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
   return [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
     ...inputs,
