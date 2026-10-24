@@ -39,7 +39,7 @@ export default async function render(app: FastifyInstance) {
     return { ok: true, fileId: f.id, link: f.webViewLink ?? null, message: `Saved to your Google Drive as "${res.fileName}".` };
   });
 
-  // Live progress: { step, steps, percent } exactly as the render modal expects, then done or failed.
+  // Live progress: { step, steps, percent, etaSec } exactly as the render modal expects, then done or failed.
   app.get("/renders/:id/events", async (req, reply) => {
     const r = await ownedRender(req.user!.id, (req.params as { id: string }).id);
     const s = openSse(req, reply);
@@ -55,14 +55,14 @@ export default async function render(app: FastifyInstance) {
     let stop = () => {};
     const end = async () => { if (ended) return; ended = true; stop(); await finish(); };
     stop = await listen(renderChannel(r.id), (msg) => {
-      const p = JSON.parse(msg) as { status: string; step: number; steps: string[]; percent: number };
+      const p = JSON.parse(msg) as { status: string; step: number; steps: string[]; percent: number; etaSec?: number | null };
       if (p.status === "done" || p.status === "failed") { void end(); return; }
-      s.send("progress", { step: p.step, steps: p.steps, percent: p.percent });
+      s.send("progress", { step: p.step, steps: p.steps, percent: p.percent, etaSec: p.etaSec ?? null });
     });
     s.onClose(() => stop());
     if (ended) stop();
     const cur = await readRender(r.id);
-    if (cur) s.send("progress", { step: cur.step, steps: cur.steps, percent: cur.percent });
+    if (cur) s.send("progress", { step: cur.step, steps: cur.steps, percent: cur.percent, etaSec: cur.etaSec ?? null });
     // A job that already finished between the first read and the subscribe.
     const again = await prisma.render.findUniqueOrThrow({ where: { id: r.id } });
     if (again.status === "done" || again.status === "failed") await end();
