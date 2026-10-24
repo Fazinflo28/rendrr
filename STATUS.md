@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 23 October 2026 (UTC). New: Phase 1 of the editor plan (docs/plans/phase-1.md). The timeline shows the edit as it renders, with no gaps. Picture and dialogue clips are linked and edit together. The player plays the real edit, or the rendered preview when it is up to date. The after-render check measures the file itself. The connector sends text only unless asked for images. One email is one account.
+Last updated: 24 October 2026 (UTC). New: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
 
 ## 1. Links
 
@@ -377,6 +377,34 @@ Three items of the plan were not fully built in the first pass. They are now:
 - get_project gives `Export (final): 1080p 1920x1080 16:9, H.264, 23.976 fps (the footage's)`. The smoke footage's original is 23.976 fps, so its final keeps that; the editor plays the 30 fps preview copy.
 - set_export 720p HEVC through the connector; render_preview's check gives `Export (final): 720p 1280x720 16:9, HEVC, 23.976 fps (the footage's)`.
 - The live editor in real Chrome: the Export window shows 16:9, 720p and HEVC selected, with "1280x720 · HEVC · 23.976 fps, kept from your footage". It was closed without changes, and the edit was set back to 1080p H.264.
+- Time left, seen during the Phase 8 renders: "at 61% (Burning captions), about 45 s left" (preview) and "at 83% (Encoding 1080p), about 35 s left" (final). When done, the connector says how long it took: "final 1080p rendered in 209.4 s".
+
+## Phase 8: a 20-minute talking head, edited through the connector only (24 October, live)
+
+**The footage.** The smoke account's talking head, joined 16 times into one file: 20 min 33 s, 1920x1080, 30 fps, 414 MB.
+- Videos from the internet could not be downloaded from here (the network blocks them).
+- It was added the way the app adds a file from a computer: the browser's preview copy and audio settings, byte for byte. It was ready 65 s after the upload started.
+- The original was then uploaded once for the final. That upload is the one step outside the connector, and it is outside on purpose: the original stays on the user's computer until a final needs it.
+
+| | |
+|---|---|
+| Calls | **8**: list_footage, get_footage, create_project, apply_edits (all 13 changes in one call), render_preview, get_render, render_final, get_render. **No images.** |
+| Tokens | Sent: 1.4k characters (about 0.4k tokens). Back: 26.9k characters (about 6.7k tokens). Of that, 24k is get_footage, almost all of it the 20-minute transcript the AI needs to choose cuts. The list of tools is 20 KB (about 5k tokens), sent once per chat. |
+| The edit | 231 pauses over 0.4 s cut (105.9 s), 25 fillers removed, bold captions on 100% of spoken words, 8 B-roll cutaways, lo-fi music at -20 dB that drops 12 dB under speech, voice cleanup at -14 LUFS / -1 dBTP. 1233.1 s became 1116.4 s, with 170 cuts. |
+| Preview | 540p, 106 MB, **rendered in 93.7 s** (its limit for this length: 6.2 min) |
+| Final | 1080p 1920x1080, H.264, 30 fps (the footage's), 351 MB, **rendered in 209.4 s** (limit: 30.8 min) |
+| Timeouts, failures | None |
+| The file, measured | Picture 1116.43 s and sound 1116.43 s. No black and no silence. -14 LUFS, true peak -1.7 dBTP. |
+| Check flag | 37 clips under 0.5 s. Cutting every pause over 0.4 s leaves single words between pauses. The check reports them; whether to keep them is the AI's call (a longer `overSeconds`, or joining them). |
+
+**Editor = render.** The live editor in real Chrome (Browserless), moved by clicking the ruler at 0:30, 5:00, 9:17, 13:22 and 16:43:
+- At each moment, the footage time the editor's player was showing equals the render plan's within 0.2 ms.
+- Each picture was compared with the rendered preview's frame. Mean difference 2.2-3.5 out of 255, which is the preview's compression. On a still talking head, neighbouring frames differ by about as much as that.
+- The player was running the live edit, not the rendered file. No page errors.
+- The editor's timeline and the final are the same length to the frame: 1116.467 s, 33,494 frames.
+- The preview is one frame (33 ms) shorter, at the very end only. The browser's preview copy ends one frame before the original because the copy stops where its sound stops. The editor shows the copy's last frame for that final 33 ms; the final shows the original's last frame.
+
+The test footage and the edit stay in the smoke account. The original is deleted automatically on 25 October at 20:29 UTC.
 
 ## Reference-video test (23 October, live, through the connector only)
 
