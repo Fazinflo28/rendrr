@@ -112,8 +112,14 @@ await page.waitForSelector("#stage video");
 const SW = 96, SH = 54;
 const small = (png) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-vf", `scale=${SW}:${SH}:flags=area`, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { input: png, maxBuffer: 64 << 20 });
 const fileFrame = (k) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", out, "-vf", `select=eq(n\\,${k}),scale=${SW}:${SH}:flags=area`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { maxBuffer: 64 << 20 });
-// The source frame a frame shows (left half: frame mod 50, right half: frame / 50, in full-range grey).
-const shown = (px, xl = 24, xr = 72, y = 27) => { const g = (x) => 16 + (px[(y * SW + x) * 3] * 219) / 255; return 50 * Math.round((g(xr) - 16) / 30) + Math.round((g(xl) - 16) / 4); };
+// The source frame a frame shows (left half: frame mod 50, right half: frame / 50), read from its luma (a red or
+// green channel carries the encoder's slight colour shift).
+// The file's frame is read from its own Y plane (H.264 shifts its colour a little, which an RGB reading would carry);
+// the editor's screenshot is neutral grey there (the footage is lossless), so any of its channels is its luma.
+const fileGrey = (k) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", out, "-vf", `select=eq(n\\,${k}),scale=${SW}:${SH}:flags=area`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"], { maxBuffer: 64 << 20 });
+const level = (G, step, x, y) => { const g = 16 + (G[(y * SW + x) * step] * 219) / 255; return g; };
+const shownIn = (G, step, xl = 24, xr = 72, y = 27) => 50 * Math.round((level(G, step, xr, y) - 16) / 30) + Math.round((level(G, step, xl, y) - 16) / 4);
+const shown = (px) => shownIn(px, 3);
 const diff = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
 
 // Moments: speed, freeze, reverse, inside each transition, the keyframed clip, the moving picture-in-picture.
@@ -137,14 +143,14 @@ for (const m of moments) {
   const shot = await page.locator("#stage").screenshot();
   const ed = small(shot);
   const fi = fileFrame(m.k);
-  if (process.env.DUMP && (m.kind !== "frame" || shown(fi) !== shown(ed))) {
+  if (process.env.DUMP && (m.kind !== "frame" || shownIn(fileGrey(m.k), 1) !== shown(ed))) {
     // Side by side: the render's frame (left) and the editor's (right), for a look.
     const name = `${process.env.DUMP}/${t.toFixed(2)}-${m.kind}`;
     writeFileSync(name + "-ed.png", shot);
     execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", out, "-i", name + "-ed.png", "-filter_complex", `[0:v]select=eq(n\\,${m.k}),scale=480:270[a];[1:v]scale=480:270[b];[a][b]hstack`, "-frames:v", "1", name + ".png"]);
   }
   if (m.kind === "frame") {
-    const a = shown(fi), b = shown(ed);
+    const a = shownIn(fileGrey(m.k), 1), b = shown(ed);
     rows.push(`${t.toFixed(2)}s frame: file shows ${a}, editor ${b}`);
     if (a !== b) fails++;
   } else {

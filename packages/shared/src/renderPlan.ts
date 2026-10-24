@@ -607,7 +607,9 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       const N = Math.max(1, Math.round((x.end - x.start) * FPS));
       const r = rateOf(x);
       const look = `${turnOf(x.rotate)}${toneOf(x.videoId)}${fit}`;
-      const pad = `,tpad=stop_mode=clone:stop=2,trim=end_frame=${N}`;
+      // tpad clones a frame at the link's frame rate: without a rate (after trim) FFmpeg 7 gives the clones one
+      // timestamp and they are dropped, so the stream is put on the 30 fps grid first.
+      const pad = `,fps=${FPS},tpad=stop_mode=clone:stop=2,trim=end_frame=${N}`;
       // At another speed output frame n shows source frame floor(rate x n) of the stretch (in play order): frame j goes to
       // tick ceil(j / rate) and fps keeps the last frame of each tick. The player shows the same frame (showAt).
       const pick = (rate: number) => `settb=1/${FPS},setpts=ceil(N/${rate}-0.000001),fps=${FPS}`;
@@ -622,7 +624,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
           parts.push(`[rc${tag}_${j}]`);
         }
         chain = `${parts.join("")}concat=n=${parts.length}:v=1:a=0,${pick(-r)}${pad}`;
-      } else if (r === 0) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
+      } else if (r === 0) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${FPS},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
       else if (r !== 1) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
       else chain = `[${branch(x.videoId)}]${vt(x)}${exact ? pad : ""},${look}`;
       const clipId = x.clipId ?? (x.clipIds?.length === 1 ? x.clipIds[0] : undefined);

@@ -262,6 +262,7 @@ Three items of the plan were not fully built in the first pass. They are now:
   - The player read zooms and text animations at the exact playhead time; the render draws them at frame times. The player now reads every curve at the start of the frame showing.
   - Chromium could keep showing the old frame of a paused video after a seek. The player now seeks again 0.1 ms later, inside the same frame.
   - The demo build's page did not declare UTF-8, so "·" showed as "Â·" when it was opened without a server that says so.
+- **Found by the live check, fixed:** a freeze frame rendered as a single frame on the server, so the file was 0.77 s short (the check flagged it: "file is 68.63s but the render planned 69.40s"). The worker runs FFmpeg 7.1. There, `tpad` after a `trim` that leaves one frame gives its copies one timestamp, and they are dropped. Local tests ran FFmpeg 6.1, which does not do that. The stream is now put on the 30 fps grid before `tpad`. Since then, the worker tests and the editor-vs-render test also run with the worker image's FFmpeg 7.1.5: 32 of 32 pass, and the match test passes.
 
 ### Phase 5 tests
 
