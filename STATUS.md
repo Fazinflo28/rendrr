@@ -312,6 +312,30 @@ Three items of the plan were not fully built in the first pass. They are now:
 | Editor vs render in a browser (`color-match.mjs`): plain baseline 0.67, grade 0.66, LUT 0.74, masks 0.27, pixelate + blurred area 0.74, key over b-roll 0.61 (mean difference out of 255) | pass |
 | Phase 4 and 5 browser tests after the player changes | 46 motion moments, captions within 2 px: pass |
 | Browser, demo build: Color tab (sliders, curve point, LUT import and amount, copy to every clip, key, ellipse and path masks with outlines, blur area, undo, HDR setting), phone width | all work, no page errors |
+| Timeline clicks under the page's 0.8 zoom (`ruler-click.mjs`, new) | 10 of 10 off on the old code; all on their label now |
+
+### Phase 6 live (24 October)
+
+- **The first live preview failed** ("Render failed at Cutting clips"). The cause: every scaler in FFmpeg's graph starts one thread per CPU. A graded edit has about 70 scalers, and the worker (6 CPUs) has a limit of 1,000 threads. Reproduced locally with a 400-thread container limit. Renders now cap the graph at 4 threads (`FFMPEG_FILTER_THREADS` changes it). If FFmpeg still runs out, the render tries once more with one thread. The worker logs its CPUs and thread limit when it starts.
+- **Through the connector on the smoke project:** one apply_edits graded two clips, copied the grade, matched a third clip to the first (measured), masked one and pixelated an area of another. render_preview took 22 s. Its Looks line reads back all of it.
+- **get_preview_frames:**
+  - 15 s: graded (brighter, warmer)
+  - 40 s: the feathered ellipse mask over black
+  - 55 s: the matched clip
+  - 66 s: the pixelated area
+- **LUT import through the API:**
+  - A broken file is refused with its reason, and nothing is stored.
+  - A real .cube is stored and read back.
+  - set_grade with that LUT moved the frame at 2 s from RGB 130,129,112 to 143,129,101; the LUT predicts about 145,129,99.
+- **The live editor** in real Chrome (Browserless; Playwright's Chromium cannot play H.264):
+  - The proxy loads with CORS from the bucket (also checked for app.rendrr.live).
+  - The look canvas draws: plain at 5 s, graded at 15 s, masked at 40 s (screenshot matches the rendered frame), matched at 55 s, pixelated at 66 s.
+  - One exposure step and its undo: back to 0.00. The test edits were undone through the connector, and the project's content is as it was.
+- **Found and fixed while testing:**
+  - Timeline clicks and drags landed at 0.8x the time under the pointer. The page is drawn at CSS zoom 0.8, and the timeline mixed screen pixels with CSS pixels. This had been wrong since the V2 design.
+  - Unknown tool arguments were dropped silently: apply_edits with `ops` instead of `edits` only posted the note. A misspelled field inside an edit saved a version that changed nothing. Both are errors now, naming what the tool or op takes.
+  - The check named an imported LUT by its id; now by its name.
+- **Not testable live:** HDR. No HDR footage is in the account, and adding footage is not allowed in live tests. HDR is covered by the worker test (a real PQ clip rendered and read back).
 
 ## Reference-video test (23 October, live, through the connector only)
 
