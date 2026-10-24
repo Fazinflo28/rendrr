@@ -183,7 +183,7 @@ export async function renderJob(ctx: Ctx) {
       await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? graphPath : a)), { signal, onProgress });
     } catch (e) {
       if (signal.aborted) throw e;
-      console.error("[render] ffmpeg failed:", (e as Error).message.slice(0, 1500));
+      console.error("[render] ffmpeg failed:", (e as Error).message.slice(0, 2600));
       throw new JobError(`Render failed at '${steps[Math.min(endStep - 1, i)]}'. Nothing was lost. Try again.`, "ffmpeg", true);
     }
     i = endStep;

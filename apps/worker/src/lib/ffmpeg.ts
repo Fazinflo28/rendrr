@@ -30,7 +30,8 @@ export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<{ 
       opts.signal?.removeEventListener("abort", kill);
       if (opts.signal?.aborted) return reject(new JobError("Stopped."));
       if (code === 0) resolve({ stdout, stderr });
-      else reject(Object.assign(new Error(`${cmd} exited with ${code}: ${stderr.slice(-800)}`), { stderr }));
+      // The cause is usually at the start (the filter that failed) and the consequences at the end: keep both.
+      else reject(Object.assign(new Error(`${cmd} exited with ${code}: ${stderr.length > 2400 ? `${stderr.slice(0, 1600)} … ${stderr.slice(-800)}` : stderr}`), { stderr }));
     });
   });
 }
