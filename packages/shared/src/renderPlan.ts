@@ -8,7 +8,7 @@ import { cutRegions, isSequence, mainVideoOf, mergeRanges, sequenceView, type At
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
-import { autoMusicFades, CLEANUP_CHAINS, CLEANUP_TEXT, DECLICK, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
+import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
 import { audioSettings, type AudioMixSettings } from "./timeline";
 
 export type RenderKind = "preview" | "final";
@@ -344,7 +344,7 @@ export function planRender(input: PlanInput): RenderPlan {
     broll.length ? `B-roll overlays: ${broll.length}` : "B-roll overlays: none",
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
     captions.length ? `Captions: ${captions.length} word-timed events, look ${look}` : "Captions: off",
-    `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${settings.cleanup !== "none" ? `, cleanup ${CLEANUP_TEXT[settings.cleanup]}` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
+    `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${cleanupText(settings) !== "none" ? `, cleanup ${cleanupText(settings)}` : ""}${settings.declick ? `, ${Math.round(settings.declick * 1000)} ms fade at every cut` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
     settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
   ];
@@ -459,13 +459,13 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     }
   }
 
-  // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts, joined in edit order. With a
-  // cleanup preset every part fades in and out over 4 ms, so no cut clicks.
+  // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts, joined in edit order. Every
+  // part fades in and out over the declick time (20 ms by default), so no cut clicks.
   const S = plan.sound.length;
   const live = (x: SoundPart) => !x.muted && info(x.videoId).hasAudio && inOf[x.videoId] != null;
   const declick = (x: SoundPart) => {
-    if (!mix || mix.cleanup === "none") return "";
-    const len = x.srcOut - x.srcIn, d = Math.min(DECLICK, len / 4);
+    if (!mix || !(mix.declick > 0)) return "";
+    const len = x.srcOut - x.srcIn, d = Math.min(mix.declick, len / 4);
     return `,afade=t=in:d=${n6(d)},afade=t=out:st=${n6(len - d)}:d=${n6(d)}`;
   };
   const at = (k: SoundPart) => `atrim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},asetpts=PTS-STARTPTS${declick(k)}`;
@@ -535,7 +535,7 @@ const PEAK_MARGIN = 1.0;
  */
 function mixAudio(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, opts: FfmpegOpts) {
   const mix = plan.audioMix;
-  const cleanup = mix ? CLEANUP_CHAINS[mix.cleanup] : "";
+  const cleanup = mix ? cleanupChain(cleanupParams(mix)) : "";
   const dlgExpr = mix ? dialogueExpr(mix.dialogue) : null;
   g.push(`[acat]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo${cleanup ? "," + cleanup : ""}${dlgExpr ? `,asetnsamples=n=480,volume='${dlgExpr}':eval=frame` : ""}[dlg]`);
   const music = plan.audio.filter((a) => a.kind === "music" && files.audio?.[a.clipId]);
@@ -578,7 +578,9 @@ function mixAudio(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     // The measured gain, then a limiter at 4x the sample rate so the peaks between samples stay under the ceiling.
     g.push(`${sum},volume=${(opts.loudnessGainDb ?? 0).toFixed(2)}dB,aresample=192000,alimiter=limit=${lin(mix.peak - PEAK_MARGIN).toFixed(4)}:attack=5:release=50:level=disabled,aresample=48000[aout]`);
   } else {
-    g.push(`${sum},alimiter=limit=0.95[aout]`);
+    // Loudness off: a safety limiter only. (The old one had FFmpeg's auto-level on: it raised everything to the limit
+    // and then rode loud sound wave by wave, which distorts it; model A plans keep it, unchanged.)
+    g.push(`${sum},alimiter=limit=0.95:level=disabled[aout]`);
   }
 }
 

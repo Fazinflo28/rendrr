@@ -2,7 +2,7 @@
 // speech, per-clip gain; the same curves in the render's expressions and in the live player; the check's sound lines.
 import { describe, expect, it } from "vitest";
 import {
-  applyOp, audioAt, buildInitialTimeline, buildInitialTimelineA, duckExpr, duckFactor, dialogueExpr, dialogueGain, editCheck, fadeFactor,
+  applyOp, audioAt, audioSettings, noiseBetweenWords, parseMeasureLog, buildInitialTimeline, CLEANUP_CHAINS, cleanupChain, cleanupParams, buildInitialTimelineA, duckExpr, duckFactor, dialogueExpr, dialogueGain, editCheck, fadeFactor,
   STYLES, stubTranscript, summarizeTimeline, DUCK_ATTACK, DUCK_RELEASE,
   type Clip, type EditContext, type FileMeasure, type Snapshot, type Transcript,
 } from "../src/index";
@@ -101,11 +101,41 @@ describe("the graph", () => {
     const p = plan(s);
     const g = ffmpegArgs(p, files(p), source, { loudnessGainDb: 2.5 }).filterGraph;
     expect(g).toMatch(/afftdn=nr=10:nf=-40:tn=1,.*deesser=i=0.4,acompressor=threshold=-18dB:ratio=3/); // the voice preset
-    expect(g).toMatch(/atrim=start=[\d.]+:end=[\d.]+,asetpts=PTS-STARTPTS,afade=t=in:d=0\.004000,afade=t=out:st=[\d.]+:d=0\.004000\[a\d+\]/); // no click at cuts
+    expect(g).toMatch(/atrim=start=[\d.]+:end=[\d.]+,asetpts=PTS-STARTPTS,afade=t=in:d=0\.020000,afade=t=out:st=[\d.]+:d=0\.020000\[a\d+\]/); // no click at cuts (20 ms)
     expect(g).toMatch(/asetnsamples=n=480,volume='1\+gte\(t,/); // the clip's gain
     expect(g).toMatch(/volume='pow\(10,-12\*\(min\(1,clip/); // music ducking
     expect(g).toMatch(/amix=inputs=2:normalize=0:duration=first,afade=t=in:d=0\.500,afade=t=out:st=[\d.]+:d=1\.000,volume=2\.50dB,aresample=192000,alimiter=limit=0\.7943:attack=5:release=50:level=disabled,aresample=48000\[aout\]/);
     expect(g).not.toMatch(/sidechaincompress/);
+  });
+  it("a 20 ms fade at every cut, with or without cleanup; declick 0 turns it off", () => {
+    const s0 = edit(snap(), { op: "cut_words", from: 10, to: 12 }).snap;
+    const g = (s: Snapshot) => ffmpegArgs(plan(s), files(plan(s)), source, { loudnessGainDb: 0 }).filterGraph;
+    expect(g(s0)).toMatch(/asetpts=PTS-STARTPTS,afade=t=in:d=0\.020000,afade=t=out:st=[\d.]+:d=0\.020000\[a1\]/);
+    expect(plan(s0).operations.join("\n")).toMatch(/20 ms fade at every cut/);
+    const off = edit(s0, { op: "set_audio", declick: 0 }).snap;
+    expect(g(off)).not.toMatch(/afade=t=in:d=0\.020000/);
+  });
+  it("the cleanup presets are their numbers; hand-set values change the chain; null goes back to the preset", () => {
+    expect(CLEANUP_CHAINS).toEqual({
+      none: "",
+      light: "highpass=f=80,acompressor=threshold=-20dB:ratio=2:attack=10:release=150",
+      voice: "highpass=f=80,afftdn=nr=10:nf=-40:tn=1,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1:g=3,deesser=i=0.4,acompressor=threshold=-18dB:ratio=3:attack=8:release=120",
+      noisy: "highpass=f=100,afftdn=nr=20:nf=-35:tn=1,agate=threshold=0.01:ratio=2:attack=5:release=200,equalizer=f=3500:t=q:w=1:g=3,deesser=i=0.5,acompressor=threshold=-18dB:ratio=4:attack=5:release=100",
+    });
+    const r = edit(snap(), { op: "set_audio", cleanup: "voice", denoise: 15, presence: 5, highpass: 0 });
+    expect(r.summary).toMatch(/cleanup voice, no high-pass, denoise 15 dB, presence \+5 dB/);
+    const g = ffmpegArgs(plan(r.snap), files(plan(r.snap)), source, { loudnessGainDb: 0 }).filterGraph;
+    expect(g).toMatch(/aformat=sample_fmts=fltp:channel_layouts=stereo,afftdn=nr=15:nf=-40:tn=1,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1:g=5,deesser=i=0.4,acompressor=threshold=-18dB:ratio=3:attack=8:release=120/);
+    // Hand values on no preset build a chain of their own.
+    const own = edit(snap(), { op: "set_audio", highpass: 90, compress: 2.5 }).snap;
+    expect(cleanupChain(cleanupParams(audioSettings(own.timeline)))).toBe("highpass=f=90,acompressor=threshold=-18dB:ratio=2.5:attack=8:release=120");
+    // null: back to the preset's value; a new preset drops the hand values.
+    const back = edit(r.snap, { op: "set_audio", denoise: null }).snap;
+    expect(back.timeline.audio).toMatchObject({ cleanup: "voice", presence: 5 });
+    expect(back.timeline.audio).not.toHaveProperty("denoise");
+    const fresh = edit(r.snap, { op: "set_audio", cleanup: "light" }).snap;
+    expect(fresh.timeline.audio).not.toHaveProperty("presence");
+    expect(summarizeTimeline(r.snap, tr)).toMatch(/Sound: cleanup voice, no high-pass, denoise 15 dB, presence \+5 dB/);
   });
   it("the measuring pass: audio only, through ebur128, to nowhere; a normalized render needs its gain", () => {
     const s = edit(snap(), { op: "add_music", trackId: "m_lofi" }).snap;
@@ -119,7 +149,7 @@ describe("the graph", () => {
   it("loudness off: the old limiter, no measuring needed", () => {
     const s = edit(snap(), { op: "set_audio", loudness: null }).snap;
     const p = plan(s);
-    expect(ffmpegArgs(p, files(p), source).filterGraph).toMatch(/anull,alimiter=limit=0\.95\[aout\]$/);
+    expect(ffmpegArgs(p, files(p), source).filterGraph).toMatch(/anull,alimiter=limit=0\.95:level=disabled\[aout\]$/);
   });
   it("reads the measuring pass and turns it into a gain (capped; silence gets none)", () => {
     const log = "[Parsed_ebur128_9 @ 0x1] Summary:\n\n  Integrated loudness:\n    I:         -23.4 LUFS\n    Threshold: -33.4 LUFS\n\n  True peak:\n    Peak:       -6.1 dBFS";
@@ -164,6 +194,15 @@ describe("the check's sound lines", () => {
     expect(out).not.toMatch(/where words should play/);
     expect(out).toMatch(/; 1 clip has its own gain or fades/);
     expect(editCheck(faded, tr, { measured: { ...ok, silences: [{ start: 20, end: 20.7 }] } })).toMatch(/silent 0.70s at 0:20.0 where words should play/);
+  });
+  it("noise left: the median loudness of 400 ms windows inside pauses between words", () => {
+    const log = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2].map((t, i) => `[Parsed_ebur128_1 @ 0x1] t: ${t}  TARGET:-23 LUFS    M: ${i < 6 ? -60 - i : -20.0} S:-30.0     I: -20.0 LUFS`).join("\n");
+    expect(parseMeasureLog(log, 1.2).momentary).toEqual([-61, -63, -65, -20, -20, -20]);
+    // Words from 1.0 s: the windows 0.2-0.6 s and 0.4-0.8 s lie wholly inside the pause (0.05 s clear of its ends).
+    expect(noiseBetweenWords([-61, -63, -65, -66, -20, -20], [{ start: 1.0, end: 1.2 }], 1.2)).toEqual({ lufs: -65.5, windows: 2 });
+    expect(noiseBetweenWords([-61, -63], [{ start: 0, end: 1.2 }], 1.2)).toBeNull();
+    const q = editCheck(s, tr, { measured: { ...ok, momentary: Array.from({ length: 200 }, (_, i) => (i % 10 === 0 ? -58 : -20)) } });
+    expect(q).toMatch(/Noise between words: (-?[\d.]+ LUFS|no pause of 0.5 s or more to measure)/);
   });
   it("a version mixed before Phase 3 is checked as it was mixed", () => {
     const a: Snapshot = { timeline: buildInitialTimelineA(tr, 40, "clean"), name: "t", aspect: "16:9", styleId: "s2" };

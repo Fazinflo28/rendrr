@@ -7,7 +7,7 @@ import { StyleArt, CreateLinkModal } from "./screens";
 import { api } from "./api";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
-import { applyOp, asSequence, audioAt, audioSettings, CLEANUP_TEXT, CLEANUPS, dbToLin, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { applyOp, asSequence, audioAt, audioSettings, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, dbToLin, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -146,6 +146,8 @@ function OpSlider({ id, label, value, min, max, step, show, opFor, H, liveOp, di
     <input type="range" id=${id} min=${min} max=${max} step=${step} value=${value} disabled=${disabled} onPointerDown=${start} onKeyDown=${start} onInput=${(e) => { start(); liveOp(H.state, opFor(+e.target.value)); }} onPointerUp=${end} onKeyUp=${end} onBlur=${end} /></label>`;
 }
 
+// The cleanup values the Audio tab can set by hand: key, label, range, step, unit.
+const FINE = [["highpass", "Rumble cut (high-pass)", 0, 300, 10, " Hz"], ["denoise", "Noise reduction", 0, 40, 1, " dB"], ["presence", "Presence (3.5 kHz lift)", 0, 8, 0.5, " dB"], ["deess", "De-esser", 0, 1, 0.05, ""], ["compress", "Compression", 1, 10, 0.5, ":1"]];
 const CLEANUP_NAME = { none: "None", light: "Light", voice: "Voice", noisy: "Noisy room" };
 const LOUDNESS = [[-14, "-14 LUFS (online)"], [-16, "-16 LUFS (podcast)"], [-23, "-23 LUFS (broadcast)"]];
 const dB = (x) => (x > 0 ? "+" : "") + (Math.round(x * 10) / 10) + " dB";
@@ -170,6 +172,12 @@ function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp }) {
         <label class="t-small grow" style="display:grid;gap:4px">Loudness<select class="input sm" id="audio-loudness" value=${loud} onChange=${(e) => doOp({ op: "set_audio", loudness: e.target.value === "off" ? null : +e.target.value })}>${loudOpts.map(([v, l]) => html`<option key=${v} value=${String(v)}>${l}</option>`)}<option value="off">Off (limiter only)</option></select></label>
         <label class="t-small grow" style="display:grid;gap:4px">True-peak ceiling<select class="input sm" id="audio-peak" value=${String(a.peak)} disabled=${a.loudness == null} onChange=${(e) => doOp({ op: "set_audio", peak: +e.target.value })}>${Array.from(new Set([-1, -1.5, -2, a.peak])).map((v) => html`<option key=${v} value=${String(v)}>${v} dBTP</option>`)}</select></label>
       </div>
+      <details class="fine" id="audio-fine"><summary class="t-small">Fine-tune the cleanup${CLEANUP_KNOBS.some((k) => a[k] != null) ? " (hand-set)" : ""}</summary>
+        <div class="col" style="gap:8px;padding-top:8px">
+          ${FINE.map(([k, l, lo, hi, st, unit]) => html`<${OpSlider} key=${k} id=${"audio-" + k} label=${l} value=${cleanupParams(a)[k]} min=${lo} max=${hi} step=${st} show=${(x) => (x === lo && k !== "deess" ? "off" : x + unit) + (a[k] == null ? " (preset)" : "")} opFor=${(x) => ({ op: "set_audio", [k]: x })} ...${sl} />`)}
+          <${OpSlider} id="audio-declick" label="Fade at every cut" value=${Math.round(a.declick * 1000)} min=${0} max=${30} step=${1} show=${(x) => (x ? x + " ms" : "off")} opFor=${(x) => ({ op: "set_audio", declick: x / 1000 })} ...${sl} />
+          ${CLEANUP_KNOBS.some((k) => a[k] != null) && html`<${Btn} kind="ghost" size="xs" id="audio-fine-reset" onClick=${() => doOp({ op: "set_audio", ...Object.fromEntries(CLEANUP_KNOBS.map((k) => [k, null])) })}>Back to the preset's values<//>`}
+        </div></details>
       <${OpSlider} id="audio-duck" label="Music under speech" value=${a.duck} min=${0} max=${24} step=${1} show=${(x) => (x ? x + " dB down" : "not ducked")} opFor=${(x) => ({ op: "set_audio", duck: x })} ...${sl} />
       <div class="row" style="gap:12px"><div class="grow"><${OpSlider} id="audio-fade-in" label="Fade in" value=${a.fadeIn} min=${0} max=${5} step=${0.1} show=${(x) => x + " s"} opFor=${(x) => ({ op: "set_audio", fadeIn: x })} ...${sl} /></div>
         <div class="grow"><${OpSlider} id="audio-fade-out" label="Fade out" value=${a.fadeOut} min=${0} max=${5} step=${0.1} show=${(x) => x + " s"} opFor=${(x) => ({ op: "set_audio", fadeOut: x })} ...${sl} /></div></div>

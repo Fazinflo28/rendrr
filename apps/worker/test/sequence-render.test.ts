@@ -27,11 +27,13 @@ describe("sequence renders", () => {
   });
   after(async () => { await rm(dir, { recursive: true, force: true }); });
 
-  async function render(plan: RenderPlan, name: string, files: Partial<PlanFiles> = {}) {
+  async function render(plan: RenderPlan, name: string, files: Partial<PlanFiles> = {}, opts: { noLimiter?: boolean } = {}) {
     const all: PlanFiles = { source: main, output: join(dir, `${name}.mp4`), assPath: join(dir, `${name}.ass`), ...files };
     if (plan.ass) await writeFile(all.assPath!, plan.ass);
     const { args, filterGraph } = ffmpegArgs(plan, all, source);
-    await writeFile(join(dir, `${name}.txt`), filterGraph);
+    // noLimiter: the final safety limiter left out, so two plans' sound can be compared before it (model A's limiter
+    // has auto-level on, the sequence's does not since Phase 3).
+    await writeFile(join(dir, `${name}.txt`), opts.noLimiter ? filterGraph.replace(/alimiter=limit=0\.95(?::level=disabled)?\[aout\]/, "anull[aout]") : filterGraph);
     await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? join(dir, `${name}.txt`) : a)));
     return all.output;
   }
@@ -56,13 +58,13 @@ describe("sequence renders", () => {
     a = normalizeTimeline({ ...a, tracks: { ...a.tracks, v1: a.tracks.v1.map((c) => ({ ...c, end: Math.min(c.end, 10.4) })), a1: a.tracks.a1.map((c) => ({ ...c, end: Math.min(c.end, 10.4) })), v2: [{ id: "z1", start: 6, end: 7.5, label: "Zoom", kind: "zoom", zoom: 1.3 } as Clip] } });
     const snapA: Snapshot = { timeline: a, name: "t", aspect: "9:16", styleId: "s2" };
     // Loudness off: the comparison is about the picture and the dialogue (Phase 3 sets loudness on top).
-    const snapB: Snapshot = { ...snapA, timeline: { ...toModelB(a, words, "v", { seconds: SECONDS }), audio: { loudness: null } } };
+    const snapB: Snapshot = { ...snapA, timeline: { ...toModelB(a, words, "v", { seconds: SECONDS }), audio: { loudness: null, declick: 0 } } };
     const pa = planRender({ kind: "preview", snapshot: snapA, transcript: tr, source, videoId: "v" });
     const pb = planRender({ kind: "preview", snapshot: snapB, transcript: tr, source, videoId: "v" });
     assert.equal(pa.model, "A");
     assert.equal(pb.model, "B");
     assert.ok(pa.parts.length > 1);
-    const [fa, fb] = [await render(pa, "a"), await render(pb, "b")];
+    const [fa, fb] = [await render(pa, "a", {}, { noLimiter: true }), await render(pb, "b", {}, { noLimiter: true })];
     const [va, vb] = [await hashes(fa, "v"), await hashes(fb, "v")];
     assert.equal(va.length, vb.length);
     assert.deepEqual(vb, va, "video frames differ");

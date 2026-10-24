@@ -126,11 +126,29 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
   - Dialogue cleanup and loudness are only heard in the rendered preview: the preview copies are served without CORS, so the browser can't process their sound. The Audio tab says so.
 - **Bug found in older work (before Phase 1, render):** the old mix ended in `alimiter=limit=0.95`, which has FFmpeg's auto-level on by default. It pushed every file's peaks to about −0.4 dBFS, which is why earlier files measured about −13.5 LUFS with a true peak near 0 dBTP. New renders use the measured gain and a true-peak limiter with auto-level off. A sequence with loudness turned off keeps the old limiter, so it renders as before.
 
+### Phase 3, finished after re-reading the plan (24 October)
+
+Three items of the plan were not fully built in the first pass. They are now:
+
+- **Fade at every cut, 20 ms** (the plan asks for 15-30 ms). Every dialogue cut fades out and in, with or without a cleanup preset. Before, it was 4 ms and only with a preset. It can be set from 0 to 30 ms (`set_audio{declick}`).
+- **Manual cleanup values.** Each preset is now a set of numbers. `set_audio` and the Audio tab's "Fine-tune" sliders can change any of them, and `null` goes back to the preset's value:
+  - high-pass (Hz)
+  - noise reduction (dB)
+  - presence lift at 3.5 kHz (dB)
+  - de-esser
+  - compression ratio
+
+  The preset chains are unchanged, character for character (tested).
+- **Noise left, in the check.** A new line reads, for example, "Noise between words: -61.3 LUFS (median of 24 windows in pauses)". It is measured from the file (the 400 ms loudness windows lying wholly inside pauses between words), and says when music is included.
+- **Bug found in older work:** with loudness off, the mix still ended in FFmpeg's limiter with auto-level on. Auto-level raises everything to the limit, and the limiter then rides loud sound wave by wave, which distorts it. Loudness off now uses a plain safety limiter. Model A plans keep the old one, unchanged.
+
 ### Phase 3 tests
 
 | What | Result |
 |---|---|
-| Shared: settings, ops, speech ranges, the FFmpeg curves equal the player's, graph, measuring mode, legacy check, fades in the check | 102 pass |
+| Shared: settings, ops, speech ranges, the FFmpeg curves equal the player's, graph, measuring mode, legacy check, fades in the check, cut fades, hand-set cleanup, noise between words | 105 pass |
+| Worker: a cut in a loud tone, rendered | without the fade the cut jumps more than 3x the tone's own step between samples; with 20 ms, under 1.3x |
+| Worker: noisy room, rendered | the check's noise between words drops by 6 dB or more with the noisy-room cleanup |
 | Worker, real renders measured with ebur128 | 8 pass |
 | ↳ quiet voice (−33 LUFS) | −14 ± 1 LUFS, true peak ≤ −0.8 dBTP |
 | ↳ full-scale clicks on a voice | true peak under the ceiling, still −14 ± 1 LUFS |

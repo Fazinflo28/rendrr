@@ -7,7 +7,7 @@ import {
   normalizeTimeline, timelineProblems,
   type AudioSettings, type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
 } from "./timeline";
-import { autoMusicFades, CLEANUP_TEXT } from "./audio";
+import { autoMusicFades, CLEANUP_KNOBS, cleanupText } from "./audio";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, isPlainSequence, layoutTimeline, mainVideoOf, mergeRanges, moveSeqClip, newSeqClipId,
@@ -76,7 +76,8 @@ const EDIT_OPS = [
   // ---- sound ----
   // The edit's sound: dialogue cleanup preset, loudness target (LUFS, null = off), true-peak ceiling (dBTP), how many
   // dB music goes down under speech (0 = off), fades of the whole mix. Fields left out keep their value.
-  z.object({ op: z.literal("set_audio"), cleanup: z.enum(CLEANUPS).optional(), loudness: z.number().min(-30).max(-6).nullable().optional(), peak: z.number().min(-6).max(0).optional(), duck: z.number().min(0).max(30).optional(), fadeIn: z.number().min(0).max(10).optional(), fadeOut: z.number().min(0).max(10).optional() }),
+  z.object({ op: z.literal("set_audio"), cleanup: z.enum(CLEANUPS).optional(), loudness: z.number().min(-30).max(-6).nullable().optional(), peak: z.number().min(-6).max(0).optional(), duck: z.number().min(0).max(30).optional(), fadeIn: z.number().min(0).max(10).optional(), fadeOut: z.number().min(0).max(10).optional(),
+    highpass: z.number().min(0).max(300).nullable().optional(), denoise: z.number().min(0).max(40).nullable().optional(), presence: z.number().min(0).max(8).nullable().optional(), deess: z.number().min(0).max(1).nullable().optional(), compress: z.number().min(1).max(10).nullable().optional(), declick: z.number().min(0).max(0.03).optional() }),
   // One clip's sound: a V1 clip's dialogue (track v1 or a1, the default), a music clip (a2) or a sound effect (a3).
   z.object({ op: z.literal("set_clip_audio"), track: z.enum(["v1", "a1", "a2", "a3"]).optional(), clipId, gainDb: z.number().min(-40).max(20).optional(), fadeIn: z.number().min(0).max(30).optional(), fadeOut: z.number().min(0).max(30).optional() }),
 ] as const;
@@ -729,7 +730,13 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     case "set_audio": {
       const { op: _op, ...change } = op;
       const audio: AudioSettings = { ...(tl.audio ?? {}) };
-      for (const [k, v] of Object.entries(change)) if (v !== undefined) (audio as Record<string, unknown>)[k] = v;
+      // A hand-set cleanup value sent as null goes back to the preset's; a new preset starts from its own values.
+      if (change.cleanup !== undefined) for (const k of CLEANUP_KNOBS) delete (audio as Record<string, unknown>)[k];
+      for (const [k, v] of Object.entries(change)) {
+        if (v === undefined) continue;
+        if (v === null && (CLEANUP_KNOBS as readonly string[]).includes(k)) delete (audio as Record<string, unknown>)[k];
+        else (audio as Record<string, unknown>)[k] = v;
+      }
       const a = audioSettings({ audio });
       const total = view().total;
       if (a.fadeIn + a.fadeOut > total + 0.01) throw new EditError(`The fades (${a.fadeIn}s in, ${a.fadeOut}s out) are longer than the edit (${total.toFixed(1)}s).`);
@@ -762,7 +769,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
 /** "cleanup voice, -14 LUFS / -1 dBTP, music 12 dB down under speech, fades in 0.5s out 1s" */
 export function audioText(a: ReturnType<typeof audioSettings>): string {
   return [
-    `cleanup ${a.cleanup === "none" ? "none" : CLEANUP_TEXT[a.cleanup].split(" (")[0]}`,
+    `cleanup ${cleanupText(a)}`,
     a.loudness != null ? `${a.loudness} LUFS / ${a.peak} dBTP` : "loudness not normalized",
     a.duck > 0 ? `music ${a.duck} dB down under speech` : "music not ducked",
     ...(a.fadeIn || a.fadeOut ? [`mix fades in ${a.fadeIn}s, out ${a.fadeOut}s`] : []),

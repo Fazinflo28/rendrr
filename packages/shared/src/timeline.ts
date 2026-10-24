@@ -60,7 +60,7 @@ export type Rotation = z.infer<typeof RotationSchema>;
 export const FramingSchema = z.object({ scale: z.number().min(0.25).max(4), x: z.number().min(-1).max(1), y: z.number().min(-1).max(1) });
 export type Framing = z.infer<typeof FramingSchema>;
 
-/** Dialogue cleanup presets (fixed FFmpeg chains, see renderPlan.ts CLEANUP_CHAINS). */
+/** Dialogue cleanup presets (see audio.ts CLEANUP_PRESETS); set_audio can change their main numbers by hand. */
 export const CLEANUPS = ["none", "light", "voice", "noisy"] as const;
 export type Cleanup = (typeof CLEANUPS)[number];
 /**
@@ -78,9 +78,21 @@ export const AudioSettingsSchema = z.object({
   /** Fade of the whole mix at the start and at the end of the edit, in seconds. */
   fadeIn: z.number().min(0).max(10).optional(),
   fadeOut: z.number().min(0).max(10).optional(),
+  /** Fade at every dialogue cut in seconds, so cuts don't click (default 0.02; 0 = off). */
+  declick: z.number().min(0).max(0.03).optional(),
+  /** Hand-set cleanup values on top of the preset: high-pass Hz (0 = off), noise reduction dB, presence lift dB at
+   *  3.5 kHz, de-esser 0-1, compression ratio (1 = off). */
+  highpass: z.number().min(0).max(300).optional(),
+  denoise: z.number().min(0).max(40).optional(),
+  presence: z.number().min(0).max(8).optional(),
+  deess: z.number().min(0).max(1).optional(),
+  compress: z.number().min(1).max(10).optional(),
 });
 export type AudioSettings = z.infer<typeof AudioSettingsSchema>;
-export const AUDIO_DEFAULTS = { cleanup: "none" as Cleanup, loudness: -14 as number | null, peak: -1, duck: 12, fadeIn: 0, fadeOut: 0 };
+export const AUDIO_DEFAULTS = {
+  cleanup: "none" as Cleanup, loudness: -14 as number | null, peak: -1, duck: 12, fadeIn: 0, fadeOut: 0, declick: 0.02,
+  highpass: undefined as number | undefined, denoise: undefined as number | undefined, presence: undefined as number | undefined, deess: undefined as number | undefined, compress: undefined as number | undefined,
+};
 export type AudioMixSettings = typeof AUDIO_DEFAULTS;
 /** The edit's audio settings with the defaults filled in. */
 export const audioSettings = (tl: { audio?: AudioSettings }): AudioMixSettings => ({ ...AUDIO_DEFAULTS, ...Object.fromEntries(Object.entries(tl.audio ?? {}).filter(([, v]) => v !== undefined)) });

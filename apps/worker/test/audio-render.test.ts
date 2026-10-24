@@ -1,11 +1,11 @@
 // Phase 3 sound, rendered and measured: the file lands on -14 LUFS under a -1 dBTP ceiling (also with sharp peaks),
 // music goes down by the set amount under speech, fades fade, and the cleanup presets lower the noise. Needs ffmpeg.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { applyOp, buildInitialTimeline, buildTranscript, STYLES, type EditContext, type Op, type Snapshot, type Transcript } from "@rendrr/shared";
+import { applyOp, buildInitialTimeline, buildTranscript, noiseBetweenWords, STYLES, type EditContext, type Op, type Snapshot, type Transcript } from "@rendrr/shared";
 import { ffmpegArgs, planRender, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { measureFile, run } from "../src/lib/ffmpeg";
 import { measureMix } from "../src/lib/mix";
@@ -27,6 +27,8 @@ describe("the sound, rendered and measured", () => {
     await v("faint", ["-f", "lavfi", "-i", `sine=f=220:d=${SECONDS}:sample_rate=48000`], "[1:a]volume=-26dB[a]");
     // Sharp peaks: a voice-level tone (around -21 LUFS) with a 0.5 ms full-scale click every second, like plosives.
     await v("peaky", ["-f", "lavfi", "-i", `sine=f=220:d=${SECONDS}:sample_rate=48000`, "-f", "lavfi", "-i", `aevalsrc='if(lt(mod(t,1),0.0005),0.99,0)':d=${SECONDS}:s=48000`], "[1:a][2:a]amix=inputs=2:normalize=0[a]");
+    // A loud steady tone (-2 dBFS): a cut in it jumps in the middle of a wave.
+    await v("tone", ["-f", "lavfi", "-i", `aevalsrc='0.8*sin(2*PI*220*t)':d=${SECONDS}:s=48000`], "[1:a]anull[a]");
     // No sound at all (for ducking: only the music is heard).
     await v("silent", []);
     // A voice from 3 s to 8 s over room noise everywhere.
@@ -104,6 +106,35 @@ describe("the sound, rendered and measured", () => {
     const { file } = await render("gain", "quiet", words(0.5, 11.5), [{ op: "set_clips", track: "v1", clips: [{ id: s.timeline.tracks.v1[0].id, start: 0, end: 6, label: "a" }, { id: b, start: 6, end: 12, label: "b" }] }, { op: "set_clip_audio", clipId: b, gainDb: -6 }, { op: "set_audio", loudness: null }]);
     const a1 = await meanDb(file, 2, 2), b1 = await meanDb(file, 8, 2);
     assert.ok(Math.abs(a1 - b1 - 6) <= 0.5, `second clip ${(a1 - b1).toFixed(2)} dB lower`);
+  });
+
+  it("a 20 ms fade at the cut takes the click out", async () => {
+    // A cut in a steady tone jumps in the middle of a wave: a step between two samples, many times the tone's own.
+    const jump = async (file: string, from: number) => {
+      const out = join(dir, "jump.f32");
+      await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-ss", String(from), "-t", "0.2", "-i", file, "-ac", "1", "-f", "f32le", out]);
+      const buf = await readFile(out), x = new Float32Array(buf.buffer, buf.byteOffset, buf.length / 4);
+      let m = 0;
+      for (let i = 1; i < x.length; i++) m = Math.max(m, Math.abs(x[i] - x[i - 1]));
+      return m;
+    };
+    const cutAt = async (name: string, declick: number) => {
+      const { file } = await render(name, "tone", words(0.5, 11.5), [{ op: "cut_words", from: 3.03, to: 4.0 }, { op: "set_audio", declick }]);
+      return (await jump(file, 2.95)) / (await jump(file, 1.0)); // the cut is at 3.03 s; 1.0-1.2 s has no cut
+    };
+    const hard = await cutAt("click-on", 0), soft = await cutAt("click-off", 0.02);
+    assert.ok(hard > 3, `without the fade the cut jumps ${hard.toFixed(1)}x the tone's own step`);
+    assert.ok(soft < 1.3, `with the fade the cut steps ${soft.toFixed(2)}x the tone's own step`);
+  });
+
+  it("the check's noise reading between words drops with the noisy-room cleanup", async () => {
+    const tr = words(3, 8);
+    const a = await render("noise-a", "noisy", tr, [{ op: "set_audio", loudness: null }]);
+    const b = await render("noise-b", "noisy", tr, [{ op: "set_audio", loudness: null, cleanup: "noisy" }]);
+    const spans = tr.flatMap((l) => l.words).map((w) => ({ start: w.t, end: w.end }));
+    const na = noiseBetweenWords(a.measured.momentary, spans, SECONDS), nb = noiseBetweenWords(b.measured.momentary, spans, SECONDS);
+    assert.ok(na && nb, "both files have pauses to measure");
+    assert.ok(na!.lufs - nb!.lufs >= 6, `noise between words: ${na!.lufs} LUFS without cleanup, ${nb!.lufs} LUFS with it`);
   });
 
   it("the noisy-room cleanup lowers the noise between the words", async () => {

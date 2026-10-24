@@ -16,12 +16,14 @@ export type FileMeasure = FileLoudness & {
   silences: Range[]; // silence (below -45 dB), 0.15 s or longer
   /** Each graphic overlaid: where it is on screen and how much of the frame its picture covers on average (0-100). */
   graphics: { clipId: string; start: number; end: number; coverPct: number | null }[];
+  /** Momentary loudness (LUFS, 400 ms windows) every 0.2 s: value i is the window ending at (i + 1) * 0.2 s. */
+  momentary?: number[];
   error?: string;
 };
 export const MEASURE_MIN = 0.15;
 
 /** Reads blackdetect, silencedetect and ebur128 output from one FFmpeg pass. Open stretches close at `fileEnd`. */
-export function parseMeasureLog(stderr: string, fileEnd: number): Pick<FileMeasure, "black" | "silences" | "lufs" | "peakDb"> {
+export function parseMeasureLog(stderr: string, fileEnd: number): Pick<FileMeasure, "black" | "silences" | "lufs" | "peakDb" | "momentary"> {
   const r3 = (n: number) => Math.round(n * 1000) / 1000;
   const black: Range[] = [];
   for (const m of stderr.matchAll(/black_start:\s*([\d.]+)\s+black_end:\s*([\d.]+)/g)) black.push({ start: r3(Number(m[1])), end: r3(Number(m[2])) });
@@ -35,7 +37,38 @@ export function parseMeasureLog(stderr: string, fileEnd: number): Pick<FileMeasu
   if (open != null && fileEnd - open >= MEASURE_MIN) silences.push({ start: r3(open), end: r3(fileEnd) });
   const summary = stderr.slice(stderr.lastIndexOf("Summary:"));
   const num = (re: RegExp) => { const m = summary.includes("Summary:") ? re.exec(summary) : null; const n = m ? Number(m[1]) : NaN; return Number.isFinite(n) ? Math.round(n * 10) / 10 : null; };
-  return { black: black.filter((b) => b.end - b.start >= MEASURE_MIN - 1e-6), silences: silences.filter((x) => x.end - x.start >= MEASURE_MIN - 1e-6), lufs: num(/I:\s+(-?[\d.]+) LUFS/), peakDb: num(/Peak:\s+(-?[\d.]+) dBFS/) };
+  // ebur128 logs the momentary loudness every 0.1 s; every second one is kept (0.2 s steps).
+  const momentary: number[] = [];
+  for (const m of stderr.matchAll(/\bt:\s*([\d.]+)\s+TARGET:[^\n]*?M:\s*(-?[\d.]+|-inf|nan)/g)) {
+    const k = Math.round(Number(m[1]) * 10);
+    if (k % 2 !== 0) continue;
+    const v = Number(m[2]);
+    momentary[k / 2 - 1] = Number.isFinite(v) ? Math.max(-99, Math.round(v * 10) / 10) : -99;
+  }
+  return { black: black.filter((b) => b.end - b.start >= MEASURE_MIN - 1e-6), silences: silences.filter((x) => x.end - x.start >= MEASURE_MIN - 1e-6), lufs: num(/I:\s+(-?[\d.]+) LUFS/), peakDb: num(/Peak:\s+(-?[\d.]+) dBFS/), ...(momentary.length ? { momentary: Array.from(momentary, (x) => x ?? -99) } : {}) };
+}
+
+/**
+ * The noise left in the file: the median momentary loudness of the 400 ms windows that fall wholly inside pauses
+ * between words (50 ms clear of each word). Null when no pause is long enough to measure.
+ */
+export function noiseBetweenWords(momentary: number[] | undefined, words: Range[], total: number): { lufs: number; windows: number } | null {
+  if (!momentary?.length) return null;
+  const sorted = [...words].sort((a, b) => a.start - b.start);
+  const gaps: Range[] = [];
+  let at = 0;
+  for (const w of sorted) { if (w.start - at > 0) gaps.push({ start: at, end: w.start }); at = Math.max(at, w.end); }
+  if (total > at) gaps.push({ start: at, end: total });
+  const vals: number[] = [];
+  momentary.forEach((m, i) => {
+    const end = (i + 1) * 0.2, start = end - 0.4;
+    if (start < 0 || end > total) return;
+    if (gaps.some((g) => start >= g.start + 0.05 && end <= g.end - 0.05)) vals.push(m);
+  });
+  if (!vals.length) return null;
+  vals.sort((a, b) => a - b);
+  const mid = vals.length >> 1;
+  return { lufs: Math.round((vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2) * 10) / 10, windows: vals.length };
 }
 
 const overlap = (a: Range, b: Range) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
@@ -65,6 +98,12 @@ function sequenceLine(tl: Timeline, view: SequenceView): string {
   const videos = per.size > 1 ? ` from ${per.size} videos (${Array.from(per).map(([v, n]) => `${v === main ? "main" : v} ${n}`).join(", ")})` : "";
   const bits = [moved ? `${moved} moved` : "", repeats ? `${repeats} ${repeats === 1 ? "repeat" : "repeats"}` : "", j ? `${j} J ${j === 1 ? "cut" : "cuts"}` : "", l ? `${l} L ${l === 1 ? "cut" : "cuts"}` : "", muted ? `${muted} muted` : ""].filter(Boolean);
   return `Sequence: ${v1.length} ${v1.length === 1 ? "clip" : "clips"}${videos}${bits.length ? ", " + bits.join(", ") : per.size > 1 ? "" : ", footage order"}`;
+}
+
+/** "Noise between words: -61.3 LUFS (median of 24 windows in pauses)". */
+function noiseLine(n: { lufs: number; windows: number } | null, music: boolean): string {
+  if (!n) return "Noise between words: no pause of 0.5 s or more to measure";
+  return `Noise between words: ${n.lufs <= -70 ? "below -70 LUFS (silent)" : `${n.lufs} LUFS`} (median of ${n.windows} windows in pauses${music ? ", music included" : ""})`;
 }
 
 /**
@@ -197,6 +236,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     `Sound: ${legacy ? "mixed before Phase 3 (limiter only)" : audioText(sound)}${clipSound ? `; ${clipSound} ${clipSound === 1 ? "clip has its" : "clips have their"} own gain or fades` : ""}`,
     `Cuts ${Math.max(0, segs.length - 1)}${total ? ` (${(((segs.length - 1) / total) * 60).toFixed(1)}/min)` : ""}, shortest clip ${segs.length ? Math.min(...segs.map((x) => x.len)).toFixed(1) + "s" : "-"}${short.length ? ` at ${list(short.map((x) => fmtT(x.at)), 4)}` : ""}`,
     ...(ld ? [`Loudness of the file: ${ld.lufs != null ? ld.lufs + " LUFS" : "unknown"}, true peak ${ld.peakDb != null ? ld.peakDb + " dBTP" : "unknown"}${sound.loudness != null ? ` (target ${sound.loudness} LUFS, ceiling ${sound.peak} dBTP)` : ""}`] : []),
+    ...(m && !m.error && m.momentary ? [noiseLine(noiseBetweenWords(m.momentary, spoken.map((x) => ({ start: x.at, end: x.end })), total), music.length > 0)] : []),
     `Flags: ${flags.length ? flags.join("; ") : "none"}`,
   ];
   return lines.join("\n");
