@@ -12,6 +12,7 @@ import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
 import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
 import { planTransitions } from "./renderPlan";
+import { ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutRefSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, type ChromaKey, type ClipLook, type Grade, type Lut } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, isPlainSequence, layoutTimeline, mainVideoOf, mergeRanges, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
@@ -26,6 +27,8 @@ import {
 // ---------------------------------------------------------------------------------------------
 
 const t = z.number().finite().min(0).max(24 * 3600);
+/** The clips a Phase 6 op works on: clipId / clipIds (V1 or b-roll), all V1 clips, or the V1 clips of one video. */
+const lookTargets = { clipId: z.string().max(80).optional(), clipIds: z.array(z.string().max(80)).max(2000).optional(), all: z.boolean().optional(), video: z.string().max(80).optional() };
 const by = z.number().finite().min(-3600).max(3600);
 /** edit: true = the op's times are seconds of the edit, not of the footage. */
 const edit = z.boolean().optional();
@@ -104,6 +107,26 @@ const EDIT_OPS = [
   // A clip's keyframes (replaces them; [] removes them): V1, b-roll (v2), text or graphic (v3). Key t = seconds from
   // the clip's start in the edit.
   z.object({ op: z.literal("set_keyframes"), track: z.enum(["v1", "v2", "v3"]).optional(), clipId, keys: z.array(KeySchema).max(60) }),
+  // ---- colour and compositing (Phase 6) ----
+  // Which clips: clipIds (V1 or b-roll), all: every V1 clip, video: every V1 clip of that video.
+  // A grade: fields left out keep their value, null removes one, reset: start from no grade. curves: channels to set
+  // (master, r, g, b: points [in, out] 0-1; null removes that channel). lut: an imported LUT {id, amount 0-1, input}.
+  z.object({ op: z.literal("set_grade"), ...lookTargets, reset: z.boolean().optional(),
+    exposure: z.number().min(-4).max(4).nullable().optional(), contrast: z.number().min(-100).max(100).nullable().optional(), temperature: z.number().min(-100).max(100).nullable().optional(), tint: z.number().min(-100).max(100).nullable().optional(), saturation: z.number().min(0).max(200).nullable().optional(),
+    curves: z.object({ master: CurveSchema.nullable().optional(), r: CurveSchema.nullable().optional(), g: CurveSchema.nullable().optional(), b: CurveSchema.nullable().optional() }).nullable().optional(), lut: LutRefSchema.nullable().optional() }),
+  // A clip's grade onto other clips (with: also its key, masks, blur/pixelate).
+  z.object({ op: z.literal("copy_grade"), from: clipId, to: z.array(clipId).max(2000).optional(), all: z.boolean().optional(), video: z.string().max(80).optional(), with: z.array(z.enum(["grade", "key", "masks", "effects"])).max(4).optional() }),
+  // Clips' colour matched to a reference clip from measured frames (the server measures them; the result is a grade).
+  z.object({ op: z.literal("match_color"), clipIds: z.array(clipId).min(1).max(200), to: clipId, measured: z.record(z.object({ w: z.number().int().min(1).max(512), h: z.number().int().min(1).max(512), rgb: z.string().max(2_000_000) })).optional() }),
+  // Chroma key: color (pick it from the frame), similarity, blend, spill; off removes the key.
+  z.object({ op: z.literal("set_key"), ...lookTargets, color: ChromaKeySchema.shape.color.optional(), similarity: ChromaKeySchema.shape.similarity.optional(), blend: ChromaKeySchema.shape.blend.optional(), spill: ChromaKeySchema.shape.spill.optional(), off: z.boolean().optional() }),
+  // A clip's masks (replaces them; [] removes them) and its blur/pixelate effects (same).
+  z.object({ op: z.literal("set_masks"), ...lookTargets, masks: z.array(MaskSchema).max(8) }),
+  z.object({ op: z.literal("set_effects"), ...lookTargets, effects: z.array(EffectSchema).max(4) }),
+  // A b-roll clip behind V1 (shows where V1 is keyed, masked, framed smaller or moved away) or back over it.
+  z.object({ op: z.literal("set_under"), clipId, under: z.boolean() }),
+  // How the final file is made: hdr keep (HDR footage stays HDR) or sdr (converted).
+  z.object({ op: z.literal("set_export"), hdr: z.enum(["keep", "sdr"]).optional() }),
 ] as const;
 export const EditOpSchema = z.discriminatedUnion("op", [...EDIT_OPS]);
 export const EDIT_OP_NAMES = EDIT_OPS.map((o) => o.shape.op.value) as [EditOp["op"], ...EditOp["op"][]];
@@ -131,6 +154,9 @@ export type EditContext = {
   getGraphic?: (id: string) => GraphicLite | undefined;
   /** Other videos on V1: their transcripts and silences (cut_silences works on them too). */
   sources?: Record<string, { transcript: Transcript; silences: Silence[] }>;
+  /** The user's imported LUTs (Phase 6): their names, and their numbers where an op needs them (match_color). */
+  getLut?: (id: string) => { id: string; name: string } | undefined;
+  lutData?: (id: string) => Lut | undefined;
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -912,7 +938,114 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const next = withTracks(tl, track, (tl.tracks[track] as Clip[]).map((x) => { if (x.id !== c.id) return x; const { keys: _k, ...rest } = x as Clip & { keys?: Key[] }; return (keys.length ? { ...rest, keys: keys.map((k) => ({ ...k, t: r2(k.t) })) } : rest) as Clip; }));
       return { snap: { ...snap, timeline: next }, summary: keys.length ? `${name(c)}: ${keyText(keys)}` : `${name(c)}: keyframes removed` };
     }
+
+    // ---- colour and compositing (Phase 6) ----
+    case "set_grade": {
+      const ids = lookIds(tl, op);
+      if (op.lut && ctx.getLut && !ctx.getLut(op.lut.id)) throw new EditError(`There is no LUT "${op.lut.id}" in your LUTs. Import the .cube file in the editor's Color tab; get_project lists your LUTs.`);
+      const fields = ["exposure", "contrast", "temperature", "tint", "saturation", "lut"] as const;
+      const next = mapLook(tl, ids, (c) => {
+        const g: Grade = op.reset ? {} : { ...(c.grade ?? {}) };
+        for (const f of fields) { const v = op[f]; if (v === null) delete g[f]; else if (v !== undefined) (g as Record<string, unknown>)[f] = v; }
+        if (op.curves === null) delete g.curves;
+        else if (op.curves) {
+          const cv = { ...(g.curves ?? {}) } as Record<string, unknown>;
+          for (const [ch, pts] of Object.entries(op.curves)) { if (pts === null) delete cv[ch]; else if (pts) cv[ch] = [...pts].sort((a, b) => a[0] - b[0]); }
+          g.curves = cv as Grade["curves"];
+        }
+        return { ...c, grade: g };
+      });
+      const first = lookClip(next, ids[0]).clip;
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: grade ${first.grade ? gradeText(first.grade, (id) => ctx.getLut?.(id)?.name) : "none"}` };
+    }
+    case "copy_grade": {
+      const src = lookClip(tl, op.from).clip;
+      const what = op.with?.length ? op.with : ["grade" as const];
+      const ids = lookIds(tl, { clipIds: op.to, all: op.all, video: op.video }).filter((id) => id !== op.from);
+      if (!ids.length) throw new EditError("Send the clips to copy onto: to (clip ids), all: true, or video.");
+      const next = mapLook(tl, ids, (c) => { const x = { ...c }; for (const k of what) { if (src[k]) (x as Record<string, unknown>)[k] = JSON.parse(JSON.stringify(src[k])); else delete x[k]; } return x; });
+      return { snap: { ...snap, timeline: next }, summary: `copied the ${what.join(", ")} of ${name(src)} onto ${idsText(tl, ids)}` };
+    }
+    case "match_color": {
+      const ref = lookClip(tl, op.to).clip;
+      for (const id of op.clipIds) lookClip(tl, id);
+      const m = op.measured;
+      const px = (id: string) => { const x = m?.[id]; if (!x) throw new EditError("match_color needs frames of the clips, measured by the server: send it in apply_edits (the editor's Match button does this)."); return decodeB64(x.rgb); };
+      const refPx = px(op.to);
+      const refLut = ref.grade?.lut ? ctx.lutData?.(ref.grade.lut.id) : undefined;
+      const refLook = ref.grade ? gradeFn(ref.grade, refLut) : undefined;
+      const said: string[] = [];
+      const done = new Map<string, Grade>();
+      for (const id of op.clipIds) { if (id === op.to) continue; const r = matchGrade(px(id), refPx, refLook); done.set(id, r.grade); said.push(`${id}: ${r.text}`); }
+      const next = mapLook(tl, Array.from(done.keys()), (c) => { const g = done.get(c.id)!; const { grade: _g, ...rest } = c; return (Object.keys(g).length ? { ...rest, grade: g } : rest) as typeof c; });
+      return { snap: { ...snap, timeline: next }, summary: `matched to ${name(ref)} (measured): ${said.slice(0, 4).join("; ")}${said.length > 4 ? `; +${said.length - 4} more` : ""}` };
+    }
+    case "set_key": {
+      const ids = lookIds(tl, op);
+      const next = mapLook(tl, ids, (c) => {
+        if (op.off) { const { key: _k, ...rest } = c; return rest as typeof c; }
+        const color = op.color ?? c.key?.color;
+        if (!color) throw new EditError(`Send the key colour for ${name(c)} (#RRGGBB, picked from the frame; a typical green screen is #00B140).`);
+        const k: ChromaKey = { ...KEY_DEFAULTS, ...(c.key ?? {}), color: color.toUpperCase(), ...(op.similarity != null ? { similarity: op.similarity } : {}), ...(op.blend != null ? { blend: op.blend } : {}), ...(op.spill != null ? { spill: op.spill } : {}) };
+        return { ...c, key: k };
+      });
+      const k = lookClip(next, ids[0]).clip.key;
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${k ? `key ${chromaKeyText(k)}` : "no key"}` };
+    }
+    case "set_masks": {
+      const ids = lookIds(tl, op);
+      const next = mapLook(tl, ids, (c) => { const { masks: _m, ...rest } = c; return (op.masks.length ? { ...rest, masks: op.masks } : rest) as typeof c; });
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.masks.length ? `masks ${masksText(op.masks)}` : "no masks"}` };
+    }
+    case "set_effects": {
+      const ids = lookIds(tl, op);
+      const next = mapLook(tl, ids, (c) => { const { effects: _e, ...rest } = c; return (op.effects.length ? { ...rest, effects: op.effects } : rest) as typeof c; });
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.effects.length ? effectsText(op.effects) : "no blur or pixelate"}` };
+    }
+    case "set_under": {
+      const c = findClip(tl, "v2", op.clipId) as V2Clip & { under?: boolean };
+      if (c.kind !== "broll") throw new EditError(`Clip "${op.clipId}" on V2 is a zoom: only b-roll can go behind V1.`);
+      const next = withTracks(tl, "v2", (tl.tracks.v2 as Clip[]).map((x) => { if (x.id !== c.id) return x; const { under: _u, ...rest } = x as Clip & { under?: boolean }; return (op.under ? { ...rest, under: true } : rest) as Clip; }));
+      return { snap: { ...snap, timeline: next }, summary: `${name(c)}: ${op.under ? "behind V1 (shows where V1 is keyed, masked, framed smaller or moved)" : "over V1"}` };
+    }
+    case "set_export": {
+      const ex = { ...(tl.export ?? {}) };
+      if (op.hdr) ex.hdr = op.hdr;
+      const next: Timeline = { ...tl, export: ex };
+      if (!Object.keys(ex).length || (ex.hdr === "keep" && Object.keys(ex).length === 1)) delete next.export;
+      return { snap: { ...snap, timeline: next }, summary: `export: HDR ${ex.hdr === "sdr" ? "converted to SDR" : "kept when the footage is HDR"}` };
+    }
   }
+}
+
+/** Phase 6: a clip that takes a look (a V1 clip or a b-roll clip). */
+function lookClip(tl: Timeline, id: string): { track: "v1" | "v2"; clip: Clip & ClipLook } {
+  const v1 = (tl.tracks.v1 as Clip[]).find((c) => c.id === id);
+  if (v1) return { track: "v1", clip: v1 as Clip & ClipLook };
+  const v2 = (tl.tracks.v2 as (V2Clip & ClipLook)[]).find((c) => c.id === id);
+  if (v2 && v2.kind === "broll") return { track: "v2", clip: v2 as Clip & ClipLook };
+  if (v2) throw new EditError(`Clip "${id}" on V2 is a zoom: colour, keys, masks and blur go on V1 clips and b-roll.`);
+  throw new EditError(`There is no clip "${id}" on V1 or V2. Read the project again to get the current clip ids.`);
+}
+/** The clips a Phase 6 op names: clipId / clipIds, all V1 clips, or the V1 clips of one video. */
+function lookIds(tl: Timeline, op: { clipId?: string; clipIds?: string[]; all?: boolean; video?: string }): string[] {
+  const v1 = tl.tracks.v1 as SeqClip[];
+  const ids = op.all ? v1.map((c) => c.id) : op.video ? v1.filter((c) => c.sourceVideoId === (op.video === "main" ? mainVideoOf(tl) : op.video)).map((c) => c.id) : op.clipIds ?? (op.clipId ? [op.clipId] : []);
+  if (!ids.length) throw new EditError(op.video ? `No V1 clip plays video "${op.video}".` : "Send clipId, clipIds, all: true or video.");
+  for (const id of ids) lookClip(tl, id);
+  return Array.from(new Set(ids));
+}
+function mapLook(tl: Timeline, ids: string[], f: (c: Clip & ClipLook) => Clip & ClipLook): Timeline {
+  const set = new Set(ids);
+  return { ...tl, tracks: { ...tl.tracks, v1: (tl.tracks.v1 as (Clip & ClipLook)[]).map((c) => (set.has(c.id) ? f(c) : c)), v2: (tl.tracks.v2 as (Clip & ClipLook)[]).map((c) => (set.has(c.id) ? f(c) : c)) } } as Timeline;
+}
+const idsText = (tl: Timeline, ids: string[]) => (ids.length === 1 ? name(lookClip(tl, ids[0]).clip) : `${ids.length} clips`);
+/** Base64 to bytes, in the browser and in Node. */
+export function decodeB64(b64: string): Uint8Array {
+  const bin = globalThis.atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 /** "2x", "reversed 0.5x", "ramp 1x→3x→1x", "freeze 1.5s" (and whether its sound plays). */
@@ -1000,7 +1133,7 @@ export function lookText(tl: Timeline): string {
   return out.join(", ");
 }
 
-export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60, mainVideoId?: string): string {
+export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60, mainVideoId?: string, lutName?: (id: string) => string | undefined): string {
   const words = allWords(tr);
   const tl = layoutTimeline(asSequence(snap.timeline, words, mainVideoId), words);
   const view = sequenceView(tl, words);
@@ -1025,6 +1158,8 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
     if (!normalSpeed(c)) extra.push(speedText(c));
     if (c.transition) extra.push(`${c.transition.type}${c.transition.dir ? " " + c.transition.dir : ""} ${c.transition.duration}s in`);
     if (c.keys?.length) extra.push(`keys ${c.keys.map((k) => (Math.max(0, (c.freeze ? k.t - c.sourceIn : (view.editAt(c.id, k.t) ?? p.start) - p.start))).toFixed(2)).join(",")}s`);
+    const lk = lookTags(c);
+    if (lk) extra.push(lk);
     const at = p.end > p.start ? ` @${p.start.toFixed(2)}-${p.end.toFixed(2)}` : " (all cut)";
     return `  ${c.id} ${vName(c.sourceVideoId)} ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}${at} "${c.label}"${extra.length ? " " + extra.join(" ") : ""}`;
   });
@@ -1039,11 +1174,36 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
       const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
       const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
       const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
-      const on = (c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "") + (Array.isArray(c.keys) && c.keys.length ? ` keys ${(c.keys as Key[]).map((k) => k.t).join(",")}s` : "");
+      const lk = k === "v2" ? lookTags(c as Clip & ClipLook) : "";
+      const on = (c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "") + (Array.isArray(c.keys) && c.keys.length ? ` keys ${(c.keys as Key[]).map((k) => k.t).join(",")}s` : "") + (c.under ? " under V1" : "") + (lk ? " " + lk : "");
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;
     });
     const more = clips.length > maxPerTrack ? `\n  …and ${clips.length - maxPerTrack} more` : "";
     lines.push(`${names[k]}${k === "v3" ? " (graphics only; caption clips follow transcript lines)" : ""}: ${clips.length ? "\n" + shown.join("\n") + more : "empty"}`);
   }
+  lines.push(...colorSummary(tl, lutName));
   return lines.join("\n");
+}
+
+/** A clip's Phase 6 look in a few words: "grade, key, 2 masks, blur". */
+function lookTags(c: Clip & ClipLook): string {
+  const t = [c.grade ? "grade" : "", c.key ? "key" : "", c.masks?.length ? `${c.masks.length} ${c.masks.length === 1 ? "mask" : "masks"}` : "", ...(c.effects ?? []).map((e) => e.type)].filter(Boolean);
+  return t.length ? `look: ${t.join(", ")}` : "";
+}
+/** The looks in full, clips with the same one together (get_project). */
+export function colorSummary(tl: Timeline, lutName?: (id: string) => string | undefined): string[] {
+  const clips = [...(tl.tracks.v1 as (Clip & ClipLook)[]), ...(tl.tracks.v2 as (Clip & ClipLook)[])];
+  const group = (f: (c: Clip & ClipLook) => string) => {
+    const by = new Map<string, string[]>();
+    for (const c of clips) { const k = f(c); if (k) by.set(k, [...(by.get(k) ?? []), c.id]); }
+    return Array.from(by.entries()).map(([k, ids]) => `${k} on ${ids.length > 6 ? `${ids.slice(0, 6).join(", ")}… (${ids.length} clips)` : ids.join(", ")}`);
+  };
+  const out = [
+    ...group((c) => (c.grade ? `grade ${gradeText(c.grade, lutName)}` : "")),
+    ...group((c) => (c.key ? `key ${chromaKeyText(c.key)}` : "")),
+    ...group((c) => (c.masks?.length ? `masks ${masksText(c.masks)}` : "")),
+    ...group((c) => (c.effects?.length ? effectsText(c.effects) : "")),
+  ];
+  if (tl.export?.hdr === "sdr") out.push("export: HDR footage converted to SDR");
+  return out.length ? [`Looks: ${out.join("; ")}`] : [];
 }

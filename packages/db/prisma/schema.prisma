@@ -40,6 +40,7 @@ model User {
   chat        AiChatMessage[]
   notes       ProjectComment[]
   logins      UserLogin[]
+  luts        Lut[]
 }
 
 // More logins that open the same Rendrr account: for example the Google account someone used for the AI connector
@@ -88,6 +89,7 @@ model Video {
   error            String?
   art              String    @default("a")
   proxyKey         String?
+  hdr              String?   // pq | hlg: the original is HDR (null: SDR or not known yet)
   audioKey         String?
   thumbKey         String?
   previewSizeBytes BigInt    @default(0)
@@ -443,4 +445,18 @@ model ProjectComment {
   createdAt DateTime @default(now())
 
   @@index([projectId])
+}
+
+// Colour LUTs the user imported (.cube, Phase 6). The file sits in storage; grades refer to it by id.
+model Lut {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  key       String   // storage key of the .cube file
+  kind      String   // 3d | 1d
+  size      Int
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }

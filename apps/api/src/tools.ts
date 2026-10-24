@@ -5,7 +5,7 @@ import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signG
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   allWords, asSequence, breakdownAsText, CreateGraphicInput, describeRules, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
-  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, type Breakdown, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Transcript, type VideoKind,
+  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, type Breakdown, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources } from "./services/sequence";
 import { createProject, getOwnedProject } from "./services/projects";
@@ -13,6 +13,7 @@ import { renderResult, startRender } from "./services/render";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
+import { lutsFor, withMeasurements } from "./services/color";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
 /** loginId: the Clerk user who called (a linked login opens its account's userId). */
@@ -126,7 +127,10 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   }
   // The activity log keeps the edits, but long lists (clips, word ids) only as counts.
   const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e)) };
-  const r = await applyTimelineChange(projectId, edits.length === 1 ? edits[0] : { op: "batch", ops: edits }, actorFor(c, "apply_edits", logged));
+  // Phase 6: match_color gets the clips' measured frames (the worker reads them; a failure stops here, loudly).
+  const ready = await withMeasurements(projectId, edits);
+  const luts = ready.some((e) => e.op === "match_color") ? await lutsFor(c.userId, p0.timeline as unknown as Timeline) : undefined;
+  const r = await applyTimelineChange(projectId, ready.length === 1 ? ready[0] : { op: "batch", ops: ready }, actorFor(c, "apply_edits", logged), { luts });
   const v = await prisma.video.findUniqueOrThrow({ where: { id: p0.videoId }, include: { analysis: true } });
   const out = outputDuration(r.snapshot.timeline, allWords((v.analysis?.transcript as unknown as Transcript) || []));
   if (r.unchanged) return { text: `Nothing changed (still v${r.version}): ${r.summary}.`, data: { version: r.version } };
@@ -149,17 +153,19 @@ async function renderOut(renderId: string): Promise<ToolOut> {
   const res = await renderResult(r);
   const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
   if (r.kind === "final") return { text: head, data: { renderId: r.id } };
-  const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number } | null;
-  return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null, plan?.outputSeconds ?? null)}`, data: { renderId: r.id } };
+  const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number; operations?: string[] } | null;
+  // Phase 6: what the render itself said about HDR and missing LUTs goes into the check.
+  const notes = (plan?.operations ?? []).filter((l) => l.startsWith("HDR:") || /^Color: LUT .* left out/.test(l));
+  return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null, plan?.outputSeconds ?? null, notes)}`, data: { renderId: r.id } };
 }
 
 /** The check of one version of an edit against its rendered file (pauses from 0.15 s, whatever the style says: the AI knows what it asked for). */
-async function checkOf(projectId: string, version: number, loudness: FileLoudness | null, measured: FileMeasure | null, planned: number | null = null): Promise<string> {
+async function checkOf(projectId: string, version: number, loudness: FileLoudness | null, measured: FileMeasure | null, planned: number | null = null, renderNotes: string[] = []): Promise<string> {
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { video: { include: { analysis: true } } } });
   const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   const snap = (ver?.timeline ?? { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId }) as unknown as Snapshot;
   const others = await otherSources(p.userId, snap.timeline, p.videoId);
-  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, videoId: p.videoId, transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
+  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, renderNotes, videoId: p.videoId, transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
@@ -258,8 +264,11 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const snap = { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId } as unknown as Snapshot;
     const style = await prisma.style.findUnique({ where: { id: p.styleId } });
     const preview = await prisma.render.findFirst({ where: { projectId: p.id, status: "done", kind: "preview" }, orderBy: { createdAt: "desc" } });
-    return { text: clip([`Edit "${p.name}" (${p.id}) on footage ${v.id} "${v.name}". ${p.status}, v${p.currentVersion}, style ${style?.name ?? p.styleId}.`,
-      summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || [], 60, p.videoId),
+    // Phase 6: the user's imported LUTs (for set_grade lut) and whether the footage is HDR, only when there are any.
+    const luts = await prisma.lut.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, name: true } });
+    return { text: clip([`Edit "${p.name}" (${p.id}) on footage ${v.id} "${v.name}"${v.hdr ? ` (HDR ${v.hdr === "pq" ? "PQ" : "HLG"}: the final keeps it unless set_export hdr sdr)` : ""}. ${p.status}, v${p.currentVersion}, style ${style?.name ?? p.styleId}.`,
+      summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || [], 60, p.videoId, (id) => luts.find((l) => l.id === id)?.name),
+      ...(luts.length ? [`Your LUTs (set_grade lut id): ${luts.map((l) => `${l.id} "${l.name}"`).join(", ")}`] : []),
       preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet."].join("\n")) };
   },
 

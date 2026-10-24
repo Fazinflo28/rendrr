@@ -27,7 +27,11 @@ export type RenderJob = { renderId: string };
 export type GraphicJob = { graphicId: string };
 export type MaintenanceJob = { task: "cleanup" | "ensure-assets" };
 /** Frames at given times: from a render (output times) or from footage / a reference (original times). */
-export type FramesJob = { renderId?: string; videoId?: string; times: number[] };
+export type FramesJob = { renderId?: string; videoId?: string; times: number[]; colorSamples?: ColorSampleJob };
+/** Phase 6: small frames of clips as the editor shows them (turned, fitted), for shot matching. fitY: 0.4 for V1
+ *  (40% down, like the render's fit), 0.5 for b-roll. */
+export type ColorSampleJob = { w: number; h: number; clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number; fitY: number }[] };
+export type ColorSamples = Record<string, { w: number; h: number; rgb: string }>;
 export type BreakdownJob = { videoId: string };
 
 export async function enqueue<T extends object>(name: QueueName, data: T, opts: JobsOptions = {}) {

@@ -3,6 +3,7 @@ import { catalogMusic, catalogSfx } from "./catalog";
 import { CaptionStyleSchema, CardSchema, TEXT_ANIMS, TextStyleSchema } from "./captions";
 import { ASPECTS, CAPTION_LOOKS } from "./constants";
 import { KeysSchema, RampPointSchema, TransitionSchema } from "./motion";
+import { ChromaKeySchema, EffectSchema, GradeSchema, MaskSchema } from "./look";
 
 // The shared timeline. Same shape as timelineFor() in ui/rendrr-ui.html.
 // Two models (see docs/timeline-model.md and sequence.ts):
@@ -19,6 +20,8 @@ const label = z.string().max(300).default("");
 export const ClipSchema = z.object({ id, start: time, end: time, label }).passthrough();
 /** Keyframes (Phase 5), on any clip that is drawn: V1, b-roll, graphics, text. */
 const keys = KeysSchema.optional();
+/** Colour and compositing (Phase 6), on V1 and b-roll clips: grade, chroma key, masks, blur/pixelate. */
+const look = { grade: GradeSchema.optional(), key: ChromaKeySchema.optional(), masks: z.array(MaskSchema).max(8).optional(), effects: z.array(EffectSchema).max(4).optional() };
 
 /** V1 (model B): the footage fields are checked by sequenceProblems; speed, transition and keyframes here (Phase 5). */
 export const V1ClipSchema = ClipSchema.extend({
@@ -28,6 +31,7 @@ export const V1ClipSchema = ClipSchema.extend({
   freeze: z.number().min(0.04).max(60).optional(),
   transition: TransitionSchema.optional(),
   keys,
+  ...look,
 });
 
 export const V2ClipSchema = ClipSchema.extend({
@@ -37,6 +41,9 @@ export const V2ClipSchema = ClipSchema.extend({
   videoId: z.string().max(80).optional(),
   sourceStart: time.optional(),
   keys,
+  ...look,
+  /** Drawn behind V1 instead of over it: it shows where V1 is keyed, masked, framed smaller or moved away. */
+  under: z.boolean().optional(),
 });
 
 export const V3ClipSchema = ClipSchema.extend({
@@ -118,6 +125,11 @@ export type AudioMixSettings = typeof AUDIO_DEFAULTS;
 /** The edit's audio settings with the defaults filled in. */
 export const audioSettings = (tl: { audio?: AudioSettings }): AudioMixSettings => ({ ...AUDIO_DEFAULTS, ...Object.fromEntries(Object.entries(tl.audio ?? {}).filter(([, v]) => v !== undefined)) });
 
+/** How the final file is made (Phase 6: HDR; Phase 7 adds size, codec and frame rate). hdr: "keep" (default) keeps
+ *  HDR footage HDR (10-bit, BT.2020, its own transfer); "sdr" converts the edit to SDR. */
+export const ExportSchema = z.object({ hdr: z.enum(["keep", "sdr"]).optional() });
+export type ExportSettings = z.infer<typeof ExportSchema>;
+
 export const TimelineSchema = z.object({
   /** "B" = the sequence model. Missing = model A (stored before Phase 2; converted when edited). */
   model: z.literal("B").optional(),
@@ -135,6 +147,7 @@ export const TimelineSchema = z.object({
   rotate: RotationSchema.optional(),
   framing: FramingSchema.optional(),
   audio: AudioSettingsSchema.optional(),
+  export: ExportSchema.optional(),
 });
 
 export type Clip = z.infer<typeof ClipSchema>;
@@ -208,6 +221,20 @@ function sequenceProblems(t: Timeline): string[] {
   return out;
 }
 
+/** Phase 6 fields that do nothing are left out: a neutral grade, no masks, no effects. */
+function tidyLook(x: Record<string, unknown>) {
+  // Copies: the clip objects may be shared with the timeline this one was made from.
+  if (x.grade) {
+    const g = { ...(x.grade as Record<string, unknown>) };
+    for (const k of Object.keys(g)) if (g[k] == null || (k !== "saturation" && g[k] === 0) || (k === "saturation" && g[k] === 100)) delete g[k];
+    if (g.curves) { const cv = { ...(g.curves as Record<string, unknown>) }; for (const k of Object.keys(cv)) if (!cv[k]) delete cv[k]; if (Object.keys(cv).length) g.curves = cv; else delete g.curves; }
+    if (Object.keys(g).length) x.grade = g; else delete x.grade;
+  }
+  if (x.key == null) delete x.key;
+  if (Array.isArray(x.masks) && !x.masks.length) delete x.masks;
+  if (Array.isArray(x.effects) && !x.effects.length) delete x.effects;
+}
+
 /** Keys in time order, times to 1/1000 s. */
 const sortKeys = <T extends { t: number }>(ks: T[]): T[] => ks.map((k) => ({ ...k, t: Math.round(k.t * 1000) / 1000 })).sort((a, b) => a.t - b.t);
 
@@ -259,6 +286,7 @@ function normalizeSequence(t: Timeline): Timeline {
         if (x.freeze != null) { x.freeze = r(Number(x.freeze)); delete x.speed; delete x.reverse; delete x.ramp; delete x.audioStart; }
         if (x.transition && (x.transition as { type: string }).type === "cut") delete x.transition;
         if (Array.isArray(x.keys)) { if ((x.keys as unknown[]).length) x.keys = sortKeys(x.keys as { t: number }[]); else delete x.keys; }
+        tidyLook(x);
         return x;
       }).filter((c) => Number(c.sourceOut) - Number(c.sourceIn) >= 0.01);
     } else if (name !== "a1") {
@@ -270,6 +298,7 @@ function normalizeSequence(t: Timeline): Timeline {
         if (x.anchorAt != null) x.anchorAt = r3(Number(x.anchorAt));
         for (const k of ["fadeIn", "fadeOut"]) if (x[k] != null) x[k] = r(Math.max(0, Number(x[k])));
         if (Array.isArray(x.keys)) { if ((x.keys as unknown[]).length) x.keys = sortKeys(x.keys as { t: number }[]); else delete x.keys; }
+        if (name === "v2") { tidyLook(x); if (!x.under) delete x.under; }
         return x;
       }).filter((c) => isCaptionMarker(name, c) || c.fill || c.length == null || Number(c.length) >= 0.01);
     }

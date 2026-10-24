@@ -17,6 +17,7 @@
 import { isCaptionMarker, normalizeTimeline, TRACK_NAMES, type Clip, type Framing, type Rotation, type Timeline, type TrackName } from "./timeline";
 import type { Word } from "./transcript";
 import { audibleRate, rampSteps, type Key, type RampPoint, type Transition } from "./motion";
+import type { ChromaKey, Effect, Grade, Mask } from "./look";
 
 export type Range = { start: number; end: number };
 
@@ -278,6 +279,7 @@ export function removeFromMainCut(tl: Timeline, a: number, b: number): Timeline 
 export type SeqClip = Clip & {
   sourceVideoId: string; sourceIn: number; sourceOut: number; audioStart?: number; audioMuted?: boolean; audioGain?: number; audioFadeIn?: number; audioFadeOut?: number; rotate?: Rotation; framing?: Framing;
   speed?: number; reverse?: boolean; ramp?: RampPoint[]; freeze?: number; transition?: Transition; keys?: Key[];
+  grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[];
 };
 /** The clip plays at normal speed, forwards. */
 export const normalSpeed = (c: Partial<SeqClip>) => (!c.speed || c.speed === 1) && !c.reverse && !c.ramp?.length && !c.freeze;
@@ -344,7 +346,9 @@ export type SequenceView = {
 const sameFraming = (a?: Framing | null, b?: Framing | null) => (!a && !b) || (!!a && !!b && a.scale === b.scale && a.x === b.x && a.y === b.y);
 export const plainFraming = (f?: Framing | null): Framing | null => (!f || (f.scale === 1 && f.x === 0 && f.y === 0) ? null : f);
 // Keyframed clips play as parts of their own (their motion is the clip's).
-const sameLook = (a: SeqClip, b: SeqClip) => (a.rotate ?? 0) === (b.rotate ?? 0) && sameFraming(plainFraming(a.framing), plainFraming(b.framing)) && (a === b || (!a.keys?.length && !b.keys?.length));
+/** Colour and compositing (Phase 6): clips with different looks are drawn apart. */
+const colorOf = (c: SeqClip) => (c.grade || c.key || c.masks || c.effects ? JSON.stringify([c.grade, c.key, c.masks, c.effects]) : "");
+const sameLook = (a: SeqClip, b: SeqClip) => (a.rotate ?? 0) === (b.rotate ?? 0) && sameFraming(plainFraming(a.framing), plainFraming(b.framing)) && (a === b || (!a.keys?.length && !b.keys?.length)) && (a === b || colorOf(a) === colorOf(b));
 
 /** Cuts ranges out of ranges, keeping every leftover however short (the caller decides what is too short). */
 function cutOut(keep: Range[], remove: Range[]): Range[] {

@@ -132,6 +132,9 @@ export type LiveFrame = {
   rate: number;
   motion: Motion | null;
   transition: TransitionNow | null;
+  /** Phase 6: the clip whose look (plan.looks) the picture shows, and the b-roll behind V1 at t (bottom first). */
+  lookId: string | null;
+  under: { clipId: string; videoId: string; src: number; motion: Motion | null }[];
 };
 
 const inside = (t: number, r: { start: number; end: number }) => t >= r.start && t < r.end;
@@ -163,6 +166,8 @@ export function liveFrame(plan: RenderPlan, t0: number, clock = sequenceClock(pl
     rate: pic ? pic.rate : 1,
     motion: part && part.clipIds.length === 1 ? clipMotionAt(plan, part.clipIds[0], t) : null,
     transition: transitionNow(plan, t),
+    lookId: part && plan.looks?.[part.clipIds[0]] ? part.clipIds[0] : null,
+    under: (plan.under ?? []).filter((u) => inside(t, u) && u.videoId).map((u) => ({ clipId: u.clipId, videoId: u.videoId!, src: u.sourceStart + (t - u.start), motion: ov(u, "v2:") })),
   };
 }
 

@@ -70,6 +70,7 @@ export const PREFIX = {
   brand: "brand/",
   assets: "assets/",
   samples: "samples/",
+  luts: "luts/",
 } as const;
 
 export const FILLER_WORDS = ["um", "uh", "like", "basically", "honestly"] as const;

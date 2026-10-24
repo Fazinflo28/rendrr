@@ -132,4 +132,67 @@ describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL 
     await assert.rejects(async () => TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "set_speed", clipId: ids[0], speed: 50 }] }), /speed number must be less than or equal to 10/);
     assert.match((await TOOL_HANDLERS.get_project(c(), { projectId })).text, /v5/);
   });
+
+  it("Phase 6: a grade with an imported LUT, a key, masks, blur and match_color measured by the worker; get_project and the check read them back", async (t) => {
+    const { putObject } = await import("@rendrr/core");
+    // Storage and FFmpeg are needed (the worker reads frames of the clips' preview copies to measure them).
+    try { await putObject(`luts/${userId}/probe.txt`, "x", "text/plain"); } catch { t.skip("needs the storage in .env (S3_ENDPOINT)"); return; }
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { Worker } = await import("bullmq");
+    const { newRedis, uploadFile } = await import("@rendrr/core");
+    const { QUEUES } = await import("@rendrr/shared");
+    const { framesJob } = await import("../../worker/src/jobs/frames");
+    const dir = mkdtempSync(join(tmpdir(), "p6-api-"));
+    // The main footage's preview copy: a dark blue picture; the second camera's: brighter and warmer.
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=black:s=320x180:r=30:d=30,format=gbrp,geq=r='20+X*0.2':g='30+Y*0.4':b='80+X*0.3'", "-c:v", "libx264", "-pix_fmt", "yuv420p", join(dir, "main.mp4")]);
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=black:s=320x180:r=30:d=12,format=gbrp,geq=r='120+X*0.3':g='80+Y*0.4':b='40+X*0.2'", "-c:v", "libx264", "-pix_fmt", "yuv420p", join(dir, "other.mp4")]);
+    await uploadFile(`proxies/${userId}/${videoId}.mp4`, join(dir, "main.mp4"), "video/mp4");
+    await uploadFile(`proxies/${userId}/${otherId}.mp4`, join(dir, "other.mp4"), "video/mp4");
+    await prisma.video.update({ where: { id: videoId }, data: { proxyKey: `proxies/${userId}/${videoId}.mp4`, hdr: "pq" } });
+    await prisma.video.update({ where: { id: otherId }, data: { proxyKey: `proxies/${userId}/${otherId}.mp4` } });
+    const conn = newRedis();
+    const worker = new Worker(QUEUES.frames.name, async (job) => framesJob({ job, dir, signal: new AbortController().signal, isLastAttempt: true } as never), { connection: conn });
+    try {
+      // An imported LUT, as the upload route stores it.
+      const cube = ["LUT_3D_SIZE 2", ...[0, 1].flatMap((b) => [0, 1].flatMap((g) => [0, 1].map((r) => `${r} ${g} ${b}`)))].join("\n");
+      const lut = await prisma.lut.create({ data: { userId, name: "Identity", key: `luts/${userId}/id.cube`, kind: "3d", size: 2 } });
+      await putObject(lut.key, cube, "text/plain");
+      const before = await TOOL_HANDLERS.get_project(c(), { projectId });
+      assert.match(before.text, new RegExp(`Your LUTs \\(set_grade lut id\\): ${lut.id} "Identity"`));
+      assert.match(before.text, /HDR PQ: the final keeps it/);
+      const ids = Array.from(before.text.matchAll(/^ {2}(\S+) (main|\S+) ([\d.]+)-[\d.]+ @/gm)).map((m) => ({ id: m[1], video: m[2] }));
+      const main = ids.find((x) => x.video === "main")!.id, other = ids.find((x) => x.video === otherId)!.id;
+      const r = await TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [
+        { op: "set_grade", clipId: other, exposure: 0.3, lut: { id: lut.id, amount: 0.5 } },
+        { op: "match_color", clipIds: [main], to: other },
+        { op: "set_key", clipId: other, color: "#00B140" },
+        { op: "set_masks", clipId: other, masks: [{ shape: "ellipse", x: 0.1, y: 0.1, w: 0.8, h: 0.8, feather: 0.05 }] },
+        { op: "set_effects", clipId: main, effects: [{ type: "blur", amount: 20, area: { shape: "rect", x: 0, y: 0, w: 0.3, h: 0.3 } }] },
+      ] });
+      assert.match(r.text, /grade exposure \+0\.3, LUT "Identity" 50%/);
+      assert.match(r.text, /matched to .* \(measured\): /);
+      const read = await TOOL_HANDLERS.get_project(c(), { projectId });
+      // The dark blue clip got curves that lift it towards the warm reference (red up, blue down at the middle).
+      const proj = await prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+      const g = (proj.timeline as { tracks: { v1: { id: string; grade?: { curves?: Record<string, [number, number][]> } }[] } }).tracks.v1.find((x) => x.id === main)!.grade!;
+      const mid = (ch: string) => g.curves![ch][2];
+      assert.ok(mid("r")[1] > mid("r")[0] + 0.2, `red lifted (${mid("r")})`);
+      assert.ok(mid("b")[1] < mid("b")[0], `blue lowered (${mid("b")})`);
+      assert.match(read.text, /Looks: grade (saturation \d+%, )?curves r\/g\/b on [^;]+; grade exposure \+0\.3, LUT "Identity" 50% on /);
+      assert.match(read.text, /key #00B140 similarity 0\.25 blend 0\.1 spill 0\.5 on /);
+      assert.match(read.text, /look: grade, key, 1 mask/);
+      // A clip that is not there: refused, with the reason.
+      await assert.rejects(async () => TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "match_color", clipIds: ["nope"], to: main }] }), /no clip "nope"/);
+    } finally {
+      await worker.close();
+      conn.disconnect();
+      await (await import("../src/services/color")).closeColorEvents();
+      rmSync(dir, { recursive: true, force: true });
+      await prisma.lut.deleteMany({ where: { userId } });
+    }
+  });
 });
+

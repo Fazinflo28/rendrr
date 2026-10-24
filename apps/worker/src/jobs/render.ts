@@ -1,7 +1,7 @@
-import { deleteObject, downloadFile, drive, publishRender, signGet, uploadFile, usage, type RenderJob } from "@rendrr/core";
+import { deleteObject, downloadFile, drive, getText, publishRender, signGet, uploadFile, usage, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { isSequence, mainVideoOf, PREFIX, renderTimeoutMs, StyleRulesSchema, type FileMeasure, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
-import { ffmpegArgs, planRender, RenderPlanError, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
+import { isSequence, mainVideoOf, parseCube, PREFIX, renderTimeoutMs, StyleRulesSchema, type ClipLook, type FileMeasure, type HdrTransfer, type Lut, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { ffmpegArgs, lookFileData, planRender, RenderPlanError, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -86,14 +86,17 @@ export async function renderJob(ctx: Ctx) {
     const brollIds = Array.from(new Set(snapshot.timeline.tracks.v2.map((c) => (c as { videoId?: string }).videoId).filter(Boolean) as string[]));
     const brollVideos = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId: video.userId, proxyKey: { not: null } } }) : [];
     const graphicClips = (snapshot.timeline.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId);
-    const files: PlanFiles = { source: src, output: join(ctx.dir, "out.mp4"), assPath: join(ctx.dir, "captions.ass"), fontsDir: FONTS_DIR, broll: {}, graphics: {}, audio: {}, videos: {} };
-    const sourceInfo = { width: info.width, height: info.height, fps: info.fps, seconds: info.seconds || video.seconds, hasAudio: info.hasAudio, hdr: !!info.hdr };
+    const files: PlanFiles = { source: src, output: join(ctx.dir, "out.mp4"), assPath: join(ctx.dir, "captions.ass"), fontsDir: FONTS_DIR, broll: {}, graphics: {}, audio: {}, videos: {}, under: {}, looks: {} };
+    const sourceInfo: SourceInfo = { width: info.width, height: info.height, fps: info.fps, seconds: info.seconds || video.seconds, hasAudio: info.hasAudio, hdr: !!info.hdr, ...(info.transfer ? { transfer: info.transfer } : {}) };
+    // Phase 6: a final reads the original, so it learns whether the footage is HDR (previews say so from then on).
+    if (kind === "final" && (video.hdr ?? null) !== (info.transfer ?? null)) await prisma.video.update({ where: { id: video.id }, data: { hdr: info.transfer ?? null } }).catch(() => {});
 
     // The other videos on V1 (a sequence can cut between several): previews use their preview copy; finals their
     // original when Rendrr keeps it, else the preview copy (the operations say so). A video that is gone fails the
     // plan with a plain message.
     const sources: Record<string, SourceInfo> = {};
     const transcripts: Record<string, Transcript> = {};
+    const hdrFootage: Record<string, HdrTransfer> = video.hdr ? { [video.id]: video.hdr as HdrTransfer } : {};
     const copies: string[] = [];
     if (isSequence(snapshot.timeline)) {
       const main = mainVideoOf(snapshot.timeline);
@@ -108,11 +111,18 @@ export async function renderJob(ctx: Ctx) {
         const oi = await probe(p, { signal });
         if (!oi.hasVideo) throw new JobError(`"${o.name}" on V1 looks damaged. Remove it from the edit or add it again.`, "damaged", false);
         files.videos![o.id] = p;
-        sources[o.id] = { width: oi.width, height: oi.height, fps: oi.fps, seconds: oi.seconds || o.seconds, hasAudio: oi.hasAudio, hdr: !!oi.hdr };
+        sources[o.id] = { width: oi.width, height: oi.height, fps: oi.fps, seconds: oi.seconds || o.seconds, hasAudio: oi.hasAudio, hdr: !!oi.hdr, ...(oi.transfer ? { transfer: oi.transfer } : {}) };
+        if (o.hdr) hdrFootage[o.id] = o.hdr as HdrTransfer;
         transcripts[o.id] = (o.analysis?.transcript as unknown as Transcript) || [];
       }
     }
-    const planBase = { kind, snapshot, transcript, source: sourceInfo, videoId: video.id, sources, transcripts, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])) };
+    // Phase 6: the imported LUTs the grades use (one that is gone renders without it, and the check says so).
+    const lutIds = Array.from(new Set([...snapshot.timeline.tracks.v1, ...snapshot.timeline.tracks.v2].map((c) => (c as ClipLook).grade?.lut?.id).filter((x): x is string => !!x)));
+    const luts: Record<string, Lut> = {};
+    for (const l of lutIds.length ? await prisma.lut.findMany({ where: { id: { in: lutIds }, userId: video.userId } }) : []) {
+      try { luts[l.id] = parseCube(await getText(l.key)); } catch (e) { console.error("[render] LUT skipped:", l.id, (e as Error).message.slice(0, 200)); }
+    }
+    const planBase = { kind, snapshot, transcript, source: sourceInfo, videoId: video.id, sources, transcripts, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])), luts, hdrFootage };
 
     // A first plan tells us the output size, so graphics can be drawn at the right resolution.
     const first = planRender(planBase);
@@ -131,9 +141,15 @@ export async function renderJob(ctx: Ctx) {
     }
     const plan = planRender({ ...planBase, graphicsReady });
     if (copies.length) plan.operations.push(`Other videos without an original in Rendrr use their 720p copy: ${copies.join(", ")}`);
-    for (const b of plan.broll) {
+    for (const b of [...plan.broll, ...(plan.under ?? [])]) {
       const bv = brollVideos.find((x) => x.id === b.videoId);
-      if (bv?.proxyKey) { const p = join(ctx.dir, `broll-${b.clipId}.mp4`); await downloadFile(bv.proxyKey, p); files.broll![b.clipId] = p; }
+      if (bv?.proxyKey) { const p = join(ctx.dir, `broll-${b.clipId}.mp4`); await downloadFile(bv.proxyKey, p); (plan.under?.includes(b) ? files.under! : files.broll!)[b.clipId] = p; }
+    }
+    // Phase 6: the grades as .cube files and the masks as pictures, at the render's size.
+    for (const [name, spec] of Object.entries(plan.lookFiles ?? {})) {
+      const p = join(ctx.dir, `look-${name}`);
+      await writeFile(p, lookFileData(spec, plan, luts));
+      files.looks![name] = p;
     }
     for (const a of plan.audio) {
       // Built-in music and sound effects only (the plan takes keys from the catalog; this is a second lock).
@@ -203,7 +219,7 @@ export async function renderJob(ctx: Ctx) {
     const framesKeys: string[] = [];
     for (const [k, f] of [0.15, 0.4, 0.65, 0.9].entries()) {
       const fp = join(ctx.dir, `f${k}.jpg`);
-      await frameAt(files.output, outInfo.seconds * f, fp, kind === "final" ? 960 : 540, signal).catch(() => {});
+      await frameAt(files.output, outInfo.seconds * f, fp, kind === "final" ? 960 : 540, signal, !!plan.hdr).catch(() => {});
       if (await stat(fp).then(() => true).catch(() => false)) { await uploadFile(`${base}-f${k}.jpg`, fp, "image/jpeg"); framesKeys.push(`${base}-f${k}.jpg`); }
     }
     // Final: the original is deleted straight away (the daily cleanup is only the safety net).
@@ -214,7 +230,7 @@ export async function renderJob(ctx: Ctx) {
     }
     await prisma.render.update({ where: { id: r.id }, data: {
       status: "done", outputKey: `${base}.mp4`, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? (plan.hdr ? "1080p HDR" : "1080p") : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
     } });
     const fresh = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     await prisma.project.update({ where: { id: project.id }, data: {

@@ -9,6 +9,7 @@ import internal from "./routes/internal";
 import library from "./routes/library";
 import projects from "./routes/projects";
 import render from "./routes/render";
+import color from "./routes/color";
 import reviews from "./routes/reviews";
 import { backfillOutputSeconds, refreshFillerFlags } from "./services/projects";
 import { removeDemoFootage } from "./services/cleanup";
@@ -104,6 +105,7 @@ export async function buildServer() {
   await app.register(library);
   await app.register(projects);
   await app.register(render);
+  await app.register(color);
   await app.register(reviews);
   await app.register(internal);
   return app;

@@ -12,9 +12,10 @@ import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
 import { audioSettings, type AudioMixSettings } from "./timeline";
 import { buildStyledAss, captionStyleOf, layoutCaptions, styleText, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
+import { areaPicture, blurSigma, buildLut, chromaKeyText, cubeText, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, pixelBlock, sdrToHdr, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
-export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean };
+export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean; transfer?: HdrTransfer };
 export type CaptionRules = { wordsAtOnce: number; upper: boolean; maxLines: number };
 
 export type PlanInput = {
@@ -33,6 +34,10 @@ export type PlanInput = {
   sources?: Record<string, SourceInfo>;
   /** Their transcripts (captions of their speech), by id. */
   transcripts?: Record<string, Transcript>;
+  /** Imported LUTs the grades use, by id (Phase 6). A grade whose LUT is missing renders without it (and says so). */
+  luts?: Record<string, Lut>;
+  /** Videos whose original is HDR, by id (a preview plays SDR copies, so it learns this here for its check line). */
+  hdrFootage?: Record<string, HdrTransfer>;
 };
 
 /** through: the zoom transition (in to the cut, out after it). */
@@ -54,6 +59,14 @@ export type AudioMix = AudioMixSettings & {
   dialogue: DialogueSpan[];
 };
 export type CaptionEvent = { start: number; end: number; text: string };
+/**
+ * A clip's colour and compositing (Phase 6), with the files the render reads: lut = the grade as a .cube (lutHdr: the
+ * grade, then SDR into the HDR output), mask = the masks' picture (.pgm), each effect's area picture. px: blur sigma or
+ * block size in pixels at the plan's size. alpha: parts of the clip are transparent (key or masks).
+ */
+export type LookOp = { grade?: Grade; lut?: string; lutHdr?: string; key?: ChromaKey; masks?: Mask[]; mask?: string; effects?: (Effect & { px: number; file?: string })[]; alpha: boolean };
+/** What a look file holds; lookFileData() writes it. */
+export type LookFile = { kind: "lut"; grade: Grade; hdr?: HdrTransfer } | { kind: "hdr"; hdr: HdrTransfer } | { kind: "mask"; masks: Mask[] } | { kind: "area"; area: Area };
 
 export type RenderPlan = {
   /** "B" = planned from a sequence; "A" = from a timeline stored in model A (renderPlanA.ts). */
@@ -69,8 +82,8 @@ export type RenderPlan = {
   sound: SoundPart[];
   /** The videos it plays, main footage first. */
   sources: string[];
-  /** Per video: has a sound track, HDR (tone-mapped like the preview copy). */
-  videos?: Record<string, { hasAudio: boolean; hdr: boolean }>;
+  /** Per video: has a sound track, HDR (tone-mapped like the preview copy in SDR output) and its transfer. */
+  videos?: Record<string, { hasAudio: boolean; hdr: boolean; transfer?: HdrTransfer }>;
   /** Sequences only: cleanup, loudness target, ducking, fades. */
   audioMix?: AudioMix;
   outputSeconds: number;
@@ -86,6 +99,12 @@ export type RenderPlan = {
   /** Phase 5: transitions in edit order, and the keyframes of V1 clips (seconds from the clip's start in the edit). */
   transitions?: TransitionOp[];
   clipMotion?: Record<string, { start: number; end: number; keys: Key[] }>;
+  /** Phase 6: each V1 and b-roll clip's look (by clip id), the files they need (by file name), b-roll drawn behind V1,
+   *  and the HDR output (null: SDR). hdr.lut converts SDR pictures (footage, b-roll, graphics) into it. */
+  looks?: Record<string, LookOp>;
+  lookFiles?: Record<string, LookFile>;
+  under?: OverlayOp[];
+  hdr?: { transfer: HdrTransfer; lut: string } | null;
   /** Sequences: the caption style, the captions with their lines and word times, the text layers (Phase 4). */
   captionStyle?: CaptionStyle;
   styledCaptions?: StyledCaption[];
@@ -340,7 +359,7 @@ export function planRender(input: PlanInput): RenderPlan {
 
   const zooms: ZoomOp[] = [];
   for (const t of transitions) if (t.type === "zoom" && t.end > t.start) zooms.push({ start: t.start, end: t.end, scale: ZOOM_PEAK, mode: "through" });
-  const broll: OverlayOp[] = [];
+  const broll: OverlayOp[] = [], under: OverlayOp[] = [];
   for (const c of tl.tracks.v2 as (V2Clip & Attached)[]) {
     const sp = placed(c);
     if (!sp) continue;
@@ -353,7 +372,7 @@ export function planRender(input: PlanInput): RenderPlan {
       const end = Math.min(sp.end, sp.start + (len - ss));
       // On whole frames, so the render and the player show it on exactly the same frames.
       const fs = onFrame(sp.start), fe = onFrame(end);
-      if (fe - fs >= 0.05) broll.push({ clipId: c.id, start: fs, end: fe, sourceStart: ss, videoId: c.videoId, ...(c.keys?.length ? { keys: c.keys } : {}) });
+      if (fe - fs >= 0.05) ((c as { under?: boolean }).under ? under : broll).push({ clipId: c.id, start: fs, end: fe, sourceStart: ss, videoId: c.videoId, ...(c.keys?.length ? { keys: c.keys } : {}) });
     }
   }
   const graphics: OverlayOp[] = [];
@@ -412,9 +431,35 @@ export function planRender(input: PlanInput): RenderPlan {
   const ass = buildStyledAss({ captions: styledCaptions, captionStyle, texts, width, height });
 
   const parts = view.picture.map((p) => ({ ...p, start: r3(p.start), end: r3(p.end) }));
+
+  // Phase 6: HDR stays HDR in a final (unless the edit asks for SDR): the main footage's transfer, else the first HDR
+  // video's. Previews are made from the SDR preview copies.
+  const hdrSrc = [main, ...parts.map((p) => p.videoId)].map((v) => infoOf(v)).find((x) => x?.hdr);
+  const hdrVideos = new Set(parts.map((p) => p.videoId).filter((v) => infoOf(v)?.hdr || input.hdrFootage?.[v]));
+  const hdrT: HdrTransfer | null = kind === "final" && (tl.export?.hdr ?? "keep") === "keep" && hdrSrc ? hdrSrc.transfer ?? "pq" : null;
+  const lookFiles: Record<string, LookFile> = {};
+  const file = (spec: LookFile) => { const name = `${spec.kind}_${hashOf(spec)}.${spec.kind === "mask" || spec.kind === "area" ? "pgm" : "cube"}`; lookFiles[name] = spec; return name; };
+  const hdr = hdrT ? { transfer: hdrT, lut: file({ kind: "hdr", hdr: hdrT }) } : null;
+  const looks: Record<string, LookOp> = {};
+  const missingLuts = new Set<string>();
+  const lookFor = (c: ClipLook & { id: string }) => {
+    const grade = c.grade && gradeIsActive(c.grade) ? { ...c.grade } : undefined;
+    if (grade?.lut && !input.luts?.[grade.lut.id]) { missingLuts.add(grade.lut.id); delete grade.lut; }
+    const g = grade && gradeIsActive(grade) ? grade : undefined;
+    if (!g && !c.key && !c.masks?.length && !c.effects?.length) return;
+    looks[c.id] = {
+      ...(g ? { grade: g, lut: file({ kind: "lut", grade: g }), ...(hdr ? { lutHdr: file({ kind: "lut", grade: g, hdr: hdr.transfer }) } : {}) } : {}),
+      ...(c.key ? { key: c.key } : {}),
+      ...(c.masks?.length ? { masks: c.masks, mask: file({ kind: "mask", masks: c.masks }) } : {}),
+      ...(c.effects?.length ? { effects: c.effects.map((e) => ({ ...e, px: e.type === "blur" ? blurSigma(e.amount, width, height) : pixelBlock(e.amount, width, height), ...(e.area ? { file: file({ kind: "area", area: e.area }) } : {}) })) } : {}),
+      alpha: !!c.key || !!c.masks?.length,
+    };
+  };
+  for (const c of v1) lookFor(c);
+  for (const b of [...broll, ...under]) lookFor((tl.tracks.v2 as (V2Clip & ClipLook)[]).find((x) => x.id === b.clipId)!);
   const sound = view.sound.map((x) => ({ ...x, start: r3(x.start), end: r3(x.end) }));
   const sources = Array.from(new Set([main, ...parts.map((p) => p.videoId), ...sound.map((x) => x.videoId)])).filter((v) => parts.some((p) => p.videoId === v) || sound.some((x) => x.videoId === v));
-  const videos = Object.fromEntries(sources.map((v) => [v, { hasAudio: infoOf(v)!.hasAudio, hdr: !!infoOf(v)!.hdr }]));
+  const videos = Object.fromEntries(sources.map((v) => [v, { hasAudio: infoOf(v)!.hasAudio, hdr: !!infoOf(v)!.hdr, ...(infoOf(v)!.hdr ? { transfer: infoOf(v)!.transfer ?? "pq" } : {}) }]));
   const cutCount = cutRegions(words, new Set(tl.cut)).length;
   const live = view.clips.filter((c) => c.pieces.length);
   const jl = { j: live.filter((c, i) => i > 0 && c.soundStart < c.start - 1e-6).length, l: live.filter((c, i) => i > 0 && c.soundStart > c.start + 1e-6).length, muted: (tl.tracks.v1 as unknown as { audioMuted?: boolean }[]).filter((c) => c.audioMuted).length };
@@ -431,15 +476,59 @@ export function planRender(input: PlanInput): RenderPlan {
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
+    ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr"),
     `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${cleanupText(settings) !== "none" ? `, cleanup ${cleanupText(settings)}` : ""}${settings.declick ? `, ${Math.round(settings.declick * 1000)} ms fade at every cut` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
     settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
-    kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
+    kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : hdr ? `Encode final: HEVC 10-bit HDR (${hdr.transfer === "pq" ? "PQ" : "HLG"}, BT.2020), ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
   ];
   return {
     model: "B", kind, width, height, fps: 30, aspect: snapshot.aspect, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })), parts, sound, sources, videos,
     outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, captionStyle, styledCaptions, texts, ass, operations, audioMix,
     transitions, clipMotion,
+    looks, lookFiles, under, hdr, ...(hdr && ass ? { ass: hdrAss(ass, hdr.transfer) } : {}),
   };
+}
+
+/** The render plan's Phase 6 lines: colour, key, masks, blur, under layers, HDR. */
+function colorLines(looks: Record<string, LookOp>, under: OverlayOp[], missingLuts: Set<string>, hdr: RenderPlan["hdr"], hdrClips: string[], kind: RenderKind, hdrFootage: boolean, toSdr: boolean): string[] {
+  const all = Object.entries(looks);
+  const list = <T,>(xs: [string, T][], f: (x: T) => string) => xs.slice(0, 4).map(([id, x]) => `${id} ${f(x)}`).join("; ") + (xs.length > 4 ? `; +${xs.length - 4} more` : "");
+  const graded = all.filter(([, l]) => l.grade).map(([id, l]) => [id, l.grade!] as [string, Grade]);
+  const keyed = all.filter(([, l]) => l.key).map(([id, l]) => [id, l.key!] as [string, ChromaKey]);
+  const masked = all.filter(([, l]) => l.masks).map(([id, l]) => [id, l.masks!] as [string, Mask[]]);
+  const fx = all.filter(([, l]) => l.effects).map(([id, l]) => [id, l.effects!] as [string, Effect[]]);
+  // Lines only for what the edit uses.
+  const out: string[] = graded.length ? [`Color: ${graded.length} ${graded.length === 1 ? "clip" : "clips"} graded (${list(graded, (g) => gradeText(g))})`] : [];
+  if (missingLuts.size) out.push(`Color: LUT ${Array.from(missingLuts).join(", ")} is not in your LUTs any more: left out`);
+  if (keyed.length) out.push(`Key: ${list(keyed, chromaKeyText)}`);
+  if (masked.length) out.push(`Masks: ${list(masked, masksText)}`);
+  if (fx.length) out.push(`Blur/pixelate: ${list(fx, effectsText)}`);
+  if (under.length) out.push(`Under V1: ${under.length} b-roll ${under.length === 1 ? "clip" : "clips"} (${under.slice(0, 4).map((u) => u.clipId).join(", ")})`);
+  const sdrGraded = hdrClips.filter((id) => looks[id]?.grade || looks[id]?.key);
+  const gradedNote = sdrGraded.length ? `; ${sdrGraded.slice(0, 6).join(", ")} graded or keyed in SDR (as the editor shows them): no highlights above SDR white there` : "";
+  if (hdr) out.push(`HDR: kept (${hdr.transfer === "pq" ? "PQ" : "HLG"}, BT.2020, 10-bit); SDR clips, b-roll, graphics and captions at SDR white (203 nits)${gradedNote}`);
+  else if (hdrFootage) out.push(kind === "preview" ? `HDR: footage is HDR; this preview and the editor show it tone-mapped to SDR; ${toSdr ? "the final converts it to SDR (as the edit asks)" : `the final keeps HDR${gradedNote}`}` : "HDR: converted to SDR (tone-mapped), as the edit asks");
+  return out;
+}
+
+/** ASS colours (&HAABBGGRR, &HBBGGRR) as the same light in an HDR picture (SDR white at 203 nits). */
+export function hdrAss(ass: string, t: HdrTransfer): string {
+  const map = (bgr: string) => {
+    const b = parseInt(bgr.slice(0, 2), 16) / 255, g = parseInt(bgr.slice(2, 4), 16) / 255, r = parseInt(bgr.slice(4, 6), 16) / 255;
+    const h = sdrToHdr(r, g, b, t).map((v) => Math.round(v * 255).toString(16).padStart(2, "0").toUpperCase());
+    return h[2] + h[1] + h[0];
+  };
+  return ass.replace(/&H([0-9A-Fa-f]{2})?([0-9A-Fa-f]{6})(&?)/g, (_m, a: string | undefined, bgr: string, amp: string) => `&H${a ?? ""}${map(bgr)}${amp}`);
+}
+
+/** The bytes of a look file at the plan's size: a .cube LUT or a .pgm picture. */
+export function lookFileData(spec: LookFile, plan: { width: number; height: number }, luts: Record<string, Lut> = {}): string | Uint8Array {
+  const W = plan.width, H = plan.height;
+  if (spec.kind === "mask") return pgm(maskPicture(spec.masks, W, H), W, H);
+  if (spec.kind === "area") return pgm(areaPicture(spec.area, W, H)!, W, H);
+  if (spec.kind === "hdr") return cubeText(hdrLut(spec.hdr), undefined, "SDR into HDR");
+  const lut = spec.grade.lut ? luts[spec.grade.lut.id] : null;
+  return cubeText(spec.hdr ? hdrLut(spec.hdr, gradeFn(spec.grade, lut)) : buildLut(spec.grade, lut));
 }
 
 /**
@@ -522,6 +611,9 @@ export type PlanFiles = {
   broll?: Record<string, string>; // by clip id
   graphics?: Record<string, string>; // by clip id
   audio?: Record<string, string>; // by clip id
+  /** Phase 6: b-roll drawn behind V1, by clip id; the look files (LUTs, mask pictures), by file name. */
+  under?: Record<string, string>;
+  looks?: Record<string, string>;
 };
 
 const q = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "'\\''").replace(/:/g, "\\:")}'`;
@@ -561,7 +653,86 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   let idx = 0;
   const W = plan.width, H = plan.height;
   const main = plan.sources[0];
-  const info = (vid: string) => plan.videos?.[vid] ?? { hasAudio: vid === main ? source.hasAudio : true, hdr: vid === main ? !!source.hdr : false };
+  const info = (vid: string): { hasAudio: boolean; hdr: boolean; transfer?: HdrTransfer } => plan.videos?.[vid] ?? { hasAudio: vid === main ? source.hasAudio : true, hdr: vid === main ? !!source.hdr : false, transfer: vid === main ? source.transfer : undefined };
+  // Phase 6: an HDR output keeps 10 bits all the way (PF); SDR pictures enter it through the SDR-into-HDR LUT.
+  const hdr = plan.hdr ?? null;
+  const PF = hdr ? "yuv420p10le" : "yuv420p", PFA = hdr ? "yuva420p10le" : "yuva420p";
+  const looks = plan.looks ?? {};
+  const lookPath = (name: string) => { const x = files.looks?.[name]; if (!x) throw new RenderPlanError(`A colour file of this edit is missing (${name}). Render again.`); return x; };
+  /** A look picture (mask or area, .pgm) as a grey stream `frames` long. */
+  const picture = (name: string, frames: number, tag: string) => {
+    inputs.push("-loop", "1", "-framerate", String(FPS), "-t", n3(frames / FPS + 1), "-i", lookPath(name));
+    g.push(`[${idx++}:v]format=gray,setsar=1,trim=end_frame=${frames}[lp${tag}]`);
+    return `lp${tag}`;
+  };
+  /**
+   * A clip's look on [inp] (fitted, W x H, `frames` long), in this order: the key's alpha from the fitted colours,
+   * despill, the grade (lut3d), blur/pixelate mixed in by their areas (maskedmerge), the masks into the alpha. In an
+   * HDR output an SDR picture goes through the SDR-into-HDR LUT (with its grade, 16-bit). dom: what [inp] holds.
+   */
+  const colorChain = (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string): { out: string; alpha: boolean } => {
+    const toHdr = !!hdr && dom === "sdr";
+    if (!look && !toHdr) return { out: inp, alpha: false };
+    // 16-bit RGB after the key: lut3d truncates its output, which at 8 bits would darken a grade by half a level.
+    const rgbF = "gbrp16le";
+    let rgb = `lc${tag}`, alpha: string | null = null;
+    // accurate_rnd: without it FFmpeg 7 loses about a level of luma going to RGB and back.
+    g.push(`[${inp}]scale=in_color_matrix=${dom === "hdr" ? "bt2020" : "bt709"}:in_range=tv:flags=accurate_rnd,format=${dom === "hdr" ? "gbrp16le" : "gbrp"}${look?.key ? `,split[${rgb}][lk${tag}]` : `[${rgb}]`}`);
+    if (look?.key) {
+      const k = look.key, t = spillType(k);
+      g.push(`[lk${tag}]format=gbrap,colorkey=0x${k.color.slice(1).toUpperCase()}:${k.similarity}:${k.blend},format=yuva444p,alphaextract,format=gray,setsar=1[ka${tag}]`);
+      alpha = `ka${tag}`;
+      if (k.spill > 0) { g.push(`[${rgb}]despill=type=${t}:mix=0.5:expand=0:red=0:green=${t === "green" ? -k.spill : 0}:blue=${t === "blue" ? -k.spill : 0}:brightness=0:alpha=0,format=gbrp[ls${tag}]`); rgb = `ls${tag}`; }
+    }
+    const lut = hdr ? (dom === "sdr" ? look?.lutHdr ?? hdr.lut : undefined) : look?.lut;
+    if (lut) { g.push(`[${rgb}]format=${rgbF},lut3d=file=${q(lookPath(lut))}:interp=trilinear[ll${tag}]`); rgb = `ll${tag}`; }
+    else if (dom === "sdr") { g.push(`[${rgb}]format=${rgbF}[ll${tag}]`); rgb = `ll${tag}`; }
+    (look?.effects ?? []).forEach((e, j) => {
+      const fx = e.type === "blur" ? `gblur=sigma=${e.px}:steps=4` : `pixelize=width=${e.px}:height=${e.px}:mode=avg`, t2 = `${tag}_${j}`;
+      if (!e.file) { g.push(`[${rgb}]${fx},format=${rgbF}[le${t2}]`); rgb = `le${t2}`; return; }
+      g.push(`[${rgb}]split[la${t2}][lb${t2}]`);
+      g.push(`[lb${t2}]${fx},format=${rgbF}[lf${t2}]`);
+      g.push(`[${picture(e.file, frames, "e" + t2)}]format=${rgbF}[lm${t2}]`);
+      g.push(`[la${t2}][lf${t2}][lm${t2}]maskedmerge[le${t2}]`);
+      rgb = `le${t2}`;
+    });
+    if (look?.mask) {
+      const mk = picture(look.mask, frames, "m" + tag);
+      if (alpha) { g.push(`[${alpha}][${mk}]blend=all_mode=multiply[lq${tag}]`); alpha = `lq${tag}`; } else alpha = mk;
+    }
+    const yuv = `scale=out_color_matrix=${hdr ? "bt2020" : "bt709"}:out_range=tv:flags=accurate_rnd,format=${PF}`;
+    if (!alpha) { g.push(`[${rgb}]${yuv}[lo${tag}]`); return { out: `lo${tag}`, alpha: false }; }
+    g.push(`[${rgb}]${yuv}[ly${tag}]`);
+    // 8 bits: alphamerge. 10 bits (alphamerge is 8-bit only): the alpha goes in as a fourth plane, its values put back
+    // to full range after the conversion mergeplanes makes.
+    if (!hdr) g.push(`[ly${tag}][${alpha}]alphamerge[lo${tag}]`);
+    else {
+      g.push(`[${alpha}]scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd,format=yuv420p10le,lutyuv=y='clip((val-64)*1023/876,0,1023)'[lz${tag}]`);
+      g.push(`[ly${tag}][lz${tag}]mergeplanes=map0s=0:map0p=0:map1s=0:map1p=1:map2s=0:map2p=2:map3s=1:map3p=0:format=yuva420p10le[lo${tag}]`);
+    }
+    return { out: `lo${tag}`, alpha: true };
+  };
+  /** b-roll laid behind V1 over [start, start + frames): black with the `under` clips on it (as overlays are drawn). */
+  const underClips = plan.under ?? [];
+  const baseOf = (start: number, frames: number, tag: string) => {
+    const end = start + frames / FPS;
+    g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(frames / FPS + 1)},format=${PF},trim=end_frame=${frames}[bs${tag}]`);
+    let cur = `bs${tag}`;
+    underClips.filter((u) => u.start < end - 1e-6 && u.end > start + 1e-6).forEach((u, j) => {
+      const path = files.under?.[u.clipId];
+      if (!path) return;
+      const s = Math.max(start, u.start), e = Math.min(end, u.end), n = Math.max(1, Math.round((e - s) * FPS)), t = `${tag}u${j}`;
+      inputs.push("-ss", n3(u.sourceStart + (s - u.start)), "-t", n3(e - s + 0.25), "-i", path);
+      g.push(`[${idx++}:v]fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[ua${t}]`);
+      const c = colorChain(`ua${t}`, looks[u.clipId], "sdr", n, t);
+      let ov = c.out;
+      if (u.keys?.length) { motionChain(g, ov, `um${t}`, u.keys, s - u.start, n, W, H, false, t, { hdr: !!hdr }); ov = `um${t}`; }
+      g.push(`[${ov}]settb=1/${FPS},setpts=PTS-STARTPTS+${Math.round((s - start) * FPS)}[ub${t}]`);
+      g.push(`[${cur}][ub${t}]overlay=eof_action=pass:format=auto,format=${PF}[bu${t}]`);
+      cur = `bu${t}`;
+    });
+    return cur;
+  };
 
   // One input per video.
   const inOf: Record<string, number> = {};
@@ -582,16 +753,21 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   if (!opts.measure) {
     const vt = (k: { srcIn: number; srcOut: number }) => `trim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},setpts=PTS-STARTPTS`;
     const turnOf = (r: number) => (r === 90 ? "transpose=1," : r === 270 ? "transpose=2," : r === 180 ? "hflip,vflip," : "");
-    // HDR originals are tone-mapped to SDR BT.709 exactly like the preview copy, so the final looks like the preview.
-    const toneOf = (vid: string) => (info(vid).hdr ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "");
+    // HDR originals are tone-mapped to SDR BT.709 exactly like the preview copy, so the final looks like the preview
+    // (Phase 6: unless the output keeps HDR; a graded or keyed HDR clip is still graded on that SDR picture).
+    const toneOf = (vid: string, dom: "sdr" | "hdr" = "sdr") => (info(vid).hdr && dom === "sdr" ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "");
+    /** Where a clip's picture lives: HDR (10-bit, the output's transfer) or SDR (graded, keyed, other transfer, or SDR). */
+    const domOf = (vid: string, look: LookOp | undefined): "sdr" | "hdr" => (hdr && info(vid).hdr && (info(vid).transfer ?? "pq") === hdr.transfer && !look?.grade && !look?.key ? "hdr" : "sdr");
     const fit = `fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1`;
-    const frame = (from: string, f: Framing, to: string, tag: string) => {
-      // The fitted picture is scaled about its centre and moved over a black frame.
+    const frame = (from: string, f: Framing, to: string, tag: string, canvas: "black" | "clear" | { base: string } = "black") => {
+      // The fitted picture is scaled about its centre and moved over a black frame (Phase 6: over what is behind V1, or
+      // a clear frame when keyframes move it next).
       const sw = even(W * f.scale), sh = even(H * f.scale);
       const ox = Math.round((W - sw) / 2 + f.x * W), oy = Math.round((H - sh) / 2 + f.y * H);
-      g.push(`color=c=black:s=${W}x${H}:r=${FPS}[fcanvas${tag}]`);
+      if (canvas === "black") g.push(`color=c=black:s=${W}x${H}:r=${FPS}${hdr ? `,format=${PF}` : ""}[fcanvas${tag}]`);
+      else if (canvas === "clear") g.push(`color=c=black@0:s=${W}x${H}:r=${FPS},format=${PFA}[fcanvas${tag}]`);
       g.push(`[${from}]scale=${sw}:${sh},setsar=1[fscaled${tag}]`);
-      g.push(`[fcanvas${tag}][fscaled${tag}]overlay=x=${ox}:y=${oy}:shortest=1,format=yuv420p[${to}]`);
+      g.push(`[${typeof canvas === "object" ? canvas.base : `fcanvas${tag}`}][fscaled${tag}]overlay=x=${ox}:y=${oy}:shortest=1${canvas === "clear" ? `:format=auto,format=${PFA}` : `,format=${PF}`}[${to}]`);
     };
     const motion = plan.clipMotion ?? {};
     // Branches of each video's decoder, handed out as segments ask for them (split once all are known).
@@ -606,7 +782,8 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     const drawSeg = (x: { videoId: string; srcIn: number; srcOut: number; rate?: number; start: number; end: number; rotate: number; framing: Framing | null; clipIds?: string[]; clipId?: string }, out: string, tag: string, exact = false) => {
       const N = Math.max(1, Math.round((x.end - x.start) * FPS));
       const r = rateOf(x);
-      const look = `${turnOf(x.rotate)}${toneOf(x.videoId)}${fit}`;
+      const lk = looks[x.clipId ?? x.clipIds?.[0] ?? ""], dom = domOf(x.videoId, lk);
+      const look = `${turnOf(x.rotate)}${toneOf(x.videoId, dom)}${fit}`;
       // tpad clones a frame at the link's frame rate: without a rate (after trim) FFmpeg 7 gives the clones one
       // timestamp and they are dropped, so the stream is put on the 30 fps grid first.
       const pad = `,fps=${FPS},tpad=stop_mode=clone:stop=2,trim=end_frame=${N}`;
@@ -629,27 +806,42 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       else chain = `[${branch(x.videoId)}]${vt(x)}${exact ? pad : ""},${look}`;
       const clipId = x.clipId ?? (x.clipIds?.length === 1 ? x.clipIds[0] : undefined);
       const m = clipId ? motion[clipId] : undefined;
-      if (!x.framing && !m) { g.push(`${chain},format=yuv420p[${out}]`); return; }
-      g.push(`${chain},format=yuv420p[pf${tag}]`);
-      let cur = `pf${tag}`;
-      if (x.framing) { frame(cur, x.framing, `pg${tag}`, tag); cur = `pg${tag}`; }
-      if (m) { motionChain(g, cur, out, m.keys, x.start - m.start, N, W, H, true, tag); return; }
-      g.push(`[${cur}]null[${out}]`);
+      if (!lk && !hdr && !x.framing && !m) { g.push(`${chain},format=yuv420p[${out}]`); return; }
+      if (!lk && !hdr) g.push(`${chain},format=yuv420p[pf${tag}]`);
+      else g.push(`${chain}[pc${tag}]`);
+      const c = !lk && !hdr ? { out: `pf${tag}`, alpha: false } : colorChain(`pc${tag}`, lk, dom, N, tag);
+      let cur = c.out;
+      // Phase 6: what shows around or through the clip is what is behind V1 (black, or b-roll laid under it).
+      const behind = () => (underClips.length ? baseOf(x.start, N, tag) : null);
+      if (!x.framing && !m) {
+        if (c.alpha) { const b = behind(); if (b) g.push(`[${b}][${cur}]overlay=format=auto,format=${PF}[${out}]`); else { g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(N / FPS + 1)},format=${PF},trim=end_frame=${N}[pb${tag}]`); g.push(`[pb${tag}][${cur}]overlay=format=auto,format=${PF}[${out}]`); } }
+        else g.push(`[${cur}]format=${PF}[${out}]`);
+        return;
+      }
+      if (x.framing) { const b = m ? null : behind(); frame(cur, x.framing, `pg${tag}`, tag, m ? "clear" : b ? { base: b } : "black"); cur = `pg${tag}`; }
+      if (m) { motionChain(g, cur, out, m.keys, x.start - m.start, N, W, H, true, tag, { base: behind() ?? undefined, hdr: !!hdr }); return; }
+      g.push(`[${cur}]format=${PF}[${out}]`);
     };
 
     const N = plan.parts.length;
     // One video, one look, all at normal speed and still: cut, join, then fit once (the same graph model A used).
     // Otherwise each part is drawn on its own first.
-    const uniform = plan.sources.length === 1 && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]));
+    const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
+    const uniform = plan.sources.length === 1 && !underClips.length && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0]));
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
     // concat's output counts in microseconds, a hair before each frame's exact time; back on the 1/30 s grid so every
     // overlay below lines up with its own frame (else each one shows a frame late).
     g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0${uniform ? "" : `,settb=1/${FPS}`}[vcat]`);
     v = "vcat";
     if (uniform) {
-      const p0 = plan.parts[0];
-      g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId)}${fit}[vfit]`);
+      const p0 = plan.parts[0], lk = looks[p0.clipIds[0]], dom = domOf(p0.videoId, lk);
+      g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId, dom)}${fit}[vfit]`);
       v = "vfit";
+      // Phase 6: one look for the whole edit, drawn once (keyed or masked parts show black behind them).
+      const all = Math.max(1, Math.round(plan.outputSeconds * FPS));
+      const c = colorChain(v, lk, dom, all, "u");
+      v = c.out;
+      if (c.alpha && !p0.framing) { g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(all / FPS + 1)},format=${PF},trim=end_frame=${all}[ubk]`); g.push(`[ubk][${v}]overlay=format=auto,format=${PF}[vlook]`); v = "vlook"; }
       if (p0.framing) { frame(v, p0.framing, "vframed", ""); v = "vframed"; }
     }
 
@@ -661,8 +853,10 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       const span = `enable='between(t,${n6(t.start)},${n6(t.end - 0.5 / FPS)})':eof_action=pass`;
       if (t.type === "dip-black" || t.type === "dip-white") {
         const up = t.at - t.start, down = t.end - t.at;
-        g.push(`color=c=${t.type === "dip-black" ? "0x000000" : "0xFFFFFF"}:s=${W}x${H}:r=${FPS}:d=${n6(D)},format=yuva420p${up > 1e-6 ? `,fade=t=in:st=0:d=${n6(up)}:alpha=1` : ""},fade=t=out:st=${n6(up)}:d=${n6(down)}:alpha=1,setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[dp${i}]`);
-        g.push(`[${v}][dp${i}]overlay=${span}[vd${i}]`);
+        // In an HDR output white is SDR white (203 nits), as everything SDR is placed.
+        const white = hdr ? "0x" + sdrToHdr(1, 1, 1, hdr.transfer).map((x) => Math.round(x * 255).toString(16).padStart(2, "0")).join("").toUpperCase() : "0xFFFFFF";
+        g.push(`color=c=${t.type === "dip-black" ? "0x000000" : white}:s=${W}x${H}:r=${FPS}:d=${n6(D)},format=${PFA}${up > 1e-6 ? `,fade=t=in:st=0:d=${n6(up)}:alpha=1` : ""},fade=t=out:st=${n6(up)}:d=${n6(down)}:alpha=1,setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[dp${i}]`);
+        g.push(`[${v}][dp${i}]overlay=${span}${hdr ? `:format=auto,format=${PF}` : ""}[vd${i}]`);
         v = `vd${i}`;
         return;
       }
@@ -675,18 +869,18 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       const a = side(t.a, `ta${i}_`), b = side(t.b, `tb${i}_`);
       const [dx, dy] = dirVec(t.dir);
       const p = `(t/${n6(D)})`;
-      if (t.type === "dissolve") g.push(`[${b}]format=yuva420p,fade=t=in:st=0:d=${n6(D)}:alpha=1[tbf${i}];[${a}][tbf${i}]overlay=format=auto,format=yuv420p[tx${i}]`);
-      else if (t.type === "slide") g.push(`[${a}][${b}]overlay=x='${-dx * W}*(1-${smoothExpr(p)})':y='${-dy * H}*(1-${smoothExpr(p)})':eval=frame,format=yuv420p[tx${i}]`);
+      if (t.type === "dissolve") g.push(`[${b}]format=${PFA},fade=t=in:st=0:d=${n6(D)}:alpha=1[tbf${i}];[${a}][tbf${i}]overlay=format=auto,format=${PF}[tx${i}]`);
+      else if (t.type === "slide") g.push(`[${a}][${b}]overlay=x='${-dx * W}*(1-${smoothExpr(p)})':y='${-dy * H}*(1-${smoothExpr(p)})':eval=frame${hdr ? ":format=auto" : ""},format=${PF}[tx${i}]`);
       else {
         // Whip: both sides move together, blurred along the move (strongest at the cut).
         const e = smoothExpr(p);
         const cmds = Array.from({ length: Math.round(D * FPS) }, (_, k) => `${n3(k / FPS)} gblur@wp${i} ${dx ? "sigma" : "sigmaV"} ${Math.max(0.01, (dx ? W : H) * WHIP_BLUR * Math.sin((Math.PI * k) / (D * FPS))).toFixed(2)}`).join(";");
-        g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(D)}[wc${i}]`);
-        g.push(`[wc${i}][${a}]overlay=x='${dx * W}*${e}':y='${dy * H}*${e}':eval=frame[wa${i}]`);
-        g.push(`[wa${i}][${b}]overlay=x='${dx * W}*(${e}-1)':y='${dy * H}*(${e}-1)':eval=frame,sendcmd=c='${cmds}',gblur@wp${i}=sigma=0.01:sigmaV=0.01,format=yuv420p[tx${i}]`);
+        g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(D)}${hdr ? `,format=${PF}` : ""}[wc${i}]`);
+        g.push(`[wc${i}][${a}]overlay=x='${dx * W}*${e}':y='${dy * H}*${e}':eval=frame${hdr ? ":format=auto" : ""}[wa${i}]`);
+        g.push(`[wa${i}][${b}]overlay=x='${dx * W}*(${e}-1)':y='${dy * H}*(${e}-1)':eval=frame${hdr ? ":format=auto" : ""},sendcmd=c='${cmds}',gblur@wp${i}=sigma=0.01:sigmaV=0.01,format=${PF}[tx${i}]`);
       }
       g.push(`[tx${i}]settb=1/${FPS},setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[txo${i}]`);
-      g.push(`[${v}][txo${i}]overlay=${span}[vt${i}]`);
+      g.push(`[${v}][txo${i}]overlay=${span}${hdr ? `:format=auto,format=${PF}` : ""}[vt${i}]`);
       v = `vt${i}`;
     });
     // Each video's decoder, split into the branches its segments took.
@@ -726,7 +920,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   units.forEach((u, i) => { if (!live(u[0])) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${editSamples(u)},asetpts=PTS-STARTPTS[a${i}]`); });
   g.push(`${units.map((_, i) => `[a${i}]`).join("")}concat=n=${units.length}:v=0:a=1[acat]`);
 
-  if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v);
+  if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null });
   mixAudio(plan, files, g, inputs, () => idx++, opts);
   return { args: encodeArgs(plan, inputs, files, opts), filterGraph: g.join(";\n") };
 }
@@ -737,7 +931,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
  * multiplies its alpha. The curves are the same tables the player reads (motion.ts). opaque: laid on black (V1);
  * otherwise it keeps its alpha (b-roll, graphics). `offset`: seconds into the clip at the picture's first frame.
  */
-export function motionChain(g: string[], inp: string, out: string, keys: Key[], offset: number, frames: number, W: number, H: number, opaque: boolean, tag: string) {
+export function motionChain(g: string[], inp: string, out: string, keys: Key[], offset: number, frames: number, W: number, H: number, opaque: boolean, tag: string, o: { base?: string; hdr?: boolean } = {}) {
   const tracks = keyTracks(keys);
   if (!tracks) { g.push(`[${inp}]null[${out}]`); return; }
   // A picture that only ever gets small is scaled down first (a proper scaler), so the corner mapping does not alias.
@@ -765,13 +959,15 @@ export function motionChain(g: string[], inp: string, out: string, keys: Key[], 
     cur = `me${tag}`;
   }
   if (opaque) {
-    g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(frames / FPS + 1)},trim=end_frame=${frames}[mbg${tag}]`);
-    g.push(`[mbg${tag}][${cur}]overlay=format=auto,format=yuv420p[${out}]`);
+    // Over black, or (Phase 6) over what is behind V1.
+    if (!o.base) g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(frames / FPS + 1)},trim=end_frame=${frames}[mbg${tag}]`);
+    g.push(`[${o.base ?? `mbg${tag}`}][${cur}]overlay=format=auto,format=${o.hdr ? "yuv420p10le" : "yuv420p"}[${out}]`);
   } else g.push(`[${cur}]null[${out}]`);
 }
 
+type ColorCtx = { colorChain: (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string) => { out: string; alpha: boolean }; PF: string; PFA: string; hdrLut: string | null };
 /** Zooms, b-roll, graphics, captions on [v]; returns the label of the finished picture ([vout]). */
-function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string): string {
+function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string, cc: ColorCtx): string {
   const W = plan.width, H = plan.height;
   let v = v0;
   // 3. Zooms: scale per frame, crop back to size.
@@ -788,15 +984,18 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     if (!path) return;
     inputs.push("-ss", n3(b.sourceStart), "-t", n3(b.end - b.start), "-i", path);
     const bi = next();
-    if (b.keys?.length) {
-      // Keyframed b-roll: moved, scaled, turned and faded over the picture (picture-in-picture).
-      const n = Math.max(1, Math.round((b.end - b.start) * FPS));
+    const n = Math.max(1, Math.round((b.end - b.start) * FPS));
+    const look = plan.looks?.[b.clipId];
+    if (b.keys?.length || look || plan.hdr) {
+      // Keyframed b-roll: moved, scaled, turned and faded over the picture (picture-in-picture). Phase 6: its look
+      // (grade, key, masks, blur) first; in an HDR output it goes in as SDR.
       g.push(`[${bi}:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[bk${i}]`);
-      motionChain(g, `bk${i}`, `bm${i}`, b.keys, 0, n, W, H, false, `b${i}`);
-      g.push(`[bm${i}]settb=1/30,setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
+      let cur = cc.colorChain(`bk${i}`, look, "sdr", n, `b${i}`).out;
+      if (b.keys?.length) { motionChain(g, cur, `bm${i}`, b.keys, 0, n, W, H, false, `b${i}`, { hdr: !!plan.hdr }); cur = `bm${i}`; }
+      g.push(`[${cur}]settb=1/30,setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
     } else
     g.push(`[${bi}:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,settb=1/30,setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
-    g.push(`[${v}][br${i}]overlay=0:0:enable='between(t,${n6(b.start)},${n6(b.end - 0.5 / FPS)})':eof_action=pass[vb${i}]`);
+    g.push(`[${v}][br${i}]overlay=0:0:enable='between(t,${n6(b.start)},${n6(b.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vb${i}]`);
     v = `vb${i}`;
   });
   // 5. Graphics: transparent WebM, decoded with libvpx to keep the alpha channel.
@@ -805,23 +1004,26 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     if (!path) return;
     inputs.push("-c:v", "libvpx-vp9", "-i", path);
     const gi = next();
+    // HDR output: the graphic's colours as the same light at SDR white (16-bit RGB through the SDR-into-HDR LUT).
+    const toHdr = cc.hdrLut ? `,scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrap16le,lut3d=file=${q(cc.hdrLut)}:interp=trilinear,scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd,format=${cc.PFA}` : "";
     if (gr.keys?.length) {
       // Keyframed graphic: centred on a transparent frame, then moved, scaled, turned and faded.
       const n = Math.max(1, Math.round((gr.end - gr.start) * FPS));
-      g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=30,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[gk${i}]`);
-      motionChain(g, `gk${i}`, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`);
+      g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=30,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}${toHdr}[gk${i}]`);
+      motionChain(g, `gk${i}`, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`, { hdr: !!plan.hdr });
       g.push(`[gm${i}]setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     } else
-    g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
-    g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n6(gr.start)},${n6(gr.end - 0.5 / FPS)})':eof_action=pass[vg${i}]`);
+    g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease${toHdr},setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
+    g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n6(gr.start)},${n6(gr.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vg${i}]`);
     v = `vg${i}`;
   });
   // 6. Captions on top of everything.
   if (plan.ass && files.assPath) {
-    g.push(`[${v}]ass=filename=${q(files.assPath)}${files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : ""}[vcap]`);
+    // HDR: the frame is tagged BT.2020 so libass turns the (already PQ/HLG) caption colours into YUV with that matrix.
+    g.push(`[${v}]${plan.hdr ? `setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${plan.hdr.transfer === "pq" ? "smpte2084" : "arib-std-b67"}:range=tv,` : ""}ass=filename=${q(files.assPath)}${files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : ""}[vcap]`);
     v = "vcap";
   }
-  g.push(`[${v}]format=yuv420p[vout]`);
+  g.push(`[${v}]format=${cc.PF}[vout]`);
   return "vout";
 }
 
@@ -890,14 +1092,17 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
     return ["-hide_banner", "-nostdin", "-y", "-nostats", ...inputs, "-filter_complex_script", "__FILTER_SCRIPT__", "-map", "[aout]", "-t", n3(plan.outputSeconds), "-progress", "pipe:1", "-f", "null", "-"];
   }
   const preview = plan.kind === "preview";
+  const trc = plan.hdr ? (plan.hdr.transfer === "pq" ? "smpte2084" : "arib-std-b67") : "";
+  // HDR (Phase 6): HEVC Main 10 with BT.2020 and the source's transfer in the stream and the container.
+  const video = plan.hdr
+    ? ["-c:v", "libx265", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1", "-x265-params", `log-level=error:colorprim=bt2020:transfer=${trc}:colormatrix=bt2020nc:range=limited:repeat-headers=1${plan.hdr.transfer === "pq" ? ":hdr10=1:hdr10-opt=1" : ""}`, "-r", "30", "-g", "60", "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", trc]
+    : ["-c:v", "libx264", "-preset", preview ? "ultrafast" : "veryfast", "-crf", preview ? "28" : "20", "-pix_fmt", "yuv420p", "-r", "30", "-g", "60", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
   return [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
     ...inputs,
     "-filter_complex_script", "__FILTER_SCRIPT__",
     "-map", "[vout]", "-map", "[aout]",
-    "-c:v", "libx264", "-preset", preview ? "ultrafast" : "veryfast", "-crf", preview ? "28" : "20",
-    "-pix_fmt", "yuv420p", "-r", "30", "-g", "60",
-    "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+    ...video,
     "-c:a", "aac", "-b:a", preview ? "96k" : "192k", "-ar", "48000",
     "-t", n3(plan.outputSeconds),
     "-movflags", "+faststart",

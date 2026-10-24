@@ -1,7 +1,7 @@
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   allWords, applyOp, EditError, GRAPHIC_TEMPLATES, outputDuration, stripLayout, StyleRulesSchema, TimelineSchema,
-  type Actor, type EditContext, type Op, type Silence, type Snapshot, type StyleLite, type Timeline, type Transcript,
+  type Actor, type EditContext, type Lut, type Op, type Silence, type Snapshot, type StyleLite, type Timeline, type Transcript,
 } from "@rendrr/shared";
 import { AppError, notFound } from "./errors";
 import { publishProject } from "./queue";
@@ -29,13 +29,14 @@ export function displayAi(kind: Actor, fallback?: string) {
 }
 
 /** Everything the pure editing ops need to know about a project's footage (and the other videos on its V1). */
-export async function editContext(tx: Prisma.TransactionClient, userId: string, videoId: string, timeline?: unknown, alsoIds: string[] = []): Promise<EditContext> {
+export async function editContext(tx: Prisma.TransactionClient, userId: string, videoId: string, timeline?: unknown, alsoIds: string[] = [], luts: Record<string, Lut> = {}): Promise<EditContext> {
   const video = await tx.video.findUnique({ where: { id: videoId }, include: { analysis: true } });
   if (!video) throw notFound("The footage for this edit is gone.");
   const styles = await tx.style.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] } });
   const styleMap = new Map<string, StyleLite>(styles.map((s) => [s.id, { id: s.id, name: s.name, captionLook: s.captionLook as StyleLite["captionLook"], rules: StyleRulesSchema.parse(s.rules) }]));
   const videos = await tx.video.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
   const graphics = await tx.graphic.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] }, select: { id: true, name: true, durationSec: true, status: true } });
+  const lutRows = await tx.lut.findMany({ where: { userId }, select: { id: true, name: true } });
   const onV1 = Array.from(new Set([...((timeline as Timeline | undefined)?.tracks?.v1 ?? []).map((c) => (c as { sourceVideoId?: string }).sourceVideoId), ...alsoIds].filter((v): v is string => !!v && v !== video.id)));
   const others = onV1.length ? await tx.video.findMany({ where: { id: { in: onV1 }, userId }, include: { analysis: true } }) : [];
   return {
@@ -52,6 +53,8 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
       if (!g || ("status" in g && g.status === "failed")) return undefined;
       return { id: g.id, name: g.name, durationSec: g.durationSec };
     },
+    getLut: (id) => lutRows.find((l) => l.id === id),
+    lutData: (id) => luts[id],
   };
 }
 
@@ -76,7 +79,7 @@ function stable(v: unknown): string {
 // The derived clip fields (place in the edit, source, link) follow from the rest, so they never make a version.
 const sameSnapshot = (a: Snapshot, b: Snapshot) => stable({ ...a, timeline: stripLayout(a.timeline) }) === stable({ ...b, timeline: stripLayout(b.timeline) });
 
-export async function applyTimelineChange(projectId: string, change: Op, actor: ChangeActor, opts: { baseVersion?: number } = {}): Promise<ChangeResult> {
+export async function applyTimelineChange(projectId: string, change: Op, actor: ChangeActor, opts: { baseVersion?: number; luts?: Record<string, Lut> } = {}): Promise<ChangeResult> {
   const result = await prisma.$transaction(async (tx) => {
     // Lock the project row so two writers (the editor and an AI) never interleave.
     await tx.$executeRaw`SELECT 1 FROM "Project" WHERE id = ${projectId} FOR UPDATE`;
@@ -91,7 +94,7 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
       if (newer) throw new AppError(`${displayAi(newer.createdBy as Actor)} just changed this edit. Loading the new version.`, 409, "stale", { version: p.currentVersion });
     }
 
-    const ctx = await editContext(tx, p.userId, p.videoId, p.timeline, videosIn(change));
+    const ctx = await editContext(tx, p.userId, p.videoId, p.timeline, videosIn(change), opts.luts);
     let out: { snap: Snapshot; summary: string };
     try {
       out = applyOp(snapshotOf(p), change, ctx);

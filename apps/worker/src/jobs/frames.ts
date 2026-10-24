@@ -1,16 +1,17 @@
-import { headObject, signGet, uploadFile, type FramesJob } from "@rendrr/core";
+import { headObject, signGet, uploadFile, type ColorSampleJob, type ColorSamples, type FramesJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { frameAt } from "../lib/ffmpeg";
+import { frameAt, JobError, rgbFrames } from "../lib/ffmpeg";
 import type { Ctx } from "../lib/job";
 import { framesPrefix } from "./breakdown";
 
 // Frames for the AI to look at: from a preview render (get_preview_frames, output times) or from footage and
 // references (get_frames, original times). Render frames are kept next to the render and expire with it; footage
 // frames sit with the video's other frames and go when its preview copy goes.
-export async function framesJob(ctx: Ctx): Promise<string[]> {
-  const { renderId, videoId, times } = ctx.job.data as FramesJob;
+export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples> {
+  const { renderId, videoId, times, colorSamples: cs } = ctx.job.data as FramesJob;
+  if (cs) return colorSamples(ctx, cs);
   if (videoId) return videoFrames(ctx, videoId, times);
   const r = renderId ? await prisma.render.findUnique({ where: { id: renderId } }) : null;
   if (!r?.outputKey) return [];
@@ -47,6 +48,23 @@ async function videoFrames(ctx: Ctx, videoId: string, times: number[]): Promise<
     if (!(await stat(p).then((s) => s.size > 0).catch(() => false))) continue;
     await uploadFile(key, p, "image/jpeg");
     out.push(key);
+  }
+  return out;
+}
+
+/** Phase 6: frames of clips for shot matching (4 per clip, small), from each video's preview copy: what the editor shows. */
+async function colorSamples(ctx: Ctx, cs: ColorSampleJob): Promise<ColorSamples> {
+  const ids = Array.from(new Set(cs.clips.map((c) => c.videoId)));
+  const videos = await prisma.video.findMany({ where: { id: { in: ids } }, select: { id: true, proxyKey: true, name: true } });
+  const out: ColorSamples = {};
+  const w = Math.min(96, cs.w), h = Math.min(96, cs.h);
+  for (const c of cs.clips.slice(0, 40)) {
+    const v = videos.find((x) => x.id === c.videoId);
+    if (!v?.proxyKey) throw new JobError(`The preview copy of a video in this edit is gone${v ? ` ("${v.name}")` : ""}. Rebuild it from your Library, then match again.`, "expired", false);
+    const url = await signGet(v.proxyKey, 600);
+    const rgb = await rgbFrames(url, c.srcIn, c.srcOut, { w, h, rotate: c.rotate, fitY: c.fitY, n: 4, dir: ctx.dir, signal: ctx.signal });
+    if (!rgb.length) throw new JobError(`Could not read frames of clip ${c.id}.`, "frames", false);
+    out[c.id] = { w, h, rgb: rgb.toString("base64") };
   }
   return out;
 }

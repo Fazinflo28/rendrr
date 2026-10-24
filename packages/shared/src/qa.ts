@@ -2,7 +2,7 @@
 // lengths, black and silent stretches, loudness, graphics on screen) next to what the edit says, and every place
 // they disagree. Facts and fixed thresholds only, no judgement.
 import { fmtT } from "./breakdown";
-import { audioText, lookText, speedText } from "./ops";
+import { audioText, colorSummary, lookText, speedText } from "./ops";
 import { planTransitions } from "./renderPlan";
 import type { Key } from "./motion";
 import { asSequence, editOf, isSequence, layoutTimeline, mergeRanges, normalSpeed, rateOf, sequenceView, type Range, type SeqClip, type SequenceView } from "./sequence";
@@ -114,7 +114,7 @@ function noiseLine(n: { lufs: number; windows: number } | null, music: boolean):
  * transcripts: other videos on V1 (their words count as spoken). videoId: the project's footage (an old timeline).
  * planned: the length the render planned (every part on a frame); the file is measured against it.
  */
-export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: number | null; loudness?: FileLoudness | null; measured?: FileMeasure | null; transcripts?: Record<string, Transcript>; videoId?: string; planned?: number | null } = {}): string {
+export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: number | null; loudness?: FileLoudness | null; measured?: FileMeasure | null; transcripts?: Record<string, Transcript>; videoId?: string; planned?: number | null; renderNotes?: string[] } = {}): string {
   const words = allWords(tr);
   const tl = layoutTimeline(asSequence(snap.timeline, words, opts.videoId), words);
   const view = sequenceView(tl, words);
@@ -276,6 +276,10 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     ...(offSpeed.length ? [`Speed: ${list(offSpeed.map((c) => `${c.id} ${speedText(c)}`), 6)}`] : []),
     ...(trans.some((x) => x.end > x.start) ? [`Transitions: ${list(trans.filter((x) => x.end > x.start).map((x) => `${fmtT(x.at)} ${x.type}${x.dir ? " " + x.dir : ""} ${(x.end - x.start).toFixed(2)}s`), 8)}`] : []),
     ...(keyed.length ? [`Keyframes: ${list(keyed.map((k) => `${k.id} ${keyProps(k.keys)}`), 6)}`] : []),
+    // Phase 6: looks (grade, key, masks, blur), b-roll behind V1, and what the render said about LUTs and HDR.
+    ...colorSummary(tl),
+    ...((tl.tracks.v2 as (Clip & { under?: boolean })[]).some((c) => c.under) ? [`Under V1: ${(tl.tracks.v2 as (Clip & { under?: boolean })[]).filter((c) => c.under).map((c) => c.id).join(", ")}`] : []),
+    ...(opts.renderNotes ?? []),
     `Zooms ${zooms.length}${zooms.length ? ": " + list(zooms.map((z) => `${fmtT(z.start)} ${Math.round(Number(z.zoom || 1) * 100)}%`)) : ""} | B-roll ${broll.length}${broll.length ? ": " + list(broll.map((b) => fmtT(b.start))) : ""} | Graphics ${graphics.length}${m && !m.error ? ` (${gShown.filter((x) => x.on).length} on screen)` : ""}${graphics.length ? ": " + list(gText) : ""}`,
     `Music: ${music.length ? `${list(music.map((c) => `${c.label} ${c.gainDb ?? -18}dB`), 3)}, under ${Math.round(musicCover * 100)}% of the edit` : "none"}`,
     `Sound: ${legacy ? "mixed before Phase 3 (limiter only)" : audioText(sound)}${clipSound ? `; ${clipSound} ${clipSound === 1 ? "clip has its" : "clips have their"} own gain or fades` : ""}`,

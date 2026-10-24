@@ -1,0 +1,443 @@
+// Phase 6: colour and compositing. The numbers the render (FFmpeg) and the editor's player (WebGL) both use:
+//   grade    one 3D LUT (33 points a side) built here: white balance and exposure in linear light, contrast,
+//            saturation, curves, an imported LUT. FFmpeg reads it as a .cube file (lut3d, trilinear); the player
+//            uploads the same numbers as a 3D texture (trilinear).
+//   masks    one greyscale picture at the output size (signed distance to each shape's edge, feathered), drawn
+//            here; FFmpeg reads it as a PGM file, the player as a texture.
+//   key      FFmpeg's colorkey and despill formulas, which the player's shader repeats.
+//   match    shot matching from measured pixels: three-point curves per channel and a saturation ratio.
+import { z } from "zod";
+
+const unit = z.number().min(0).max(1);
+const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "a colour like #00FF00");
+
+// ---------------------------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------------------------
+/** A curve: points [in, out] (0-1), sorted by `in`. Without a point at 0 or 1 the curve starts at (0,0) / ends at (1,1). */
+export const CurveSchema = z.array(z.tuple([unit, unit])).min(1).max(16);
+export type Curve = [number, number][];
+export const CURVE_CHANNELS = ["master", "r", "g", "b"] as const;
+export const CurvesSchema = z.object({ master: CurveSchema.optional(), r: CurveSchema.optional(), g: CurveSchema.optional(), b: CurveSchema.optional() });
+export type Curves = z.infer<typeof CurvesSchema>;
+/** An imported LUT: its id, how much of it (0-1), input: applied first (a technical LUT for log footage), else last (a look). */
+export const LutRefSchema = z.object({ id: z.string().min(1).max(80), amount: unit.optional(), input: z.boolean().optional() });
+export type LutRef = z.infer<typeof LutRefSchema>;
+/**
+ * A clip's grade. exposure: stops (+1 = twice the light); contrast -100..100 (0 = as is); temperature -100 (cooler,
+ * blue) .. 100 (warmer, orange); tint -100 (green) .. 100 (magenta); saturation % (100 = as is, 0 = grey).
+ */
+export const GradeSchema = z.object({
+  exposure: z.number().min(-4).max(4).optional(),
+  contrast: z.number().min(-100).max(100).optional(),
+  temperature: z.number().min(-100).max(100).optional(),
+  tint: z.number().min(-100).max(100).optional(),
+  saturation: z.number().min(0).max(200).optional(),
+  curves: CurvesSchema.optional(),
+  lut: LutRefSchema.optional(),
+});
+export type Grade = z.infer<typeof GradeSchema>;
+
+/** Chroma key: the colour to remove, how close a colour must be to go (similarity 0-1, RGB distance), how soft the
+ *  edge is (blend 0-1), and how much of the key colour's spill is taken off what stays (spill 0-1). */
+export const ChromaKeySchema = z.object({ color: hex, similarity: z.number().min(0.01).max(1), blend: unit, spill: unit });
+export type ChromaKey = z.infer<typeof ChromaKeySchema>;
+export const KEY_DEFAULTS: Omit<ChromaKey, "color"> = { similarity: 0.25, blend: 0.1, spill: 0.5 };
+
+export const SHAPES = ["rect", "ellipse", "path"] as const;
+export const MASK_MODES = ["add", "subtract", "intersect"] as const;
+const coord = z.number().min(-1).max(2);
+/**
+ * A shape on the clip's picture, in shares of the frame (0,0 top left; 1,1 bottom right), before framing and
+ * keyframes move the clip: rect and ellipse by their box (x, y = top left, w, h), path by its points (a polygon).
+ * feather: soft edge as a share of the frame's short side; invert: the outside instead.
+ */
+export const AreaSchema = z.object({
+  shape: z.enum(SHAPES),
+  x: coord.optional(), y: coord.optional(), w: z.number().min(0.001).max(3).optional(), h: z.number().min(0.001).max(3).optional(),
+  points: z.array(z.tuple([coord, coord])).min(3).max(64).optional(),
+  feather: z.number().min(0).max(0.5).optional(),
+  invert: z.boolean().optional(),
+}).superRefine((a, ctx) => {
+  if (a.shape === "path" && !a.points) ctx.addIssue({ code: "custom", message: "a path needs points (at least 3)" });
+  if (a.shape !== "path" && (a.x == null || a.y == null || a.w == null || a.h == null)) ctx.addIssue({ code: "custom", message: `a ${a.shape} needs x, y, w and h` });
+});
+export type Area = z.infer<typeof AreaSchema>;
+/** A mask: the clip shows only inside its masks. add: joins the masks before it; subtract: cuts it out; intersect: keeps
+ *  only the overlap. */
+export const MaskSchema = AreaSchema.and(z.object({ mode: z.enum(MASK_MODES).optional() }));
+export type Mask = Area & { mode?: (typeof MASK_MODES)[number] };
+export const EFFECTS = ["blur", "pixelate"] as const;
+/** Blur (amount 1-100: 100 = a Gaussian of 5% of the short side) or pixelate (amount 1-100: blocks of amount/10 % of the
+ *  short side), over the whole picture or inside an area. */
+export const EffectSchema = z.object({ type: z.enum(EFFECTS), amount: z.number().min(1).max(100), area: AreaSchema.optional() });
+export type Effect = z.infer<typeof EffectSchema>;
+
+/** Everything Phase 6 adds to a drawn clip (V1, b-roll). */
+export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[] };
+export const hasLook = (c: ClipLook | null | undefined) => !!c && (!!c.grade && gradeIsActive(c.grade) || !!c.key || !!c.masks?.length || !!c.effects?.length);
+export const gradeIsActive = (g: Grade | undefined) => !!g && (!!g.exposure || !!g.contrast || !!g.temperature || !!g.tint || (g.saturation != null && g.saturation !== 100) || !!g.lut || !!g.curves && Object.values(g.curves).some(Boolean));
+
+// ---------------------------------------------------------------------------------------------
+// Grade -> function -> LUT
+// ---------------------------------------------------------------------------------------------
+/** An imported LUT, normalized: 3D (size^3 RGB triplets, red fastest) or 1D (size RGB triplets), with its domain. */
+export type Lut = { kind: "3d" | "1d"; size: number; data: Float32Array; min: [number, number, number]; max: [number, number, number]; title?: string };
+
+const GAMMA = 2.4; // BT.1886: the display curve the grade's "linear light" steps undo
+const LUMA = [0.2126, 0.7152, 0.0722] as const;
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const lin = (v: number) => Math.pow(Math.max(0, v), GAMMA);
+const gam = (v: number) => Math.pow(Math.max(0, v), 1 / GAMMA);
+
+/** Monotone cubic (Fritsch-Carlson) through a curve's points; (0,0) and (1,1) are added when the curve has no end there. */
+export function curveFn(points: Curve): (x: number) => number {
+  const p = [...points].map(([x, y]) => [clamp01(x), clamp01(y)] as [number, number]).sort((a, b) => a[0] - b[0]).filter((q, i, a) => i === 0 || q[0] - a[i - 1][0] > 1e-4);
+  if (!p.length || p[0][0] > 0.001) p.unshift([0, 0]);
+  if (p[p.length - 1][0] < 0.999) p.push([1, 1]);
+  const n = p.length;
+  if (n === 1) return () => p[0][1];
+  const d = p.slice(0, -1).map((q, i) => (p[i + 1][1] - q[1]) / (p[i + 1][0] - q[0]));
+  const m = p.map((_, i) => (i === 0 ? d[0] : i === n - 1 ? d[n - 2] : d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2));
+  for (let i = 0; i < n - 1; i++) {
+    if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+    const a = m[i] / d[i], b = m[i + 1] / d[i], s = a * a + b * b;
+    if (s > 9) { const t = 3 / Math.sqrt(s); m[i] = t * a * d[i]; m[i + 1] = t * b * d[i]; }
+  }
+  return (x: number) => {
+    if (x <= p[0][0]) return p[0][1];
+    if (x >= p[n - 1][0]) return p[n - 1][1];
+    let i = 0;
+    while (x > p[i + 1][0]) i++;
+    const h = p[i + 1][0] - p[i][0], t = (x - p[i][0]) / h, t2 = t * t, t3 = t2 * t;
+    return clamp01((2 * t3 - 3 * t2 + 1) * p[i][1] + (t3 - 2 * t2 + t) * h * m[i] + (-2 * t3 + 3 * t2) * p[i + 1][1] + (t3 - t2) * h * m[i + 1]);
+  };
+}
+
+/** Samples a LUT at (r,g,b) (trilinear for 3D, linear per channel for 1D), inside its domain. */
+export function sampleLut(l: Lut, r: number, g: number, b: number): [number, number, number] {
+  const N = l.size, s = N - 1;
+  const at = (v: number, c: number) => clamp01((v - l.min[c]) / (l.max[c] - l.min[c] || 1)) * s;
+  if (l.kind === "1d") {
+    const one = (v: number, c: number) => { const x = at(v, c), i = Math.min(s - 1, Math.floor(x)), f = x - i; return l.data[i * 3 + c] * (1 - f) + l.data[(i + 1) * 3 + c] * f; };
+    return [one(r, 0), one(g, 1), one(b, 2)];
+  }
+  const x = at(r, 0), y = at(g, 1), z = at(b, 2);
+  const x0 = Math.min(s - 1, Math.floor(x)), y0 = Math.min(s - 1, Math.floor(y)), z0 = Math.min(s - 1, Math.floor(z));
+  const fx = x - x0, fy = y - y0, fz = z - z0;
+  const out: [number, number, number] = [0, 0, 0];
+  const idx = (i: number, j: number, k: number) => ((k * N + j) * N + i) * 3;
+  for (let c = 0; c < 3; c++) {
+    const v = (i: number, j: number, k: number) => l.data[idx(x0 + i, y0 + j, z0 + k) + c];
+    const c00 = v(0, 0, 0) * (1 - fx) + v(1, 0, 0) * fx, c10 = v(0, 1, 0) * (1 - fx) + v(1, 1, 0) * fx;
+    const c01 = v(0, 0, 1) * (1 - fx) + v(1, 0, 1) * fx, c11 = v(0, 1, 1) * (1 - fx) + v(1, 1, 1) * fx;
+    out[c] = (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz;
+  }
+  return out;
+}
+
+/**
+ * The grade as a function of a pixel (0-1, as displayed): [input LUT] -> white balance and exposure in linear light
+ * -> contrast (around 0.5, like CSS contrast()) -> saturation (Rec. 709 luma) -> curves (master, then each channel)
+ * -> [look LUT, by its amount] -> clipped to 0-1.
+ */
+export function gradeFn(g: Grade, lut?: Lut | null): (r: number, gg: number, b: number) => [number, number, number] {
+  const k = (g.temperature ?? 0) / 100, m = (g.tint ?? 0) / 100;
+  let wr = Math.pow(2, 0.35 * k), wg = Math.pow(2, -0.35 * m), wb = Math.pow(2, -0.35 * k);
+  const norm = LUMA[0] * wr + LUMA[1] * wg + LUMA[2] * wb;
+  const ex = Math.pow(2, g.exposure ?? 0);
+  wr = (wr / norm) * ex; wg = (wg / norm) * ex; wb = (wb / norm) * ex;
+  const linStep = wr !== 1 || wg !== 1 || wb !== 1;
+  const c = 1 + (g.contrast ?? 0) / 100, s = (g.saturation ?? 100) / 100;
+  const cv = g.curves ?? {};
+  const master = cv.master ? curveFn(cv.master) : null, cr = cv.r ? curveFn(cv.r) : null, cg = cv.g ? curveFn(cv.g) : null, cb = cv.b ? curveFn(cv.b) : null;
+  const useLut = lut && g.lut ? lut : null, amt = g.lut?.amount ?? 1, first = !!g.lut?.input;
+  const mix = (a: [number, number, number], b: [number, number, number]): [number, number, number] => (amt >= 1 ? b : [a[0] + (b[0] - a[0]) * amt, a[1] + (b[1] - a[1]) * amt, a[2] + (b[2] - a[2]) * amt]);
+  return (r0: number, g0: number, b0: number) => {
+    let p: [number, number, number] = [r0, g0, b0];
+    if (useLut && first) p = mix(p, sampleLut(useLut, p[0], p[1], p[2]));
+    if (linStep) p = [clamp01(gam(lin(p[0]) * wr)), clamp01(gam(lin(p[1]) * wg)), clamp01(gam(lin(p[2]) * wb))];
+    if (c !== 1) p = [clamp01((p[0] - 0.5) * c + 0.5), clamp01((p[1] - 0.5) * c + 0.5), clamp01((p[2] - 0.5) * c + 0.5)];
+    if (s !== 1) { const y = LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2]; p = [clamp01(y + (p[0] - y) * s), clamp01(y + (p[1] - y) * s), clamp01(y + (p[2] - y) * s)]; }
+    if (master) p = [master(p[0]), master(p[1]), master(p[2])];
+    if (cr) p[0] = cr(p[0]);
+    if (cg) p[1] = cg(p[1]);
+    if (cb) p[2] = cb(p[2]);
+    if (useLut && !first) p = mix(p, sampleLut(useLut, p[0], p[1], p[2]));
+    return [clamp01(p[0]), clamp01(p[1]), clamp01(p[2])];
+  };
+}
+
+export const LUT_SIZE = 33;
+/** The grade as a 3D LUT: size^3 RGB triplets, red changing fastest (the .cube order). */
+export function buildLut(g: Grade, lut?: Lut | null, size = LUT_SIZE): Float32Array {
+  const f = gradeFn(g, lut);
+  const out = new Float32Array(size * size * size * 3);
+  let o = 0;
+  for (let b = 0; b < size; b++) for (let gg = 0; gg < size; gg++) for (let r = 0; r < size; r++) {
+    const v = f(r / (size - 1), gg / (size - 1), b / (size - 1));
+    out[o++] = v[0]; out[o++] = v[1]; out[o++] = v[2];
+  }
+  return out;
+}
+
+/** A 3D LUT as a .cube file (what FFmpeg's lut3d reads). */
+export function cubeText(data: Float32Array, size = LUT_SIZE, title = "rendrr grade"): string {
+  const lines = [`TITLE "${title.replace(/"/g, "")}"`, `LUT_3D_SIZE ${size}`, "DOMAIN_MIN 0 0 0", "DOMAIN_MAX 1 1 1"];
+  for (let i = 0; i < data.length; i += 3) lines.push(`${data[i].toFixed(6)} ${data[i + 1].toFixed(6)} ${data[i + 2].toFixed(6)}`);
+  return lines.join("\n") + "\n";
+}
+
+/** Reads a .cube file (Adobe/Resolve: 3D or 1D, with a domain). Throws a plain message when it is not one. */
+export function parseCube(text: string): Lut {
+  let size3 = 0, size1 = 0, title: string | undefined;
+  let min: [number, number, number] = [0, 0, 0], max: [number, number, number] = [1, 1, 1];
+  const vals: number[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const [kw, ...rest] = line.split(/\s+/);
+    const up = kw.toUpperCase();
+    if (up === "TITLE") { title = line.slice(5).trim().replace(/^"|"$/g, "").slice(0, 120); continue; }
+    if (up === "LUT_3D_SIZE") { size3 = Number(rest[0]); continue; }
+    if (up === "LUT_1D_SIZE") { size1 = Number(rest[0]); continue; }
+    if (up === "DOMAIN_MIN") { min = rest.slice(0, 3).map(Number) as [number, number, number]; continue; }
+    if (up === "LUT_3D_INPUT_RANGE" || up === "LUT_1D_INPUT_RANGE") { const [lo, hi] = rest.map(Number); min = [lo, lo, lo]; max = [hi, hi, hi]; continue; }
+    if (up === "DOMAIN_MAX") { max = rest.slice(0, 3).map(Number) as [number, number, number]; continue; }
+    if (/^[A-Z_]+$/.test(up)) continue; // other keywords (LUT_IN_VIDEO_RANGE…)
+    const nums = line.split(/\s+/).map(Number);
+    if (nums.length !== 3 || nums.some((n) => !Number.isFinite(n))) throw new Error(`This is not a .cube LUT: a line reads "${line.slice(0, 40)}".`);
+    vals.push(nums[0], nums[1], nums[2]);
+  }
+  if (!size3 && !size1) throw new Error("This .cube file has no LUT_3D_SIZE or LUT_1D_SIZE line.");
+  if (size3 && (size3 < 2 || size3 > 65)) throw new Error(`LUT_3D_SIZE ${size3} is not supported (2 to 65).`);
+  if (size1 && (size1 < 2 || size1 > 65536)) throw new Error(`LUT_1D_SIZE ${size1} is not supported (2 to 65536).`);
+  const want = size3 ? size3 ** 3 : size1;
+  if (vals.length / 3 !== want) throw new Error(`This .cube file should have ${want} rows of numbers and has ${vals.length / 3}.`);
+  if ([0, 1, 2].some((c) => !(max[c] > min[c]))) throw new Error("This .cube file's DOMAIN_MAX must be above its DOMAIN_MIN.");
+  return { kind: size3 ? "3d" : "1d", size: size3 || size1, data: Float32Array.from(vals), min, max, ...(title ? { title } : {}) };
+}
+
+/** A short stable name for a grade (with its LUT), so clips with the same grade share one file and one texture. */
+export function hashOf(x: unknown): string {
+  const s = JSON.stringify(x);
+  let h1 = 0x811c9dc5, h2 = 0x01000193;
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0; h2 = Math.imul(h2 ^ c, 0x5bd1e995) >>> 0; }
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Masks and effect areas: one greyscale picture at the output size
+// ---------------------------------------------------------------------------------------------
+/** Signed distance (pixels, negative inside) from pixel centre (px, py) to the area's edge, at W x H. */
+function distanceFn(a: Area, W: number, H: number): (px: number, py: number) => number {
+  if (a.shape === "path") {
+    const pts = a.points!.map(([x, y]) => [x * W, y * H] as [number, number]);
+    const n = pts.length;
+    return (px, py) => {
+      let best = Infinity, inside = false;
+      for (let i = 0, j = n - 1; i < n; j = i++) {
+        const [xi, yi] = pts[i], [xj, yj] = pts[j];
+        if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+        const dx = xj - xi, dy = yj - yi, L = dx * dx + dy * dy;
+        const t = L ? Math.max(0, Math.min(1, ((px - xi) * dx + (py - yi) * dy) / L)) : 0;
+        const ex = xi + t * dx - px, ey = yi + t * dy - py;
+        const d = ex * ex + ey * ey;
+        if (d < best) best = d;
+      }
+      return inside ? -Math.sqrt(best) : Math.sqrt(best);
+    };
+  }
+  const cx = (a.x! + a.w! / 2) * W, cy = (a.y! + a.h! / 2) * H, hx = (a.w! * W) / 2, hy = (a.h! * H) / 2;
+  if (a.shape === "rect") return (px, py) => {
+    const qx = Math.abs(px - cx) - hx, qy = Math.abs(py - cy) - hy;
+    return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0);
+  };
+  // Ellipse: k0 (k0 - 1) / k1, a close distance estimate near the edge (where the feather is).
+  return (px, py) => {
+    const x = px - cx, y = py - cy;
+    const k0 = Math.hypot(x / hx, y / hy), k1 = Math.hypot(x / (hx * hx), y / (hy * hy));
+    return k1 > 1e-12 ? (k0 * (k0 - 1)) / k1 : -Math.min(hx, hy);
+  };
+}
+
+/** One area as coverage 0-1 per pixel (row by row), feathered across its edge and inverted when asked. */
+export function areaCoverage(a: Area, W: number, H: number): Float32Array {
+  const d = distanceFn(a, W, H);
+  const f = Math.max(1, (a.feather ?? 0) * Math.min(W, H));
+  const out = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const v = clamp01(0.5 - d(x + 0.5, y + 0.5) / f);
+    out[y * W + x] = a.invert ? 1 - v : v;
+  }
+  return out;
+}
+
+/** The clip's masks combined in order (add, subtract, intersect), as 8-bit values row by row. */
+export function maskPicture(masks: Mask[], W: number, H: number): Uint8Array {
+  const acc = new Float32Array(W * H).fill(!masks.length || (masks[0].mode ?? "add") === "add" ? 0 : 1);
+  if (!masks.length) acc.fill(1);
+  for (const m of masks) {
+    const c = areaCoverage(m, W, H), mode = m.mode ?? "add";
+    for (let i = 0; i < acc.length; i++) acc[i] = mode === "add" ? Math.max(acc[i], c[i]) : mode === "subtract" ? acc[i] * (1 - c[i]) : acc[i] * c[i];
+  }
+  const out = new Uint8Array(W * H);
+  for (let i = 0; i < out.length; i++) out[i] = Math.round(acc[i] * 255);
+  return out;
+}
+
+/** An effect's area as 8-bit values (null: the whole picture). */
+export function areaPicture(a: Area | undefined, W: number, H: number): Uint8Array | null {
+  if (!a) return null;
+  const c = areaCoverage(a, W, H), out = new Uint8Array(W * H);
+  for (let i = 0; i < out.length; i++) out[i] = Math.round(c[i] * 255);
+  return out;
+}
+
+/** 8-bit greyscale as a binary PGM file (FFmpeg reads it as a picture). */
+export function pgm(px: Uint8Array, W: number, H: number): Uint8Array {
+  const head = new TextEncoder().encode(`P5\n${W} ${H}\n255\n`);
+  const out = new Uint8Array(head.length + px.length);
+  out.set(head, 0); out.set(px, head.length);
+  return out;
+}
+
+/** Blur sigma in pixels at W x H (amount 100 = 5% of the short side). */
+export const blurSigma = (amount: number, W: number, H: number) => Math.max(0.5, Math.round((amount / 100) * 0.05 * Math.min(W, H) * 100) / 100);
+/** Pixelate block size in pixels at W x H (amount 100 = 10% of the short side). */
+export const pixelBlock = (amount: number, W: number, H: number) => Math.max(2, Math.round((amount / 1000) * Math.min(W, H)));
+
+// ---------------------------------------------------------------------------------------------
+// Key: FFmpeg's colorkey and despill (the player's shader repeats these)
+// ---------------------------------------------------------------------------------------------
+export const hexRgb = (h: string): [number, number, number] => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+/** colorkey: alpha 0-255 of an 8-bit pixel. */
+export function keyAlpha(r: number, g: number, b: number, k: ChromaKey): number {
+  const [kr, kg, kb] = hexRgb(k.color);
+  const diff = Math.sqrt(((r - kr) ** 2 + (g - kg) ** 2 + (b - kb) ** 2) / (255 * 255 * 3));
+  if (k.blend > 0.0001) return Math.trunc(clamp01((diff - k.similarity) / k.blend) * 255);
+  return diff > k.similarity ? 255 : 0;
+}
+/** Which channel spills: the key colour's stronger of green and blue. */
+export const spillType = (k: ChromaKey): "green" | "blue" => { const [, g, b] = hexRgb(k.color); return b > g ? "blue" : "green"; };
+/** despill (mix 0.5, expand 0): the spilling channel goes down by `spill` times its excess over the other two's mean. */
+export function despillPx(r: number, g: number, b: number, k: ChromaKey): [number, number, number] {
+  const R = r / 255, G = g / 255, B = b / 255;
+  const blue = spillType(k) === "blue";
+  const map = Math.max(blue ? B - (R * 0.5 + G * 0.5) : G - (R * 0.5 + B * 0.5), 0);
+  const c8 = (v: number) => Math.min(255, Math.max(0, Math.trunc(Math.max(v, 0) * 255)));
+  return blue ? [c8(R), c8(G), c8(B - map * k.spill)] : [c8(R), c8(G - map * k.spill), c8(B)];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shot matching from measured pixels
+// ---------------------------------------------------------------------------------------------
+/** Small frames of a clip as the editor shows it (turned and fitted), RGB bytes, several frames one after another. */
+export type ColorSample = { w: number; h: number; rgb: Uint8Array | number[] };
+export type ColorStats = { lo: [number, number, number]; mid: [number, number, number]; hi: [number, number, number]; sat: number; mean: [number, number, number] };
+
+/** Per channel the 2nd, 50th and 98th percentiles, the mean, and the mean colourfulness (max - min) of the pixels. */
+export function colorStats(px: ArrayLike<number>, f?: (r: number, g: number, b: number) => [number, number, number]): ColorStats {
+  const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+  let sat = 0, n = 0;
+  const sum = [0, 0, 0];
+  for (let i = 0; i + 2 < px.length; i += 3) {
+    let v: [number, number, number] = [px[i] / 255, px[i + 1] / 255, px[i + 2] / 255];
+    if (f) v = f(v[0], v[1], v[2]);
+    for (let c = 0; c < 3; c++) { hist[c][Math.round(clamp01(v[c]) * 255)]++; sum[c] += v[c]; }
+    sat += Math.max(v[0], v[1], v[2]) - Math.min(v[0], v[1], v[2]);
+    n++;
+  }
+  const pct = (c: number, p: number) => { const want = p * n; let acc = 0; for (let i = 0; i < 256; i++) { acc += hist[c][i]; if (acc >= want) return i / 255; } return 1; };
+  const tri = (p: number) => [pct(0, p), pct(1, p), pct(2, p)] as [number, number, number];
+  return { lo: tri(0.02), mid: tri(0.5), hi: tri(0.98), sat: n ? sat / n : 0, mean: [sum[0] / (n || 1), sum[1] / (n || 1), sum[2] / (n || 1)] };
+}
+
+const r3 = (n: number) => Math.round(n * 1000) / 1000;
+/**
+ * The grade that makes the target look like the reference, from their measured pixels: each channel's 2nd, 50th
+ * and 98th percentiles of the target go onto the reference's (three-point curves, slopes kept between 1/4 and 4,
+ * carried on straight to 0 and 1), then saturation brings the target's mean colourfulness to the reference's.
+ * `ref` is measured as it looks, with its own grade.
+ */
+export function matchGrade(target: ArrayLike<number>, ref: ArrayLike<number>, refLook?: (r: number, g: number, b: number) => [number, number, number]): { grade: Grade; text: string } {
+  const t = colorStats(target), R = colorStats(ref, refLook);
+  const curves: Curves = {};
+  const names = ["r", "g", "b"] as const;
+  names.forEach((ch, c) => {
+    const xs = [t.lo[c], t.mid[c], t.hi[c]], ys = [R.lo[c], R.mid[c], R.hi[c]];
+    if (!(xs[1] - xs[0] > 0.01 && xs[2] - xs[1] > 0.01)) return; // a flat channel cannot be matched by a curve
+    const sl = (i: number) => Math.min(4, Math.max(0.25, (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i])));
+    const y0 = clamp01(ys[0]);
+    const y1 = clamp01(y0 + sl(0) * (xs[1] - xs[0]));
+    const y2 = clamp01(y1 + sl(1) * (xs[2] - xs[1]));
+    const pts: Curve = [[0, clamp01(y0 - sl(0) * xs[0])], [xs[0], y0], [xs[1], y1], [xs[2], y2], [1, clamp01(y2 + sl(1) * (1 - xs[2]))]];
+    curves[ch] = pts.map(([x, y]) => [r3(x), r3(y)] as [number, number]);
+  });
+  let grade: Grade = Object.keys(curves).length ? { curves } : {};
+  // Saturation: twice, since it acts before the curves.
+  for (let i = 0; i < 2; i++) {
+    const now = colorStats(target, gradeFn(grade)).sat;
+    if (now < 0.005 || R.sat < 0.005) break;
+    const s = Math.round(Math.min(200, Math.max(25, (grade.saturation ?? 100) * (R.sat / now))));
+    grade = { ...grade, saturation: s };
+  }
+  if (grade.saturation === 100) delete grade.saturation;
+  const fmt = (v: [number, number, number]) => v.map((x) => x.toFixed(2)).join("/");
+  return { grade, text: `levels ${fmt(t.mid)} → ${fmt(R.mid)} (RGB medians)${grade.saturation ? `, saturation ${grade.saturation}%` : ""}` };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Text for the check and get_project
+// ---------------------------------------------------------------------------------------------
+const sgn = (n: number) => (n > 0 ? "+" : "") + n;
+/** "exposure +0.5, contrast +10, temp -20, saturation 120%, curves master/r, LUT lut_ab12 80% (input)" */
+export function gradeText(g: Grade, lutName?: (id: string) => string | undefined): string {
+  const out: string[] = [];
+  if (g.exposure) out.push(`exposure ${sgn(g.exposure)}`);
+  if (g.contrast) out.push(`contrast ${sgn(g.contrast)}`);
+  if (g.temperature) out.push(`temp ${sgn(g.temperature)}`);
+  if (g.tint) out.push(`tint ${sgn(g.tint)}`);
+  if (g.saturation != null && g.saturation !== 100) out.push(`saturation ${g.saturation}%`);
+  const ch = CURVE_CHANNELS.filter((c) => g.curves?.[c]);
+  if (ch.length) out.push(`curves ${ch.join("/")}`);
+  if (g.lut) { const nm = lutName?.(g.lut.id); out.push(`LUT ${nm ? `"${nm}"` : g.lut.id}${g.lut.amount != null && g.lut.amount < 1 ? ` ${Math.round(g.lut.amount * 100)}%` : ""}${g.lut.input ? " (input)" : ""}`); }
+  return out.join(", ") || "none";
+}
+const pct = (n: number) => `${Math.round(n * 100)}%`;
+export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.feather ? ` feather ${pct(a.feather)}` : ""}`;
+export const chromaKeyText = (k: ChromaKey) => `${k.color} similarity ${k.similarity} blend ${k.blend}${k.spill ? ` spill ${k.spill}` : ""}`;
+export const masksText = (ms: Mask[]) => ms.map((m, i) => `${i && m.mode && m.mode !== "add" ? m.mode + " " : ""}${areaText(m)}`).join(", ");
+export const effectsText = (es: Effect[]) => es.map((e) => `${e.type} ${e.amount}${e.area ? ` in ${areaText(e.area)}` : ""}`).join(", ");
+
+// ---------------------------------------------------------------------------------------------
+// HDR: SDR pictures placed in an HDR output at SDR white (203 nits, ITU-R BT.2408)
+// ---------------------------------------------------------------------------------------------
+export type HdrTransfer = "pq" | "hlg";
+export const SDR_WHITE_NITS = 203;
+const M709to2020 = [[0.6274, 0.3293, 0.0433], [0.0691, 0.9195, 0.0114], [0.0164, 0.088, 0.8956]];
+const pqOetf = (nits: number) => {
+  const m1 = 0.1593017578125, m2 = 78.84375, c1 = 0.8359375, c2 = 18.8515625, c3 = 18.6875;
+  const y = Math.pow(Math.max(0, nits) / 10000, m1);
+  return Math.pow((c1 + c2 * y) / (1 + c3 * y), m2);
+};
+const hlgOetf = (e: number) => (e <= 1 / 12 ? Math.sqrt(3 * e) : 0.17883277 * Math.log(12 * e - 0.28466892) + 0.55991073);
+/** An SDR pixel (BT.709, as displayed) as the same light in a BT.2020 PQ or HLG picture. */
+export function sdrToHdr(r: number, g: number, b: number, t: HdrTransfer): [number, number, number] {
+  const L = [lin(r), lin(g), lin(b)];
+  const W = M709to2020.map((row) => row[0] * L[0] + row[1] * L[1] + row[2] * L[2]);
+  // HLG: SDR white at 75% signal (scene light 0.265), as BT.2408 places it.
+  return W.map((v) => clamp01(t === "pq" ? pqOetf(v * SDR_WHITE_NITS) : hlgOetf(v * 0.2647))) as [number, number, number];
+}
+/** That conversion as a 3D LUT (for lut3d on SDR footage, b-roll and graphics in an HDR render), after an optional grade. */
+export function hdrLut(t: HdrTransfer, before?: (r: number, g: number, b: number) => [number, number, number], size = LUT_SIZE): Float32Array {
+  const out = new Float32Array(size * size * size * 3);
+  let o = 0;
+  for (let b = 0; b < size; b++) for (let g = 0; g < size; g++) for (let r = 0; r < size; r++) {
+    let v: [number, number, number] = [r / (size - 1), g / (size - 1), b / (size - 1)];
+    if (before) v = before(v[0], v[1], v[2]);
+    const h = sdrToHdr(v[0], v[1], v[2], t);
+    out[o++] = h[0]; out[o++] = h[1]; out[o++] = h[2];
+  }
+  return out;
+}
