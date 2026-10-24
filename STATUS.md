@@ -274,6 +274,12 @@ Three items of the plan were not fully built in the first pass. They are now:
 | API: speed, freeze, transition and keyframes in one apply_edits; get_project reads them back; a bad value is refused and nothing is saved | 12 pass |
 | Browser, demo build: Clip tab (speed, transition, keys, ease, freeze, reverse, undo), marks on the timeline, the player's transform, phone width | all work, no page errors |
 
+### Phase 5 live (24 October)
+
+- Through the connector on the smoke project: one apply_edits set 1.5x on a clip, a 0.8 s freeze, a dissolve at 0:24.2, a whip left at 0:48.1 and scale keys on the first clip.
+- With the fix deployed, render_preview took 14 s. The check gives the file as video 69.40 s and audio 69.39 s, the same as the edit, with no length flag. Its Speed, Transitions and Keyframes lines read back what was sent.
+- get_preview_frames at 24.1 s and 24.25 s shows the dissolve's double picture. At 48.05 s and 48.15 s it shows the whip's motion blur. At 68.0 s it shows the held frame.
+
 ## Reference-video test (23 October, live, through the connector only)
 
 The test: copy the edit of a finished reel (Glow Flow, 51 s, vertical) onto a raw talking-head video (77 s, 4K), using only the MCP connector, the way Claude would.
