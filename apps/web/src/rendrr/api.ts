@@ -252,6 +252,13 @@ export const api: any = {
   // ---- styles (open to everyone; a login adds your own styles) ----
   getCategories: async () => CATEGORIES,
   listStyles: async () => emptyIf(await get("/styles")),
+
+  // ---- colour (Phase 6): imported LUTs, measured frames for shot matching ----
+  listLuts: async () => (await get("/luts"))?.luts || [],
+  uploadLut: (name: string, text: string) => post("/luts", { name, text }),
+  lutText: async (id: string) => (await get(`/luts/${enc(id)}/cube`))?.text || "",
+  deleteLut: (id: string) => del(`/luts/${enc(id)}`),
+  colorSamples: async (projectId: string, clipIds: string[]) => (await post(`/projects/${enc(projectId)}/color-samples`, { clipIds }))?.measured || {},
   getStyleFilters: () => get("/styles/filters"),
   getStyle: (id: string) => get(`/styles/${enc(id)}`),
 

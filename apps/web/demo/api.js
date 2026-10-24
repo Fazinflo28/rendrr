@@ -101,6 +101,16 @@ globalThis.__rendrrDemoFile = (v, f) => {
   probe.src = url;
 };
 
+// Imported LUTs (Phase 6) live in this tab; shot matching needs the server's frames.
+const demoLuts = [];
+Object.assign(api, {
+  listLuts: async () => demoLuts.map(({ text, ...l }) => l),
+  uploadLut: async (name, text) => { const l = { id: "lut_" + Math.random().toString(36).slice(2, 8), name: name.replace(/\.cube$/i, ""), kind: /LUT_1D_SIZE/.test(text) ? "1d" : "3d", size: 0, text }; demoLuts.unshift(l); return l; },
+  lutText: async (id) => demoLuts.find((l) => l.id === id)?.text || "",
+  deleteLut: async (id) => { const i = demoLuts.findIndex((l) => l.id === id); if (i >= 0) demoLuts.splice(i, 1); return { ok: true }; },
+  colorSamples: async () => { await wait(200); throw Object.assign(new Error("Matching measures frames on the server; the preview has no server."), { friendly: true }); },
+});
+
 // Music and sound effect files for the live player, by catalog key (the real API sends signed URLs).
 const sounds = {};
 globalThis.__rendrrDemoSound = (key, f) => { if (f) sounds[key] = URL.createObjectURL(f); };

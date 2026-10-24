@@ -39,10 +39,9 @@ export default async function color(app: FastifyInstance) {
   }
 
   // The file itself, for the editor to build the same table the render uses.
-  app.get("/luts/:id/cube", async (req, reply) => {
+  app.get("/luts/:id/cube", async (req) => {
     const l = await ownedLut(req.user!.id, (req.params as { id: string }).id);
-    reply.header("content-type", "text/plain; charset=utf-8").header("cache-control", "private, max-age=86400");
-    return getText(l.key);
+    return { id: l.id, name: l.name, text: await getText(l.key) };
   });
 
   app.delete("/luts/:id", async (req) => {

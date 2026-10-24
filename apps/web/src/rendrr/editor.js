@@ -5,6 +5,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, turnedVideoStyle, Art, useNav, useApp } from "./ui";
 import { StyleArt, CreateLinkModal } from "./screens";
 import { api } from "./api";
+import { OpColor, OpSlider } from "./controls";
+import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./color";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { applyOp, asSequence, audioAt, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, TEXT_ANIMS, TEXT_PRESETS, textPreset, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
@@ -44,15 +46,18 @@ const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "P
 const r2 = (n) => Math.round(n * 100) / 100;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-// A video laid over the player (b-roll, a custom graphic), kept on the time it should show.
-function SyncedVideo({ src, time, playing, fit = "cover" }) {
-  const ref = useRef(null);
+// A video laid over the player (b-roll, a custom graphic), kept on the time it should show. Phase 6: a b-roll clip
+// with a look is drawn through it (the video stays as the clock); CORS lets WebGL read its frames.
+function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = null, luts }) {
+  const ref = useRef(null); const [noGl, setNoGl] = useState(false);
   useEffect(() => {
     const el = ref.current; if (!el) return;
     if (playing) { if (Math.abs(el.currentTime - time) > 0.25) { try { el.currentTime = time; } catch {} } el.play().catch(() => {}); }
     else { el.pause(); if (Math.abs(el.currentTime - time) > 0.04) { try { el.currentTime = time; } catch {} } }
   }, [time, playing]);
-  return html`<video ref=${ref} src=${src} muted playsInline preload="auto" style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: fit, pointerEvents: "none" }} />`;
+  const gl = !!look && !!plan && !noGl;
+  return html`<video ref=${ref} src=${src} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: fit, pointerEvents: "none", ...(gl ? { opacity: 0 } : {}) }} />
+    ${gl && html`<${LookCanvas} videoRef=${ref} look=${look} W=${plan.width} H=${plan.height} fitY=${0.5} luts=${luts} onFail=${() => setNoGl(true)} />`}`;
 }
 
 // A built-in graphic template drawn live with the recorder's own HTML and clock, at the size the render draws it.
@@ -68,12 +73,12 @@ function TemplateFrame({ graphicId, params, start, end, t, aspect }) {
 }
 
 // What the render lays over the footage at this moment: b-roll, then graphics, then text layers and captions.
-function LiveOverlays({ frame, clips, media, aspect, playing, plan }) {
+function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts }) {
   if (!frame) return null;
   const b = frame.broll && media.broll[frame.broll.videoId];
   // Keyframed overlays move as the render's perspective filter moves them (Phase 5).
   const moved = (m, child) => (m ? html`<div style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(m) }}>${child}</div>` : child);
-  return html`${b && moved(frame.broll.motion, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} />`)}
+  return html`${b && moved(frame.broll.motion, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} />`)}
     ${frame.graphics.map((g) => { const m = media.graphics[g.graphicId]; const c = clips.find((x) => x.id === g.clipId);
       return moved(g.motion, m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`); })}
     ${plan && html`<${TextLayers} plan=${plan} frame=${frame} />`}`;
@@ -108,14 +113,6 @@ function TextLayers({ plan, frame }) {
       ${frame.captionLines.map((line, i) => html`<div key=${i}><span style=${{ ...fontCss(cd), ...boxCss(cd) }}>${line.map((w, j) => html`${j ? " " : ""}<span key=${j} data-active=${w.active ? "1" : null} style=${w.active ? { color: cs.highlight } : null}>${w.text}</span>`)}</span></div>`)}
     </div>`}
   </div></div>`;
-}
-
-// A colour field that changes the edit live while it is picked and makes one undo step when it closes.
-function OpColor({ id, value, opFor, H, liveOp }) {
-  const base = useRef(null);
-  const start = () => { if (!base.current) base.current = H.state; };
-  const end = () => { if (base.current) { H.commitFrom(base.current); base.current = null; } };
-  return html`<input type="color" class="swatch" id=${id} value=${value} onFocus=${start} onInput=${(e) => { start(); liveOp(H.state, opFor(e.target.value)); }} onBlur=${end} onChange=${() => {}} />`;
 }
 
 // Style controls shared by the caption style and a text layer: font, weight, size, colour, box, stroke, shadow,
@@ -212,13 +209,18 @@ function follow(el, want, playing, rate = 1) {
 // transition goes away in the same moment): seeks 0.1 ms on, inside the same frame, make it present the new one.
 const repaint = (el) => { if (el.paused) { try { el.currentTime = el.currentTime + 0.0001; } catch {} } };
 // One footage stretch as the render fits it: turned, fitted (cover, 40% down), framed, moved by its keyframes.
-function Footage({ id, url, rotate, framing, motion, aspect, refFn, on = true }) {
+// Phase 6: with `gl` (the clip, or another part of this video, has a look) the picture is drawn through the look canvas
+// with the render's numbers; the <video> stays as the clock, hidden. `look` null there draws it plain.
+function Footage({ id, url, rotate, framing, motion, aspect, refFn, on = true, gl = false, look = null, plan = null, luts }) {
   const turn = turnedVideoStyle(rotate || 0, aspect);
+  const vEl = useRef(null); const [noGl, setNoGl] = useState(false);
+  const drawn = gl && !!plan && !noGl;
   return html`<div style=${{ position: "absolute", inset: 0, ...motionCss(motion) }}><div style=${{ position: "absolute", inset: 0, transform: framing ? `translate(${framing.x * 100}%, ${framing.y * 100}%) scale(${framing.scale})` : "none" }}>
-    <video ref=${refFn} data-on=${on ? "1" : "0"} data-video=${id} src=${url} muted playsInline preload="auto" style=${{ objectFit: "cover", background: "#000", ...(turn || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: "50% 40%" }) }} />
+    <video ref=${(el) => { vEl.current = el; refFn?.(el); }} data-on=${on ? "1" : "0"} data-video=${id} src=${url} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ objectFit: "cover", background: drawn ? "transparent" : "#000", ...(turn || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: "50% 40%" }), ...(drawn ? { opacity: 0 } : {}) }} />
+    ${drawn && html`<${LookCanvas} videoRef=${vEl} look=${look} W=${plan.width} H=${plan.height} rotate=${rotate || 0} fitY=${0.4} luts=${luts} onFail=${() => setNoGl(true)} />`}
   </div></div>`;
 }
-function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb }) {
+function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, broll = {}, luts }) {
   const pic = clock.picture(time), snd = clock.soundAt(time);
   const part = pic ? plan.parts[pic.i] : null;
   const fr = useMemo(() => liveFrame(plan, time, clock), [plan, time, clock]);
@@ -271,10 +273,16 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb })
   }, [time, playing, part, plan, head, near]);
   const look = tr?.look;
   const blurId = "whip-" + (tr?.op.clipId || "x");
-  return html`<div ref=${box} style="position:absolute;inset:0">${plan.sources.map((id) => {
+  // Phase 6: which videos have a look on any part (their element is drawn through the look canvas all along, so it
+  // never switches mid-play), and the b-roll laid behind V1 at this moment.
+  const looks = plan.looks || {};
+  const glVideo = useMemo(() => new Set(plan.parts.filter((p) => looks[p.clipIds[0]]).map((p) => p.videoId)), [plan]);
+  const under = (fr.under || []).filter((u) => broll[u.videoId]);
+  return html`<div ref=${box} style="position:absolute;inset:0">${under.map((u) => html`<div key=${"u" + u.clipId} data-under=${u.clipId} style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(u.motion) }}><${SyncedVideo} src=${broll[u.videoId].url} time=${u.src} playing=${playing} look=${looks[u.clipId]} plan=${plan} luts=${luts} /></div>`)}
+    ${plan.sources.map((id) => {
     const on = part?.videoId === id; const p = on ? part : plan.parts.find((x) => x.videoId === id);
     return html`<div key=${id} style=${{ position: "absolute", inset: 0, visibility: on ? "visible" : "hidden" }}>
-      ${urls[id] ? html`<${Footage} id=${id} url=${urls[id]} rotate=${p?.rotate} framing=${p?.framing} motion=${on ? fr.motion : null} aspect=${aspect} on=${on} refFn=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} />`
+      ${urls[id] ? html`<${Footage} id=${id} url=${urls[id]} rotate=${p?.rotate} framing=${p?.framing} motion=${on ? fr.motion : null} aspect=${aspect} on=${on} gl=${glVideo.has(id)} look=${on && fr.lookId ? looks[fr.lookId] : null} plan=${plan} luts=${luts} refFn=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} />`
         : on && html`<div style="position:absolute;inset:0;display:grid;place-items:center;background:#000;color:#999"><span class="t-small">No preview copy of this video</span></div>`}
       ${urls[id] && html`<audio ref=${(el) => { if (el) aref.current[id] = el; else delete aref.current[id]; }} data-sound=${id} src=${urls[id]} preload=${jl ? "auto" : "none"} />`}
     </div>`;
@@ -282,8 +290,8 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb })
     ${near.map((x) => { const active = tr?.op === x;
       const side = (s) => { const now = active ? tr[s] : null; const seg = x[s][0]; const l = active ? look[s] : { x: 0, y: 0, opacity: 0 };
         return html`<div key=${s} data-side=${s} style=${{ position: "absolute", inset: 0, transform: `translate(${(l.x / plan.width) * 100}%, ${(l.y / plan.height) * 100}%)`, opacity: l.opacity }}>
-          ${urls[seg.videoId] && html`<${Footage} id=${seg.videoId} url=${urls[seg.videoId]} rotate=${(now || seg).rotate} framing=${(now || seg).framing} motion=${now?.motion} aspect=${aspect} refFn=${(el) => { if (el) tref.current[x.clipId + s] = el; else delete tref.current[x.clipId + s]; }} />`}</div>`; };
-      return html`<div key=${"tr" + x.clipId} class="tlayer" data-transition=${x.type} style=${{ position: "absolute", inset: 0, overflow: "hidden", background: "#000", visibility: active ? "visible" : "hidden", filter: active && (look.blur.x || look.blur.y) ? `url(#${blurId})` : "none" }}>${side("a")}${side("b")}</div>`; })}
+          ${urls[seg.videoId] && html`<${Footage} id=${seg.videoId} url=${urls[seg.videoId]} rotate=${(now || seg).rotate} framing=${(now || seg).framing} motion=${now?.motion} aspect=${aspect} gl=${!!looks[(now || seg).clipId]} look=${looks[(now || seg).clipId] || null} plan=${plan} luts=${luts} refFn=${(el) => { if (el) tref.current[x.clipId + s] = el; else delete tref.current[x.clipId + s]; }} />`}</div>`; };
+      return html`<div key=${"tr" + x.clipId} class="tlayer" data-transition=${x.type} style=${{ position: "absolute", inset: 0, overflow: "hidden", background: under.length ? "transparent" : "#000", visibility: active ? "visible" : "hidden", filter: active && (look.blur.x || look.blur.y) ? `url(#${blurId})` : "none" }}>${side("a")}${side("b")}</div>`; })}
     ${look?.color && html`<div class="tdip" style=${{ position: "absolute", inset: 0, background: look.color.hex, opacity: look.color.opacity }} />`}
     ${look && (look.blur.x || look.blur.y) ? html`<svg width="0" height="0" style="position:absolute"><filter id=${blurId} x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation=${`${look.blur.x * k} ${look.blur.y * k}`} /></filter></svg>` : null}
   </div>${plan.audio.map((a) => sounds[a.assetKey] && html`<audio key=${a.clipId} ref=${(el) => { if (el) mref.current[a.clipId] = el; else delete mref.current[a.clipId]; }} data-music=${a.clipId} data-kind=${a.kind} src=${sounds[a.assetKey]} loop=${a.kind === "music"} preload="auto" />`)}`;
@@ -348,14 +356,6 @@ function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek 
   </div></div>`;
 }
 
-// A slider that changes the edit live while it moves and makes one undo step when let go.
-function OpSlider({ id, label, value, min, max, step, show, opFor, H, liveOp, disabled = false }) {
-  const base = useRef(null);
-  const start = () => { if (!base.current) base.current = H.state; };
-  const end = () => { if (base.current) { H.commitFrom(base.current); base.current = null; } };
-  return html`<label class="t-small" style="display:grid;gap:2px"><span class="row between"><span>${label}</span><span class="muted mono" data-val=${id}>${show(value)}</span></span>
-    <input type="range" id=${id} min=${min} max=${max} step=${step} value=${value} disabled=${disabled} onPointerDown=${start} onKeyDown=${start} onInput=${(e) => { start(); liveOp(H.state, opFor(+e.target.value)); }} onPointerUp=${end} onKeyUp=${end} onBlur=${end} /></label>`;
-}
 
 // The cleanup values the Audio tab can set by hand: key, label, range, step, unit.
 const FINE = [["highpass", "Rumble cut (high-pass)", 0, 300, 10, " Hz"], ["denoise", "Noise reduction", 0, 40, 1, " dB"], ["presence", "Presence (3.5 kHz lift)", 0, 8, 0.5, " dB"], ["deess", "De-esser", 0, 1, 0.05, ""], ["compress", "Compression", 1, 10, 0.5, ":1"]];
@@ -449,12 +449,12 @@ function EditorInner({ project, reload, ai, keep }) {
   const footDur = project.timeline.duration;
   // The edit is a sequence. A project stored before Phase 2 is shown converted (the server stores it so at the next save).
   const tl = useMemo(() => asSequence(project.timeline, words, project.videoId, project.video?.seconds || footDur), [project, words]);
-  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, captionStyle: tl.captionStyle, audio: tl.audio });
+  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, captionStyle: tl.captionStyle, audio: tl.audio, export: tl.export });
   const S = H.state;
   // The edit as the server and the renderer see it, the place of every clip in it, and the render plan the live
   // player draws from. Times on the timeline and in the player are EDIT seconds.
   const initial = useRef(S).current;
-  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio });
+  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio, export: s.export });
   const timeline = useMemo(() => tlOf(S), [S]);
   const lay = useMemo(() => layoutTimeline(timeline, words), [timeline, words]);
   const view = useMemo(() => sequenceView(lay, words), [lay, words]);
@@ -479,6 +479,11 @@ function EditorInner({ project, reload, ai, keep }) {
   const cutSet = useMemo(() => new Set(S.cut), [S.cut]);
   const style = (sq.data || []).find((s) => s.id === S.styleId) || project.style;
   const captionRules = useMemo(() => { const r = StyleRulesSchema.safeParse(style?.rules); return r.success ? r.data.captions : undefined; }, [style]);
+  // Phase 6: the user's LUTs, and the numbers of the ones this edit's grades use (the plan needs them, as the render).
+  const lutQ = useAsync(() => api.listLuts().catch(() => []), []);
+  const lutIds = Array.from(new Set([...S.tracks.v1, ...S.tracks.v2].map((c) => c.grade?.lut?.id).filter(Boolean)));
+  const luts = useLutData(lutIds);
+  const [colorMode, setColorMode] = useState(null); const [pathDraft, setPathDraft] = useState([]);
   const plan = useMemo(() => {
     try {
       const v = project.video || {};
@@ -488,9 +493,9 @@ function EditorInner({ project, reload, ai, keep }) {
         transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript || []])),
         brollSeconds: Object.fromEntries(Object.entries(media.broll).map(([id, b]) => [id, b.seconds])),
         // Templates draw live; a custom graphic shows once its recorded file is there (as in the render).
-        graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, GRAPHIC_TEMPLATES.some((g) => g.id === c.graphicId) || !!media.graphics[c.graphicId]])) });
+        graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, GRAPHIC_TEMPLATES.some((g) => g.id === c.graphicId) || !!media.graphics[c.graphicId]])), luts });
     } catch { return null; } // everything is cut
-  }, [timeline, S.aspect, captionRules, media, others]);
+  }, [timeline, S.aspect, captionRules, media, others, luts]);
   const clock = useMemo(() => sequenceClock(plan || { parts: [], sound: [], outputSeconds: 0 }), [plan]);
   const dur = plan ? plan.outputSeconds : 0;
   // The rendered preview plays instead when it is of this version and nothing changed since: exactly the file.
@@ -519,7 +524,7 @@ function EditorInner({ project, reload, ai, keep }) {
     getGraphic: (id) => { const g = GRAPHIC_TEMPLATES.find((x) => x.id === id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
     sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others]);
   const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
-  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle }, summary: r.summary }; };
+  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export }, summary: r.summary }; };
   const say = (t) => t.charAt(0).toUpperCase() + t.slice(1);
   const doOp = (op, tell = true) => { try { const r = opOn(H.state, op); H.commit(r.state); if (tell) toast(say(r.summary), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
   const liveOp = (base, op) => { try { H.replace(opOn(base, op).state); return true; } catch { return false; } };
@@ -543,6 +548,16 @@ function EditorInner({ project, reload, ai, keep }) {
   const selClip = sel ? lay.tracks[sel.track]?.find((c) => c.id === sel.id) : null;
   const selV1 = sel && isV1(sel.track) ? lay.tracks.v1.find((c) => c.id === sel.id) : null;
   const isOn = (k, c) => !!sel && c.id === sel.id && (k === sel.track || (isV1(k) && isV1(sel.track)));
+  // The Color tab's clip (V1 or b-roll), its shapes on the picture, and a click there: a path point or the key colour.
+  const colorClip = selV1 || (sel?.track === "v2" && selClip?.kind === "broll" ? selClip : null);
+  const colorShapes = colorClip ? [...(colorClip.masks || []).map((m) => ({ ...m, kind: "mask" })), ...(colorClip.effects || []).filter((e) => e.area).map((e) => ({ ...e.area, kind: "area" }))] : [];
+  const onColorPoint = (pt) => {
+    if (colorMode === "path") { setPathDraft((d) => [...d, pt]); return; }
+    if (colorMode !== "pick" || !colorClip || !plan) return;
+    const el = colorClip.sourceVideoId ? document.querySelector(`video[data-video="${colorClip.sourceVideoId}"][data-on="1"]`) : media.broll[colorClip.videoId] && document.querySelector(`video[src="${media.broll[colorClip.videoId].url}"]`);
+    let c = null; try { c = el && pickColor(el, plan.width, plan.height, colorClip.rotate || 0, colorClip.sourceVideoId ? 0.4 : 0.5, pt[0], pt[1]); } catch (e) { toast("Could not read the picture here: " + e.message); }
+    if (c) { doOp({ op: "set_key", clipId: colorClip.id, color: c }); setColorMode(null); }
+  };
   const toggleMute = () => selV1 && doOp({ op: "set_audio_offset", clipId: selV1.id, muted: !selV1.audioMuted });
   // Turn and framing: the selected V1 clip, else every clip of the footage (as the connector's ops do).
   const lookIds = selV1 ? [selV1.id] : undefined;
@@ -750,7 +765,7 @@ function EditorInner({ project, reload, ai, keep }) {
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
           : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} />`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} />${rtab === "color" && colorClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} />` : null}`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">
@@ -792,7 +807,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
 
       <div class="panel">
-        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["clip", "Clip"], ["audio", "Audio"], ["text", "Text"], ["style", "Style"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
+        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["clip", "Clip"], ["color", "Color"], ["audio", "Audio"], ["text", "Text"], ["style", "Style"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
         ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
           <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted">${S.cut.length} cut</span></div>
           ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
@@ -826,6 +841,7 @@ function EditorInner({ project, reload, ai, keep }) {
           </form>
         </div>`}
         ${rtab === "clip" && html`<${ClipTab} clip=${sel && isV1(sel.track) ? selV1 : selClip} track=${sel?.track} plan=${plan} first=${!!selV1 && lay.tracks.v1.find((c) => c.end - c.start > 0.01)?.id === selV1.id} at=${pb.time} srcAt=${(id, t) => view.editToSource(id, t)} onSeek=${(t) => pb.seek(t)} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
+        ${rtab === "color" && html`<${ColorTab} clip=${colorClip} track=${sel?.track} projectId=${project.id} clips=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")]} lutList=${lutQ.data || []} reloadLuts=${() => lutQ.reload()} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mode=${colorMode} setMode=${setColorMode} draft=${pathDraft} setDraft=${setPathDraft} toast=${toast} />`}
         ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "style" && html`<div class="pb" style="padding-top:16px">

@@ -280,6 +280,39 @@ Three items of the plan were not fully built in the first pass. They are now:
 - With the fix deployed, render_preview took 14 s. The check gives the file as video 69.40 s and audio 69.39 s, the same as the edit, with no length flag. Its Speed, Transitions and Keyframes lines read back what was sent.
 - get_preview_frames at 24.1 s and 24.25 s shows the dissolve's double picture. At 48.05 s and 48.15 s it shows the whip's motion blur. At 68.0 s it shows the held frame.
 
+## Phase 6: colour and compositing
+
+- **Grade** on any V1 clip or b-roll clip:
+  - exposure, contrast, temperature, tint and saturation
+  - curves (master, red, green, blue)
+  - an imported .cube LUT, with an amount, applied first (log footage) or last (a look)
+  - copy a grade to every clip, or to one video's clips
+- **Shot matching** from measured values, with no AI. The worker reads small frames of the clips from their preview copies. Each channel's 2nd, 50th and 98th percentiles are mapped onto the reference's (as graded) by curves, and saturation is matched. The result is an ordinary grade you can see and change.
+- **Chroma key**: colour (with an eyedropper on the picture), similarity, softness and spill removal.
+- **Masks** (rectangle, ellipse, a path drawn on the picture) with feather, invert, and add, subtract or intersect.
+- **Blur and pixelate**, on the whole picture or inside an area.
+- **B-roll under V1** (`under`): a keyed or masked speaker gets a background.
+- **HDR stays HDR**: a final of PQ or HLG footage is HEVC 10-bit, BT.2020, with its transfer; SDR content goes in at 203 nits. Set the export to SDR to convert. Previews and the editor are SDR, and the check says so.
+- **Ops in apply_edits:** `set_grade`, `copy_grade`, `match_color` (the server measures the frames), `set_key`, `set_masks`, `set_effects`, `set_under`, `set_export`. get_project shows the looks, grouped, and your LUTs.
+- **Check:** Looks, Under V1 and HDR lines, only when the edit uses them; a LUT that is gone is named.
+- **Editor:**
+  - A Color tab with every control above, and a curve editor (click, drag, double-click).
+  - LUT import (checked before it is stored).
+  - Match to a clip, an eyedropper for the key, path drawing, and outlines of masks and areas on the picture.
+  - The player draws a clip with a look through WebGL2, using the render's own numbers (the same LUT, key formulas, mask pictures, blur and block sizes).
+- **Found and fixed while testing:** FFmpeg 7.1 (production) loses about one level of luma converting to RGB and back unless `accurate_rnd` is set (6.1 does not), and `lut3d` truncates at 8 bits. The look runs in 16-bit RGB with accurate rounding, and both FFmpeg versions now give the same result.
+
+### Phase 6 tests
+
+| What | Result |
+|---|---|
+| Shared: curves, every grade control, LUTs first or last with an amount, .cube both ways (3D, 1D, bad files refused plainly), mask pictures (feather, invert, subtract, intersect, path), colorkey and despill numbers, matching a darker, bluer, flatter shot onto its reference, every op, the plan's looks and files, the graph (LUT, key, despill, pixelize, maskedmerge), one grade drawn once, b-roll under V1, HDR plans (kept, converted, preview line), SDR white in PQ and HLG, caption colours, check lines | 20 new, 155 pass |
+| Worker, rendered and read back on FFmpeg 6.1 and 7.1: grade = the shared function on the plain clip (mean 0.73/255), imported LUT, mask, pixelate blocks = block means, blurred area flat, key shows the b-roll under V1 and keeps the subject, HDR final (HEVC 10-bit, PQ tags, HDR picture untouched, SDR white at PQ 203 nits) | 7 new, 39 in all, pass |
+| API with a real frames worker: a grade with an imported LUT, match_color measured (red lifted, blue lowered towards the reference), key, masks, blur; get_project reads them back; a wrong clip is refused | 13 pass |
+| Editor vs render in a browser (`color-match.mjs`): plain baseline 0.67, grade 0.66, LUT 0.74, masks 0.27, pixelate + blurred area 0.74, key over b-roll 0.61 (mean difference out of 255) | pass |
+| Phase 4 and 5 browser tests after the player changes | 46 motion moments, captions within 2 px: pass |
+| Browser, demo build: Color tab (sliders, curve point, LUT import and amount, copy to every clip, key, ellipse and path masks with outlines, blur area, undo, HDR setting), phone width | all work, no page errors |
+
 ## Reference-video test (23 October, live, through the connector only)
 
 The test: copy the edit of a finished reel (Glow Flow, 51 s, vertical) onto a raw talking-head video (77 s, 4K), using only the MCP connector, the way Claude would.

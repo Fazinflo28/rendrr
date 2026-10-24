@@ -31,6 +31,13 @@ A timeline with `model: "B"` and `mainVideoId` (the project's footage):
   - `keys` (keyframes), stored at footage seconds so they move with the footage when the clip is cut or split; a freeze's are `sourceIn` + seconds into it
 
   V2 b-roll and V3 text and graphics clips carry `keys` in seconds from their own start. A key is `{t, x, y, scale, rotation, opacity, ease}`.
+- **Colour and compositing (Phase 6).** V1 clips and V2 b-roll clips can carry:
+  - `grade`: `exposure` (stops), `contrast`, `temperature`, `tint` (−100 to 100), `saturation` (%), `curves` (`master`, `r`, `g`, `b`: points `[in, out]` 0–1) and `lut` `{id, amount, input}` (an imported .cube)
+  - `key` `{color, similarity, blend, spill}`: a chroma key
+  - `masks`: shapes the clip shows inside. A rect or ellipse is `x`, `y` (top left), `w`, `h` as shares of the frame; a path is `points`. Each has `feather` (share of the short side), `invert` and `mode` (add, subtract, intersect).
+  - `effects`: `{type: blur | pixelate, amount, area}`, where `area` is a shape like a mask
+
+  A V2 b-roll clip with `under: true` is drawn behind V1. The timeline's `export.hdr` is `keep` (the default) or `sdr`.
 - **`start` / `end`** on every clip are edit seconds, written by the layout with `timelineStart`, `timelineEnd` and `linkId`. `stripLayout` removes the last three, so they never make a version.
 
 ### What plays
@@ -80,6 +87,20 @@ Speed, transitions and keyframes (Phase 5, `motion.ts`):
   - Dissolve, slide and whip are drawn from both sides' segments (each through the same steps as a part) and laid over the joined picture.
 - **Keyframes** become one piecewise-linear table per property (16 pieces per eased segment). The render writes it as an FFmpeg expression for the `perspective` filter (the four corners), with opacity multiplied into the alpha. The player evaluates the same table (`liveFrame`: `motion`, `transition`, overlay and text motion). A keyframed text layer is one ASS event per piece.
 - **Timing.** Every curve in the player is read at the start of the frame showing. Overlays (b-roll, graphics, transitions, dips) start and end on whole frames.
+
+Colour and compositing (Phase 6, `look.ts`):
+- **The look of a clip** runs after its fit and before framing and keyframes, in this order:
+  1. the key's alpha (FFmpeg's `colorkey` on the fitted 8-bit colours), then `despill`
+  2. the grade as one 33-point 3D LUT (`lut3d`, trilinear, 16-bit RGB)
+  3. blur (`gblur`, 4 steps) and pixelate (`pixelize`), mixed in by their areas (`maskedmerge`)
+  4. the masks (a PGM picture) multiplied into the alpha
+- **Files.** `plan.looks` names each clip's files and `plan.lookFiles` says what is in them; `lookFileData` writes them at the plan's size. The player builds the same LUT and the same pictures and draws through WebGL2 (`look-gl.js`).
+- **Under V1.** Where a V1 part has alpha, framing or keyframes, it is laid over the b-roll under it (black when there is none). Each `under` clip is cut to that part's window.
+- **HDR.** A final of HDR footage (and `export.hdr` not `sdr`) has `plan.hdr = {transfer, lut}`:
+  - The output is 10-bit, BT.2020, PQ or HLG.
+  - HDR parts pass through untouched.
+  - SDR parts, b-roll, graphics and caption colours go through the SDR-into-HDR LUT (SDR white at 203 nits).
+  - A graded or keyed HDR clip is tone-mapped first and graded as SDR (the editor shows it that way).
 
 ## Model A (before Phase 2)
 
