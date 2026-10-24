@@ -5,7 +5,7 @@ import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signG
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   allWords, asSequence, breakdownAsText, CreateGraphicInput, describeRules, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
-  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, type Breakdown, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
+  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources } from "./services/sequence";
 import { createProject, getOwnedProject } from "./services/projects";
@@ -109,6 +109,8 @@ const PLAIN_RULES: StyleRules = StyleRulesSchema.parse({ cutSilencesOver: null, 
 /** The edit list checked one by one, with the first problem said plainly ("Edit 3 (add_zoom): end is required"). */
 function parseEdits(raw: unknown[]): EditOp[] {
   return raw.map((e, n) => {
+    const extra = unknownEditFields(e);
+    if (extra.unknown.length) throw new AppError(`Edit ${n + 1} (${(e as { op: string }).op}): unknown field${extra.unknown.length > 1 ? "s" : ""} ${extra.unknown.join(", ")}; it takes ${extra.known.join(", ")}. Nothing was changed.`, 400, "invalid-edit");
     const r = EditOpSchema.safeParse(e);
     if (r.success) return r.data;
     const op = (e as { op?: string })?.op;
@@ -165,7 +167,8 @@ async function checkOf(projectId: string, version: number, loudness: FileLoudnes
   const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   const snap = (ver?.timeline ?? { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId }) as unknown as Snapshot;
   const others = await otherSources(p.userId, snap.timeline, p.videoId);
-  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, renderNotes, videoId: p.videoId, transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
+  const luts = await prisma.lut.findMany({ where: { userId: p.userId }, select: { id: true, name: true } });
+  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, renderNotes, videoId: p.videoId, lutName: (id) => luts.find((l) => l.id === id)?.name, transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {

@@ -130,6 +130,14 @@ const EDIT_OPS = [
 ] as const;
 export const EditOpSchema = z.discriminatedUnion("op", [...EDIT_OPS]);
 export const EDIT_OP_NAMES = EDIT_OPS.map((o) => o.shape.op.value) as [EditOp["op"], ...EditOp["op"][]];
+/** The fields of an edit its op does not have (a typo would otherwise be dropped silently and do nothing). */
+export function unknownEditFields(e: unknown): { unknown: string[]; known: string[] } {
+  const op = (e as { op?: unknown })?.op;
+  const def = EDIT_OPS.find((o) => o.shape.op.value === op);
+  if (!def || !e || typeof e !== "object") return { unknown: [], known: [] };
+  const known = Object.keys(def.shape);
+  return { unknown: Object.keys(e).filter((k) => !known.includes(k)), known: known.filter((k) => k !== "op") };
+}
 export type EditOp = z.infer<typeof EditOpSchema>;
 export const OpSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("replace"), timeline: TimelineSchema, name: z.string().max(200).optional(), aspect: AspectSchema.optional(), styleId: z.string().max(80).optional() }),

@@ -77,7 +77,8 @@ function buildServer(w: Who) {
     server.registerTool(def.name, {
       title: def.title,
       description: def.description,
-      inputSchema: def.input.shape,
+      // Strict: a field the tool does not have is an error the AI sees (it was dropped silently, e.g. "ops" for "edits").
+      inputSchema: def.input.strict(),
       annotations: { readOnlyHint: !def.write && !def.long, destructiveHint: false, openWorldHint: false },
     }, async (args: Record<string, unknown>, extra) => {
       // Long tools (renders, graphics) keep the client's timeout alive with progress notifications.

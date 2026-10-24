@@ -191,3 +191,15 @@ describe("render plan", () => {
     expect(zoomExpr([{ start: 1, end: 2, scale: 1.2, mode: "punch" }])).toContain("between(t,1.000,2.000)");
   });
 });
+
+describe("edits with a field their op does not have", () => {
+  it("names the unknown field and the ones the op takes", async () => {
+    const { unknownEditFields } = await import("../src/ops");
+    const r = unknownEditFields({ op: "set_grade", clipId: "a", exposre: 1 });
+    expect(r.unknown).toEqual(["exposre"]);
+    expect(r.known).toContain("exposure");
+    expect(unknownEditFields({ op: "set_grade", clipId: "a", exposure: 1 }).unknown).toEqual([]);
+    expect(unknownEditFields({ op: "add_zoom", start: 1, end: 2, scale: 1.1, edit: true }).unknown).toEqual([]);
+    expect(unknownEditFields({ op: "nope" }).unknown).toEqual([]);
+  });
+});
