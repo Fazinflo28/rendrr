@@ -1,6 +1,6 @@
 import { abortMultipart, AppError, applyTimelineChange, deleteObjects, notFound, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, asSequence, aspectFor, buildInitialTimeline, DEFAULT_STYLE_ID, outputDuration, refreshFillers, type Snapshot, type Transcript } from "@rendrr/shared";
+import { allWords, asSequence, aspectFor, buildInitialTimeline, catalogMusic, catalogSfx, DEFAULT_STYLE_ID, outputDuration, refreshFillers, type Snapshot, type Transcript } from "@rendrr/shared";
 import { playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
@@ -105,7 +105,8 @@ export async function projectFull(userId: string, id: string) {
 
 /**
  * The files the editor's live player overlays, so it shows what the render will: b-roll videos (their preview
- * copies) and custom graphics (their recorded transparent WebM), by id. Templates are drawn live from their HTML.
+ * copies), custom graphics (their recorded transparent WebM), by id, and the built-in music and sound effects the
+ * edit uses, by storage key (from the catalog only). Templates are drawn live from their HTML.
  */
 async function playerMedia(userId: string, tl: Snapshot["timeline"]) {
   const brollIds = Array.from(new Set(tl.tracks.v2.map((c) => (c as { videoId?: string }).videoId).filter(Boolean) as string[]));
@@ -117,6 +118,10 @@ async function playerMedia(userId: string, tl: Snapshot["timeline"]) {
   return {
     brollMedia: Object.fromEntries(await Promise.all(vids.map(async (v) => [v.id, { url: await signGet(v.proxyKey!, 6 * 3600), seconds: v.seconds }] as const))),
     graphicMedia: Object.fromEntries(await Promise.all(gs.map(async (g) => [g.id, { url: await signGet(g.renderedKey!, 6 * 3600), width: g.width, height: g.height, seconds: g.durationSec }] as const))),
+    audioMedia: Object.fromEntries(await Promise.all(Array.from(new Set([
+      ...tl.tracks.a2.map((c) => catalogMusic(c as { trackId?: string; assetKey?: string })?.key),
+      ...tl.tracks.a3.map((c) => catalogSfx(c as { sfxId?: string; assetKey?: string })?.key),
+    ].filter((k): k is string => !!k))).map(async (k) => [k, await signGet(k, 6 * 3600)] as const))),
   };
 }
 

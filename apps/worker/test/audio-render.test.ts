@@ -1,0 +1,118 @@
+// Phase 3 sound, rendered and measured: the file lands on -14 LUFS under a -1 dBTP ceiling (also with sharp peaks),
+// music goes down by the set amount under speech, fades fade, and the cleanup presets lower the noise. Needs ffmpeg.
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, describe, it } from "node:test";
+import { applyOp, buildInitialTimeline, buildTranscript, STYLES, type EditContext, type Op, type Snapshot, type Transcript } from "@rendrr/shared";
+import { ffmpegArgs, planRender, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
+import { measureFile, run } from "../src/lib/ffmpeg";
+import { measureMix } from "../src/lib/mix";
+
+const SECONDS = 12;
+const words = (from: number, to: number) => buildTranscript([Array.from({ length: Math.floor((to - from) / 0.5) }, (_, i) => ({ text: `w${i}`, start: from + i * 0.5, end: from + i * 0.5 + 0.4 }))], { maxWordsPerLine: 6 })
+  .map((l) => ({ ...l, words: l.words.map((w) => ({ ...w, filler: false })) }));
+const source = (hasAudio = true): SourceInfo => ({ width: 320, height: 180, fps: 30, seconds: SECONDS, hasAudio });
+
+describe("the sound, rendered and measured", () => {
+  let dir = "";
+  const media: Record<string, string> = {};
+  before(async () => {
+    dir = await mkdtemp(join(tmpdir(), "audio-render-"));
+    const v = (name: string, audio: string[], filter = "") => run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", `color=gray:s=320x180:r=30:d=${SECONDS}`, ...audio, ...(filter ? ["-filter_complex", filter, "-map", "0:v", "-map", "[a]"] : []), "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-b:a", "192k", "-shortest", (media[name] = join(dir, `${name}.mp4`))]);
+    // A quiet voice: a tone around -33 LUFS.
+    await v("quiet", ["-f", "lavfi", "-i", `sine=f=220:d=${SECONDS}:sample_rate=48000`], "[1:a]volume=-12dB[a]");
+    // Far too quiet (around -47 LUFS): more than the 24 dB the loudness step may add.
+    await v("faint", ["-f", "lavfi", "-i", `sine=f=220:d=${SECONDS}:sample_rate=48000`], "[1:a]volume=-26dB[a]");
+    // Sharp peaks: a voice-level tone (around -21 LUFS) with a 0.5 ms full-scale click every second, like plosives.
+    await v("peaky", ["-f", "lavfi", "-i", `sine=f=220:d=${SECONDS}:sample_rate=48000`, "-f", "lavfi", "-i", `aevalsrc='if(lt(mod(t,1),0.0005),0.99,0)':d=${SECONDS}:s=48000`], "[1:a][2:a]amix=inputs=2:normalize=0[a]");
+    // No sound at all (for ducking: only the music is heard).
+    await v("silent", []);
+    // A voice from 3 s to 8 s over room noise everywhere.
+    await v("noisy", ["-f", "lavfi", "-i", `sine=f=300:d=${SECONDS}:sample_rate=48000`, "-f", "lavfi", "-i", `anoisesrc=c=pink:a=0.02:d=${SECONDS}:r=48000`], "[1:a]volume=-12dB,volume='between(t,3,8)':eval=frame[s];[s][2:a]amix=inputs=2:normalize=0[a]");
+    media.music = join(dir, "music.m4a");
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", `sine=f=500:d=${SECONDS}:sample_rate=48000`, "-c:a", "aac", media.music]);
+  });
+  after(async () => { if (process.env.KEEP_AUDIO_TEST) console.log("kept", dir); else await rm(dir, { recursive: true, force: true }); });
+
+  const ctxFor = (tr: Transcript): EditContext => ({ videoId: "v", transcript: tr, silences: [], sceneCuts: [], duration: SECONDS, getStyle: (id) => STYLES.find((s) => s.id === id) });
+  /** Renders an edit the way the render job does (measure, then render) and measures the file. */
+  async function render(name: string, src: string, tr: Transcript, ops: Op[], hasAudio = true) {
+    let s: Snapshot = { timeline: buildInitialTimeline(tr, SECONDS, "clean", [], "v"), name, aspect: "16:9", styleId: "s2" };
+    s = applyOp(s, { op: "batch", ops: [{ op: "set_captions", on: false }, ...ops] as never }, ctxFor(tr)).snap;
+    const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source: source(hasAudio), videoId: "v" });
+    const files: PlanFiles = { source: media[src], output: join(dir, `out-${name}.mp4`), audio: Object.fromEntries(plan.audio.map((a) => [a.clipId, media.music])) };
+    const mix = await measureMix(plan, files, source(hasAudio), { dir });
+    const { args, filterGraph } = ffmpegArgs(plan, files, source(hasAudio), { loudnessGainDb: mix.gainDb });
+    await writeFile(join(dir, `${name}.txt`), filterGraph);
+    await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? join(dir, `${name}.txt`) : a)));
+    return { file: files.output, mix, measured: await measureFile(files.output, { timeoutMs: 60_000 }) };
+  }
+  const meanDb = async (file: string, from: number, len: number) => {
+    const { stderr } = await run("ffmpeg", ["-hide_banner", "-ss", String(from), "-t", String(len), "-i", file, "-af", "volumedetect", "-f", "null", "-"]);
+    return Number(/mean_volume:\s*(-?[\d.]+)/.exec(stderr)?.[1] ?? "-999");
+  };
+
+  it("a quiet voice comes out at -14 LUFS under the -1 dBTP ceiling", async () => {
+    const { mix, measured } = await render("quiet", "quiet", words(0.5, 11.5), []);
+    assert.ok(mix.lufs! < -28, `measured mix ${mix.lufs}`);
+    assert.ok(mix.gainDb > 14, `gain ${mix.gainDb}`);
+    assert.ok(Math.abs(measured.lufs! - -14) <= 1, `file ${measured.lufs} LUFS`);
+    assert.ok(measured.peakDb! <= -1 + 0.2, `true peak ${measured.peakDb}`);
+  });
+
+  it("a far too quiet source gets at most +24 dB, and the file's real loudness is what the check sees", async () => {
+    const { mix, measured } = await render("faint", "faint", words(0.5, 11.5), []);
+    assert.equal(mix.gainDb, 24);
+    assert.ok(Math.abs(measured.lufs! - (mix.lufs! + 24)) <= 1, `file ${measured.lufs} LUFS, mix ${mix.lufs}`);
+    assert.ok(measured.lufs! < -15, `file ${measured.lufs} LUFS (off target: the check flags it)`);
+  });
+
+  it("sharp peaks stay under the ceiling", async () => {
+    const { mix, measured } = await render("peaky", "peaky", words(0.5, 11.5), []);
+    assert.ok(mix.peakDb! + mix.gainDb > 3, `with the gain the clicks would reach ${(mix.peakDb! + mix.gainDb).toFixed(1)} dBTP`);
+    assert.ok(measured.peakDb! <= -1 + 0.2, `true peak ${measured.peakDb} dBTP`);
+    assert.ok(Math.abs(measured.lufs! - -14) <= 1, `loudness ${measured.lufs} LUFS`);
+  });
+
+  it("other targets are honoured: -23 LUFS, -2 dBTP", async () => {
+    const { measured } = await render("broadcast", "quiet", words(0.5, 11.5), [{ op: "set_audio", loudness: -23, peak: -2 }]);
+    assert.ok(Math.abs(measured.lufs! - -23) <= 1, `file ${measured.lufs} LUFS`);
+    assert.ok(measured.peakDb! <= -2 + 0.2, `true peak ${measured.peakDb}`);
+  });
+
+  it("music goes down 12 dB under speech and comes back after", async () => {
+    // Speech from 4 s to 6 s; no dialogue sound (silent source), so only the music is heard.
+    const { file } = await render("duck", "silent", words(4, 6), [{ op: "add_music", trackId: "m_lofi", gainDb: -10 }, { op: "set_audio", loudness: null }], false);
+    const before = await meanDb(file, 1, 1.5), under = await meanDb(file, 4.5, 1), afterwards = await meanDb(file, 8, 1.5);
+    assert.ok(Math.abs(before - under - 12) <= 1, `ducked by ${(before - under).toFixed(1)} dB (${before} vs ${under})`);
+    assert.ok(Math.abs(afterwards - before) <= 1, `back up: ${afterwards} vs ${before}`);
+  });
+
+  it("fades: the whole mix fades in and out", async () => {
+    const { file } = await render("fades", "quiet", words(0.5, 11.5), [{ op: "set_audio", fadeIn: 2, fadeOut: 2 }]);
+    const start = await meanDb(file, 0, 0.4), mid = await meanDb(file, 5, 2), end = await meanDb(file, SECONDS - 0.4, 0.4);
+    assert.ok(mid - start > 12, `fade in: ${start} vs ${mid}`);
+    assert.ok(mid - end > 12, `fade out: ${end} vs ${mid}`);
+  });
+
+  it("a dialogue clip's gain changes its level only", async () => {
+    let s: Snapshot = { timeline: buildInitialTimeline(words(0.5, 11.5), SECONDS, "clean", [], "v"), name: "g", aspect: "16:9", styleId: "s2" };
+    s = applyOp(s, { op: "set_clips", track: "v1", clips: [{ start: 0, end: 6, label: "a" }, { start: 6, end: 12, label: "b" }] }, ctxFor(words(0.5, 11.5))).snap;
+    const b = s.timeline.tracks.v1[1].id;
+    const { file } = await render("gain", "quiet", words(0.5, 11.5), [{ op: "set_clips", track: "v1", clips: [{ id: s.timeline.tracks.v1[0].id, start: 0, end: 6, label: "a" }, { id: b, start: 6, end: 12, label: "b" }] }, { op: "set_clip_audio", clipId: b, gainDb: -6 }, { op: "set_audio", loudness: null }]);
+    const a1 = await meanDb(file, 2, 2), b1 = await meanDb(file, 8, 2);
+    assert.ok(Math.abs(a1 - b1 - 6) <= 0.5, `second clip ${(a1 - b1).toFixed(2)} dB lower`);
+  });
+
+  it("the noisy-room cleanup lowers the noise between the words", async () => {
+    const tr = words(3, 8);
+    const plain = await render("noisy-none", "noisy", tr, []);
+    const clean = await render("noisy-clean", "noisy", tr, [{ op: "set_audio", cleanup: "noisy" }]);
+    const snr = async (f: string) => (await meanDb(f, 4, 3)) - (await meanDb(f, 0.5, 2));
+    const [a, b] = [await snr(plain.file), await snr(clean.file)];
+    assert.ok(b - a >= 6, `voice over noise: ${a.toFixed(1)} dB without cleanup, ${b.toFixed(1)} dB with`);
+    assert.ok(Math.abs(clean.measured.lufs! - -14) <= 1, `still on target: ${clean.measured.lufs}`);
+  });
+});

@@ -33,7 +33,7 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
   - graphics (templates drawn with the recorder's own HTML and clock; custom graphics from their recorded file)
   - picture without dialogue plays muted
 
-  Music and sound effects play only in the rendered preview. When the preview is of the current version and nothing has changed since, the player plays that file instead. "Render preview" sits in the editor's top bar.
+  Music and sound effects play only in the rendered preview (since Phase 3 they play live too). When the preview is of the current version and nothing has changed since, the player plays that file instead. "Render preview" sits in the editor's top bar.
 - **The check measures the file.** After every preview render, the worker measures the file in one pass:
   - the length of each stream
   - black and silent stretches from 0.15 s
@@ -107,6 +107,41 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
   - J cut and muted dialogue shown on A1; all six tools
   - after a change, one player element per video; undo works
   - no page errors
+
+## Phase 3: sound
+
+- **Dialogue cleanup presets:** `none` (default), `light`, `voice`, `noisy`. Each is a fixed FFmpeg chain on the dialogue before the mix: high-pass, denoise, gate, de-esser, presence and compression, by preset. Any preset also puts a 4 ms fade at every dialogue cut, so cuts don't click.
+- **Loudness:** files come out at **−14 LUFS** with a **−1 dBTP** true-peak ceiling by default. Both are settable, and normalization can be turned off.
+  - The worker measures the mix first ("Measuring loudness" step: audio only, with its own timeout, progress and plain error).
+  - It then renders with the exact gain and a limiter at 4× the sample rate, set 1 dB under the ceiling for the AAC encoder.
+  - The gain is capped at +24 dB. A source quieter than that comes out below target, and the check says so.
+- **Ducking:** music goes down a set amount under speech (default 12 dB, 0 = off). Speech is the spoken words in the edit: 0.2 s down before them, 0.5 s up after, joined when less than 1 s apart. It is an exact envelope (it replaces the old sidechain compressor), so the live player follows it.
+- **Fades and levels:** each V1 clip's dialogue, each music clip and each sound effect has its own level and fades. The whole mix can fade in and out. Music without fades of its own keeps the automatic ones.
+- **Connector ops (one line each in the tool text):** `set_audio{cleanup, loudness, peak, duck, fadeIn, fadeOut}` and `set_clip_audio{track, clipId, gainDb, fadeIn, fadeOut}`. `get_project` shows a `Sound:` line and each clip's level and fades.
+- **Check (`render_preview`):** a new Sound line (cleanup, target, ducking, fades). The file's loudness line reads, for example, "Loudness of the file: −14.0 LUFS, true peak −1.6 dBTP (target −14 LUFS, ceiling −1 dBTP)". Flagged when more than 1 LU off target, or when the true peak is over the ceiling. Versions mixed before Phase 3 are checked as they were mixed.
+- **Editor:**
+  - An Audio tab: cleanup, loudness target, true-peak ceiling, ducking, mix fades, and the selected clip's level and fades. Sliders change the edit live and make an undo step when let go.
+  - Fades are drawn on the A1, A2 and A3 clips. Levels show in the clip labels.
+  - The live player now plays music and sound effects at the render's levels, with clip levels, fades, ducking and mix fades.
+  - Dialogue cleanup and loudness are only heard in the rendered preview: the preview copies are served without CORS, so the browser can't process their sound. The Audio tab says so.
+- **Bug found in older work (before Phase 1, render):** the old mix ended in `alimiter=limit=0.95`, which has FFmpeg's auto-level on by default. It pushed every file's peaks to about −0.4 dBFS, which is why earlier files measured about −13.5 LUFS with a true peak near 0 dBTP. New renders use the measured gain and a true-peak limiter with auto-level off. A sequence with loudness turned off keeps the old limiter, so it renders as before.
+
+### Phase 3 tests
+
+| What | Result |
+|---|---|
+| Shared: settings, ops, speech ranges, the FFmpeg curves equal the player's, graph, measuring mode, legacy check | 101 pass |
+| Worker, real renders measured with ebur128 | 8 pass |
+| ↳ quiet voice (−33 LUFS) | −14 ± 1 LUFS, true peak ≤ −0.8 dBTP |
+| ↳ full-scale clicks on a voice | true peak under the ceiling, still −14 ± 1 LUFS |
+| ↳ −23 LUFS / −2 dBTP target | met |
+| ↳ far too quiet source (−47 LUFS) | +24 dB at most; the file's real loudness is reported |
+| ↳ ducking 12 dB | 12 ± 1 dB under speech, back up after |
+| ↳ mix fades, dialogue clip at −6 dB | > 12 dB fade, 6 ± 0.5 dB lower |
+| ↳ noisy-room cleanup | voice over noise improves ≥ 6 dB, still on target |
+| Worker, older tests (A/B identical render, two videos, J/L, check end to end) | pass |
+| API: one `apply_edits` call with `set_audio`, `add_music` and `set_clip_audio`; `get_project` reads it back; the editor payload carries the signed music URL | 10 pass |
+| Browser, demo build: Audio tab, selects, sliders (live, undo), clip level and fades, fades drawn, music `<audio>` volume, phone width | music −18 dB, −36 dB under speech with 18 dB ducking; dialogue plays at 1/1.585 when a clip is +4 dB; no page errors |
 
 ## Reference-video test (23 October, live, through the connector only)
 

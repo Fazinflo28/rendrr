@@ -9,6 +9,7 @@ import { after, before, describe, it } from "node:test";
 import { applyOp, buildInitialTimeline, buildTranscript, editCheck, STYLES, type EditContext, type FileMeasure, type Snapshot } from "@rendrr/shared";
 import { ffmpegArgs, planRender } from "@rendrr/shared/renderPlan";
 import { graphicCover, measureFile, run } from "../src/lib/ffmpeg";
+import { measureMix } from "../src/lib/mix";
 
 const SECONDS = 12;
 // One word every 0.5 s over a steady tone, so the only silence in a file is silence the render made.
@@ -31,7 +32,9 @@ describe("the check agrees with the rendered file", () => {
     const plan = planRender({ kind: "preview", snapshot: snap, transcript: tr, source, graphicsReady: Object.fromEntries(snap.timeline.tracks.v3.filter((c) => (c as { graphicId?: string }).graphicId).map((c) => [c.id, true])) });
     const files = { source: src, output: join(dir, `${name}.mp4`), assPath: join(dir, `${name}.ass`), graphics: Object.fromEntries(plan.graphics.map((g) => [g.clipId, gfx])) };
     if (plan.ass) await writeFile(files.assPath, plan.ass);
-    const { args, filterGraph } = ffmpegArgs(plan, files, source);
+    // Two passes, as in the render job: measure the mix, then render at the target loudness.
+    const mix = await measureMix(plan, files, source, { dir });
+    const { args, filterGraph } = ffmpegArgs(plan, files, source, { loudnessGainDb: mix.gainDb });
     await writeFile(join(dir, `${name}.txt`), filterGraph);
     await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? join(dir, `${name}.txt`) : a)));
     const base = await measureFile(files.output, { timeoutMs: 60_000 });
@@ -72,7 +75,7 @@ describe("the check agrees with the rendered file", () => {
     const s = applyOp(s0, { op: "batch", ops: [{ op: "set_rotation", degrees: 90 }, { op: "set_captions", on: false }] }, ctx).snap;
     const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source: { ...source, width: 320, height: 180 } });
     const out = join(dir, "turned.mp4");
-    const { args, filterGraph } = ffmpegArgs(plan, { source: side, output: out }, { ...source, width: 320, height: 180 });
+    const { args, filterGraph } = ffmpegArgs(plan, { source: side, output: out }, { ...source, width: 320, height: 180 }, { loudnessGainDb: 0 });
     await writeFile(join(dir, "turned.txt"), filterGraph);
     await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? join(dir, "turned.txt") : a)));
     // Colour of a small patch at height y: red has a high V (Cr), blue a high U (Cb).
@@ -97,7 +100,7 @@ describe("the check agrees with the rendered file", () => {
     const src = { ...source, width: 180, height: 320 };
     const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source: src });
     const out = join(dir, "framed.mp4");
-    const { args, filterGraph } = ffmpegArgs(plan, { source: tall, output: out }, src);
+    const { args, filterGraph } = ffmpegArgs(plan, { source: tall, output: out }, src, { loudnessGainDb: 0 });
     await writeFile(join(dir, "framed.txt"), filterGraph);
     await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? join(dir, "framed.txt") : a)));
     const yuv = async (y: number) => {

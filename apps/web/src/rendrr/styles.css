@@ -900,3 +900,7 @@ a { color: var(--accent-ink); }
 .tl-canvas.tool-slip .track.v .clip.video, .tl-canvas.tool-slide .track.v .clip.video { cursor: ew-resize; }
 .tl-canvas.tool-roll .clip .h { cursor: col-resize; }
 .tool-set .tool { padding: 0 7px; gap: 4px; }
+/* Phase 3: sound fades drawn on clips (the shaded corner is the part faded out). */
+.clip .fd { position: absolute; top: 0; bottom: 0; pointer-events: none; opacity: .22; }
+.clip .fd.in { left: 0; background: linear-gradient(to bottom right, currentColor 50%, transparent 50%); }
+.clip .fd.out { right: 0; background: linear-gradient(to bottom left, currentColor 50%, transparent 50%); }

@@ -3,8 +3,8 @@ export const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cu
 export const DRIVE_STEPS = ["Linking", "Making preview", ...PROC_STEPS] as const;
 export const LOCAL_STEPS = ["Making preview in your browser", "Uploading preview", ...PROC_STEPS] as const;
 
-export const PREVIEW_STEPS = ["Reading timeline", "Cutting clips", "Burning captions", "Packing preview"] as const;
-export const FINAL_RENDER_STEPS = ["Reading timeline", "Cutting clips", "Adding zooms", "Mixing music", "Burning captions", "Encoding 1080p", "Cleaning up raw file"] as const;
+export const PREVIEW_STEPS = ["Reading timeline", "Measuring loudness", "Cutting clips", "Burning captions", "Packing preview"] as const;
+export const FINAL_RENDER_STEPS = ["Reading timeline", "Measuring loudness", "Cutting clips", "Adding zooms", "Mixing music", "Burning captions", "Encoding 1080p", "Cleaning up raw file"] as const;
 export const FINAL_DRIVE_STEPS = ["Fetching raw from Drive", ...FINAL_RENDER_STEPS] as const;
 export const ORIGINAL_UPLOAD_STEPS = ["Uploading original"] as const;
 

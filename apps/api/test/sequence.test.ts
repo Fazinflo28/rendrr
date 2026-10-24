@@ -79,4 +79,21 @@ describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL 
     const full = await projectFull(userId, projectId);
     assert.ok((full as { videos: Record<string, { name: string }> }).videos[otherId], "the editor gets the other video");
   });
+
+  it("Phase 3: the AI sets the sound in one call; get_project reads it back; the editor gets the music file", async () => {
+    const p0 = await projectFull(userId, projectId);
+    const v1 = (p0.timeline as { tracks: { v1: { id: string }[] } }).tracks.v1;
+    const r = await TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [
+      { op: "set_audio", cleanup: "voice", duck: 10, fadeOut: 1 },
+      { op: "add_music", trackId: "m_lofi" },
+      { op: "set_clip_audio", clipId: v1[0].id, gainDb: 3, fadeIn: 0.2 },
+    ] });
+    assert.match(r.text, /Done \(v3/);
+    const read = await TOOL_HANDLERS.get_project(c(), { projectId });
+    assert.match(read.text, /Sound: cleanup voice, -14 LUFS \/ -1 dBTP, music 10 dB down under speech, mix fades in 0s, out 1s/);
+    assert.match(read.text, /dialogue \+3 dB/);
+    const full = (await projectFull(userId, projectId)) as { audioMedia: Record<string, string> };
+    assert.deepEqual(Object.keys(full.audioMedia), ["assets/music/m_lofi.m4a"]);
+    assert.match(full.audioMedia["assets/music/m_lofi.m4a"], /^https?:\/\/.+m_lofi\.m4a/);
+  });
 });

@@ -162,9 +162,10 @@ describe("render plan", () => {
     for (let i = 0; i + 1 < plan.captions.length; i++) expect(plan.captions[i].end).toBeLessThanOrEqual(plan.captions[i + 1].start);
     expect(plan.captions.every((c) => c.end <= plan.outputSeconds + 0.01)).toBe(true);
     expect(plan.audio.some((a) => a.kind === "music")).toBe(true);
-    const { args, filterGraph } = ffmpegArgs(plan, { source: "/in.mp4", output: "/out.mp4", assPath: "/c.ass", audio: Object.fromEntries(plan.audio.map((a) => [a.clipId, "/m.m4a"])) }, { width: 1280, height: 720, fps: 30, seconds: 40, hasAudio: true });
+    const { args, filterGraph } = ffmpegArgs(plan, { source: "/in.mp4", output: "/out.mp4", assPath: "/c.ass", audio: Object.fromEntries(plan.audio.map((a) => [a.clipId, "/m.m4a"])) }, { width: 1280, height: 720, fps: 30, seconds: 40, hasAudio: true }, { loudnessGainDb: 0 });
     expect(filterGraph).toContain(`concat=n=${plan.kept.length}`);
-    expect(filterGraph).toContain("sidechaincompress");
+    expect(filterGraph).toMatch(/volume='pow\(10,-12\*\(min\(1,clip\(/); // music 12 dB down under speech (an envelope)
+    expect(filterGraph).toMatch(/aresample=192000,alimiter=limit=0\.7943:attack=5:release=50:level=disabled,aresample=48000\[aout\]/); // -1 dBTP ceiling, 1 dB margin
     expect(args).toContain("-filter_complex_script");
   });
   it("refuses an edit with everything cut", () => {

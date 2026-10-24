@@ -3,10 +3,11 @@ import { findMusic, MUSIC_TRACKS, SFX } from "./catalog";
 import type { Aspect } from "./constants";
 import { mergeRules, StyleRulesPatchSchema, type StyleRules } from "./styles";
 import {
-  AspectSchema, CaptionLookSchema, ClipSchema, FramingSchema, isCaptionMarker, RotationSchema, SnapshotSchema, TimelineSchema, TrackNameSchema,
+  AspectSchema, audioSettings, CaptionLookSchema, CLEANUPS, ClipSchema, FramingSchema, isCaptionMarker, RotationSchema, SnapshotSchema, TimelineSchema, TrackNameSchema,
   normalizeTimeline, timelineProblems,
-  type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
+  type AudioSettings, type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
 } from "./timeline";
+import { CLEANUP_TEXT } from "./audio";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, isPlainSequence, layoutTimeline, mainVideoOf, mergeRanges, moveSeqClip, newSeqClipId,
@@ -72,6 +73,12 @@ const EDIT_OPS = [
   z.object({ op: z.literal("slip_clip"), clipId, by }),
   // Slide: same footage, `by` seconds later in the edit (the clip before gets longer, the one after shorter).
   z.object({ op: z.literal("slide_clip"), clipId, by }),
+  // ---- sound ----
+  // The edit's sound: dialogue cleanup preset, loudness target (LUFS, null = off), true-peak ceiling (dBTP), how many
+  // dB music goes down under speech (0 = off), fades of the whole mix. Fields left out keep their value.
+  z.object({ op: z.literal("set_audio"), cleanup: z.enum(CLEANUPS).optional(), loudness: z.number().min(-30).max(-6).nullable().optional(), peak: z.number().min(-6).max(0).optional(), duck: z.number().min(0).max(30).optional(), fadeIn: z.number().min(0).max(10).optional(), fadeOut: z.number().min(0).max(10).optional() }),
+  // One clip's sound: a V1 clip's dialogue (track v1 or a1, the default), a music clip (a2) or a sound effect (a3).
+  z.object({ op: z.literal("set_clip_audio"), track: z.enum(["v1", "a1", "a2", "a3"]).optional(), clipId, gainDb: z.number().min(-40).max(20).optional(), fadeIn: z.number().min(0).max(30).optional(), fadeOut: z.number().min(0).max(30).optional() }),
 ] as const;
 export const EditOpSchema = z.discriminatedUnion("op", [...EDIT_OPS]);
 export const EDIT_OP_NAMES = EDIT_OPS.map((o) => o.shape.op.value) as [EditOp["op"], ...EditOp["op"][]];
@@ -717,8 +724,51 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const next = setSeq(tl, v1.map((x, k) => (k === i - 1 ? { ...x, sourceOut: pOut } : k === i + 1 ? { ...x, sourceIn: nIn } : x)));
       return { snap: { ...snap, timeline: next }, summary: `slid ${name(v1[i])} ${Math.abs(op.by).toFixed(2)}s ${op.by > 0 ? "later" : "earlier"} in the edit` };
     }
+
+    // ---- sound ----
+    case "set_audio": {
+      const { op: _op, ...change } = op;
+      const audio: AudioSettings = { ...(tl.audio ?? {}) };
+      for (const [k, v] of Object.entries(change)) if (v !== undefined) (audio as Record<string, unknown>)[k] = v;
+      const a = audioSettings({ audio });
+      const total = view().total;
+      if (a.fadeIn + a.fadeOut > total + 0.01) throw new EditError(`The fades (${a.fadeIn}s in, ${a.fadeOut}s out) are longer than the edit (${total.toFixed(1)}s).`);
+      return { snap: { ...snap, timeline: { ...tl, audio } }, summary: `sound: ${audioText(a)}` };
+    }
+    case "set_clip_audio": {
+      const track = op.track ?? "v1";
+      if (op.gainDb == null && op.fadeIn == null && op.fadeOut == null) throw new EditError("Send gainDb, fadeIn or fadeOut.");
+      if (track === "v1" || track === "a1") {
+        const c = findClip(tl, "v1", op.clipId) as SeqClip;
+        const p = view().clip(c.id)!;
+        const len = p.soundEnd - p.soundStart;
+        const fi = op.fadeIn ?? c.audioFadeIn ?? 0, fo = op.fadeOut ?? c.audioFadeOut ?? 0;
+        if (fi + fo > len + 0.01) throw new EditError(`${name(c)}'s sound is ${len.toFixed(2)}s long: the fades (${fi}s in, ${fo}s out) do not fit.`);
+        const next = mapClip(tl, c.id, (x) => ({ ...x, ...(op.gainDb != null ? { audioGain: r2(op.gainDb) } : {}), ...(op.fadeIn != null ? { audioFadeIn: r2(op.fadeIn) } : {}), ...(op.fadeOut != null ? { audioFadeOut: r2(op.fadeOut) } : {}) }));
+        return { snap: { ...snap, timeline: next }, summary: `${name(c)}'s dialogue: ${clipAudioText(op.gainDb ?? c.audioGain ?? 0, fi, fo)}` };
+      }
+      const c = findClip(tl, track, op.clipId) as Attached & { gainDb?: number; fadeIn?: number; fadeOut?: number };
+      const len = placeOf(view(), c).e - placeOf(view(), c).s;
+      const fi = op.fadeIn ?? c.fadeIn ?? 0, fo = op.fadeOut ?? c.fadeOut ?? 0;
+      if (fi + fo > len + 0.01) throw new EditError(`${name(c)} is ${len.toFixed(2)}s long: the fades (${fi}s in, ${fo}s out) do not fit.`);
+      if (op.gainDb != null && (op.gainDb < -60 || op.gainDb > 12)) throw new EditError("Music and sound effects take a gain from -60 to 12 dB.");
+      const next = withTracks(tl, track, (tl.tracks[track] as Clip[]).map((x) => (x.id === c.id ? { ...x, ...(op.gainDb != null ? { gainDb: r2(op.gainDb) } : {}), ...(op.fadeIn != null ? { fadeIn: r2(op.fadeIn) } : {}), ...(op.fadeOut != null ? { fadeOut: r2(op.fadeOut) } : {}) } : x)));
+      const g = op.gainDb ?? c.gainDb ?? (track === "a2" ? -18 : -6);
+      return { snap: { ...snap, timeline: next }, summary: `${name(c)}: ${clipAudioText(g, fi, fo)}` };
+    }
   }
 }
+
+/** "cleanup voice, -14 LUFS / -1 dBTP, music 12 dB down under speech, fades in 0.5s out 1s" */
+export function audioText(a: ReturnType<typeof audioSettings>): string {
+  return [
+    `cleanup ${a.cleanup === "none" ? "none" : CLEANUP_TEXT[a.cleanup].split(" (")[0]}`,
+    a.loudness != null ? `${a.loudness} LUFS / ${a.peak} dBTP` : "loudness not normalized",
+    a.duck > 0 ? `music ${a.duck} dB down under speech` : "music not ducked",
+    ...(a.fadeIn || a.fadeOut ? [`mix fades in ${a.fadeIn}s, out ${a.fadeOut}s`] : []),
+  ].join(", ");
+}
+const clipAudioText = (gainDb: number, fi: number, fo: number) => [`${gainDb > 0 ? "+" : ""}${gainDb} dB`, fi ? `fade in ${fi}s` : "", fo ? `fade out ${fo}s` : ""].filter(Boolean).join(", ");
 
 const label2 = (l: string) => (/\(2\)$/.test(l) ? l : l ? l + " (2)" : "");
 /** V1 clips an op works on: the ids given, else every clip of the main footage. */
@@ -784,6 +834,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
   const lines: string[] = [];
   lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${view.total.toFixed(1)}s, aspect ${snap.aspect}${look ? ", " + look : ""}, style ${snap.styleId}.`);
   lines.push(`Cut words: ${tl.cut.length}. Captions ${tl.captionsOn ? "on (" + tl.captionLook + ")" : "off"}. Edited caption lines: ${Object.entries(tl.captionText).filter(([id, txt]) => { const l = tr.find((x) => x.id === id); return l && l.words.map((w) => w.text).join(" ") !== txt; }).length}.`);
+  lines.push(`Sound: ${audioText(audioSettings(tl))}.`);
   lines.push("V1 plays in this order, back to back: id video footageIn-footageOut @editStart-editEnd. Ops on a V1 clip take its own footage seconds. Its dialogue (A1) follows it; J/L cuts and mutes are shown on it. Other tracks: id @editStart-editEnd on <V1 clip> at <its footage second>; they move with that clip. Their op times are main-footage seconds (where it first plays), or edit seconds with edit:true.");
   const v1 = tl.tracks.v1 as SeqClip[];
   const vName = (v: string) => (v === main ? "main" : v);
@@ -793,6 +844,8 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
     if (p.pieces.length && p.soundStart < p.start - 0.005) extra.push(`J ${(p.soundStart - p.start).toFixed(2)}`);
     if (p.pieces.length && p.soundEnd > p.end + 0.005) extra.push(`L +${(p.soundEnd - p.end).toFixed(2)}`);
     if (c.audioMuted) extra.push("muted");
+    if (c.audioGain) extra.push(`dialogue ${c.audioGain > 0 ? "+" : ""}${c.audioGain} dB`);
+    if (c.audioFadeIn || c.audioFadeOut) extra.push(`fades ${c.audioFadeIn ?? 0}/${c.audioFadeOut ?? 0}s`);
     if (c.rotate && !look.includes("turned") ) extra.push(`turned ${c.rotate}°`);
     const at = p.end > p.start ? ` @${p.start.toFixed(2)}-${p.end.toFixed(2)}` : " (all cut)";
     return `  ${c.id} ${vName(c.sourceVideoId)} ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}${at} "${c.label}"${extra.length ? " " + extra.join(" ") : ""}`;
@@ -803,7 +856,8 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
     let clips = tl.tracks[k] as (Clip & Record<string, unknown>)[];
     if (k === "v3") clips = clips.filter((c) => !isCaptionMarker("v3", c));
     const shown = clips.slice(0, maxPerTrack).map((c) => {
-      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB` : c.sfxId ? ` sfx=${c.sfxId}` : "";
+      const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${c.fadeIn ?? 0}/${c.fadeOut ?? 0}s` : "";
+      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
       const on = c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "";
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;
     });

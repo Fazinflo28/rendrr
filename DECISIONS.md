@@ -153,7 +153,7 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Question | Decision |
 |---|---|
 | Sequence model | Model A for now (clips are footage ranges; V1 plays back to back). Every clip also stores its source and its place in the edit, and all timeline logic is in `sequence.ts`, so model B replaces one module. Migration steps: `docs/timeline-model.md`. |
-| What the player plays | The render plan (`planRender`) itself, through `playback.ts`. When a preview of this exact version exists and nothing has changed, the player plays that file. Music and SFX are left out of the live player, and the up-to-date preview covers them. |
+| What the player plays | The render plan (`planRender`) itself, through `playback.ts`. When a preview of this exact version exists and nothing has changed, the player plays that file. Music and SFX are left out of the live player, and the up-to-date preview covers them (Phase 3: they play live now). |
 | Linking rule | A V1 clip and the A1 clip with the same start and end are linked, unless marked `unlinked`. "Alt-click unlinks" toggles the mark. Alt-drag trims one side, which also unlinks them because their ends no longer match. |
 | `cut_words` range | `from`/`to` removes exactly that footage range from V1 and A1, words or not (it used to cut the words that start inside it, plus the pause after the last one). Undo brings it back; `restore_words` only restores word cuts. |
 | Clip edges in `cut_silences` | Silence over 0.3 s at a clip's start or end is trimmed to the speech, whatever `overSeconds` is (pads 0.1 s before and 0.15 s after). `edges: false` turns it off. |
@@ -178,3 +178,15 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Player | Wall clock plus one element per video, re-synced on cuts and drifts over 0.15 s. The clock waits up to 1.5 s for the picture to load. The up-to-date rendered preview still plays the exact file. |
 | Keys | Premiere's: V, C, B, N, Y, U for the tools, S for snapping, Shift Z for fit, Cmd/Ctrl K to split. |
 
+## Phase 3: sound
+
+| Question | Decision |
+|---|---|
+| Ducking | A fixed envelope from the spoken words (0.2 s down, 0.5 s up, speech under 1 s apart joined), not a sidechain compressor. It is exact, the same curve is an FFmpeg `volume` expression and a function the player evaluates (tested equal), and the depth is a number the AI sets. A video without a transcript counts as speech wherever it is heard. |
+| Loudness | Two passes: measure the mix (audio-only graph through ebur128), then render with that gain. One-pass `loudnorm` was not used: its dynamic mode changes the level over time, and its linear mode needs the measurement anyway. |
+| True peak | `alimiter` at 192 kHz (4× oversampling), auto-level off, ceiling 1 dB under the target. Measured: the limiter's output is exact, but the 96k AAC preview adds up to 0.8 dB on sharp clicks. |
+| Gain limit | −30 to +24 dB. A near-silent mix gets no gain. The check reports the file's real loudness, so a capped boost is visible and never silent. |
+| Cleanup | Four fixed chains of FFmpeg's own filters (highpass, afftdn, agate, equalizer, deesser, acompressor). No models and no AI: rule 1. |
+| Defaults | −14 LUFS / −1 dBTP (the online norm), ducking 12 dB, no cleanup. New renders of every sequence get them. A sequence with loudness off keeps the old limiter (`alimiter=limit=0.95`) and renders as before. Model A plans and their check are unchanged. |
+| Live player | `element.volume` per element at the plan's level for that moment. Boosts above 0 dB are played by lowering everything else by the largest boost, so the balance is exact. No WebAudio: the preview copies come from the bucket without CORS, so cleanup and loudness are only in the rendered preview, and the editor says so. |
+| Music files in the editor | Signed URLs of the catalog keys the edit uses (`audioMedia`), looked up from the catalog, never from the clip. |

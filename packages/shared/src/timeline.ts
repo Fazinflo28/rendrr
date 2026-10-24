@@ -60,6 +60,31 @@ export type Rotation = z.infer<typeof RotationSchema>;
 export const FramingSchema = z.object({ scale: z.number().min(0.25).max(4), x: z.number().min(-1).max(1), y: z.number().min(-1).max(1) });
 export type Framing = z.infer<typeof FramingSchema>;
 
+/** Dialogue cleanup presets (fixed FFmpeg chains, see renderPlan.ts CLEANUP_CHAINS). */
+export const CLEANUPS = ["none", "light", "voice", "noisy"] as const;
+export type Cleanup = (typeof CLEANUPS)[number];
+/**
+ * The edit's sound. Left out = the defaults: no cleanup, loudness -14 LUFS with a -1 dBTP ceiling, music 12 dB down
+ * under speech, no fades of the whole mix.
+ */
+export const AudioSettingsSchema = z.object({
+  cleanup: z.enum(CLEANUPS).optional(),
+  /** Integrated loudness of the file in LUFS; null = no normalization (the old limiter only). */
+  loudness: z.number().min(-30).max(-6).nullable().optional(),
+  /** True-peak ceiling in dBTP. */
+  peak: z.number().min(-6).max(0).optional(),
+  /** How many dB music goes down under speech; 0 = no ducking. */
+  duck: z.number().min(0).max(30).optional(),
+  /** Fade of the whole mix at the start and at the end of the edit, in seconds. */
+  fadeIn: z.number().min(0).max(10).optional(),
+  fadeOut: z.number().min(0).max(10).optional(),
+});
+export type AudioSettings = z.infer<typeof AudioSettingsSchema>;
+export const AUDIO_DEFAULTS = { cleanup: "none" as Cleanup, loudness: -14 as number | null, peak: -1, duck: 12, fadeIn: 0, fadeOut: 0 };
+export type AudioMixSettings = typeof AUDIO_DEFAULTS;
+/** The edit's audio settings with the defaults filled in. */
+export const audioSettings = (tl: { audio?: AudioSettings }): AudioMixSettings => ({ ...AUDIO_DEFAULTS, ...Object.fromEntries(Object.entries(tl.audio ?? {}).filter(([, v]) => v !== undefined)) });
+
 export const TimelineSchema = z.object({
   /** "B" = the sequence model. Missing = model A (stored before Phase 2; converted when edited). */
   model: z.literal("B").optional(),
@@ -74,6 +99,7 @@ export const TimelineSchema = z.object({
   tracks: TracksSchema,
   rotate: RotationSchema.optional(),
   framing: FramingSchema.optional(),
+  audio: AudioSettingsSchema.optional(),
 });
 
 export type Clip = z.infer<typeof ClipSchema>;
@@ -186,6 +212,7 @@ function normalizeSequence(t: Timeline): Timeline {
         if (x.audioStart != null) { const a = r(Number(x.audioStart)); if (a) x.audioStart = a; else delete x.audioStart; }
         if (!x.audioMuted) delete x.audioMuted;
         if (!x.rotate) delete x.rotate;
+        for (const k of ["audioGain", "audioFadeIn", "audioFadeOut"]) { if (x[k] != null) { const v = r(Number(x[k])); if (v) x[k] = v; else delete x[k]; } }
         return x;
       }).filter((c) => Number(c.sourceOut) - Number(c.sourceIn) >= 0.01);
     } else if (name !== "a1") {
@@ -195,6 +222,7 @@ function normalizeSequence(t: Timeline): Timeline {
         const r3 = (n: number) => Math.round(n * 1000) / 1000;
         if (x.length != null) x.length = r3(Number(x.length));
         if (x.anchorAt != null) x.anchorAt = r3(Number(x.anchorAt));
+        for (const k of ["fadeIn", "fadeOut"]) if (x[k] != null) x[k] = r(Math.max(0, Number(x[k])));
         return x;
       }).filter((c) => isCaptionMarker(name, c) || c.fill || c.length == null || Number(c.length) >= 0.01);
     }

@@ -22,6 +22,7 @@ A timeline with `model: "B"` and `mainVideoId` (the project's footage):
   The cut never passes the picture cut before or after it, and never reaches outside the footage. `audioMuted` makes a clip silent. A1 is written from this by the layout: one clip per V1 clip, with the same id.
 - **Other tracks hang on a V1 clip.** V2 (zooms, b-roll), V3 graphics, A2 music and A3 sound effects store `anchorId` (the V1 clip), `anchorAt` (a moment of its footage) and `length` (edit seconds). They move with their clip and keep their length. `fill: true` is a music bed under the whole edit. V3 caption clips only say which transcript lines show captions.
 - **Turn and framing** (`rotate`, `framing`) are per V1 clip.
+- **Sound (Phase 3).** `audio` on the timeline holds `cleanup` (`none`, `light`, `voice`, `noisy`), `loudness` (LUFS, or `null` for off), `peak` (dBTP), `duck` (dB) and the mix's `fadeIn` / `fadeOut`. Missing fields take the defaults: none, −14, −1, 12, 0, 0. V1 clips carry their dialogue's `audioGain`, `audioFadeIn` and `audioFadeOut`. A2 and A3 clips carry `gainDb`, `fadeIn` and `fadeOut`; a music clip without fades gets the automatic ones.
 - **`start` / `end`** on every clip are edit seconds, written by the layout with `timelineStart`, `timelineEnd` and `linkId`. `stripLayout` removes the last three, so they never make a version.
 
 ### What plays
@@ -46,6 +47,15 @@ With `align: 30` (the render plan) every part starts and ends on a frame, exactl
 ### Render
 
 `planRender` plans a sequence from several inputs, one per video. With one video and one look, the graph is model A's: cut, join, then fit once. Otherwise each part is fitted, turned and framed on its own, then joined. The dialogue is joined from its own parts, with silence for muted parts.
+
+The sound (`plan.audioMix`, `audio.ts`):
+
+1. The dialogue gets the cleanup chain, a 4 ms fade at each part when a preset is on, and each clip's gain and fades.
+2. Music gets its fades, its gain, and the ducking envelope from the speech ranges. Sound effects get their fades and gain.
+3. Everything is mixed and the mix fades are applied.
+4. The worker measures this mix (`ffmpegArgs(..., { measure: true })`), then renders it with `loudnessGainDb` and the true-peak limiter.
+
+`audioAt(plan, t)` in `playback.ts` gives the same levels to the live player.
 
 ## Model A (before Phase 2)
 

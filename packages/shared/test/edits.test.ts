@@ -58,8 +58,9 @@ describe("the check after a render", () => {
     const raw = editCheck(s, tr, { pauseOver: 0.4, loudness: { lufs: -14.2, peakDb: -0.4 } });
     expect(raw).toMatch(/^CHECK /);
     expect(raw).toMatch(/Captions: on \(clean\), 100% of spoken words/);
-    expect(raw).toMatch(/Loudness of the file: -14.2 LUFS, peak -0.4dB/);
-    expect(raw).toMatch(/Flags: .*peak -0.4dB/);
+    expect(raw).toMatch(/Loudness of the file: -14.2 LUFS, true peak -0.4 dBTP \(target -14 LUFS, ceiling -1 dBTP\)/);
+    expect(raw).toMatch(/Flags: .*true peak -0.4 dBTP over the -1 dBTP ceiling/);
+    expect(raw).toMatch(/Sound: cleanup none, -14 LUFS \/ -1 dBTP, music 12 dB down under speech/);
     const edited = applyOp(s, { op: "batch", ops: [{ op: "cut_silences", overSeconds: 0.4 }, { op: "remove_fillers" }, { op: "add_zoom", start: 2, end: 3, scale: 1.2 }, { op: "add_music", trackId: "upbeat" }] }, ctx).snap;
     const out = editCheck(edited, tr, { pauseOver: 0.4 });
     expect(out).toMatch(/Fillers left: none/);

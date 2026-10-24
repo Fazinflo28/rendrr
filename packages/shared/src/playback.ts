@@ -4,6 +4,7 @@
 // whether the dialogue is muted. Times are edit seconds.
 import type { PicturePart, Range, SoundPart } from "./sequence";
 import type { RenderPlan, ZoomOp } from "./renderPlan";
+import { dbToLin, dialogueGain, duckFactor, fadeFactor } from "./audio";
 
 /** The zoom at edit time t: the same curve as zoomExpr() draws in the render (punch ramps, slow push). */
 export function zoomAt(zooms: ZoomOp[], t: number): number {
@@ -94,4 +95,27 @@ export function liveFrame(plan: RenderPlan, t: number, clock = sequenceClock(pla
     broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start) } : null,
     graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start, start: g.start, end: g.end })),
   };
+}
+
+/**
+ * Every sound's level at edit time t (linear), as the render mixes it before its loudness step: the dialogue (its
+ * clip's gain and fades), each music clip (its gain and fades, ducked under speech) and each sound effect, all
+ * under the mix's fades. `src` is the moment inside the music or effect file. The live player plays these levels;
+ * the loudness step itself (one gain for everything) and the cleanup are heard in the rendered preview.
+ */
+export function audioAt(plan: RenderPlan, t: number): { dialogue: number; music: { clipId: string; assetKey: string; src: number; gain: number }[]; sfx: { clipId: string; assetKey: string; src: number; gain: number }[] } {
+  const mix = plan.audioMix;
+  const T = plan.outputSeconds;
+  const mixFade = mix ? fadeFactor(t, 0, T + 1e-9, mix.fadeIn, mix.fadeOut > 0 ? mix.fadeOut : 0) : 1;
+  const dialogue = (mix ? dialogueGain(mix.dialogue, t) : 1) * mixFade;
+  const music: { clipId: string; assetKey: string; src: number; gain: number }[] = [];
+  const sfx: { clipId: string; assetKey: string; src: number; gain: number }[] = [];
+  for (const a of plan.audio) {
+    if (t < a.start || t >= a.end) continue;
+    const fades = fadeFactor(t, a.start, a.end, a.fadeIn ?? 0, a.fadeOut ?? 0);
+    const duck = a.kind === "music" && mix && mix.duck > 0 ? duckFactor(mix.speech, t) * mix.duck : 0;
+    const x = { clipId: a.clipId, assetKey: a.assetKey, src: t - a.start, gain: dbToLin(a.gainDb - duck) * fades * mixFade };
+    (a.kind === "music" ? music : sfx).push(x);
+  }
+  return { dialogue, music, sfx };
 }

@@ -12,3 +12,4 @@ export * from "./breakdown";
 export * from "./qa";
 export * from "./graphicHtml";
 export * from "./playback";
+export * from "./audio";

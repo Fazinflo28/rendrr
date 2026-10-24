@@ -7,7 +7,7 @@ import { StyleArt, CreateLinkModal } from "./screens";
 import { api } from "./api";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
-import { applyOp, asSequence, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { applyOp, asSequence, audioAt, audioSettings, CLEANUP_TEXT, CLEANUPS, dbToLin, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -80,10 +80,14 @@ function LiveOverlays({ frame, clips, media, aspect, playing }) {
 // and framed like its clip) and one sound element per video for J/L cuts (when the sound is another clip's). They
 // follow the edit time: a cut or a drift over 0.15 s seeks again. While the picture that should show is loading,
 // the clock waits (at most 1.5 s), so picture and time stay together.
-function SeqMedia({ plan, clock, time, playing, urls, aspect, pb }) {
+// Sound (Phase 3): the dialogue, music and sound effects play at the render's levels (audioAt: clip gains, fades,
+// ducking, mix fades). An element can't go over full volume, so all of them play `head` lower when a clip is turned
+// up: the balance stays exact. Cleanup and loudness are only in the rendered preview (no WebAudio: no CORS).
+function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb }) {
   const pic = clock.picture(time), snd = clock.soundAt(time);
   const part = pic ? plan.parts[pic.i] : null;
-  const vref = useRef({}), aref = useRef({}), hold = useRef(0);
+  const vref = useRef({}), aref = useRef({}), mref = useRef({}), hold = useRef(0);
+  const head = useMemo(() => Math.max(1, ...(plan.audioMix?.dialogue || []).map((d) => dbToLin(d.gainDb)), ...plan.audio.map((a) => dbToLin(a.gainDb))), [plan]);
   // Sound that is not its picture's own (J/L cuts): its elements load ahead.
   const jl = useMemo(() => plan.sound.some((s) => { const p = plan.parts.find((x) => s.start >= x.start - 1e-3 && s.start < x.end); return !p || p.videoId !== s.videoId || Math.abs((p.srcIn - p.start) - (s.srcIn - s.start)) > 0.02; }), [plan]);
   useEffect(() => {
@@ -104,15 +108,24 @@ function SeqMedia({ plan, clock, time, playing, urls, aspect, pb }) {
     };
     // The picture's own element plays the sound when the sound is its own footage, else a sound element does.
     const own = !!(snd && part && snd.videoId === part.videoId && Math.abs(snd.src - pic.src) < 0.08);
+    const lv = audioAt(plan, time); const vol = (g) => Math.min(1, Math.max(0, g / head));
     for (const [id, el] of Object.entries(vref.current)) {
       const on = part?.videoId === id;
-      el.muted = !(on && own && !snd.muted);
+      el.muted = !(on && own && !snd.muted); el.volume = vol(lv.dialogue);
       if (on) follow(el, pic.src); else if (!el.paused) el.pause();
     }
     for (const [id, el] of Object.entries(aref.current)) {
+      el.volume = vol(lv.dialogue);
       if (snd && !own && !snd.muted && snd.videoId === id) follow(el, snd.src); else if (!el.paused) el.pause();
     }
-  }, [time, playing, part]);
+    // Music loops (as in the render); a sound effect plays once.
+    const now = new Map([...lv.music, ...lv.sfx].map((x) => [x.clipId, x]));
+    for (const [id, el] of Object.entries(mref.current)) {
+      const x = now.get(id); const d = el.duration || 0;
+      const want = x && (el.loop && d ? x.src % d : x.src);
+      if (x && (el.loop || !d || want < d - 0.02)) { el.volume = vol(x.gain); follow(el, want); } else if (!el.paused) el.pause();
+    }
+  }, [time, playing, part, plan, head]);
   return html`${plan.sources.map((id) => {
     const on = part?.videoId === id; const p = on ? part : plan.parts.find((x) => x.videoId === id);
     const f = p?.framing; const turn = turnedVideoStyle(p?.rotate || 0, aspect);
@@ -121,7 +134,53 @@ function SeqMedia({ plan, clock, time, playing, urls, aspect, pb }) {
         : on && html`<div style="position:absolute;inset:0;display:grid;place-items:center;background:#000;color:#999"><span class="t-small">No preview copy of this video</span></div>`}
       ${urls[id] && html`<audio ref=${(el) => { if (el) aref.current[id] = el; else delete aref.current[id]; }} data-sound=${id} src=${urls[id]} preload=${jl ? "auto" : "none"} />`}
     </div>`;
-  })}`;
+  })}${plan.audio.map((a) => sounds[a.assetKey] && html`<audio key=${a.clipId} ref=${(el) => { if (el) mref.current[a.clipId] = el; else delete mref.current[a.clipId]; }} data-music=${a.clipId} data-kind=${a.kind} src=${sounds[a.assetKey]} loop=${a.kind === "music"} preload="auto" />`)}`;
+}
+
+// A slider that changes the edit live while it moves and makes one undo step when let go.
+function OpSlider({ id, label, value, min, max, step, show, opFor, H, liveOp, disabled = false }) {
+  const base = useRef(null);
+  const start = () => { if (!base.current) base.current = H.state; };
+  const end = () => { if (base.current) { H.commitFrom(base.current); base.current = null; } };
+  return html`<label class="t-small" style="display:grid;gap:2px"><span class="row between"><span>${label}</span><span class="muted mono" data-val=${id}>${show(value)}</span></span>
+    <input type="range" id=${id} min=${min} max=${max} step=${step} value=${value} disabled=${disabled} onPointerDown=${start} onKeyDown=${start} onInput=${(e) => { start(); liveOp(H.state, opFor(+e.target.value)); }} onPointerUp=${end} onKeyUp=${end} onBlur=${end} /></label>`;
+}
+
+const CLEANUP_NAME = { none: "None", light: "Light", voice: "Voice", noisy: "Noisy room" };
+const LOUDNESS = [[-14, "-14 LUFS (online)"], [-16, "-16 LUFS (podcast)"], [-23, "-23 LUFS (broadcast)"]];
+const dB = (x) => (x > 0 ? "+" : "") + (Math.round(x * 10) / 10) + " dB";
+// The Audio tab: the whole edit's sound (set_audio) and the selected clip's level and fades (set_clip_audio).
+function AudioTab({ a, clip, track, len, doOp, H, liveOp }) {
+  const loud = a.loudness == null ? "off" : String(a.loudness);
+  const loudOpts = LOUDNESS.some(([v]) => v === a.loudness) || a.loudness == null ? LOUDNESS : [...LOUDNESS, [a.loudness, a.loudness + " LUFS"]];
+  const v1 = track === "v1" || track === "a1";
+  const gain = clip ? (v1 ? clip.audioGain ?? 0 : clip.gainDb ?? (track === "a2" ? -18 : -6)) : 0;
+  const fi = clip ? (v1 ? clip.audioFadeIn : clip.fadeIn) ?? 0 : 0, fo = clip ? (v1 ? clip.audioFadeOut : clip.fadeOut) ?? 0 : 0;
+  const fadeMax = Math.max(0.1, Math.min(10, Math.floor(len * 10) / 10));
+  const clipOp = (k) => (x) => ({ op: "set_clip_audio", track: v1 ? "v1" : track, clipId: clip.id, [k]: x });
+  const sl = { H, liveOp };
+  return html`<div class="pb" id="audio-panel" style="padding-top:16px"><div class="col" style="gap:16px">
+    <div class="col" style="gap:10px">
+      <b class="t-label">Whole edit</b>
+      <label class="t-small" style="display:grid;gap:4px">Dialogue cleanup<select class="input sm" id="audio-cleanup" value=${a.cleanup} onChange=${(e) => doOp({ op: "set_audio", cleanup: e.target.value })}>${CLEANUPS.map((c) => html`<option key=${c} value=${c}>${CLEANUP_NAME[c]}</option>`)}</select>
+        ${a.cleanup !== "none" && html`<span class="muted" id="audio-cleanup-what">${CLEANUP_TEXT[a.cleanup].replace(/^[^(]*\(|\)$/g, "")}</span>`}</label>
+      <div class="row" style="gap:8px">
+        <label class="t-small grow" style="display:grid;gap:4px">Loudness<select class="input sm" id="audio-loudness" value=${loud} onChange=${(e) => doOp({ op: "set_audio", loudness: e.target.value === "off" ? null : +e.target.value })}>${loudOpts.map(([v, l]) => html`<option key=${v} value=${String(v)}>${l}</option>`)}<option value="off">Off (limiter only)</option></select></label>
+        <label class="t-small grow" style="display:grid;gap:4px">True-peak ceiling<select class="input sm" id="audio-peak" value=${String(a.peak)} disabled=${a.loudness == null} onChange=${(e) => doOp({ op: "set_audio", peak: +e.target.value })}>${Array.from(new Set([-1, -1.5, -2, a.peak])).map((v) => html`<option key=${v} value=${String(v)}>${v} dBTP</option>`)}</select></label>
+      </div>
+      <${OpSlider} id="audio-duck" label="Music under speech" value=${a.duck} min=${0} max=${24} step=${1} show=${(x) => (x ? x + " dB down" : "not ducked")} opFor=${(x) => ({ op: "set_audio", duck: x })} ...${sl} />
+      <div class="row" style="gap:12px"><div class="grow"><${OpSlider} id="audio-fade-in" label="Fade in" value=${a.fadeIn} min=${0} max=${5} step=${0.1} show=${(x) => x + " s"} opFor=${(x) => ({ op: "set_audio", fadeIn: x })} ...${sl} /></div>
+        <div class="grow"><${OpSlider} id="audio-fade-out" label="Fade out" value=${a.fadeOut} min=${0} max=${5} step=${0.1} show=${(x) => x + " s"} opFor=${(x) => ({ op: "set_audio", fadeOut: x })} ...${sl} /></div></div>
+    </div>
+    <div class="col" style="gap:10px" id="audio-clip">
+      <b class="t-label">${clip ? (v1 ? "Dialogue of " + (clip.label || "this clip") : clip.label || "This clip") : "Selected clip"}</b>
+      ${clip ? html`<${OpSlider} id="clip-gain" label="Level" value=${gain} min=${v1 ? -24 : -40} max=${12} step=${0.5} show=${dB} opFor=${clipOp("gainDb")} ...${sl} />
+        <div class="row" style="gap:12px"><div class="grow"><${OpSlider} id="clip-fade-in" label="Fade in" value=${fi} min=${0} max=${fadeMax} step=${0.1} show=${(x) => x + " s"} opFor=${clipOp("fadeIn")} ...${sl} /></div>
+          <div class="grow"><${OpSlider} id="clip-fade-out" label="Fade out" value=${fo} min=${0} max=${fadeMax} step=${0.1} show=${(x) => x + " s"} opFor=${clipOp("fadeOut")} ...${sl} /></div></div>`
+        : html`<p class="t-small muted">Select a clip on V1, A1, A2 or A3 to set its level and fades.</p>`}
+    </div>
+    <p class="t-small muted" id="audio-note">The live player plays the balance: clip levels, fades, ducking, music and sound effects. Cleanup and loudness are heard in the rendered preview.</p>
+  </div></div>`;
 }
 
 // Puts a clip of any video into the sequence (the connector's add_clip).
@@ -169,12 +228,12 @@ function EditorInner({ project, reload, ai, keep }) {
   const footDur = project.timeline.duration;
   // The edit is a sequence. A project stored before Phase 2 is shown converted (the server stores it so at the next save).
   const tl = useMemo(() => asSequence(project.timeline, words, project.videoId, project.video?.seconds || footDur), [project, words]);
-  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText });
+  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, audio: tl.audio });
   const S = H.state;
   // The edit as the server and the renderer see it, the place of every clip in it, and the render plan the live
   // player draws from. Times on the timeline and in the player are EDIT seconds.
   const initial = useRef(S).current;
-  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText });
+  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, audio: s.audio });
   const timeline = useMemo(() => tlOf(S), [S]);
   const lay = useMemo(() => layoutTimeline(timeline, words), [timeline, words]);
   const view = useMemo(() => sequenceView(lay, words), [lay, words]);
@@ -182,7 +241,7 @@ function EditorInner({ project, reload, ai, keep }) {
   // The other videos on V1: sent with the project, plus any added here (their preview copy is fetched then).
   const [added, setAdded] = useState({});
   const others = useMemo(() => ({ ...(project.videos || {}), ...added }), [project, added]);
-  const media = useMemo(() => ({ broll: project.brollMedia || {}, graphics: project.graphicMedia || {} }), [project]);
+  const media = useMemo(() => ({ broll: project.brollMedia || {}, graphics: project.graphicMedia || {}, audio: project.audioMedia || {} }), [project]);
   const urls = useMemo(() => ({ ...Object.fromEntries(Object.entries(others).map(([id, v]) => [id, v.url || null])), [main]: project.video?.proxyUrl || null }), [others, main, project]);
   const [sel, setSel] = useState(null); // {track,id}
   const [wsel, setWsel] = useState(null); // {a,b} word indexes
@@ -239,7 +298,7 @@ function EditorInner({ project, reload, ai, keep }) {
     getGraphic: (id) => { const g = GRAPHIC_TEMPLATES.find((x) => x.id === id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
     sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others]);
   const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
-  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); return { state: { ...s, cut: r.snap.timeline.cut, tracks: r.snap.timeline.tracks }, summary: r.summary }; };
+  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); return { state: { ...s, cut: r.snap.timeline.cut, tracks: r.snap.timeline.tracks, audio: r.snap.timeline.audio }, summary: r.summary }; };
   const say = (t) => t.charAt(0).toUpperCase() + t.slice(1);
   const doOp = (op, tell = true) => { try { const r = opOn(H.state, op); H.commit(r.state); if (tell) toast(say(r.summary), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
   const liveOp = (base, op) => { try { H.replace(opOn(base, op).state); return true; } catch { return false; } };
@@ -418,9 +477,18 @@ function EditorInner({ project, reload, ai, keep }) {
   const v1ById = useMemo(() => new Map(lay.tracks.v1.map((c) => [c.id, c])), [lay]);
   const clipText = (k, c) => {
     if (k === "v1") { const vn = c.sourceVideoId !== main ? others[c.sourceVideoId]?.name || "Other video" : ""; return (vn && vn !== c.label ? vn + " · " : "") + (c.label || vn) + (c.rotate ? ` ↻${c.rotate}°` : ""); }
-    if (k === "a1") { const v = v1ById.get(c.id); const j = v && c.start < v.start - 0.005, l = v && v.end < c.end - 0.005; return "Dialogue" + (j ? " · J" : "") + (l ? " · L" : "") + (c.audioMuted ? " · muted" : ""); }
+    if (k === "a1") { const v = v1ById.get(c.id); const j = v && c.start < v.start - 0.005, l = v && v.end < c.end - 0.005; return "Dialogue" + (j ? " · J" : "") + (l ? " · L" : "") + (c.audioMuted ? " · muted" : "") + (v?.audioGain ? " · " + dB(v.audioGain) : ""); }
+    if (k === "a2" || k === "a3") { const a = planAudio.get(c.id); return c.label + (a ? " · " + dB(a.gainDb) : ""); }
     return c.label;
   };
+  // Sound fades drawn on the clips, as they render (music without its own fades gets the automatic ones).
+  const planAudio = useMemo(() => new Map((plan?.audio || []).map((a) => [a.clipId, a])), [plan]);
+  const fadesOf = (k, c) => {
+    const f = k === "a1" ? { i: v1ById.get(c.id)?.audioFadeIn, o: v1ById.get(c.id)?.audioFadeOut } : k === "a2" || k === "a3" ? { i: planAudio.get(c.id)?.fadeIn, o: planAudio.get(c.id)?.fadeOut } : null;
+    return f && html`${f.i > 0 && html`<i class="fd in" data-fade="in" style=${{ width: f.i * zoom }} />`}${f.o > 0 && html`<i class="fd out" data-fade="out" style=${{ width: f.o * zoom }} />`}`;
+  };
+  const soundSel = sel && ["v1", "a1", "a2", "a3"].includes(sel.track) ? (isV1(sel.track) ? selV1 : selClip) : null;
+  const soundLen = !soundSel ? 0 : isV1(sel.track) ? (() => { const a = lay.tracks.a1.find((x) => x.id === soundSel.id); return a ? a.end - a.start : 0; })() : soundSel.end - soundSel.start;
 
   const { chat, setChat } = ai;
   useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, rtab]);
@@ -439,7 +507,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
       <span class="t-small muted" id="saved" title=${saved} style="display:inline-flex;align-items:center;gap:4px;opacity:.7">${saved === "Saved" ? "" : saved}</span>
       <div class="grow" />
-      <span class="t-small muted" id="auto-preview" title=${fresh ? "The player plays the rendered preview file of this version." : "The player plays the edit as it will render: every clip and video in order, J/L cuts, captions, zooms, b-roll and graphics. Music plays in the rendered preview."}>${fresh ? `Playing the rendered preview (V${project.version})` : "Live edit"}</span>
+      <span class="t-small muted" id="auto-preview" title=${fresh ? "The player plays the rendered preview file of this version." : "The player plays the edit as it will render: every clip and video in order, J/L cuts, captions, zooms, b-roll, graphics, music and sound effects at their levels. Dialogue cleanup and loudness are heard in the rendered preview."}>${fresh ? `Playing the rendered preview (V${project.version})` : "Live edit"}</span>
       ${!fresh && html`<${Btn} kind="ghost" size="sm" id="render-preview" icon="play" disabled=${saved !== "Saved" || !plan} onClick=${() => startRender("preview")}>Render preview<//>`}
       <${Btn} kind="secondary" size="sm" id="render-final" icon="film" onClick=${() => startRender("final")}>Render final<//>
       <${Btn} size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share for review<//>
@@ -454,7 +522,7 @@ function EditorInner({ project, reload, ai, keep }) {
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
           : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} aspect=${S.aspect} pb=${pb} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} />`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} />`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">
@@ -485,7 +553,7 @@ function EditorInner({ project, reload, ai, keep }) {
               return html`<div key=${c.id} class=${"clip " + (k === "v1" ? "video" : k[0] === "a" ? "audio" : c.kind === "zoom" ? "fx" : "title") + (isOn(k, c) ? " on" : "") + (gone ? " gone" : "") + (other ? " other" : "") + (c.audioMuted ? " muted" : "")} data-clip=${c.id} data-track=${k}
                 title=${gone ? "Not in the edit: its footage is cut" : k === "a1" ? "Its V1 clip's dialogue. Alt-drag an edge for a J or L cut." : k === "v1" ? `${clipText(k, c)} · footage ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}s` : c.label}
                 style=${{ left: px(c.start), width: Math.max(gone ? 4 : 8, (c.end - c.start) * zoom) }}
-                onPointerDown=${clipDown(k, c)}><span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
+                onPointerDown=${clipDown(k, c)}>${fadesOf(k, c)}<span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
             ${k === "v1" && drop != null && html`<div class="drop" id="drop-marker" style=${{ left: px(drop) - 1 }} />`}
           </div>`)}
           <div class="playhead" id="playhead" style=${{ left: px(pb.time) - 1 }}><i /></div>
@@ -496,7 +564,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
 
       <div class="panel">
-        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["style", "Style"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
+        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["audio", "Audio"], ["style", "Style"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
         ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
           <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted">${S.cut.length} cut</span></div>
           ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
@@ -529,6 +597,7 @@ function EditorInner({ project, reload, ai, keep }) {
             <${Btn} size="sm" type="submit" id="comment-post" disabled=${!draft.trim() || posting}>${posting ? "…" : "Post"}<//>
           </form>
         </div>`}
+        ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "style" && html`<div class="pb" style="padding-top:16px">
           ${style && html`<div class="col" style="gap:12px">
             <${StyleArt} s=${style} />

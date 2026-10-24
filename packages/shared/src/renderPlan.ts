@@ -8,6 +8,8 @@ import { cutRegions, isSequence, mainVideoOf, mergeRanges, sequenceView, type At
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
+import { autoMusicFades, CLEANUP_CHAINS, CLEANUP_TEXT, DECLICK, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
+import { audioSettings, type AudioMixSettings } from "./timeline";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean };
@@ -33,7 +35,14 @@ export type PlanInput = {
 
 export type ZoomOp = { start: number; end: number; scale: number; mode: "punch" | "push" };
 export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string };
-export type AudioOp = { clipId: string; start: number; end: number; gainDb: number; assetKey: string; kind: "music" | "sfx" };
+export type AudioOp = { clipId: string; start: number; end: number; gainDb: number; assetKey: string; kind: "music" | "sfx"; fadeIn?: number; fadeOut?: number };
+/** The sequence's sound settings and the numbers the mix is made from (edit seconds). */
+export type AudioMix = AudioMixSettings & {
+  /** Where people speak: music ducks under these. */
+  speech: Range[];
+  /** Dialogue clips with their own gain or fades. */
+  dialogue: DialogueSpan[];
+};
 export type CaptionEvent = { start: number; end: number; text: string };
 
 export type RenderPlan = {
@@ -52,6 +61,8 @@ export type RenderPlan = {
   sources: string[];
   /** Per video: has a sound track, HDR (tone-mapped like the preview copy). */
   videos?: Record<string, { hasAudio: boolean; hdr: boolean }>;
+  /** Sequences only: cleanup, loudness target, ducking, fades. */
+  audioMix?: AudioMix;
   outputSeconds: number;
   rotate: 0 | 90 | 180 | 270; // clockwise turn of the footage before it is fitted
   framing: { scale: number; x: number; y: number } | null; // the footage's position and scale in the frame, after the fit
@@ -282,15 +293,31 @@ export function planRender(input: PlanInput): RenderPlan {
     const track = catalogMusic(c);
     if (!track) continue;
     const sp = placed(c);
-    if (sp) audio.push({ clipId: c.id, ...sp, gainDb: c.gainDb ?? -18, assetKey: track.key, kind: "music" });
+    if (!sp) continue;
+    // A music clip without fades of its own fades in and out by itself (as before Phase 3).
+    const x = c as A2Clip & { fadeIn?: number; fadeOut?: number }, auto = autoMusicFades(sp.end - sp.start);
+    audio.push({ clipId: c.id, ...sp, gainDb: c.gainDb ?? -18, assetKey: track.key, kind: "music", fadeIn: r3(x.fadeIn ?? auto.fadeIn), fadeOut: r3(x.fadeOut ?? auto.fadeOut) });
   }
   for (const c of tl.tracks.a3 as (A3Clip & Attached)[]) {
     const sfx = catalogSfx(c);
     if (!sfx || !c.anchorId || !view.clip(c.anchorId)) continue;
     const start = r3(view.editAt(c.anchorId, Number(c.anchorAt ?? 0))!);
     if (start >= total) continue;
-    audio.push({ clipId: c.id, start, end: r3(Math.min(total, start + Math.max(0.1, Number(c.length ?? c.end - c.start)))), gainDb: c.gainDb ?? -6, assetKey: sfx.key, kind: "sfx" });
+    const x = c as A3Clip & { fadeIn?: number; fadeOut?: number };
+    audio.push({ clipId: c.id, start, end: r3(Math.min(total, start + Math.max(0.1, Number(c.length ?? c.end - c.start)))), gainDb: c.gainDb ?? -6, assetKey: sfx.key, kind: "sfx", fadeIn: x.fadeIn ?? 0, fadeOut: x.fadeOut ?? 0 });
   }
+  // The sound: settings, where music ducks (speech), and dialogue clips with their own gain or fades.
+  const settings = audioSettings(tl);
+  const cutSet = new Set(tl.cut);
+  const speech = speechRanges(view, (vid) => (vid === main ? words : input.transcripts?.[vid] ? allWords(input.transcripts[vid]) : null), cutSet);
+  const dialogue: DialogueSpan[] = [];
+  for (const p of view.clips) {
+    const c = (tl.tracks.v1 as unknown as { id: string; audioGain?: number; audioFadeIn?: number; audioFadeOut?: number; audioMuted?: boolean }[]).find((x) => x.id === p.id);
+    if (!c || c.audioMuted || !p.pieces.length || p.soundEnd - p.soundStart < 0.01) continue;
+    if (!c.audioGain && !c.audioFadeIn && !c.audioFadeOut) continue;
+    dialogue.push({ start: r3(p.soundStart), end: r3(p.soundEnd), gainDb: c.audioGain ?? 0, fadeIn: c.audioFadeIn ?? 0, fadeOut: c.audioFadeOut ?? 0 });
+  }
+  const audioMix: AudioMix = { ...settings, fadeIn: Math.min(settings.fadeIn, total / 2), fadeOut: Math.min(settings.fadeOut, total / 2), speech, dialogue };
   // Muted clips: their dialogue is silent.
   const dialogueMutes = mergeRanges(view.sound.filter((x) => x.muted).map((x) => ({ start: r3(x.start), end: r3(x.end) })).filter((g) => g.end > g.start));
 
@@ -317,12 +344,13 @@ export function planRender(input: PlanInput): RenderPlan {
     broll.length ? `B-roll overlays: ${broll.length}` : "B-roll overlays: none",
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
     captions.length ? `Captions: ${captions.length} word-timed events, look ${look}` : "Captions: off",
-    `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${audio.some((a) => a.kind === "music") ? " + music ducked under speech" : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}`,
+    `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${settings.cleanup !== "none" ? `, cleanup ${CLEANUP_TEXT[settings.cleanup]}` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
+    settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
   ];
   return {
     model: "B", kind, width, height, fps: 30, aspect: snapshot.aspect, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })), parts, sound, sources, videos,
-    outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, ass, operations,
+    outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, ass, operations, audioMix,
   };
 }
 
@@ -357,8 +385,18 @@ export function zoomExpr(zooms: ZoomOp[]): string {
   return `min(2,1+${terms.join("+")})`;
 }
 
-export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: { threads?: number } = {}): { args: string[]; filterGraph: string } {
+export type FfmpegOpts = {
+  threads?: number;
+  /** The loudness gain the measuring pass found (dB). Needed when the plan normalizes loudness. */
+  loudnessGainDb?: number;
+  /** Audio only, up to the mix, through ebur128: the measuring pass (its stderr has the loudness summary). */
+  measure?: boolean;
+};
+
+export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: FfmpegOpts = {}): { args: string[]; filterGraph: string } {
   if (plan.model === "A") return ffmpegArgsA(plan, files, source, opts);
+  const mix = plan.audioMix;
+  if (mix && mix.loudness != null && !opts.measure && opts.loudnessGainDb == null) throw new RenderPlanError("This render sets the loudness: measure the mix first (ffmpegArgs with measure: true), then pass loudnessGainDb.");
   const inputs: string[] = [];
   const g: string[] = [];
   let idx = 0;
@@ -374,54 +412,63 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     inputs.push("-i", path);
     inOf[vid] = idx++;
   }
-
-  // 1. Picture: put each video on a 30 fps grid, take its parts and join them in edit order. Parts start and end on
-  // frames (planRender), so each is a whole number of frames; after fps=30 trim rounds to the nearest frame.
-  const vt = (k: { srcIn: number; srcOut: number }) => `trim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},setpts=PTS-STARTPTS`;
-  const at = (k: { srcIn: number; srcOut: number }) => `atrim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},asetpts=PTS-STARTPTS`;
-  const turnOf = (r: number) => (r === 90 ? "transpose=1," : r === 270 ? "transpose=2," : r === 180 ? "hflip,vflip," : "");
-  // HDR originals are tone-mapped to SDR BT.709 exactly like the preview copy, so the final looks like the preview.
-  const toneOf = (vid: string) => (info(vid).hdr ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "");
-  const fit = `fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1`;
-  const frame = (from: string, f: Framing, to: string, tag: string) => {
-    // The fitted picture is scaled about its centre and moved over a black frame.
-    const sw = even(W * f.scale), sh = even(H * f.scale);
-    const ox = Math.round((W - sw) / 2 + f.x * W), oy = Math.round((H - sh) / 2 + f.y * H);
-    g.push(`color=c=black:s=${W}x${H}:r=${FPS}[fcanvas${tag}]`);
-    g.push(`[${from}]scale=${sw}:${sh},setsar=1[fscaled${tag}]`);
-    g.push(`[fcanvas${tag}][fscaled${tag}]overlay=x=${ox}:y=${oy}:shortest=1,format=yuv420p[${to}]`);
-  };
   const splitOf = (kind: "v" | "a", vid: string, n: number, name: (i: number) => string) => {
     if (kind === "v") g.push(`[${inOf[vid]}:v]fps=${FPS}${n > 1 ? `,split=${n}${Array.from({ length: n }, (_, i) => `[${name(i)}]`).join("")}` : `[${name(0)}]`}`);
     else g.push(`[${inOf[vid]}:a]aresample=48000${n > 1 ? `,asplit=${n}${Array.from({ length: n }, (_, i) => `[${name(i)}]`).join("")}` : `[${name(0)}]`}`);
   };
-  const N = plan.parts.length;
-  // One video, one look: cut, join, then fit once (the same graph model A used). Otherwise each part is fitted first.
-  const uniform = plan.sources.length === 1 && plan.parts.every((p) => p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing));
-  for (const vid of plan.sources) {
-    const mine = plan.parts.map((p, i) => ({ p, i })).filter((x) => x.p.videoId === vid);
-    if (!mine.length) continue;
-    splitOf("v", vid, mine.length, (k) => `sv${mine[k].i}`);
-    for (const { p, i } of mine) {
-      if (uniform) g.push(`[sv${i}]${vt(p)}[v${i}]`);
-      else {
-        g.push(`[sv${i}]${vt(p)},${turnOf(p.rotate)}${toneOf(vid)}${fit},format=yuv420p[${p.framing ? `pf${i}` : `v${i}`}]`);
-        if (p.framing) frame(`pf${i}`, p.framing, `v${i}`, String(i));
+
+  // 1. Picture (not in the measuring pass): put each video on a 30 fps grid, take its parts and join them in edit
+  // order. Parts start and end on frames (planRender), so each is a whole number of frames.
+  let v = "";
+  if (!opts.measure) {
+    const vt = (k: { srcIn: number; srcOut: number }) => `trim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},setpts=PTS-STARTPTS`;
+    const turnOf = (r: number) => (r === 90 ? "transpose=1," : r === 270 ? "transpose=2," : r === 180 ? "hflip,vflip," : "");
+    // HDR originals are tone-mapped to SDR BT.709 exactly like the preview copy, so the final looks like the preview.
+    const toneOf = (vid: string) => (info(vid).hdr ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "");
+    const fit = `fps=${FPS},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1`;
+    const frame = (from: string, f: Framing, to: string, tag: string) => {
+      // The fitted picture is scaled about its centre and moved over a black frame.
+      const sw = even(W * f.scale), sh = even(H * f.scale);
+      const ox = Math.round((W - sw) / 2 + f.x * W), oy = Math.round((H - sh) / 2 + f.y * H);
+      g.push(`color=c=black:s=${W}x${H}:r=${FPS}[fcanvas${tag}]`);
+      g.push(`[${from}]scale=${sw}:${sh},setsar=1[fscaled${tag}]`);
+      g.push(`[fcanvas${tag}][fscaled${tag}]overlay=x=${ox}:y=${oy}:shortest=1,format=yuv420p[${to}]`);
+    };
+    const N = plan.parts.length;
+    // One video, one look: cut, join, then fit once (the same graph model A used). Otherwise each part is fitted first.
+    const uniform = plan.sources.length === 1 && plan.parts.every((p) => p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing));
+    for (const vid of plan.sources) {
+      const mine = plan.parts.map((p, i) => ({ p, i })).filter((x) => x.p.videoId === vid);
+      if (!mine.length) continue;
+      splitOf("v", vid, mine.length, (k) => `sv${mine[k].i}`);
+      for (const { p, i } of mine) {
+        if (uniform) g.push(`[sv${i}]${vt(p)}[v${i}]`);
+        else {
+          g.push(`[sv${i}]${vt(p)},${turnOf(p.rotate)}${toneOf(vid)}${fit},format=yuv420p[${p.framing ? `pf${i}` : `v${i}`}]`);
+          if (p.framing) frame(`pf${i}`, p.framing, `v${i}`, String(i));
+        }
       }
     }
-  }
-  g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0[vcat]`);
-  let v = "vcat";
-  if (uniform) {
-    const p0 = plan.parts[0];
-    g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId)}${fit}[vfit]`);
-    v = "vfit";
-    if (p0.framing) { frame(v, p0.framing, "vframed", ""); v = "vframed"; }
+    g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0[vcat]`);
+    v = "vcat";
+    if (uniform) {
+      const p0 = plan.parts[0];
+      g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId)}${fit}[vfit]`);
+      v = "vfit";
+      if (p0.framing) { frame(v, p0.framing, "vframed", ""); v = "vframed"; }
+    }
   }
 
-  // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts, joined in edit order.
+  // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts, joined in edit order. With a
+  // cleanup preset every part fades in and out over 4 ms, so no cut clicks.
   const S = plan.sound.length;
   const live = (x: SoundPart) => !x.muted && info(x.videoId).hasAudio && inOf[x.videoId] != null;
+  const declick = (x: SoundPart) => {
+    if (!mix || mix.cleanup === "none") return "";
+    const len = x.srcOut - x.srcIn, d = Math.min(DECLICK, len / 4);
+    return `,afade=t=in:d=${n6(d)},afade=t=out:st=${n6(len - d)}:d=${n6(d)}`;
+  };
+  const at = (k: SoundPart) => `atrim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},asetpts=PTS-STARTPTS${declick(k)}`;
   for (const vid of plan.sources) {
     const mine = plan.sound.map((x, i) => ({ x, i })).filter((y) => y.x.videoId === vid && live(y.x));
     if (!mine.length) continue;
@@ -431,12 +478,13 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   plan.sound.forEach((x, i) => { if (!live(x)) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${Math.max(1, Math.round((x.srcOut - x.srcIn) * 48000))},asetpts=PTS-STARTPTS[a${i}]`); });
   g.push(`${plan.sound.map((_, i) => `[a${i}]`).join("")}concat=n=${S}:v=0:a=1[acat]`);
 
-  overlaysAndMix(plan, files, g, inputs, () => idx++, v);
+  if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v);
+  mixAudio(plan, files, g, inputs, () => idx++, opts);
   return { args: encodeArgs(plan, inputs, files, opts), filterGraph: g.join(";\n") };
 }
 
-/** Zooms, b-roll, graphics, captions on [v]; dialogue [acat] mixed with music (ducked) and sound effects. */
-function overlaysAndMix(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string) {
+/** Zooms, b-roll, graphics, captions on [v]; returns the label of the finished picture ([vout]). */
+function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string): string {
   const W = plan.width, H = plan.height;
   let v = v0;
   // 3. Zooms: scale per frame, crop back to size.
@@ -473,39 +521,71 @@ function overlaysAndMix(plan: RenderPlan, files: PlanFiles, g: string[], inputs:
     v = "vcap";
   }
   g.push(`[${v}]format=yuv420p[vout]`);
+  return "vout";
+}
 
-  // 7. Audio: dialogue, music ducked under speech, sound effects.
-  g.push(`[acat]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[dlg]`);
+const lin = (db: number) => Math.pow(10, db / 20);
+/** The limiter's ceiling sits this far under the true-peak target: AAC encoding adds up to ~0.8 dB to sharp peaks (measured at 96k). */
+const PEAK_MARGIN = 1.0;
+
+/**
+ * 7. Sound: the dialogue (cleanup, its clips' gains and fades), music ducked under speech, sound effects, the mix's
+ * fades, then the loudness gain with a 4x oversampled limiter (true peak), or the old limiter when loudness is off.
+ * The measuring pass stops before the loudness step and measures the mix with ebur128.
+ */
+function mixAudio(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, opts: FfmpegOpts) {
+  const mix = plan.audioMix;
+  const cleanup = mix ? CLEANUP_CHAINS[mix.cleanup] : "";
+  const dlgExpr = mix ? dialogueExpr(mix.dialogue) : null;
+  g.push(`[acat]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo${cleanup ? "," + cleanup : ""}${dlgExpr ? `,asetnsamples=n=480,volume='${dlgExpr}':eval=frame` : ""}[dlg]`);
   const music = plan.audio.filter((a) => a.kind === "music" && files.audio?.[a.clipId]);
   const sfx = plan.audio.filter((a) => a.kind === "sfx" && files.audio?.[a.clipId]);
+  const fades = (d: number, fi: number, fo: number) => `${fi > 0 ? `,afade=t=in:d=${n3(Math.min(fi, d))}` : ""}${fo > 0 ? `,afade=t=out:st=${n3(Math.max(0, d - fo))}:d=${n3(Math.min(fo, d))}` : ""}`;
   const mixIn: string[] = [];
-  if (music.length) {
+  if (music.length && !mix) {
+    // A plan without mix settings (never made by planRender today): music ducked by a sidechain compressor, as before.
     g.push(`[dlg]asplit=2[dlgmix][dlgsc]`);
     mixIn.push("[dlgmix]");
-    music.forEach((m, i) => {
-      inputs.push("-stream_loop", "-1", "-i", files.audio![m.clipId]);
-      const mi = next();
-      const d = Math.max(0.1, m.end - m.start);
-      g.push(`[${mi}:a]atrim=0:${n3(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,afade=t=in:d=${n3(Math.min(0.6, d / 4))},afade=t=out:st=${n3(Math.max(0, d - Math.min(1.2, d / 4)))}:d=${n3(Math.min(1.2, d / 4))},volume=${m.gainDb}dB,adelay=delays=${Math.round(m.start * 1000)}:all=1[mu${i}]`);
-    });
+  } else mixIn.push("[dlg]");
+  music.forEach((m, i) => {
+    inputs.push("-stream_loop", "-1", "-i", files.audio![m.clipId]);
+    const mi = next();
+    const d = Math.max(0.1, m.end - m.start);
+    const auto = autoMusicFades(d);
+    // Music goes down under speech: a fixed envelope (the live player follows the same curve).
+    const duck = mix && mix.duck > 0 ? duckExpr(mix.speech, m.start, m.end) : "0";
+    const ducking = duck !== "0" ? `,asetnsamples=n=480,volume='pow(10,-${mix!.duck}*(${duck})/20)':eval=frame` : "";
+    g.push(`[${mi}:a]atrim=0:${n3(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo${fades(d, m.fadeIn ?? auto.fadeIn, m.fadeOut ?? auto.fadeOut)},volume=${m.gainDb}dB,adelay=delays=${Math.round(m.start * 1000)}:all=1${ducking}[mu${i}]`);
+  });
+  if (music.length) {
     let bus = "[mu0]";
     if (music.length > 1) { g.push(`${music.map((_, i) => `[mu${i}]`).join("")}amix=inputs=${music.length}:normalize=0[mubus]`); bus = "[mubus]"; }
-    g.push(`${bus}[dlgsc]sidechaincompress=threshold=0.04:ratio=8:attack=15:release=350[muduck]`);
-    mixIn.push("[muduck]");
-  } else {
-    mixIn.push("[dlg]");
+    if (!mix) { g.push(`${bus}[dlgsc]sidechaincompress=threshold=0.04:ratio=8:attack=15:release=350[muduck]`); mixIn.push("[muduck]"); }
+    else mixIn.push(bus);
   }
   sfx.forEach((s, i) => {
     inputs.push("-i", files.audio![s.clipId]);
     const si = next();
-    g.push(`[${si}:a]atrim=0:${n3(Math.max(0.1, s.end - s.start))},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${s.gainDb}dB,adelay=delays=${Math.round(s.start * 1000)}:all=1[fx${i}]`);
+    const d = Math.max(0.1, s.end - s.start);
+    g.push(`[${si}:a]atrim=0:${n3(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo${fades(d, s.fadeIn ?? 0, s.fadeOut ?? 0)},volume=${s.gainDb}dB,adelay=delays=${Math.round(s.start * 1000)}:all=1[fx${i}]`);
     mixIn.push(`[fx${i}]`);
   });
-  if (mixIn.length > 1) g.push(`${mixIn.join("")}amix=inputs=${mixIn.length}:normalize=0:duration=first,alimiter=limit=0.95[aout]`);
-  else g.push(`${mixIn[0]}alimiter=limit=0.95[aout]`);
+  const T = plan.outputSeconds;
+  const mixFades = mix ? `${mix.fadeIn > 0 ? `,afade=t=in:d=${n3(mix.fadeIn)}` : ""}${mix.fadeOut > 0 ? `,afade=t=out:st=${n3(Math.max(0, T - mix.fadeOut))}:d=${n3(mix.fadeOut)}` : ""}` : "";
+  const sum = mixIn.length > 1 ? `${mixIn.join("")}amix=inputs=${mixIn.length}:normalize=0:duration=first${mixFades}` : `${mixIn[0]}${mixFades ? "anull" + mixFades : "anull"}`;
+  if (opts.measure) { g.push(`${sum},ebur128=peak=true:framelog=quiet[aout]`); return; }
+  if (mix && mix.loudness != null) {
+    // The measured gain, then a limiter at 4x the sample rate so the peaks between samples stay under the ceiling.
+    g.push(`${sum},volume=${(opts.loudnessGainDb ?? 0).toFixed(2)}dB,aresample=192000,alimiter=limit=${lin(mix.peak - PEAK_MARGIN).toFixed(4)}:attack=5:release=50:level=disabled,aresample=48000[aout]`);
+  } else {
+    g.push(`${sum},alimiter=limit=0.95[aout]`);
+  }
 }
 
-function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: { threads?: number }): string[] {
+function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: FfmpegOpts): string[] {
+  if (opts.measure) {
+    return ["-hide_banner", "-nostdin", "-y", "-nostats", ...inputs, "-filter_complex_script", "__FILTER_SCRIPT__", "-map", "[aout]", "-t", n3(plan.outputSeconds), "-progress", "pipe:1", "-f", "null", "-"];
+  }
   const preview = plan.kind === "preview";
   return [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
@@ -522,4 +602,18 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
     "-progress", "pipe:1", "-nostats",
     files.output,
   ];
+}
+
+/** Reads the measuring pass's ebur128 summary: integrated loudness (LUFS) and true peak (dBTP). */
+export function readMixLoudness(stderr: string): { lufs: number | null; peakDb: number | null } {
+  const summary = stderr.slice(stderr.lastIndexOf("Summary:"));
+  if (!summary.startsWith("Summary:")) return { lufs: null, peakDb: null };
+  const num = (re: RegExp) => { const m = re.exec(summary); const n = m ? Number(m[1]) : NaN; return Number.isFinite(n) ? n : null; };
+  return { lufs: num(/I:\s+(-?[\d.]+) LUFS/), peakDb: num(/Peak:\s+(-?[\d.]+) dBFS/) };
+}
+
+/** The loudness step's gain: what brings the measured mix to the target, within -30..+24 dB (a silent mix gets none). */
+export function loudnessGain(target: number, measuredLufs: number | null): number {
+  if (measuredLufs == null || measuredLufs < -70) return 0;
+  return Math.round(Math.min(24, Math.max(-30, target - measuredLufs)) * 100) / 100;
 }

@@ -45,7 +45,7 @@ describe("the sequence: clips from any video, in any order, repeats", () => {
     const p = plan(s);
     expect(p.sources).toEqual(["vid1", "v2nd"]);
     expect(p.outputSeconds).toBeCloseTo(42, 1);
-    const { args, filterGraph } = ffmpegArgs(p, { source: "/main.mp4", videos: { v2nd: "/second.mp4" }, output: "/o.mp4" }, source);
+    const { args, filterGraph } = ffmpegArgs(p, { source: "/main.mp4", videos: { v2nd: "/second.mp4" }, output: "/o.mp4" }, source, { loudnessGainDb: 0 });
     expect(args.filter((a) => a === "-i")).toHaveLength(2);
     expect(filterGraph).toMatch(/\[1:v\]fps=30\[sv1\]/);
     expect(filterGraph).toMatch(/concat=n=3:v=1:a=0\[vcat\]/);
@@ -110,7 +110,7 @@ describe("J and L cuts", () => {
     expect(r.snap.timeline.tracks.a1[0].end).toBeCloseTo(a.end + 0.4, 2);
     const p = plan(r.snap);
     expect(p.dialogueMutes).toHaveLength(1);
-    const g = ffmpegArgs(p, { source: "/m.mp4", output: "/o.mp4" }, source).filterGraph;
+    const g = ffmpegArgs(p, { source: "/m.mp4", output: "/o.mp4" }, source, { loudnessGainDb: 0 }).filterGraph;
     expect(g).toMatch(/anullsrc=r=48000:cl=stereo,atrim=end_sample=\d+/); // the muted clip is silence
     expect(g).toMatch(/concat=n=\d+:v=0:a=1\[acat\]/);
     expect(editCheck(r.snap, tr)).toMatch(/1 L cut, 1 muted/);
@@ -195,7 +195,7 @@ describe("old ops keep working; edit:true takes edit seconds", () => {
     expect(r.summary).toMatch(/turned 1 clip 90°/);
     const p = plan(r.snap);
     expect(p.parts.map((x) => x.rotate)).toEqual([0, 90, 0]);
-    expect(ffmpegArgs(p, { source: "a", output: "b" }, source).filterGraph).toMatch(/\[sv1\]trim=[^;]*transpose=1,fps=30,scale/);
+    expect(ffmpegArgs(p, { source: "a", output: "b" }, source, { loudnessGainDb: 0 }).filterGraph).toMatch(/\[sv1\]trim=[^;]*transpose=1,fps=30,scale/);
     expect(editCheck(r.snap, tr)).toMatch(/footage turned 90° \(1 of 3 clips\)/);
   });
   it("split_clip with edit:true splits at that moment of the edit", () => {

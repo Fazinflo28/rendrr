@@ -223,13 +223,13 @@ describe("footage filmed sideways", () => {
     const plan = planRender({ kind: "preview", snapshot: { ...s.snap, aspect: "9:16" }, transcript: tr, source });
     expect(plan.rotate).toBe(90);
     expect(plan.operations.join("\n")).toMatch(/Turn the footage 90° clockwise, then fit to 9:16/);
-    const graph = ffmpegArgs(plan, { source: "in.mp4", output: "out.mp4" }, source).filterGraph;
+    const graph = ffmpegArgs(plan, { source: "in.mp4", output: "out.mp4" }, source, { loudnessGainDb: 0 }).filterGraph;
     expect(graph).toMatch(/\[vcat\]transpose=1,fps=30,scale=/);
     expect(editCheck(s.snap, tr)).toMatch(/footage turned 90°/);
     const back = applyOp(s.snap, { op: "set_rotation", degrees: 0 }, ctx).snap;
     expect(seq(back).some((c) => "rotate" in c)).toBe(false);
-    expect(ffmpegArgs(planRender({ kind: "preview", snapshot: back, transcript: tr, source }), { source: "a", output: "b" }, source).filterGraph).not.toMatch(/transpose|hflip/);
-    expect(ffmpegArgs(planRender({ kind: "preview", snapshot: applyOp(snap(), { op: "set_rotation", degrees: 270 }, ctx).snap, transcript: tr, source }), { source: "a", output: "b" }, source).filterGraph).toMatch(/transpose=2,/);
+    expect(ffmpegArgs(planRender({ kind: "preview", snapshot: back, transcript: tr, source }), { source: "a", output: "b" }, source, { loudnessGainDb: 0 }).filterGraph).not.toMatch(/transpose|hflip/);
+    expect(ffmpegArgs(planRender({ kind: "preview", snapshot: applyOp(snap(), { op: "set_rotation", degrees: 270 }, ctx).snap, transcript: tr, source }), { source: "a", output: "b" }, source, { loudnessGainDb: 0 }).filterGraph).toMatch(/transpose=2,/);
   });
 });
 
@@ -239,7 +239,7 @@ describe("footage position and scale", () => {
     expect(seq(s.snap).map((c) => c.framing)).toEqual(seq(s.snap).map(() => ({ scale: 1.15, x: 0, y: 0.34 })));
     expect(s.summary).toMatch(/framed the footage: scale 1.15, moved down 34%/);
     const plan = planRender({ kind: "preview", snapshot: s.snap, transcript: tr, source });
-    const graph = ffmpegArgs(plan, { source: "a", output: "b" }, source).filterGraph;
+    const graph = ffmpegArgs(plan, { source: "a", output: "b" }, source, { loudnessGainDb: 0 }).filterGraph;
     // 540x960 preview: scaled to 622x1104, centred (-41, -72) then 34% down (+326) => (-41, 254)
     expect(graph).toMatch(/color=c=black:s=540x960:r=30\[fcanvas\]/);
     expect(graph).toMatch(/\[vfit\]scale=622:1104,setsar=1\[fscaled\]/);
@@ -249,6 +249,6 @@ describe("footage position and scale", () => {
     expect(seq(x)[0].framing).toEqual({ scale: 1.15, x: -0.1, y: 0.34 });
     const back = applyOp(x, { op: "set_framing", scale: 1, x: 0, y: 0 }, ctx).snap;
     expect(seq(back).some((c) => "framing" in c)).toBe(false);
-    expect(ffmpegArgs(planRender({ kind: "preview", snapshot: back, transcript: tr, source }), { source: "a", output: "b" }, source).filterGraph).not.toMatch(/fcanvas/);
+    expect(ffmpegArgs(planRender({ kind: "preview", snapshot: back, transcript: tr, source }), { source: "a", output: "b" }, source, { loudnessGainDb: 0 }).filterGraph).not.toMatch(/fcanvas/);
   });
 });

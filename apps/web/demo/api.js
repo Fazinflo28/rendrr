@@ -77,7 +77,10 @@ Object.assign(api, {
   getProject: async (id) => {
     const p = await getProject(id);
     const src = playable[p.videoId];
-    return src ? { ...p, video: { ...p.video, proxyUrl: src } } : p;
+    // The design's music clips name no catalog track: give them one, as add_music does, so they play and render.
+    const a2 = (p.timeline?.tracks?.a2 || []).map((c) => (c.trackId || c.assetKey ? c : { ...c, trackId: "m_lofi" }));
+    const q = p.timeline ? { ...p, timeline: { ...p.timeline, tracks: { ...p.timeline.tracks, a2 } } } : p;
+    return { ...(src ? { ...q, video: { ...q.video, proxyUrl: src } } : q), audioMedia: { ...sounds } };
   },
 });
 
@@ -95,6 +98,10 @@ globalThis.__rendrrDemoFile = (v, f) => {
   };
   probe.src = url;
 };
+
+// Music and sound effect files for the live player, by catalog key (the real API sends signed URLs).
+const sounds = {};
+globalThis.__rendrrDemoSound = (key, f) => { if (f) sounds[key] = URL.createObjectURL(f); };
 
 export { api };
 export const API_BASE = "";

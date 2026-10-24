@@ -2,9 +2,9 @@
 // lengths, black and silent stretches, loudness, graphics on screen) next to what the edit says, and every place
 // they disagree. Facts and fixed thresholds only, no judgement.
 import { fmtT } from "./breakdown";
-import { lookText } from "./ops";
-import { asSequence, layoutTimeline, mergeRanges, sequenceView, type Range, type SeqClip, type SequenceView } from "./sequence";
-import type { Clip, Snapshot, Timeline } from "./timeline";
+import { audioText, lookText } from "./ops";
+import { asSequence, isSequence, layoutTimeline, mergeRanges, sequenceView, type Range, type SeqClip, type SequenceView } from "./sequence";
+import { audioSettings, type Clip, type Snapshot, type Timeline } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 
 export type FileLoudness = { lufs: number | null; peakDb: number | null };
@@ -124,7 +124,16 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
   if (short.length) flags.push(`${short.length} clip${short.length === 1 ? "" : "s"} under 0.5s`);
   const m = opts.measured ?? null;
   const ld = m && !m.error ? m : opts.loudness;
-  if (ld?.peakDb != null && ld.peakDb > -1) flags.push(`peak ${ld.peakDb}dB (may clip)`);
+  // The sound settings. A version stored in model A was mixed the old way (limiter only), whatever the defaults say.
+  const legacy = !isSequence(snap.timeline);
+  const sound = legacy ? { ...audioSettings({}), loudness: null } : audioSettings(tl);
+  const v1 = tl.tracks.v1 as SeqClip[];
+  const clipSound = v1.filter((c) => c.audioGain || c.audioFadeIn || c.audioFadeOut).length + (tl.tracks.a2 as (Clip & { fadeIn?: number; fadeOut?: number })[]).filter((c) => c.fadeIn != null || c.fadeOut != null).length;
+  if (sound.loudness != null) {
+    // Loudness is set by the render: the file must be within 1 LU of the target and under the true-peak ceiling.
+    if (ld?.lufs != null && Math.abs(ld.lufs - sound.loudness) > 1) flags.push(`loudness ${ld.lufs} LUFS, target ${sound.loudness}`);
+    if (ld?.peakDb != null && ld.peakDb > sound.peak + 0.2) flags.push(`true peak ${ld.peakDb} dBTP over the ${sound.peak} dBTP ceiling`);
+  } else if (ld?.peakDb != null && ld.peakDb > -1) flags.push(`peak ${ld.peakDb}dB (may clip)`);
   if (ld?.lufs != null && ld.lufs < -40) flags.push("sound is almost silent");
 
   // Where the edit and the file disagree. Each one is a flag; "Flags: none" only when they agree.
@@ -168,8 +177,9 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     `Captions: ${tl.captionsOn ? `on (${tl.captionLook}), ${coverPct}% of spoken words` : "off"}`,
     `Zooms ${zooms.length}${zooms.length ? ": " + list(zooms.map((z) => `${fmtT(z.start)} ${Math.round(Number(z.zoom || 1) * 100)}%`)) : ""} | B-roll ${broll.length}${broll.length ? ": " + list(broll.map((b) => fmtT(b.start))) : ""} | Graphics ${graphics.length}${m && !m.error ? ` (${gShown.filter((x) => x.on).length} on screen)` : ""}${graphics.length ? ": " + list(gText) : ""}`,
     `Music: ${music.length ? `${list(music.map((c) => `${c.label} ${c.gainDb ?? -18}dB`), 3)}, under ${Math.round(musicCover * 100)}% of the edit` : "none"}`,
+    `Sound: ${legacy ? "mixed before Phase 3 (limiter only)" : audioText(sound)}${clipSound ? `; ${clipSound} ${clipSound === 1 ? "clip has" : "clips have"} its own gain or fades` : ""}`,
     `Cuts ${Math.max(0, segs.length - 1)}${total ? ` (${(((segs.length - 1) / total) * 60).toFixed(1)}/min)` : ""}, shortest clip ${segs.length ? Math.min(...segs.map((x) => x.len)).toFixed(1) + "s" : "-"}${short.length ? ` at ${list(short.map((x) => fmtT(x.at)), 4)}` : ""}`,
-    ...(ld ? [`Loudness of the file: ${ld.lufs != null ? ld.lufs + " LUFS" : "unknown"}, peak ${ld.peakDb != null ? ld.peakDb + "dB" : "unknown"}`] : []),
+    ...(ld ? [`Loudness of the file: ${ld.lufs != null ? ld.lufs + " LUFS" : "unknown"}, true peak ${ld.peakDb != null ? ld.peakDb + " dBTP" : "unknown"}${sound.loudness != null ? ` (target ${sound.loudness} LUFS, ceiling ${sound.peak} dBTP)` : ""}`] : []),
     `Flags: ${flags.length ? flags.join("; ") : "none"}`,
   ];
   return lines.join("\n");

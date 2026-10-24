@@ -55,7 +55,8 @@ describe("sequence renders", () => {
     let a = buildInitialTimelineA(tr, SECONDS, "clean", [words[2].id, words[3].id, words[9].id]);
     a = normalizeTimeline({ ...a, tracks: { ...a.tracks, v1: a.tracks.v1.map((c) => ({ ...c, end: Math.min(c.end, 10.4) })), a1: a.tracks.a1.map((c) => ({ ...c, end: Math.min(c.end, 10.4) })), v2: [{ id: "z1", start: 6, end: 7.5, label: "Zoom", kind: "zoom", zoom: 1.3 } as Clip] } });
     const snapA: Snapshot = { timeline: a, name: "t", aspect: "9:16", styleId: "s2" };
-    const snapB: Snapshot = { ...snapA, timeline: toModelB(a, words, "v", { seconds: SECONDS }) };
+    // Loudness off: the comparison is about the picture and the dialogue (Phase 3 sets loudness on top).
+    const snapB: Snapshot = { ...snapA, timeline: { ...toModelB(a, words, "v", { seconds: SECONDS }), audio: { loudness: null } } };
     const pa = planRender({ kind: "preview", snapshot: snapA, transcript: tr, source, videoId: "v" });
     const pb = planRender({ kind: "preview", snapshot: snapB, transcript: tr, source, videoId: "v" });
     assert.equal(pa.model, "A");
@@ -75,6 +76,7 @@ describe("sequence renders", () => {
     s = applyOp(s, { op: "batch", ops: [
       { op: "set_clips", track: "v1", clips: [{ start: 0, end: 3, label: "a" }, { videoId: "o", start: 1, end: 3, label: "b" }, { start: 5, end: 8, label: "c" }, { videoId: "o", start: 3, end: 5, label: "d" }] },
       { op: "set_captions", on: false },
+      { op: "set_audio", loudness: null }, // levels below are absolute: no loudness step
     ] }, ctx).snap;
     const [, b, c, d] = s.timeline.tracks.v1;
     s = applyOp(s, { op: "batch", ops: [{ op: "set_audio_offset", clipId: c.id, start: -0.5 }, { op: "set_audio_offset", clipId: d.id, muted: true }] }, ctx).snap;

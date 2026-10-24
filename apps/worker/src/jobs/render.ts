@@ -11,6 +11,7 @@ import { frameAt, graphicCover, JobError, measureFile, probe, run } from "../lib
 import { cachedAsset } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { throttle, type Ctx } from "../lib/job";
+import { measureMix, type MixLoudness } from "../lib/mix";
 
 const FONTS_DIR = process.env.FONTS_DIR || "/usr/share/fonts";
 
@@ -137,11 +138,19 @@ export async function renderJob(ctx: Ctx) {
       files.audio![a.clipId] = await cachedAsset(a.assetKey);
     }
     if (plan.ass) await writeFile(files.assPath!, plan.ass);
-    const { args, filterGraph } = ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || undefined });
-    const graphPath = join(ctx.dir, "graph.txt");
-    await writeFile(graphPath, filterGraph);
     await send(i, 1);
     i++;
+
+    // ---- Measuring loudness: the mix, audio only, so the render can set it to the target exactly ----
+    let mixLoudness: MixLoudness | null = null;
+    const measuring = steps[i] === "Measuring loudness";
+    if (plan.audioMix?.loudness != null) {
+      mixLoudness = await measureMix(plan, files, sourceInfo, { dir: ctx.dir, signal, onProgress: measuring ? (f) => sendThrottled(i, f) : undefined });
+    }
+    if (measuring) { await send(i, 1); i++; }
+    const { args, filterGraph } = ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || undefined, loudnessGainDb: mixLoudness?.gainDb });
+    const graphPath = join(ctx.dir, "graph.txt");
+    await writeFile(graphPath, filterGraph);
 
     // ---- One FFmpeg pass. Its progress moves through the visible steps. ----
     const endStep = steps.length - 1; // the last step is packing / cleaning up
@@ -202,7 +211,7 @@ export async function renderJob(ctx: Ctx) {
     }
     await prisma.render.update({ where: { id: r.id }, data: {
       status: "done", outputKey: `${base}.mp4`, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? "1080p" : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
     } });
     const fresh = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     await prisma.project.update({ where: { id: project.id }, data: {

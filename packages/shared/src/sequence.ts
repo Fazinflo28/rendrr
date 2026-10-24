@@ -269,7 +269,7 @@ export function removeFromMainCut(tl: Timeline, a: number, b: number): Timeline 
 //   start/end   on every clip: edit seconds, written by the layout (with timelineStart/timelineEnd and linkId).
 //   rotate, framing   per V1 clip.
 // =============================================================================================
-export type SeqClip = Clip & { sourceVideoId: string; sourceIn: number; sourceOut: number; audioStart?: number; audioMuted?: boolean; rotate?: Rotation; framing?: Framing };
+export type SeqClip = Clip & { sourceVideoId: string; sourceIn: number; sourceOut: number; audioStart?: number; audioMuted?: boolean; audioGain?: number; audioFadeIn?: number; audioFadeOut?: number; rotate?: Rotation; framing?: Framing };
 export type Attached = Clip & { anchorId?: string; anchorAt?: number; length?: number; fill?: boolean };
 
 export const isSequence = (tl: Timeline) => tl.model === "B";
