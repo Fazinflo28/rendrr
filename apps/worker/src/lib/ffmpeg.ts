@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { parseMeasureLog, type FileMeasure } from "@rendrr/shared";
 
@@ -7,6 +8,17 @@ export class JobError extends Error {
   friendly = true;
   constructor(message: string, public code?: string, public retry = true) { super(message); }
 }
+
+/**
+ * Filter graph threads for renders: FFMPEG_FILTER_THREADS, else the CPU count up to 4. Every scaler in the graph
+ * starts this many threads, and the host's CPU count (not the container's share) would start thousands.
+ */
+export function filterThreads(): number {
+  return Math.max(1, Math.floor(Number(process.env.FFMPEG_FILTER_THREADS || 0)) || Math.min(4, availableParallelism()));
+}
+
+/** FFmpeg failed because the container could not start another thread. */
+export const outOfThreads = (e: unknown) => /Resource temporarily unavailable/.test(String((e as { stderr?: string })?.stderr ?? ""));
 
 export type RunOpts = { signal?: AbortSignal; onProgress?: (seconds: number) => void; cwd?: string; stdin?: "ignore" };
 

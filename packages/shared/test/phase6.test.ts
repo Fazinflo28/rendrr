@@ -249,4 +249,14 @@ describe("render plan and FFmpeg graph", () => {
     expect(out).toMatch(/Looks: grade exposure \+0.5 on a; blur 30 on b/);
     expect(out).toMatch(/HDR: footage is HDR/);
   });
+  it("bounds the filter graph's threads when asked (every scaler starts that many)", () => {
+    const s = edit(three(), { op: "set_grade", clipId: "a", exposure: 0.5 } as Op).snap;
+    const p = planRender({ kind: "preview", snapshot: s, transcript: tr, source, videoId: "v" });
+    const files: PlanFiles = { source: "/in.mp4", output: "/out.mp4", looks: Object.fromEntries(Object.keys(p.lookFiles ?? {}).map((n) => [n, `/tmp/${n}`])) };
+    const { args } = ffmpegArgs(p, files, source, { loudnessGainDb: 0, filterThreads: 3 });
+    const at = args.indexOf("-filter_complex_threads");
+    expect(args[at + 1]).toBe("3");
+    expect(args[at + 2]).toBe("-filter_complex_script");
+    expect(ffmpegArgs(p, files, source, { loudnessGainDb: 0 }).args).not.toContain("-filter_complex_threads");
+  });
 });

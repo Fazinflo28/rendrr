@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { frameAt, graphicCover, JobError, measureFile, probe, run } from "../lib/ffmpeg";
+import { filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run } from "../lib/ffmpeg";
 import { cachedAsset } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { throttle, type Ctx } from "../lib/job";
@@ -167,7 +167,8 @@ export async function renderJob(ctx: Ctx) {
       mixLoudness = await measureMix(plan, files, sourceInfo, { dir: ctx.dir, signal, onProgress: measuring ? (f) => sendThrottled(i, f) : undefined });
     }
     if (measuring) { await send(i, 1); i++; }
-    const { args, filterGraph } = ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || undefined, loudnessGainDb: mixLoudness?.gainDb });
+    const argsFor = (ft: number) => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || undefined, filterThreads: ft, loudnessGainDb: mixLoudness?.gainDb });
+    const { args, filterGraph } = argsFor(filterThreads());
     const graphPath = join(ctx.dir, "graph.txt");
     await writeFile(graphPath, filterGraph);
 
@@ -179,8 +180,16 @@ export async function renderJob(ctx: Ctx) {
       const pos = p * span;
       sendThrottled(i + Math.min(span - 1, Math.floor(pos)), pos - Math.min(span - 1, Math.floor(pos)));
     };
+    const withGraph = (a: string[]) => a.map((x) => (x === "__FILTER_SCRIPT__" ? graphPath : x));
     try {
-      await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? graphPath : a)), { signal, onProgress });
+      try {
+        await run("ffmpeg", withGraph(args), { signal, onProgress });
+      } catch (e) {
+        // Out of threads (a container limit): once more with one filter thread, which needs far fewer.
+        if (signal.aborted || !outOfThreads(e)) throw e;
+        console.error("[render] ffmpeg ran out of threads; trying again with one filter thread");
+        await run("ffmpeg", withGraph(argsFor(1).args), { signal, onProgress });
+      }
     } catch (e) {
       if (signal.aborted) throw e;
       console.error("[render] ffmpeg failed:", (e as Error).message.slice(0, 2600));

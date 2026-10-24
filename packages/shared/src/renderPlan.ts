@@ -638,6 +638,11 @@ export function zoomExpr(zooms: ZoomOp[]): string {
 
 export type FfmpegOpts = {
   threads?: number;
+  /**
+   * Threads of the filter graph, which each scaler also starts: a graded graph has ~70 scalers, so leaving it to the
+   * CPU count on a many-core host starts thousands of threads and FFmpeg fails with EAGAIN at the container's limit.
+   */
+  filterThreads?: number;
   /** The loudness gain the measuring pass found (dB). Needed when the plan normalizes loudness. */
   loudnessGainDb?: number;
   /** Audio only, up to the mix, through ebur128: the measuring pass (its stderr has the loudness summary). */
@@ -1100,6 +1105,7 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
   return [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
     ...inputs,
+    ...(opts.filterThreads ? ["-filter_complex_threads", String(opts.filterThreads)] : []),
     "-filter_complex_script", "__FILTER_SCRIPT__",
     "-map", "[vout]", "-map", "[aout]",
     ...video,

@@ -2,7 +2,9 @@ import { env, newRedis, queue, type MaintenanceJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { processTimeoutMs, QUEUES, renderTimeoutMs } from "@rendrr/shared";
 import { Worker, type Job } from "bullmq";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { availableParallelism } from "node:os";
 import { analyzeJob } from "./jobs/analyze";
 import { breakdownJob, queueMissingBreakdowns } from "./jobs/breakdown";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
@@ -10,6 +12,7 @@ import { framesJob } from "./jobs/frames";
 import { maintenanceJob } from "./jobs/maintenance";
 import { proxyJob } from "./jobs/proxy";
 import { renderFailed, renderJob } from "./jobs/render";
+import { filterThreads } from "./lib/ffmpeg";
 import { guarded } from "./lib/job";
 
 env(); // fail fast on missing settings
@@ -61,7 +64,11 @@ createServer(async (_req, res) => {
   const counts = await Promise.all(Object.keys(QUEUES).map(async (q) => [q, await queue(q as keyof typeof QUEUES).getJobCounts("active", "waiting", "failed")])).catch(() => []);
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ ok: true, service: "rendrr-worker", queues: Object.fromEntries(counts as [string, unknown][]) }));
-}).listen(port, () => console.log(`[worker] up, health on :${port}`));
+}).listen(port, () => {
+  // The CPUs FFmpeg sees and the container's thread limit, which a render's thread count has to stay under.
+  const pids = (() => { try { return readFileSync("/sys/fs/cgroup/pids.max", "utf8").trim(); } catch { return "?"; } })();
+  console.log(`[worker] up, health on :${port}; cpus ${availableParallelism()}, pids.max ${pids}, filter threads ${filterThreads()}`);
+});
 
 const stop = async () => { await Promise.all(workers.map((w) => w.close())); await prisma.$disconnect(); process.exit(0); };
 process.on("SIGTERM", stop);

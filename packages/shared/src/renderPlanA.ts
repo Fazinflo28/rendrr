@@ -170,7 +170,7 @@ export function planRenderA(input: PlanInput): RenderPlan {
 // ---------------------------------------------------------------------------------------------
 // ffmpegArgs (model A): plan + local files -> one command.
 // ---------------------------------------------------------------------------------------------
-export function ffmpegArgsA(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: { threads?: number } = {}): { args: string[]; filterGraph: string } {
+export function ffmpegArgsA(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: { threads?: number; filterThreads?: number } = {}): { args: string[]; filterGraph: string } {
   const inputs: string[] = [];
   const g: string[] = [];
   let idx = 0;
@@ -296,6 +296,7 @@ export function ffmpegArgsA(plan: RenderPlan, files: PlanFiles, source: SourceIn
   const args = [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
     ...inputs,
+    ...(opts.filterThreads ? ["-filter_complex_threads", String(opts.filterThreads)] : []),
     "-filter_complex_script", "__FILTER_SCRIPT__",
     "-map", "[vout]", "-map", "[aout]",
     "-c:v", "libx264", "-preset", preview ? "ultrafast" : "veryfast", "-crf", preview ? "28" : "20",
