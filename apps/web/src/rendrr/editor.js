@@ -640,7 +640,11 @@ function EditorInner({ project, reload, ai, keep }) {
 
   // ---- timeline pointer logic ----
   const canvasRef = useRef();
-  const PAD = 12; const px = (t) => PAD + t * zoom; const tAt = (clientX) => { const r = canvasRef.current.getBoundingClientRect(); return Math.min(dur, Math.max(0, (clientX - r.left - PAD) / zoom)); };
+  const PAD = 12; const px = (t) => PAD + t * zoom;
+  // The page is drawn at a CSS zoom (#root, 0.8 on desktop): pointer positions and rects are screen pixels, the
+  // timeline's px are CSS pixels. uiScale converts (without it a click landed at 0.8x the time under the pointer).
+  const uiScale = () => { const el = canvasRef.current; const w = el?.offsetWidth; return w ? el.getBoundingClientRect().width / w || 1 : 1; };
+  const tAt = (clientX) => { const r = canvasRef.current.getBoundingClientRect(); return Math.min(dur, Math.max(0, ((clientX - r.left) / uiScale() - PAD) / zoom)); };
   const scrubTimeline = (e) => { pb.seek(tAt(e.clientX)); const mv = (ev) => pb.seek(tAt(ev.clientX)); const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); }; window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up); };
   // Snapping: an edge or a cut dragged within 8 px of the playhead or another clip's edge lands on it.
   const snapT = (t, skip = []) => {
@@ -654,9 +658,9 @@ function EditorInner({ project, reload, ai, keep }) {
   };
   // A drag: each move shows the result of the op on the state before the drag; letting go makes it one undo step.
   const drag = (e, onMove, onUp) => {
-    const x0 = e.clientX; const base = H.state;
-    const mv = (ev) => onMove((ev.clientX - x0) / zoom, base, ev);
-    const up = (ev) => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); if (onUp) onUp((ev.clientX - x0) / zoom, base); else H.commitFrom(base); };
+    const x0 = e.clientX; const base = H.state; const k = uiScale() * zoom;
+    const mv = (ev) => onMove((ev.clientX - x0) / k, base, ev);
+    const up = (ev) => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); if (onUp) onUp((ev.clientX - x0) / k, base); else H.commitFrom(base); };
     window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
   };
   const [drop, setDrop] = useState(null); // reordering: the cut where the dragged clip would go
