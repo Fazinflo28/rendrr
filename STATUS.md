@@ -337,6 +337,47 @@ Three items of the plan were not fully built in the first pass. They are now:
   - The check named an imported LUT by its id; now by its name.
 - **Not testable live:** HDR. No HDR footage is in the account, and adding footage is not allowed in live tests. HDR is covered by the worker test (a real PQ clip rendered and read back).
 
+## Phase 7: graphics and export
+
+- **Export settings**, in a new Export window before a final and through `set_export`:
+  - Resolution: 720p, 1080p or 4K in the edit's shape. The shape (9:16, 16:9, 1:1) is now in that window too.
+  - Codec: H.264 or HEVC (Apple's `hvc1` tag).
+  - HDR footage: keep HDR (always HEVC 10-bit) or convert to SDR.
+- **Frame rate kept:**
+  - A final plays at the footage's own rate (23.976, 25, 29.97, 50, 60…; above 60 it is capped at 60, and the check says so). Every part is whole frames at that rate, so sound and picture stay together across any number of cuts.
+  - Previews stay 30 fps, like the preview copy the editor plays. Their FFmpeg commands are byte for byte what they were.
+- **Time left** while rendering: in the render window ("About 3 min left · 45%"), and in render_final and get_render ("at 45% (Encoding), about 3 min left").
+  - It comes from this user's past renders of the same quality, then from the encode's own speed. It says "Estimating" until there is something to go on.
+  - Time limits grow for 4K and HEVC, and the app now waits as long as the server does. Before, it gave up after 17 minutes even when the server allowed more.
+- **Graphics as long as the video** (up to 4 hours):
+  - Built-in graphics are drawn for the clip's real length in the render and in the player.
+  - `create_graphic` takes up to 4 hours. Over 15 s a graphic is recorded by sampling every 0.5 s: still stretches are held, and real changes are recorded frame by frame. A 60 s progress bar records in about 12 s.
+  - A custom graphic placed longer than its recording holds its last frame, in the render and the player.
+  - A graphic that fails is named in the check instead of disappearing silently.
+- **Check and get_project:** `Export (final): 1080p 1920x1080 16:9, H.264, 23.976 fps (the footage's)`, plus "scaled up from…" when the final is bigger than the footage.
+- **Found and fixed:**
+  - A built-in graphic placed for longer than 15 s vanished from the render at 15 s, while the editor kept showing it.
+  - The app gave up waiting for a final after a fixed 17 minutes.
+  - The done message always said 1080p.
+  - The live progress stream did not carry the time left.
+
+### Phase 7 tests
+
+| What | Result |
+|---|---|
+| Shared: rates snap to the nearest standard one (a phone's 29.92 is 29.97, 120 is capped at 60, previews stay 30), parts aligned to whole frames at 25, 23.976, 29.97 and 60 fps with the graph and encoder on that rate, previews unchanged, set_export, sizes in every shape, HEVC arguments, 4K scaled-up note, time limits and quality labels, Export line, graphics held to the clip | 12 new, 169 pass |
+| Previews and 30 fps finals before vs after (the live smoke edit, every shape): same arguments and graph, byte for byte | identical |
+| Worker, rendered and read back (FFmpeg 6.1 and 7.1): 25 fps and 23.976 fps finals have every frame the right source frame across four cuts on no particular grid; the picture-sound offset is constant at 5-7 ms (the measuring window), no drift; HEVC 9:16 720p (hvc1, 720x1280, 25 fps); 4K (3840x2160, 38 frames for 1.5 s at 25 fps) | 4 new, pass |
+| Worker, long graphics: a 40 s custom graphic (slow bar, 0.6 s flash at 20 s, text changed by JS at 30 s) recorded in 7.4 s from 102 pictures and read back (flash on 20.05-20.55 s and off at 19.9/20.65 s, text change exactly at 30 s, bar within half a second); a 60 s progress-bar template over a 60 s edit is on screen and growing at 10, 30 and 55 s; the editor's player HTML against the recording: bar within 5 px, mean difference 3.5-5.9/255 | 3 new, pass; worker 46 in all |
+| Editor, demo build: Export window (defaults, 4K + HEVC + 9:16 update the summary, three undos restore it), phone width | works, no page errors |
+| Browser tests after the player change (colour, motion, captions, ruler) | pass |
+
+### Phase 7 live (24 October)
+
+- get_project gives `Export (final): 1080p 1920x1080 16:9, H.264, 23.976 fps (the footage's)`. The smoke footage's original is 23.976 fps, so its final keeps that; the editor plays the 30 fps preview copy.
+- set_export 720p HEVC through the connector; render_preview's check gives `Export (final): 720p 1280x720 16:9, HEVC, 23.976 fps (the footage's)`.
+- The live editor in real Chrome: the Export window shows 16:9, 720p and HEVC selected, with "1280x720 · HEVC · 23.976 fps, kept from your footage". It was closed without changes, and the edit was set back to 1080p H.264.
+
 ## Reference-video test (23 October, live, through the connector only)
 
 The test: copy the edit of a finished reel (Glow Flow, 51 s, vertical) onto a raw talking-head video (77 s, 4K), using only the MCP connector, the way Claude would.
