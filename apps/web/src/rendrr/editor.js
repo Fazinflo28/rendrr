@@ -150,12 +150,14 @@ const CLEANUP_NAME = { none: "None", light: "Light", voice: "Voice", noisy: "Noi
 const LOUDNESS = [[-14, "-14 LUFS (online)"], [-16, "-16 LUFS (podcast)"], [-23, "-23 LUFS (broadcast)"]];
 const dB = (x) => (x > 0 ? "+" : "") + (Math.round(x * 10) / 10) + " dB";
 // The Audio tab: the whole edit's sound (set_audio) and the selected clip's level and fades (set_clip_audio).
-function AudioTab({ a, clip, track, len, doOp, H, liveOp }) {
+function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp }) {
   const loud = a.loudness == null ? "off" : String(a.loudness);
   const loudOpts = LOUDNESS.some(([v]) => v === a.loudness) || a.loudness == null ? LOUDNESS : [...LOUDNESS, [a.loudness, a.loudness + " LUFS"]];
   const v1 = track === "v1" || track === "a1";
   const gain = clip ? (v1 ? clip.audioGain ?? 0 : clip.gainDb ?? (track === "a2" ? -18 : -6)) : 0;
-  const fi = clip ? (v1 ? clip.audioFadeIn : clip.fadeIn) ?? 0 : 0, fo = clip ? (v1 ? clip.audioFadeOut : clip.fadeOut) ?? 0 : 0;
+  // A music fade the clip does not set is automatic: show what renders (the plan's), marked "auto".
+  const fi = clip ? (v1 ? clip.audioFadeIn : clip.fadeIn ?? planned?.fadeIn) ?? 0 : 0, fo = clip ? (v1 ? clip.audioFadeOut : clip.fadeOut ?? planned?.fadeOut) ?? 0 : 0;
+  const autoIn = !!clip && !v1 && clip.fadeIn == null && !!planned?.fadeIn, autoOut = !!clip && !v1 && clip.fadeOut == null && !!planned?.fadeOut;
   const fadeMax = Math.max(0.1, Math.min(10, Math.floor(len * 10) / 10));
   const clipOp = (k) => (x) => ({ op: "set_clip_audio", track: v1 ? "v1" : track, clipId: clip.id, [k]: x });
   const sl = { H, liveOp };
@@ -175,8 +177,8 @@ function AudioTab({ a, clip, track, len, doOp, H, liveOp }) {
     <div class="col" style="gap:10px" id="audio-clip">
       <b class="t-label">${clip ? (v1 ? "Dialogue of " + (clip.label || "this clip") : clip.label || "This clip") : "Selected clip"}</b>
       ${clip ? html`<${OpSlider} id="clip-gain" label="Level" value=${gain} min=${v1 ? -24 : -40} max=${12} step=${0.5} show=${dB} opFor=${clipOp("gainDb")} ...${sl} />
-        <div class="row" style="gap:12px"><div class="grow"><${OpSlider} id="clip-fade-in" label="Fade in" value=${fi} min=${0} max=${fadeMax} step=${0.1} show=${(x) => x + " s"} opFor=${clipOp("fadeIn")} ...${sl} /></div>
-          <div class="grow"><${OpSlider} id="clip-fade-out" label="Fade out" value=${fo} min=${0} max=${fadeMax} step=${0.1} show=${(x) => x + " s"} opFor=${clipOp("fadeOut")} ...${sl} /></div></div>`
+        <div class="row" style="gap:12px"><div class="grow"><${OpSlider} id="clip-fade-in" label="Fade in" value=${fi} min=${0} max=${fadeMax} step=${0.1} show=${(x) => x + " s" + (autoIn && x === fi ? " auto" : "")} opFor=${clipOp("fadeIn")} ...${sl} /></div>
+          <div class="grow"><${OpSlider} id="clip-fade-out" label="Fade out" value=${fo} min=${0} max=${fadeMax} step=${0.1} show=${(x) => x + " s" + (autoOut && x === fo ? " auto" : "")} opFor=${clipOp("fadeOut")} ...${sl} /></div></div>`
         : html`<p class="t-small muted">Select a clip on V1, A1, A2 or A3 to set its level and fades.</p>`}
     </div>
     <p class="t-small muted" id="audio-note">The live player plays the balance: clip levels, fades, ducking, music and sound effects. Cleanup and loudness are heard in the rendered preview.</p>
@@ -597,7 +599,7 @@ function EditorInner({ project, reload, ai, keep }) {
             <${Btn} size="sm" type="submit" id="comment-post" disabled=${!draft.trim() || posting}>${posting ? "…" : "Post"}<//>
           </form>
         </div>`}
-        ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
+        ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "style" && html`<div class="pb" style="padding-top:16px">
           ${style && html`<div class="col" style="gap:12px">
             <${StyleArt} s=${style} />

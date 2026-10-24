@@ -48,6 +48,11 @@ describe("the sound settings", () => {
     expect(span.start).toBeCloseTo(c.start, 1);
     expect(p.audio[0]).toMatchObject({ kind: "music", gainDb: -22, fadeIn: 2, fadeOut: 3 });
     expect(summarizeTimeline(r.snap, tr)).toMatch(/dialogue \+4 dB fades 0.3\/0s/);
+    expect(summarizeTimeline(r.snap, tr)).toMatch(/track=m_lofi -22dB fades 2\/3s/);
+    // Only the fade out set: the fade in stays automatic, and get_project says what renders.
+    const half = edit(s0, { op: "set_clip_audio", track: "a2", clipId: m.id, fadeOut: 2 }).snap;
+    expect(plan(half).audio[0]).toMatchObject({ fadeIn: 0.6, fadeOut: 2 });
+    expect(summarizeTimeline(half, tr)).toMatch(/track=m_lofi -18dB fades 0.6 auto\/2s/);
     expect(() => edit(s0, { op: "set_clip_audio", clipId: c.id, fadeIn: 30 })).toThrow(/do not fit/);
     expect(() => edit(s0, { op: "set_clip_audio", clipId: c.id })).toThrow(/Send gainDb/);
   });
@@ -150,6 +155,15 @@ describe("the check's sound lines", () => {
     const bad = editCheck(s, tr, { measured: { ...ok, lufs: -16.2, peakDb: -0.5 } });
     expect(bad).toMatch(/loudness -16.2 LUFS, target -14/);
     expect(bad).toMatch(/true peak -0.5 dBTP over the -1 dBTP ceiling/);
+  });
+  it("words gone quiet inside a requested fade are not lost dialogue; elsewhere they are", () => {
+    const end = { ...ok, silences: [{ start: 39.2, end: 39.9 }] };
+    expect(editCheck(s, tr, { measured: end })).toMatch(/silent 0.70s at 0:39.2 where words should play/);
+    const faded = edit(s, { op: "set_audio", fadeOut: 1 }, { op: "set_clip_audio", clipId: s.timeline.tracks.v1[0].id, fadeIn: 0.5 }).snap;
+    const out = editCheck(faded, tr, { measured: { ...ok, silences: [{ start: 39.2, end: 39.9 }, { start: 0, end: 0.4 }] } });
+    expect(out).not.toMatch(/where words should play/);
+    expect(out).toMatch(/; 1 clip has its own gain or fades/);
+    expect(editCheck(faded, tr, { measured: { ...ok, silences: [{ start: 20, end: 20.7 }] } })).toMatch(/silent 0.70s at 0:20.0 where words should play/);
   });
   it("a version mixed before Phase 3 is checked as it was mixed", () => {
     const a: Snapshot = { timeline: buildInitialTimelineA(tr, 40, "clean"), name: "t", aspect: "16:9", styleId: "s2" };

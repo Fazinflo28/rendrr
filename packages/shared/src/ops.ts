@@ -7,7 +7,7 @@ import {
   normalizeTimeline, timelineProblems,
   type AudioSettings, type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
 } from "./timeline";
-import { CLEANUP_TEXT } from "./audio";
+import { autoMusicFades, CLEANUP_TEXT } from "./audio";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, isPlainSequence, layoutTimeline, mainVideoOf, mergeRanges, moveSeqClip, newSeqClipId,
@@ -856,7 +856,10 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
     let clips = tl.tracks[k] as (Clip & Record<string, unknown>)[];
     if (k === "v3") clips = clips.filter((c) => !isCaptionMarker("v3", c));
     const shown = clips.slice(0, maxPerTrack).map((c) => {
-      const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${c.fadeIn ?? 0}/${c.fadeOut ?? 0}s` : "";
+      // As they render: a music clip that sets only one fade keeps the automatic other one.
+      const auto = k === "a2" ? autoMusicFades(c.end - c.start) : { fadeIn: 0, fadeOut: 0 };
+      const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
+      const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
       const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
       const on = c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "";
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;

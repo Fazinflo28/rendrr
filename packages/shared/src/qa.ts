@@ -39,6 +39,12 @@ export function parseMeasureLog(stderr: string, fileEnd: number): Pick<FileMeasu
 }
 
 const overlap = (a: Range, b: Range) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
+/** The parts of `rs` outside every range of `out`. */
+const minus = (rs: Range[], out: Range[]): Range[] => rs.flatMap((r) => {
+  let parts = [r];
+  for (const o of out) parts = parts.flatMap((p) => (o.end <= p.start || o.start >= p.end ? [p] : [{ start: p.start, end: o.start }, { start: o.end, end: p.end }].filter((x) => x.end - x.start > 1e-6)));
+  return parts;
+});
 const list = (xs: string[], max = 8) => xs.slice(0, max).join(", ") + (xs.length > max ? `, +${xs.length - max} more` : "");
 
 /** "Sequence: 12 clips from 2 videos (main 10, v_x 2), 1 moved, 1 repeat, 1 J cut, 1 muted". */
@@ -128,7 +134,17 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
   const legacy = !isSequence(snap.timeline);
   const sound = legacy ? { ...audioSettings({}), loudness: null } : audioSettings(tl);
   const v1 = tl.tracks.v1 as SeqClip[];
-  const clipSound = v1.filter((c) => c.audioGain || c.audioFadeIn || c.audioFadeOut).length + (tl.tracks.a2 as (Clip & { fadeIn?: number; fadeOut?: number })[]).filter((c) => c.fadeIn != null || c.fadeOut != null).length;
+  const clipSound = v1.filter((c) => c.audioGain || c.audioFadeIn || c.audioFadeOut).length + ([...tl.tracks.a2, ...tl.tracks.a3] as (Clip & { fadeIn?: number; fadeOut?: number })[]).filter((c) => c.fadeIn != null || c.fadeOut != null).length;
+  // The fades the edit asks for (the mix's and each dialogue clip's): words there may go quiet in the file on purpose.
+  const faded: Range[] = legacy ? [] : mergeRanges([
+    ...(sound.fadeIn > 0 ? [{ start: 0, end: Math.min(total, sound.fadeIn) }] : []),
+    ...(sound.fadeOut > 0 ? [{ start: Math.max(0, total - sound.fadeOut), end: total }] : []),
+    ...v1.flatMap((c) => {
+      const p = view.clip(c.id);
+      if (!p) return [];
+      return [...(c.audioFadeIn ? [{ start: p.soundStart, end: p.soundStart + c.audioFadeIn }] : []), ...(c.audioFadeOut ? [{ start: p.soundEnd - c.audioFadeOut, end: p.soundEnd }] : [])];
+    }),
+  ]);
   if (sound.loudness != null) {
     // Loudness is set by the render: the file must be within 1 LU of the target and under the true-peak ceiling.
     if (ld?.lufs != null && Math.abs(ld.lufs - sound.loudness) > 1) flags.push(`loudness ${ld.lufs} LUFS, target ${sound.loudness}`);
@@ -148,8 +164,9 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     if (v != null && Math.abs(v - want) > 0.1) flags.push(`file is ${v.toFixed(2)}s but the ${opts.planned != null ? "render planned" : "edit is"} ${want.toFixed(2)}s`);
     if (v != null && a != null && Math.abs(v - a) > 0.1) flags.push(`audio ${a.toFixed(2)}s vs video ${v.toFixed(2)}s (out of sync at the end)`);
     for (const b of m.black) flags.push(`black ${(b.end - b.start).toFixed(2)}s at ${fmtT(b.start)}`);
-    // Silent in the file while the edit has someone speaking: a lost stretch of dialogue (muted clips are flagged above).
-    const speech = spoken.filter((x) => !x.muted).map((x) => ({ start: x.at, end: x.end }));
+    // Silent in the file while the edit has someone speaking: a lost stretch of dialogue (muted clips are flagged above,
+    // and words inside a fade the edit asks for may go quiet on purpose).
+    const speech = minus(spoken.filter((x) => !x.muted).map((x) => ({ start: x.at, end: x.end })), faded);
     for (const x of m.silences) {
       const hit = speech.reduce((acc, w) => acc + overlap(w, x), 0);
       if (hit >= 0.2) flags.push(`silent ${(x.end - x.start).toFixed(2)}s at ${fmtT(x.start)} where words should play`);
@@ -177,7 +194,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     `Captions: ${tl.captionsOn ? `on (${tl.captionLook}), ${coverPct}% of spoken words` : "off"}`,
     `Zooms ${zooms.length}${zooms.length ? ": " + list(zooms.map((z) => `${fmtT(z.start)} ${Math.round(Number(z.zoom || 1) * 100)}%`)) : ""} | B-roll ${broll.length}${broll.length ? ": " + list(broll.map((b) => fmtT(b.start))) : ""} | Graphics ${graphics.length}${m && !m.error ? ` (${gShown.filter((x) => x.on).length} on screen)` : ""}${graphics.length ? ": " + list(gText) : ""}`,
     `Music: ${music.length ? `${list(music.map((c) => `${c.label} ${c.gainDb ?? -18}dB`), 3)}, under ${Math.round(musicCover * 100)}% of the edit` : "none"}`,
-    `Sound: ${legacy ? "mixed before Phase 3 (limiter only)" : audioText(sound)}${clipSound ? `; ${clipSound} ${clipSound === 1 ? "clip has" : "clips have"} its own gain or fades` : ""}`,
+    `Sound: ${legacy ? "mixed before Phase 3 (limiter only)" : audioText(sound)}${clipSound ? `; ${clipSound} ${clipSound === 1 ? "clip has its" : "clips have their"} own gain or fades` : ""}`,
     `Cuts ${Math.max(0, segs.length - 1)}${total ? ` (${(((segs.length - 1) / total) * 60).toFixed(1)}/min)` : ""}, shortest clip ${segs.length ? Math.min(...segs.map((x) => x.len)).toFixed(1) + "s" : "-"}${short.length ? ` at ${list(short.map((x) => fmtT(x.at)), 4)}` : ""}`,
     ...(ld ? [`Loudness of the file: ${ld.lufs != null ? ld.lufs + " LUFS" : "unknown"}, true peak ${ld.peakDb != null ? ld.peakDb + " dBTP" : "unknown"}${sound.loudness != null ? ` (target ${sound.loudness} LUFS, ceiling ${sound.peak} dBTP)` : ""}`] : []),
     `Flags: ${flags.length ? flags.join("; ") : "none"}`,

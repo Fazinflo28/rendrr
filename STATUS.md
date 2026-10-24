@@ -130,7 +130,7 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 | What | Result |
 |---|---|
-| Shared: settings, ops, speech ranges, the FFmpeg curves equal the player's, graph, measuring mode, legacy check | 101 pass |
+| Shared: settings, ops, speech ranges, the FFmpeg curves equal the player's, graph, measuring mode, legacy check, fades in the check | 102 pass |
 | Worker, real renders measured with ebur128 | 8 pass |
 | ↳ quiet voice (−33 LUFS) | −14 ± 1 LUFS, true peak ≤ −0.8 dBTP |
 | ↳ full-scale clicks on a voice | true peak under the ceiling, still −14 ± 1 LUFS |
@@ -142,6 +142,29 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 | Worker, older tests (A/B identical render, two videos, J/L, check end to end) | pass |
 | API: one `apply_edits` call with `set_audio`, `add_music` and `set_clip_audio`; `get_project` reads it back; the editor payload carries the signed music URL | 10 pass |
 | Browser, demo build: Audio tab, selects, sliders (live, undo), clip level and fades, fades drawn, music `<audio>` volume, phone width | music −18 dB, −36 dB under speech with 18 dB ducking; dialogue plays at 1/1.585 when a clip is +4 dB; no page errors |
+
+### Phase 3 live (24 October)
+
+- **Through the connector (smoke-test account), a new edit on the existing 1:17 footage:**
+  - one `apply_edits`: `cut_silences`, `add_music`, `set_audio` (voice cleanup, 12 dB ducking, mix fades 0.5 / 1 s)
+  - one `apply_edits`: `set_clip_audio` on a dialogue clip (+3 dB, fade in 0.2 s) and on the music (−20 dB, fade out 2 s)
+  - `get_project` read all of it back
+
+| Render (540p preview, 70.4 s) | File, measured by the worker |
+|---|---|
+| default target, −14 LUFS / −1 dBTP | −14.1 LUFS, true peak −1.4 dBTP, about 10 s to render |
+| `set_audio` −16 LUFS / −2 dBTP | −16.0 LUFS, true peak −2.8 dBTP |
+| loudness off | −19.4 LUFS, true peak −4.3 dBTP, "loudness not normalized" |
+
+- **Live editor (browser):**
+  - Audio tab shows the edit's settings; A1 shows "Dialogue · +3 dB" with its fade; A2 shows "Soft lo-fi 01 · −20 dB" with both fades
+  - after a change, the live player has a music element from the bucket, looped, at −33 dB under speech (−20 dB, ducked 13 dB)
+  - undo restores the setting; no page errors
+  - The test browser (Playwright's Chromium) can't decode AAC or H.264, so it could not play the sound itself. The music URL returns HTTP 200 `audio/mp4`. Chrome and Safari play AAC.
+- **Bugs found by the live test, fixed:**
+  - With loudness off, the check flagged "silent 0.42s at 1:09.5 where words should play". The last words were inside the 1 s mix fade-out the edit asked for. The check now ignores silence inside requested fades (the mix's and each dialogue clip's) and still flags it anywhere else.
+  - `get_project` showed a music clip with only a fade-out set as "fades 0/2s", but its automatic 0.6 s fade-in still renders. It now reads "fades 0.6 auto/2s", and the Audio tab shows the automatic fades too.
+  - Check wording: "2 clips have its own gain" now reads "their own".
 
 ## Reference-video test (23 October, live, through the connector only)
 
