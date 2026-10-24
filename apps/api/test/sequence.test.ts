@@ -109,4 +109,27 @@ describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL 
     assert.match(read.text, /text="Hello" \(Inter 800, 5% size, #0A0A0C, box #FFD400 100%/);
     await prisma.style.delete({ where: { id: styleId } });
   });
+
+  it("Phase 5: speed, a freeze, a transition and keyframes in one call; get_project reads them back", async () => {
+    const before = await TOOL_HANDLERS.get_project(c(), { projectId });
+    const rows = Array.from(before.text.matchAll(/^ {2}(\S+) main ([\d.]+)-[\d.]+ @/gm));
+    const ids = rows.map((m) => m[1]);
+    assert.ok(ids.length >= 2, "two clips on V1");
+    const r = await TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [
+      { op: "set_speed", clipId: ids[0], speed: 2 },
+      { op: "set_transition", clipId: ids[1], type: "dip-black", duration: 0.4 },
+      { op: "set_keyframes", clipId: ids[1], keys: [{ t: 0, scale: 1 }, { t: 0.5, scale: 1.2, ease: "out" }] },
+      { op: "freeze_frame", clipId: ids[1], at: Number(rows[1][2]), length: 0.5 },
+    ] });
+    assert.match(r.text, /Done \(v5/);
+    assert.match(r.text, /2x \(sound pitch kept\)/);
+    const read = await TOOL_HANDLERS.get_project(c(), { projectId });
+    assert.match(read.text, new RegExp(`${ids[0]} main .* 2x \\(sound pitch kept\\)`));
+    assert.match(read.text, /freeze 0\.5s \(silent\)/);
+    assert.match(read.text, /dip-black 0\.4s in/);
+    assert.match(read.text, /keys 0\.00,0\.50s/);
+    // A bad op is refused with the reason, and nothing is saved.
+    await assert.rejects(async () => TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "set_speed", clipId: ids[0], speed: 50 }] }), /speed number must be less than or equal to 10/);
+    assert.match((await TOOL_HANDLERS.get_project(c(), { projectId })).text, /v5/);
+  });
 });

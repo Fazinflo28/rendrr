@@ -915,3 +915,7 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .tlist { display: flex; gap: 8px; align-items: baseline; text-align: left; padding: 6px 8px; border-radius: 8px; font-size: 13px; }
 .tlist.on, .tlist:hover { background: var(--raised); }
 #text-panel select.input.sm { min-width: 84px; }
+
+/* Phase 5: transition marks on the cut, keyframe diamonds on clips */
+.tl-canvas .clip .trm { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(255, 210, 60, .55) 0 4px, rgba(255, 210, 60, .15) 4px 8px); border-left: 1px solid rgba(255, 210, 60, .9); border-right: 1px solid rgba(255, 210, 60, .9); pointer-events: none; z-index: 2; }
+.tl-canvas .clip .kf { position: absolute; bottom: 2px; width: 7px; height: 7px; margin-left: -3.5px; background: #ffd23c; border: 1px solid rgba(0, 0, 0, .55); transform: rotate(45deg); pointer-events: none; z-index: 3; }

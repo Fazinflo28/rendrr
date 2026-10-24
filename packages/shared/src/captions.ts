@@ -6,6 +6,7 @@
 import { z } from "zod";
 import type { Aspect, CaptionLook } from "./constants";
 import { FONT_METRICS, type FontMetrics } from "./fontMetrics";
+import { keyTracks, motionAt, type Key, type Motion } from "./motion";
 
 // ---------------------------------------------------------------------------------------------
 // Fonts: the bundled files (apps/web/public/fonts), one face per family name.
@@ -223,7 +224,8 @@ export function activeWord(c: StyledCaption, t: number): [number, number] | null
 }
 
 /** A text layer as the render draws it (edit seconds). */
-export type TextLayer = { clipId: string; start: number; end: number; lines: string[]; style: TextStyle; card: Card | null; anim: TextAnim };
+/** keys (Phase 5): keyframes in seconds from the layer's start; they move, scale, turn and fade the text (not its card). */
+export type TextLayer = { clipId: string; start: number; end: number; lines: string[]; style: TextStyle; card: Card | null; anim: TextAnim; keys?: Key[] };
 /** Seconds an animation takes in and out. */
 export const ANIM_IN: Record<TextAnim, number> = { none: 0, fade: 0.25, pop: 0.15, slide: 0.25 };
 export const ANIM_OUT: Record<TextAnim, number> = { none: 0, fade: 0.25, pop: 0.25, slide: 0.25 };
@@ -239,6 +241,23 @@ export function textAnimAt(anim: TextAnim, u: number, len: number, H: number): {
   const scale = anim === "pop" ? (u < 0.15 ? 0.8 + (0.2 * u) / 0.15 : 1) : 1;
   const dy = anim === "slide" ? (u < 0.25 ? Math.round(H * 0.04 * (1 - u / 0.25) * 10) / 10 : 0) : 0;
   return { opacity: ms(opacity), scale: ms(scale), dy };
+}
+/** A keyframed text layer's look at u seconds in: its anchor point (px), scale, turn (degrees clockwise) and opacity,
+ *  its animation and its keyframes together. The editor draws this; the ASS file draws it piece by piece. */
+export function textLookAt(t: Pick<TextLayer, "start" | "end" | "anim" | "style" | "keys">, u: number, W: number, H: number): { x: number; y: number; scale: number; rotation: number; opacity: number } {
+  const a = textAnimAt(t.anim, u, t.end - t.start, H);
+  const m: Motion = motionAt(keyTracks(t.keys), u);
+  return { x: t.style.x * W + m.x * W, y: t.style.y * H + a.dy + m.y * H, scale: a.scale * m.scale, rotation: m.rotation, opacity: a.opacity * m.opacity };
+}
+/** Where a keyframed text layer's curves bend (seconds in, to 1/100 s): the ASS pieces start and end there. */
+export function textPieces(t: Pick<TextLayer, "start" | "end" | "anim" | "keys">): number[] {
+  const len = t.end - t.start;
+  const fin = t.anim === "pop" ? 0.1 : ANIM_IN[t.anim];
+  const at = new Set<number>([0, len, fin, len - ANIM_OUT[t.anim], ...(t.anim === "pop" ? [0.15] : []), ...(t.anim === "slide" ? [0.25] : [])]);
+  const tr = keyTracks(t.keys);
+  for (const p of Object.values(tr ?? {})) for (const x of p!) at.add(x.t);
+  const cs = Array.from(at).map((x) => Math.round(x * 100) / 100).filter((x) => x >= 0 && x <= len + 1e-9).sort((a, b) => a - b);
+  return cs.filter((x, i) => i === 0 || x - cs[i - 1] >= 0.01);
 }
 /** A text layer's block size (px): its widest line and its lines' height, padding included. */
 export function textBlock(l: Pick<TextLayer, "lines" | "style">, W: number, H: number): { w: number; h: number } {
@@ -305,9 +324,22 @@ export function buildStyledAss(o: { captions: StyledCaption[]; captionStyle: Cap
     const fin = Math.round((t.anim === "pop" ? 0.1 : ANIM_IN[t.anim]) * 1000), fout = Math.round(ANIM_OUT[t.anim] * 1000);
     const fad = t.anim === "none" ? "" : `\\fad(${fin},${fout})`;
     if (t.card) ev(i * 2, t.start, t.end, "Card", `{\\an7\\pos(0,0)\\p1\\bord0\\shad0\\1c${bgr(t.card.color)}&\\1a&H${Math.round((1 - t.card.opacity) * 255 + 1e-9).toString(16).padStart(2, "0").toUpperCase()}&${fad}}m 0 0 l ${W} 0 ${W} ${H} 0 ${H}{\\p0}`);
+    const body = t.lines.map((l) => esc(caseOf(l, t.style.case))).join("\\N");
+    if (t.keys?.length) {
+      // Keyframed (Phase 5): one event per piece of the curve table, each a straight line from its start to its end
+      // (position, scale, turn, fade), with the layer's animation folded in. ASS turns counter-clockwise: \frz is minus.
+      const cuts = textPieces(t);
+      for (let k = 0; k + 1 < cuts.length; k++) {
+        const u0 = cuts[k], u1 = cuts[k + 1], ms = Math.round((u1 - u0) * 1000);
+        const a = textLookAt(t, u0, W, H), b = textLookAt(t, u1, W, H);
+        const al = (o: number) => Math.round((1 - Math.min(1, Math.max(0, o))) * 255);
+        ev(i * 2 + 1, t.start + u0, t.start + u1, `T${i}`, `{\\move(${n1(a.x)},${n1(a.y)},${n1(b.x)},${n1(b.y)},0,${ms})\\fscx${n1(a.scale * 100)}\\fscy${n1(a.scale * 100)}\\frz${n1(-a.rotation)}\\fade(${al(a.opacity)},${al(b.opacity)},${al(b.opacity)},0,${ms},${ms},${ms})\\t(0,${ms},\\fscx${n1(b.scale * 100)}\\fscy${n1(b.scale * 100)}\\frz${n1(-b.rotation)})${shadowTags(d)}}${body}`);
+      }
+      return;
+    }
     const motion = t.anim === "slide" ? `\\move(${X},${n1(t.style.y * H + H * 0.04)},${X},${Y},0,250)` : `\\pos(${X},${Y})`;
     const pop = t.anim === "pop" ? "\\fscx80\\fscy80\\t(0,150,\\fscx100\\fscy100)" : "";
-    ev(i * 2 + 1, t.start, t.end, `T${i}`, `{${motion}${fad}${pop}${shadowTags(d)}}${t.lines.map((l) => esc(caseOf(l, t.style.case))).join("\\N")}`);
+    ev(i * 2 + 1, t.start, t.end, `T${i}`, `{${motion}${fad}${pop}${shadowTags(d)}}${body}`);
   });
   // Cards: full-frame rectangles, drawn with a plain style (a box style would paint a box around them).
   if (o.texts.some((t) => t.card)) styles.unshift("Style: Card,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1");

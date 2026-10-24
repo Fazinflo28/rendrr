@@ -207,3 +207,16 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Text layer animations | Linear, from ASS tags: fade (`\fad`), pop (`\fscx80` to 100 over 150 ms, `\fad(100,…)`), slide (`\move` from 4% lower over 250 ms). The editor evaluates the same curves (`textAnimAt`). |
 | The three looks | Presets of the caption style with their old sizes, colours and boxes. Only line breaking changed: by words and width instead of libass's own wrapping. |
 
+## Phase 5: transitions, keyframes, speed
+
+| Question | Decision |
+|---|---|
+| Keyframes in the render | FFmpeg's `perspective` filter with `sense=destination`, evaluated per frame: the four corners go where position, scale and rotation put them, at output size, transparent around. Its cost does not grow with the zoom. A picture that only gets small is scaled down first with a real scaler, so it does not alias. Opacity: a 2x2 grey curve (`geq` on T), stretched and multiplied into the alpha. |
+| Easing | The CSS curves (ease in, out, in-out) and any cubic bezier, turned into 16 straight pieces per segment. The render and the player use the same table, so they agree exactly. |
+| Speed frames | Output frame n of a part shows source frame floor(rate x n), with the timestamps placed explicitly (`settb`, `setpts=ceil(N/rate)`), not left to FFmpeg's rounding, which differs by path. The player seeks inside that frame. |
+| Sound at other speeds | `atempo` keeps the pitch. A ramp is one `atempo` whose tempo changes at each step (`asendcmd`), so steps do not click. Sound plays between 0.5x and 4x, because browsers mute it outside that and cannot play it backwards. Outside that range, reversed and frozen, the clip is silent in the render too. |
+| Reverse | In 1 s chunks, each read from its own input (`-ss`) and fitted before `reverse`, so memory stays at about one second of frames at output size. |
+| Transitions | Centred on the cut; the edit's length does not change. Dissolve, slide and whip use footage past the cut (handles), as Premiere does; they get shorter when a side has less, and the check says so. Dips and zoom need no handles. A dip or dissolve on the first clip fades in from the colour. Two transitions on one clip get at most half of it each. |
+| Whip | Both sides slide together with a smoothstep, blurred along the move: `gblur` set per frame with `sendcmd` in the render, an SVG `feGaussianBlur` with the same sigma in the player. |
+| V1 keyframe times | Stored at footage seconds (like `anchorAt`), so cut words or a split before a key do not move it relative to the picture. The ops take seconds from the clip's start, and get_project shows those. |
+| Timing found by the new browser test | The joined picture's timestamps were in microseconds when parts were drawn one by one, so every overlay showed a frame late. It is now put back on the 1/30 s grid. Overlays start and end on whole frames, and the player reads curves at the frame's start. |

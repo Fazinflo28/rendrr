@@ -2,8 +2,10 @@
 // lengths, black and silent stretches, loudness, graphics on screen) next to what the edit says, and every place
 // they disagree. Facts and fixed thresholds only, no judgement.
 import { fmtT } from "./breakdown";
-import { audioText, lookText } from "./ops";
-import { asSequence, isSequence, layoutTimeline, mergeRanges, sequenceView, type Range, type SeqClip, type SequenceView } from "./sequence";
+import { audioText, lookText, speedText } from "./ops";
+import { planTransitions } from "./renderPlan";
+import type { Key } from "./motion";
+import { asSequence, editOf, isSequence, layoutTimeline, mergeRanges, normalSpeed, rateOf, sequenceView, type Range, type SeqClip, type SequenceView } from "./sequence";
 import { audioSettings, type Clip, type Snapshot, type Timeline } from "./timeline";
 import { captionStyleOf, drawnOf, styleText, textPreset, textRect, type CaptionStyle, type Card, type TextAnim, type TextStyle } from "./captions";
 import { allWords, type Transcript, type Word } from "./transcript";
@@ -122,10 +124,12 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
   const wordsOf = (vid: string) => (vid === main ? words : allWords(opts.transcripts?.[vid] ?? []));
   // What is said in the edit, in edit order: the words of every stretch of dialogue (muted ones are in the edit, silent).
   const spoken: { w: Word; vid: string; at: number; end: number; muted: boolean }[] = [];
+  // A clip silent at its speed (reversed, frozen, too slow or fast) says nothing.
   for (const s of view.sound) {
+    if (s.silent) continue;
     for (const w of wordsOf(s.videoId)) {
       if ((s.videoId === main && cut.has(w.id)) || w.t < s.srcIn || w.t >= s.srcOut) continue;
-      spoken.push({ w, vid: s.videoId, at: s.start + (w.t - s.srcIn), end: s.start + (Math.min(w.end, s.srcOut) - s.srcIn), muted: s.muted });
+      spoken.push({ w, vid: s.videoId, at: editOf(s, w.t), end: editOf(s, Math.min(w.end, s.srcOut)), muted: s.muted });
     }
   }
   spoken.sort((a, b) => a.at - b.at);
@@ -165,7 +169,13 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
   const music = (tl.tracks.a2 as (Clip & Record<string, unknown>)[]).filter(inEdit);
   const musicCover = total ? mergeRanges(music.map((c) => ({ start: Math.max(0, c.start), end: Math.min(total, c.end) }))).reduce((a, r) => a + r.end - r.start, 0) / total : 0;
 
-  const segs = view.picture.map((p) => ({ at: p.start, len: p.end - p.start }));
+  // Cuts: where the picture jumps. A ramp's steps play on from each other, so they make one stretch.
+  const segs: { at: number; len: number }[] = [];
+  view.picture.forEach((p, i) => {
+    const q = view.picture[i - 1], last = segs[segs.length - 1];
+    const goesOn = q && last && q.videoId === p.videoId && rateOf(q) !== 1 && Math.sign(rateOf(q)) === Math.sign(rateOf(p)) && (rateOf(p) > 0 ? Math.abs(q.srcOut - p.srcIn) < 1e-3 : Math.abs(p.srcOut - q.srcIn) < 1e-3);
+    if (goesOn) last.len += p.end - p.start; else segs.push({ at: p.start, len: p.end - p.start });
+  });
   const short = segs.filter((x) => x.len < 0.5);
   if (short.length) flags.push(`${short.length} clip${short.length === 1 ? "" : "s"} under 0.5s`);
   const m = opts.measured ?? null;
@@ -208,6 +218,19 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     if (talks && r.x < capRect.x + capRect.w && r.x + r.w > capRect.x && r.y < capRect.y + capRect.h && r.y + r.h > capRect.y) flags.push(`text "${x.lines[0].slice(0, 30)}" at ${fmtT(x.c.start)} covers the captions`);
   }
 
+  // Phase 5: speed, transitions, keyframes. Transitions made shorter or left out are flagged; black the edit asks for (a
+  // dip, a keyframed fade) is not.
+  const offSpeed = v1.filter((c) => !normalSpeed(c) && view.clip(c.id)?.pieces.length);
+  const trans = planTransitions(view, new Map(v1.map((c) => [c.id, c])), (vid) => (vid === main ? tl.duration : undefined));
+  for (const x of trans) if (x.note && !x.note.startsWith("first clip")) flags.push(`${x.type} at ${fmtT(x.at)} ${x.end > x.start ? `is ${(x.end - x.start).toFixed(2)}s, not ${x.asked}s` : "is left out"} (${x.note.replace(/^left out: /, "")})`);
+  type Keyed = { id: string; keys: Key[] };
+  const keyed: Keyed[] = [...v1, ...tl.tracks.v2, ...tl.tracks.v3].filter((c) => ((c as { keys?: Key[] }).keys ?? []).length).map((c) => ({ id: c.id, keys: (c as { keys: Key[] }).keys }));
+  const asked: Range[] = [
+    ...trans.filter((x) => x.type.startsWith("dip") && x.end > x.start).map((x) => ({ start: x.start - 0.1, end: x.end + 0.1 })),
+    ...v1.filter((c) => c.keys?.some((k) => k.opacity != null && k.opacity < 0.5)).map((c) => { const p = view.clip(c.id)!; return { start: p.start - 0.1, end: p.end + 0.1 }; }),
+  ];
+  const keyProps = (ks: Key[]) => (["x", "y", "scale", "rotation", "opacity"] as const).filter((p) => ks.some((k) => k[p] != null)).join(", ");
+
   // Where the edit and the file disagree. Each one is a flag; "Flags: none" only when they agree.
   const fileLines: string[] = [];
   const gShown = graphics.map((g) => ({ g, on: m?.graphics.find((x) => x.clipId === g.id) }));
@@ -219,7 +242,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     const want = opts.planned ?? total;
     if (v != null && Math.abs(v - want) > 0.1) flags.push(`file is ${v.toFixed(2)}s but the ${opts.planned != null ? "render planned" : "edit is"} ${want.toFixed(2)}s`);
     if (v != null && a != null && Math.abs(v - a) > 0.1) flags.push(`audio ${a.toFixed(2)}s vs video ${v.toFixed(2)}s (out of sync at the end)`);
-    for (const b of m.black) flags.push(`black ${(b.end - b.start).toFixed(2)}s at ${fmtT(b.start)}`);
+    for (const b of m.black) if (!asked.some((r) => b.start >= r.start && b.end <= r.end)) flags.push(`black ${(b.end - b.start).toFixed(2)}s at ${fmtT(b.start)}`);
     // Silent in the file while the edit has someone speaking: a lost stretch of dialogue (muted clips are flagged above,
     // and words inside a fade the edit asks for may go quiet on purpose).
     const speech = minus(spoken.filter((x) => !x.muted).map((x) => ({ start: x.at, end: x.end })), faded);
@@ -249,6 +272,10 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     `Fillers left: ${fillers.length ? list(fillers.map((x) => `"${x.w.text.replace(/[^\w'-]/g, "")}" ${fmtT(x.at)}`)) : "none"}`,
     `Captions: ${tl.captionsOn ? `on (${tl.captionStyle ? "own style: " + styleText(tl.captionStyle) : tl.captionLook}), ${coverPct}% of spoken words` : "off"}`,
     `Text: ${texts.length ? `${texts.length} ${texts.length === 1 ? "layer" : "layers"}: ` + list(texts.map((x) => `${fmtT(x.c.start)}-${fmtT(x.c.end)} ${JSON.stringify(x.lines.join(" / ").slice(0, 40))}${x.card ? " (card)" : ""}${x.anim !== "none" ? ` ${x.anim}` : ""}`), 6) : "none"}`,
+    // Only when the edit uses them (short outputs).
+    ...(offSpeed.length ? [`Speed: ${list(offSpeed.map((c) => `${c.id} ${speedText(c)}`), 6)}`] : []),
+    ...(trans.some((x) => x.end > x.start) ? [`Transitions: ${list(trans.filter((x) => x.end > x.start).map((x) => `${fmtT(x.at)} ${x.type}${x.dir ? " " + x.dir : ""} ${(x.end - x.start).toFixed(2)}s`), 8)}`] : []),
+    ...(keyed.length ? [`Keyframes: ${list(keyed.map((k) => `${k.id} ${keyProps(k.keys)}`), 6)}`] : []),
     `Zooms ${zooms.length}${zooms.length ? ": " + list(zooms.map((z) => `${fmtT(z.start)} ${Math.round(Number(z.zoom || 1) * 100)}%`)) : ""} | B-roll ${broll.length}${broll.length ? ": " + list(broll.map((b) => fmtT(b.start))) : ""} | Graphics ${graphics.length}${m && !m.error ? ` (${gShown.filter((x) => x.on).length} on screen)` : ""}${graphics.length ? ": " + list(gText) : ""}`,
     `Music: ${music.length ? `${list(music.map((c) => `${c.label} ${c.gainDb ?? -18}dB`), 3)}, under ${Math.round(musicCover * 100)}% of the edit` : "none"}`,
     `Sound: ${legacy ? "mixed before Phase 3 (limiter only)" : audioText(sound)}${clipSound ? `; ${clipSound} ${clipSound === 1 ? "clip has its" : "clips have their"} own gain or fades` : ""}`,

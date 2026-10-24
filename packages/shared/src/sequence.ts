@@ -16,6 +16,7 @@
 //   linkId                                 shared by a V1 clip and its A1 dialogue while they are linked
 import { isCaptionMarker, normalizeTimeline, TRACK_NAMES, type Clip, type Framing, type Rotation, type Timeline, type TrackName } from "./timeline";
 import type { Word } from "./transcript";
+import { audibleRate, rampSteps, type Key, type RampPoint, type Transition } from "./motion";
 
 export type Range = { start: number; end: number };
 
@@ -268,8 +269,18 @@ export function removeFromMainCut(tl: Timeline, a: number, b: number): Timeline 
 //               edit. V3 caption clips only say which transcript lines show captions.
 //   start/end   on every clip: edit seconds, written by the layout (with timelineStart/timelineEnd and linkId).
 //   rotate, framing   per V1 clip.
+//   speed (Phase 5)    speed, reverse, ramp (speed points at footage moments) or freeze (a still of the frame at
+//               sourceIn for that many seconds). Every piece and part then has a rate: footage seconds per edit
+//               second, below 0 reversed, 0 frozen. A clip off normal speed has no J/L cut at its edges, and its
+//               sound is silent when reversed, frozen, or outside SOUND_SPEEDS.
+//   transition  on the cut before the clip; keys: keyframes (t = footage second; a freeze: sourceIn + seconds in).
 // =============================================================================================
-export type SeqClip = Clip & { sourceVideoId: string; sourceIn: number; sourceOut: number; audioStart?: number; audioMuted?: boolean; audioGain?: number; audioFadeIn?: number; audioFadeOut?: number; rotate?: Rotation; framing?: Framing };
+export type SeqClip = Clip & {
+  sourceVideoId: string; sourceIn: number; sourceOut: number; audioStart?: number; audioMuted?: boolean; audioGain?: number; audioFadeIn?: number; audioFadeOut?: number; rotate?: Rotation; framing?: Framing;
+  speed?: number; reverse?: boolean; ramp?: RampPoint[]; freeze?: number; transition?: Transition; keys?: Key[];
+};
+/** The clip plays at normal speed, forwards. */
+export const normalSpeed = (c: Partial<SeqClip>) => (!c.speed || c.speed === 1) && !c.reverse && !c.ramp?.length && !c.freeze;
 export type Attached = Clip & { anchorId?: string; anchorAt?: number; length?: number; fill?: boolean };
 
 export const isSequence = (tl: Timeline) => tl.model === "B";
@@ -278,12 +289,29 @@ export const mainVideoOf = (tl: Timeline) => tl.mainVideoId || "main";
 export const ATTACHED_TRACKS: TrackName[] = ["v2", "v3", "a2", "a3"];
 export const isAttached = (track: TrackName, c: Clip) => ATTACHED_TRACKS.includes(track) && !isCaptionMarker(track, c);
 
-/** Part of one V1 clip that plays, in its video and in the edit. */
-export type Piece = { clipId: string; videoId: string; srcIn: number; srcOut: number; start: number; end: number };
+/** Part of one V1 clip that plays, in its video and in the edit. rate: footage seconds per edit second (missing = 1,
+ *  below 0 = reversed, 0 = frozen on the frame at srcIn). */
+export type Piece = { clipId: string; videoId: string; srcIn: number; srcOut: number; start: number; end: number; rate?: number };
 /** A stretch of picture with no cut in it (it may span several clips whose footage continues). */
-export type PicturePart = { videoId: string; srcIn: number; srcOut: number; start: number; end: number; rotate: Rotation; framing: Framing | null; clipIds: string[] };
-/** A stretch of dialogue: its video and footage; muted parts keep their footage (captions follow them) but are silent. */
-export type SoundPart = { videoId: string; srcIn: number; srcOut: number; start: number; end: number; muted: boolean; clipId: string };
+export type PicturePart = { videoId: string; srcIn: number; srcOut: number; start: number; end: number; rotate: Rotation; framing: Framing | null; clipIds: string[]; rate?: number };
+/** A stretch of dialogue: its video and footage; muted parts keep their footage (captions follow them) but are silent.
+ *  silent: no sound because of its speed (reversed, frozen, too slow or fast): no captions either. */
+export type SoundPart = { videoId: string; srcIn: number; srcOut: number; start: number; end: number; muted: boolean; clipId: string; rate?: number; silent?: boolean };
+
+export const rateOf = (x: { rate?: number }) => x.rate ?? 1;
+/** The footage moment at edit time t of a part or piece (its footage continued past its ends). Reversed parts count
+ *  down from srcOut; a frozen part stays on srcIn. */
+export function srcAt(x: { srcIn: number; srcOut: number; start: number; rate?: number }, t: number): number {
+  const r = rateOf(x);
+  if (r === 0) return x.srcIn;
+  return r > 0 ? x.srcIn + (t - x.start) * r : x.srcOut + (t - x.start) * r;
+}
+/** The edit time of a footage moment inside a part or piece (clamped to it). */
+export function editOf(x: { srcIn: number; srcOut: number; start: number; end: number; rate?: number }, src: number): number {
+  const r = rateOf(x), s = Math.min(x.srcOut, Math.max(x.srcIn, src));
+  if (r === 0) return x.start;
+  return Math.min(x.end, r > 0 ? x.start + (s - x.srcIn) / r : x.start + (x.srcOut - s) / -r);
+}
 export type ClipPlace = { id: string; videoId: string; start: number; end: number; pieces: Piece[]; soundStart: number; soundEnd: number };
 
 export type ViewOpts = {
@@ -315,7 +343,8 @@ export type SequenceView = {
 
 const sameFraming = (a?: Framing | null, b?: Framing | null) => (!a && !b) || (!!a && !!b && a.scale === b.scale && a.x === b.x && a.y === b.y);
 export const plainFraming = (f?: Framing | null): Framing | null => (!f || (f.scale === 1 && f.x === 0 && f.y === 0) ? null : f);
-const sameLook = (a: SeqClip, b: SeqClip) => (a.rotate ?? 0) === (b.rotate ?? 0) && sameFraming(plainFraming(a.framing), plainFraming(b.framing));
+// Keyframed clips play as parts of their own (their motion is the clip's).
+const sameLook = (a: SeqClip, b: SeqClip) => (a.rotate ?? 0) === (b.rotate ?? 0) && sameFraming(plainFraming(a.framing), plainFraming(b.framing)) && (a === b || (!a.keys?.length && !b.keys?.length));
 
 /** Cuts ranges out of ranges, keeping every leftover however short (the caller decides what is too short). */
 function cutOut(keep: Range[], remove: Range[]): Range[] {
@@ -339,36 +368,74 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
   const fps = opts.align;
   const lenOf = (vid: string) => opts.seconds?.[vid];
 
-  // 1. What each clip keeps: its footage minus cut words (main footage) and anything past the video's end.
-  type Raw = { clip: SeqClip; srcIn: number; srcOut: number };
+  // 1. What each clip keeps: its footage minus cut words (main footage) and anything past the video's end, as segments
+  // in play order, each at one rate. A freeze is one frame held; a ramp is cut into steps; a reversed clip plays its
+  // segments last first.
+  type Raw = { clip: SeqClip; srcIn: number; srcOut: number; rate: number; hold: number };
   const raws: Raw[] = [];
+  const FRAME = 1 / (fps || 30);
   for (const c of v1) {
+    const len = lenOf(c.sourceVideoId);
+    if (c.freeze) {
+      const f = len != null ? Math.min(c.sourceIn, Math.max(0, len - FRAME)) : c.sourceIn;
+      raws.push({ clip: c, srcIn: f, srcOut: f + FRAME, rate: 0, hold: c.freeze });
+      continue;
+    }
     let rs: Range[] = [{ start: c.sourceIn, end: c.sourceOut }];
     if (c.sourceVideoId === main && cuts.length) rs = cutOut(rs, cuts);
-    const len = lenOf(c.sourceVideoId);
     if (len != null) rs = cutOut(rs, [{ start: len, end: Infinity }]);
-    for (const r of rs) if (r.end - r.start > 1e-6) raws.push({ clip: c, srcIn: r.start, srcOut: r.end });
+    rs = rs.filter((r) => r.end - r.start > 1e-6);
+    if (c.reverse) rs.reverse();
+    for (const r of rs) {
+      if (c.ramp?.length) for (const st of rampSteps(c.ramp, r.start, r.end, !!c.reverse)) raws.push({ clip: c, srcIn: st.srcIn, srcOut: st.srcOut, rate: c.reverse ? -st.speed : st.speed, hold: 0 });
+      else raws.push({ clip: c, srcIn: r.start, srcOut: r.end, rate: (c.speed || 1) * (c.reverse ? -1 : 1), hold: 0 });
+    }
   }
 
-  // 2. Parts: footage that continues (same video, same turn and framing) plays as one part, so the picture only cuts
-  // where it really jumps. Parts under 0.04 s are dropped, as in model A.
-  type P = { videoId: string; srcIn: number; srcOut: number; look: SeqClip; raws: Raw[] };
+  // 2. Parts: footage that continues (same video, rate, turn and framing) plays as one part, so the picture only cuts
+  // where it really jumps. Parts under 0.04 s of edit are dropped, as in model A.
+  type P = { videoId: string; srcIn: number; srcOut: number; rate: number; hold: number; look: SeqClip; raws: Raw[] };
+  const editLen = (p: { srcIn: number; srcOut: number; rate: number; hold: number }) => (p.rate === 0 ? p.hold : (p.srcOut - p.srcIn) / Math.abs(p.rate));
   const join = (list: P[], p: P) => {
     const last = list[list.length - 1];
-    if (last && last.videoId === p.videoId && Math.abs(p.srcIn - last.srcOut) <= 1e-6 && sameLook(last.look, p.look)) { last.srcOut = p.srcOut; last.raws.push(...p.raws); }
+    const goesOn = !!last && last.videoId === p.videoId && last.rate === p.rate && p.rate !== 0 && sameLook(last.look, p.look)
+      && (p.rate > 0 ? Math.abs(p.srcIn - last.srcOut) <= 1e-6 : Math.abs(p.srcOut - last.srcIn) <= 1e-6);
+    if (goesOn) { if (p.rate > 0) last.srcOut = p.srcOut; else last.srcIn = p.srcIn; last.raws.push(...p.raws); }
     else list.push(p);
   };
   let parts: P[] = [];
-  for (const r of raws) join(parts, { videoId: r.clip.sourceVideoId, srcIn: r.srcIn, srcOut: r.srcOut, look: r.clip, raws: [r] });
-  parts = parts.filter((p) => p.srcOut - p.srcIn >= 0.04);
+  for (const r of raws) join(parts, { videoId: r.clip.sourceVideoId, srcIn: r.srcIn, srcOut: r.srcOut, rate: r.rate, hold: r.hold, look: r.clip, raws: [r] });
+  parts = parts.filter((p) => editLen(p) >= 0.04);
   if (fps) {
-    // Every part starts and ends on a frame, so the picture and the sound of each part are exactly as long as planned.
+    // Every part starts and ends on a frame of the output, so the picture and the sound of each part are exactly as
+    // long as planned. At another speed the edit length is whole frames and the footage follows from it.
     const f = (x: number) => Math.round(x * fps) / fps;
     const aligned: P[] = [];
     for (const p of parts) {
       const len = lenOf(p.videoId);
-      const a = f(p.srcIn), b = Math.min(f(p.srcOut), len != null ? Math.floor(len * fps) / fps : Infinity);
-      if (b - a >= 1 / fps - 1e-9) join(aligned, { ...p, srcIn: a, srcOut: b, raws: [...p.raws] });
+      const top = len != null ? Math.floor(len * fps) / fps : Infinity;
+      let q: P | null = null;
+      if (p.rate === 1) {
+        const a = f(p.srcIn), b = Math.min(f(p.srcOut), top);
+        if (b - a >= 1 / fps - 1e-9) q = { ...p, srcIn: a, srcOut: b };
+      } else if (p.rate === 0) {
+        const n = Math.round(p.hold * fps);
+        const a = Math.max(0, Math.min(f(p.srcIn), top - 1 / fps));
+        if (n >= 1) q = { ...p, srcIn: a, srcOut: a + 1 / fps, hold: n / fps };
+      } else {
+        const r = Math.abs(p.rate);
+        let n = Math.round(((p.srcOut - p.srcIn) / r) * fps);
+        if (p.rate > 0) {
+          const a = f(p.srcIn);
+          n = Math.min(n, Math.floor(((top - a) / r) * fps + 1e-6));
+          if (n >= 1) q = { ...p, srcIn: a, srcOut: a + (n * r) / fps };
+        } else {
+          const b = Math.min(f(p.srcOut), top);
+          n = Math.min(n, Math.floor((b / r) * fps + 1e-6));
+          if (n >= 1) q = { ...p, srcIn: b - (n * r) / fps, srcOut: b };
+        }
+      }
+      if (q) join(aligned, { ...q, raws: [...p.raws] });
     }
     parts = aligned;
   }
@@ -379,11 +446,20 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
   const pieces: Piece[] = [];
   for (const p of parts) {
     const start = acc;
-    acc += p.srcOut - p.srcIn;
-    picture.push({ videoId: p.videoId, srcIn: p.srcIn, srcOut: p.srcOut, start, end: acc, rotate: (p.look.rotate ?? 0) as Rotation, framing: plainFraming(p.look.framing), clipIds: Array.from(new Set(p.raws.map((r) => r.clip.id))) });
+    acc += editLen(p);
+    const part: PicturePart = { videoId: p.videoId, srcIn: p.srcIn, srcOut: p.srcOut, start, end: acc, rotate: (p.look.rotate ?? 0) as Rotation, framing: plainFraming(p.look.framing), clipIds: Array.from(new Set(p.raws.map((r) => r.clip.id))) };
+    if (p.rate !== 1) part.rate = p.rate;
+    picture.push(part);
+    if (p.rate === 0) { pieces.push({ clipId: p.raws[0].clip.id, videoId: p.videoId, srcIn: p.srcIn, srcOut: p.srcOut, start, end: acc, rate: 0 }); continue; }
+    // Each clip's share of the part (the first and last reach the part's ends, which the frame rounding may move).
     p.raws.forEach((r, j) => {
-      const a = j === 0 ? p.srcIn : Math.max(r.srcIn, p.srcIn), b = j === p.raws.length - 1 ? p.srcOut : Math.min(r.srcOut, p.srcOut);
-      if (b - a > 1e-9) pieces.push({ clipId: r.clip.id, videoId: p.videoId, srcIn: a, srcOut: b, start: start + (a - p.srcIn), end: start + (b - p.srcIn) });
+      const first = j === 0, last = j === p.raws.length - 1;
+      let a = Math.max(r.srcIn, p.srcIn), b = Math.min(r.srcOut, p.srcOut);
+      if (p.rate > 0) { if (first) a = p.srcIn; if (last) b = p.srcOut; } else { if (first) b = p.srcOut; if (last) a = p.srcIn; }
+      if (b - a <= 1e-9) return;
+      const x: Piece = { clipId: r.clip.id, videoId: p.videoId, srcIn: a, srcOut: b, start: editOf(part, p.rate > 0 ? a : b), end: editOf(part, p.rate > 0 ? b : a) };
+      if (p.rate !== 1) x.rate = p.rate;
+      pieces.push(x);
     });
   }
   const total = acc;
@@ -401,13 +477,14 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
   }
 
   // 5. Dialogue. The cut between two clips' sounds sits at the picture cut moved by audioStart. It never passes the
-  // picture cut before or after it, and never reaches outside the footage.
+  // picture cut before or after it, and never reaches outside the footage. Clips off normal speed have no J/L cut.
   const clipById = new Map(v1.map((c) => [c.id, c]));
   const live = clips.filter((c) => c.pieces.length);
   const D: number[] = [];
   for (let k = 0; k < live.length; k++) {
     if (k === 0) { D.push(0); continue; }
     const cur = live[k], prev = live[k - 1];
+    if (!normalSpeed(clipById.get(cur.id)!) || !normalSpeed(clipById.get(prev.id)!)) { D.push(cur.start); continue; }
     let off = Number(clipById.get(cur.id)!.audioStart || 0);
     if (fps) off = Math.round(off * fps) / fps;
     let d = cur.start + off;
@@ -420,13 +497,22 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
   const pushSound = (s: SoundPart) => {
     if (s.end - s.start <= 1e-9) return;
     const last = sound[sound.length - 1];
-    if (last && last.videoId === s.videoId && last.muted === s.muted && Math.abs(last.srcOut - s.srcIn) <= 1e-6 && Math.abs(last.end - s.start) <= 1e-6) { last.srcOut = s.srcOut; last.end = s.end; }
+    if (last && rateOf(last) === 1 && rateOf(s) === 1 && last.videoId === s.videoId && last.muted === s.muted && Math.abs(last.srcOut - s.srcIn) <= 1e-6 && Math.abs(last.end - s.start) <= 1e-6) { last.srcOut = s.srcOut; last.end = s.end; }
     else sound.push({ ...s });
   };
   live.forEach((pl, k) => {
     const a = D[k], b = k + 1 < live.length ? D[k + 1] : total;
     pl.soundStart = a; pl.soundEnd = b;
-    const muted = !!clipById.get(pl.id)!.audioMuted;
+    const clip = clipById.get(pl.id)!;
+    const muted = !!clip.audioMuted;
+    if (!normalSpeed(clip)) {
+      // Its sound follows its picture piece by piece, at the same rate (pitch kept), or is silent.
+      for (const x of pl.pieces) {
+        const r = rateOf(x);
+        pushSound({ videoId: x.videoId, srcIn: x.srcIn, srcOut: x.srcOut, start: x.start, end: x.end, muted, clipId: pl.id, ...(r !== 1 ? { rate: r } : {}), ...(!audibleRate(r) ? { silent: true } : {}) });
+      }
+      return;
+    }
     const first = pl.pieces[0], last = pl.pieces[pl.pieces.length - 1];
     if (a < pl.start) pushSound({ videoId: pl.videoId, srcIn: first.srcIn - (pl.start - a), srcOut: first.srcIn, start: a, end: pl.start, muted, clipId: pl.id });
     for (const x of pl.pieces) {
@@ -451,20 +537,23 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
     anchorFor(t) {
       const tt = Math.max(0, Math.min(t, total));
       const p = pieceAt(tt);
-      return p ? { anchorId: p.clipId, anchorAt: Math.round((p.srcIn + Math.min(Math.max(0, tt - p.start), p.end - p.start)) * 1000) / 1000 } : null;
+      return p ? { anchorId: p.clipId, anchorAt: Math.round(Math.min(p.srcOut, Math.max(p.srcIn, srcAt(p, Math.min(tt, p.end)))) * 1000) / 1000 } : null;
     },
     editAt(clipId, src) {
       const c = byClip.get(clipId);
       if (!c) return null;
       if (!c.pieces.length) return c.start;
-      for (const p of c.pieces) { if (src < p.srcIn) return p.start; if (src <= p.srcOut) return p.start + (src - p.srcIn); }
-      return c.end;
+      const hit = c.pieces.find((p) => src >= p.srcIn - 1e-9 && src <= p.srcOut + 1e-9);
+      if (hit) return editOf(hit, src);
+      // A moment that does not play: the next one that does (in play order).
+      const next = c.pieces.find((p) => (rateOf(p) >= 0 ? p.srcIn > src : p.srcOut < src));
+      return next ? next.start : c.end;
     },
     videoToEdit(videoId, src) {
       let next: Piece | null = null, furthest: Piece | null = null;
       for (const p of pieces) {
         if (p.videoId !== videoId) continue;
-        if (src >= p.srcIn && src <= p.srcOut) return p.start + (src - p.srcIn);
+        if (src >= p.srcIn && src <= p.srcOut) return editOf(p, src);
         if (p.srcIn > src && (!next || p.srcIn < next.srcIn)) next = p;
         if (!furthest || p.srcOut > furthest.srcOut) furthest = p;
       }
@@ -474,9 +563,9 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
       const c = byClip.get(clipId), clip = clipById.get(clipId);
       if (!c || !clip) return 0;
       if (!c.pieces.length) return clip.sourceIn + Math.max(0, t - c.start);
-      if (t <= c.start) return c.pieces[0].srcIn - (c.start - t);
-      for (const p of c.pieces) if (t <= p.end) return p.srcIn + Math.max(0, t - p.start);
-      return c.pieces[c.pieces.length - 1].srcOut + (t - c.end);
+      if (t <= c.start) return srcAt(c.pieces[0], t);
+      for (const p of c.pieces) if (t <= p.end) return srcAt(p, Math.max(t, p.start));
+      return srcAt(c.pieces[c.pieces.length - 1], t);
     },
   };
 }
@@ -490,9 +579,11 @@ function layoutSequence(tl: Timeline, words: Word[]): Timeline {
   const byId = new Map(v1.map((c) => [c.id, c]));
   const a1 = view.clips.filter((p) => p.pieces.length && p.soundEnd - p.soundStart > 0.005).map((p) => {
     const c = byId.get(p.id)!;
-    const sIn = p.soundStart < p.start ? p.pieces[0].srcIn - (p.start - p.soundStart) : view.editToSource(p.id, p.soundStart);
-    const sOut = p.soundEnd > p.end ? p.pieces[p.pieces.length - 1].srcOut + (p.soundEnd - p.end) : view.editToSource(p.id, p.soundEnd);
-    return { id: p.id, label: "Dialogue", ...at(p.soundStart, p.soundEnd), sourceVideoId: p.videoId, sourceIn: r2(sIn), sourceOut: r2(sOut), linkId: `lk_${p.id}`, ...(c.audioMuted ? { audioMuted: true } : {}) } as Clip;
+    const x0 = p.soundStart < p.start ? p.pieces[0].srcIn - (p.start - p.soundStart) : view.editToSource(p.id, p.soundStart);
+    const x1 = p.soundEnd > p.end ? p.pieces[p.pieces.length - 1].srcOut + (p.soundEnd - p.end) : view.editToSource(p.id, p.soundEnd);
+    // A reversed clip's footage runs down; a frozen one, a reversed one or one too slow or fast has no sound.
+    const silent = !normalSpeed(c) && view.sound.filter((s) => s.clipId === p.id).every((s) => s.silent);
+    return { id: p.id, label: "Dialogue", ...at(p.soundStart, p.soundEnd), sourceVideoId: p.videoId, sourceIn: r2(Math.min(x0, x1)), sourceOut: r2(Math.max(x0, x1)), linkId: `lk_${p.id}`, ...(c.audioMuted ? { audioMuted: true } : {}), ...(silent ? { silent: true } : {}) } as Clip;
   });
   const tracks = { ...tl.tracks, v1, a1 } as Timeline["tracks"];
   for (const k of ATTACHED_TRACKS) {
@@ -530,7 +621,7 @@ function layoutSequence(tl: Timeline, words: Word[]): Timeline {
 export function isPlainSequence(tl: Timeline): boolean {
   const v1 = tl.tracks.v1 as SeqClip[];
   const main = mainVideoOf(tl);
-  return v1.every((c, i) => c.sourceVideoId === main && !c.audioStart && !c.audioMuted && sameLook(c, v1[0]) && (i === 0 || c.sourceIn >= v1[i - 1].sourceOut - 1e-6));
+  return v1.every((c, i) => c.sourceVideoId === main && !c.audioStart && !c.audioMuted && normalSpeed(c) && !c.transition && sameLook(c, v1[0]) && (i === 0 || c.sourceIn >= v1[i - 1].sourceOut - 1e-6));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -644,13 +735,15 @@ function moveAnchors(tl: Timeline, fromId: string, toId: string, from: number, s
 }
 const label2 = (l: string) => (/\(2\)$/.test(l) ? l : l ? l + " (2)" : "");
 const noAudioStart = (c: SeqClip): SeqClip => { const x = { ...c }; delete x.audioStart; return x; };
+/** The second half of a split clip: no J/L offset and no transition (both belong to the cut before the first half). */
+const secondHalf = (c: SeqClip): SeqClip => { const x = noAudioStart(c); delete x.transition; return x; };
 
 /** Splits a V1 clip at a moment of its footage. The second half gets a new id; nothing moves. */
 export function splitSeqClip(tl: Timeline, clipId: string, at: number): { tl: Timeline; newId: string } {
   const c = findClip(tl, "v1", clipId) as SeqClip;
   if (!(at > c.sourceIn + 0.05 && at < c.sourceOut - 0.05)) throw new EditError(`Split time ${r2(at)}s must be inside the clip's footage (${c.sourceIn}s to ${c.sourceOut}s).`);
   const newId = freshIds(tl)(c.id);
-  const v1 = seqOf(tl).flatMap((x) => (x.id !== c.id ? [x] : [{ ...x, sourceOut: r2(at) }, noAudioStart({ ...x, id: newId, sourceIn: r2(at), label: label2(x.label) })]));
+  const v1 = seqOf(tl).flatMap((x) => (x.id !== c.id ? [x] : [{ ...x, sourceOut: r2(at) }, secondHalf({ ...x, id: newId, sourceIn: r2(at), label: label2(x.label) })]));
   return { tl: moveAnchors(withV1(tl, v1), c.id, newId, at), newId };
 }
 
@@ -668,7 +761,7 @@ export function removeSourceRange(tl: Timeline, videoId: string, a: number, b: n
     if (keepA) out.push({ ...c, sourceOut: r2(a) });
     if (keepB) {
       const id = keepA ? ids(c.id) : c.id;
-      out.push(keepA ? noAudioStart({ ...c, id, sourceIn: r2(b), label: label2(c.label) }) : { ...c, sourceIn: r2(b) });
+      out.push(keepA ? secondHalf({ ...c, id, sourceIn: r2(b), label: label2(c.label) }) : { ...c, sourceIn: r2(b) });
       moves.push([c.id, id, keepA ? a : -Infinity, b]);
     }
   }

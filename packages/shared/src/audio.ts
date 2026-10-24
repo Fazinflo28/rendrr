@@ -1,7 +1,7 @@
 // The edit's sound, as numbers both the render and the live player use: where music ducks under speech, how deep,
 // the fades, each dialogue clip's gain, and the fixed cleanup chains. The FFmpeg expressions are built from the same
 // curves the player evaluates, so the two agree (tested).
-import type { Range, SequenceView } from "./sequence";
+import { editOf, type Range, type SequenceView } from "./sequence";
 import type { Cleanup } from "./timeline";
 import type { Word } from "./transcript";
 
@@ -89,12 +89,12 @@ export type DialogueSpan = { start: number; end: number; gainDb: number; fadeIn:
 export function speechRanges(view: SequenceView, wordsOf: (videoId: string) => Word[] | null, cut: Set<string>): Range[] {
   const out: Range[] = [];
   for (const s of view.sound) {
-    if (s.muted) continue;
+    if (s.muted || s.silent) continue;
     const ws = wordsOf(s.videoId);
     if (!ws) { out.push({ start: s.start, end: s.end }); continue; }
     for (const w of ws) {
       if (cut.has(w.id) || w.t < s.srcIn || w.t >= s.srcOut) continue;
-      out.push({ start: s.start + (w.t - s.srcIn), end: s.start + (Math.min(w.end, s.srcOut) - s.srcIn) });
+      out.push({ start: editOf(s, w.t), end: editOf(s, Math.min(w.end, s.srcOut)) });
     }
   }
   out.sort((a, b) => a.start - b.start);

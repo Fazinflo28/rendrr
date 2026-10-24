@@ -14,3 +14,4 @@ export * from "./graphicHtml";
 export * from "./playback";
 export * from "./audio";
 export * from "./captions";
+export * from "./motion";

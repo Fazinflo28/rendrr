@@ -34,7 +34,8 @@ const res = await build({
 const js = res.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 const css = readFileSync(resolve(web, "src/rendrr/styles.css"), "utf8");
 
-const html = `<title>Rendrr</title>
+const html = `<meta charset="utf-8">
+<title>Rendrr</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">

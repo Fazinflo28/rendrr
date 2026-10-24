@@ -48,7 +48,7 @@ describe("the sequence: clips from any video, in any order, repeats", () => {
     const { args, filterGraph } = ffmpegArgs(p, { source: "/main.mp4", videos: { v2nd: "/second.mp4" }, output: "/o.mp4" }, source, { loudnessGainDb: 0 });
     expect(args.filter((a) => a === "-i")).toHaveLength(2);
     expect(filterGraph).toMatch(/\[1:v\]fps=30\[sv1\]/);
-    expect(filterGraph).toMatch(/concat=n=3:v=1:a=0\[vcat\]/);
+    expect(filterGraph).toMatch(/concat=n=3:v=1:a=0,settb=1\/30\[vcat\]/); // parts drawn one by one: back on the frame grid
     expect(filterGraph).toMatch(/\[sv1\]trim=[^;]*scale=960:540:force_original_aspect_ratio=increase[^;]*\[v1\]/); // fitted on its own
     expect(p.captions.some((c) => /Other video/i.test(c.text))).toBe(true); // its own words captioned
     expect(editCheck(s, tr, { transcripts: { v2nd: tr2 } })).toMatch(/Sequence: 4 clips from 2 videos \(main 3, v2nd 1\)/);

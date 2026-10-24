@@ -4,7 +4,7 @@
 import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  allWords, asSequence, breakdownAsText, CreateGraphicInput, describeRules, editCheck, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
+  allWords, asSequence, breakdownAsText, CreateGraphicInput, describeRules, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, type Breakdown, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources } from "./services/sequence";
@@ -308,9 +308,9 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const view = sequenceView(tl, allWords(tr));
     const others = await otherSources(c.userId, tl, p.videoId);
     const cut = new Set(tl.cut);
-    const after = view.sound.filter((s) => !s.muted).map((s) => {
+    const after = view.sound.filter((s) => !s.muted && !s.silent).map((s) => {
       const ws = (s.videoId === view.mainVideoId ? allWords(tr) : allWords(others[s.videoId]?.transcript ?? [])).filter((w) => !(s.videoId === view.mainVideoId && cut.has(w.id)) && w.t >= s.srcIn && w.t < s.srcOut);
-      return ws.length ? `[${fmtClock(s.start + (ws[0].t - s.srcIn))}] ${ws.map((w) => w.text).join(" ")}` : null;
+      return ws.length ? `[${fmtClock(editOf(s, ws[0].t))}] ${ws.map((w) => w.text).join(" ")}` : null;
     }).filter(Boolean).join("\n");
     return { text: clip(`Preview v${r.version}${r.version === p.currentVersion ? "" : ` (the edit is at v${p.currentVersion} now)`}, ${r.seconds.toFixed(1)}s. Frames at ${times.map((t: number) => t.toFixed(1) + "s").join(", ")}.\nTranscript as it plays (output times):\n${after}`), images };
   },

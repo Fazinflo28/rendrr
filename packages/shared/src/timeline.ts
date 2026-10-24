@@ -2,6 +2,7 @@ import { z } from "zod";
 import { catalogMusic, catalogSfx } from "./catalog";
 import { CaptionStyleSchema, CardSchema, TEXT_ANIMS, TextStyleSchema } from "./captions";
 import { ASPECTS, CAPTION_LOOKS } from "./constants";
+import { KeysSchema, RampPointSchema, TransitionSchema } from "./motion";
 
 // The shared timeline. Same shape as timelineFor() in ui/rendrr-ui.html.
 // Two models (see docs/timeline-model.md and sequence.ts):
@@ -16,6 +17,18 @@ const time = z.number().finite().min(0).max(24 * 3600);
 const label = z.string().max(300).default("");
 
 export const ClipSchema = z.object({ id, start: time, end: time, label }).passthrough();
+/** Keyframes (Phase 5), on any clip that is drawn: V1, b-roll, graphics, text. */
+const keys = KeysSchema.optional();
+
+/** V1 (model B): the footage fields are checked by sequenceProblems; speed, transition and keyframes here (Phase 5). */
+export const V1ClipSchema = ClipSchema.extend({
+  speed: z.number().min(0.1).max(10).optional(),
+  reverse: z.boolean().optional(),
+  ramp: z.array(RampPointSchema).max(20).optional(),
+  freeze: z.number().min(0.04).max(60).optional(),
+  transition: TransitionSchema.optional(),
+  keys,
+});
 
 export const V2ClipSchema = ClipSchema.extend({
   kind: z.enum(["zoom", "broll"]).optional(),
@@ -23,6 +36,7 @@ export const V2ClipSchema = ClipSchema.extend({
   assetKey: z.string().max(400).optional(),
   videoId: z.string().max(80).optional(),
   sourceStart: time.optional(),
+  keys,
 });
 
 export const V3ClipSchema = ClipSchema.extend({
@@ -35,6 +49,7 @@ export const V3ClipSchema = ClipSchema.extend({
   style: TextStyleSchema.optional(),
   card: CardSchema.nullable().optional(),
   anim: z.enum(TEXT_ANIMS).optional(),
+  keys,
 });
 
 export const A2ClipSchema = ClipSchema.extend({
@@ -50,7 +65,7 @@ export const A3ClipSchema = ClipSchema.extend({
 });
 
 export const TracksSchema = z.object({
-  v1: z.array(ClipSchema).max(2000),
+  v1: z.array(V1ClipSchema).max(2000),
   v2: z.array(V2ClipSchema).max(2000),
   v3: z.array(V3ClipSchema).max(4000),
   a1: z.array(ClipSchema).max(2000),
@@ -193,6 +208,9 @@ function sequenceProblems(t: Timeline): string[] {
   return out;
 }
 
+/** Keys in time order, times to 1/1000 s. */
+const sortKeys = <T extends { t: number }>(ks: T[]): T[] => ks.map((k) => ({ ...k, t: Math.round(k.t * 1000) / 1000 })).sort((a, b) => a.t - b.t);
+
 /** V3 caption clips mark which transcript lines show captions; they are not placed in the edit by hand. */
 export const isCaptionMarker = (track: TrackName, c: Clip) => {
   const x = c as Clip & { kind?: string; lineId?: string; graphicId?: string };
@@ -233,6 +251,14 @@ function normalizeSequence(t: Timeline): Timeline {
         if (!x.audioMuted) delete x.audioMuted;
         if (!x.rotate) delete x.rotate;
         for (const k of ["audioGain", "audioFadeIn", "audioFadeOut"]) { if (x[k] != null) { const v = r(Number(x[k])); if (v) x[k] = v; else delete x[k]; } }
+        // Speed (Phase 5): normal speed leaves no fields; a freeze is one still, so it has no speed of its own.
+        const r3 = (n: number) => Math.round(n * 1000) / 1000;
+        if (x.speed != null) { const v = r3(Number(x.speed)); if (v && v !== 1) x.speed = v; else delete x.speed; }
+        if (!x.reverse) delete x.reverse;
+        if (Array.isArray(x.ramp)) { const ps = (x.ramp as { at: number; speed: number }[]).map((p) => ({ at: r3(p.at), speed: r3(p.speed) })).sort((a, b) => a.at - b.at); if (ps.length) x.ramp = ps; else delete x.ramp; }
+        if (x.freeze != null) { x.freeze = r(Number(x.freeze)); delete x.speed; delete x.reverse; delete x.ramp; delete x.audioStart; }
+        if (x.transition && (x.transition as { type: string }).type === "cut") delete x.transition;
+        if (Array.isArray(x.keys)) { if ((x.keys as unknown[]).length) x.keys = sortKeys(x.keys as { t: number }[]); else delete x.keys; }
         return x;
       }).filter((c) => Number(c.sourceOut) - Number(c.sourceIn) >= 0.01);
     } else if (name !== "a1") {
@@ -243,6 +269,7 @@ function normalizeSequence(t: Timeline): Timeline {
         if (x.length != null) x.length = r3(Number(x.length));
         if (x.anchorAt != null) x.anchorAt = r3(Number(x.anchorAt));
         for (const k of ["fadeIn", "fadeOut"]) if (x[k] != null) x[k] = r(Math.max(0, Number(x[k])));
+        if (Array.isArray(x.keys)) { if ((x.keys as unknown[]).length) x.keys = sortKeys(x.keys as { t: number }[]); else delete x.keys; }
         return x;
       }).filter((c) => isCaptionMarker(name, c) || c.fill || c.length == null || Number(c.length) >= 0.01);
     }

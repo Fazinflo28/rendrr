@@ -223,6 +223,56 @@ Three items of the plan were not fully built in the first pass. They are now:
 | API: save_style with a full caption style, apply_style, add_text, get_project reads both | 11 pass |
 | Browser, demo build: Text tab (font, weight, spoken word, size), captions drawn with the bundled fonts, add a title, edit text, animation and card, undo, phone width | all work, no page errors |
 
+### Phase 4 live (24 October)
+
+- **Through the connector (smoke-test account), on the Phase 3 test edit:**
+  - one `apply_edits`: `set_caption_style` (Montserrat 800, 7%, white, 60% black box, yellow spoken word, 4 words, 1 line, 86% down) and `add_text` (title preset, two lines, pop)
+  - `render_preview` (540p, 70.4 s): the check reads "Captions: on (own style: Montserrat 800, …)" and "Text: 1 layer: 0:00.3-0:03.5 "AUDIT YOUR / LAST 20 PATIENTS" pop"
+  - `get_preview_frames` at 1 s and 20 s: the title in two lines, the caption in its box, the spoken word in yellow
+- **Live editor (browser):**
+  - the Text tab shows the style (own style, Montserrat 800, 7%, 50% / 86%, box 60%, padding 24%, 4 words, 1 line) and the title layer; V3 shows the title clip
+  - after a change, the live player draws the title and the caption on a 960x540 stage scaled to the player
+  - the browser loads RC Montserrat 800 and 900 from the web app's `/fonts/` (HTTP 200)
+  - undo returns to the rendered preview; no page errors
+
+## Phase 5: transitions, keyframes, speed
+
+- **Speed (V1 clips).**
+  - Constant speed from 0.1x to 10x, reverse, speed ramps (speed points at the clip's footage moments, linear between them), and freeze frames (a still of one frame for N seconds).
+  - Sound keeps its pitch (`atempo` in the render, the browser's own in the editor). It plays from 0.5x to 4x. Outside that, reversed and frozen, the clip is silent in the render and the editor alike, because browsers mute sound there and cannot play it backwards.
+  - A ramp is one `atempo` whose tempo changes at each step, so the steps do not click.
+  - A clip off normal speed has no J/L cut at its edges.
+- **Transitions** on the cut before a V1 clip: cut, dissolve, dip to black, dip to white, whip pan (left, right, up, down, with motion blur), zoom, slide (four directions). Each has its own duration.
+  - They are centred on the cut, so the edit's length stays the same.
+  - Dissolve, slide and whip use footage past the cut, as Premiere does. With too little of it, the transition gets shorter and the check says why.
+  - A dip or dissolve on the first clip fades it in from the colour.
+- **Keyframes** on V1 clips, b-roll (a moving picture-in-picture), text layers and graphics: position, scale, rotation, opacity. Easing: linear, ease in, ease out, ease in-out (the CSS curves), or any cubic bezier.
+- **Ops in apply_edits:** `set_speed`, `freeze_frame`, `set_transition` (one cut, several, or all), `set_keyframes`. get_project shows each clip's speed, transition and keys.
+- **Check.** New lines appear only when the edit uses these: Speed, Transitions, Keyframes. New flags: a transition made shorter or left out, with the reason. A requested dip or a keyframed fade is not flagged as black, and a frozen or reversed clip is not flagged as silent.
+- **Editor.**
+  - A Clip tab: speed slider, reverse, normal speed, freeze this frame, speed ramp points; the transition into the clip (type, duration, direction); keyframes at the playhead (across, down, scale, rotation, opacity sliders, easing, the list of keys).
+  - Timeline marks: speed on the clip label, the transition's window at the cut, keyframe diamonds.
+  - The player plays each part at its rate. Reverse steps frame by frame, a freeze holds its frame, keyframes move the picture, and transitions are drawn from both sides with the render's curves.
+- **The editor plays what renders** (`apps/web/demo/motion-match.mjs`):
+  - The editor's own player components and the FFmpeg render of one edit (speed 1.5x, a freeze, 2x reversed, dissolve, dip to white, whip, slide up, zoom, keyframed V1 clip, keyframed picture-in-picture) are compared at 46 moments.
+  - Every plain frame is the same source frame. Transitions and keyframes differ by at most 4.8 out of 255 on average (edge smoothing and blur).
+- **Bugs found in older work, fixed:**
+  - When a sequence's parts were drawn one by one (several videos, turns or framings, since Phase 2), the joined picture's timestamps were in microseconds. Every overlay (b-roll, graphics) then showed one frame late. The picture is now put back on the 1/30 s grid.
+  - Overlays started and ended between frames, so the editor and the render could disagree by one frame at their edges. They now start and end on whole frames.
+  - The player read zooms and text animations at the exact playhead time; the render draws them at frame times. The player now reads every curve at the start of the frame showing.
+  - Chromium could keep showing the old frame of a paused video after a seek. The player now seeks again 0.1 ms later, inside the same frame.
+  - The demo build's page did not declare UTF-8, so "·" showed as "Â·" when it was opened without a server that says so.
+
+### Phase 5 tests
+
+| What | Result |
+|---|---|
+| Shared: easings (the CSS curves); every curve's FFmpeg expression equals the player's value; speed (lengths, footage mapping, sound rate, silent ranges, no J/L, captions follow sped-up speech and leave out reversed speech); ramps (steps, the integral of 1/speed); the four ops; transitions (windows, handles, made shorter, first clip, zoom curve, live frame); keyframes (footage seconds, after a cut, split, ASS pieces); the player's frame choice; check and get_project lines | 135 pass (17 new) |
+| Worker, rendered and read back (footage that shows its own frame number): 2x frames and pitch; freeze; reverse; dissolve mix; dip black at the cut; centred scale; slide; ramp frames equal to the player's, pitch kept, length exact; keyframed text and picture-in-picture where the shared curves put them | 9 new, 32 in all, pass |
+| Editor vs render in a browser (`motion-match.mjs`) | 46 moments, pass 3 runs in a row |
+| API: speed, freeze, transition and keyframes in one apply_edits; get_project reads them back; a bad value is refused and nothing is saved | 12 pass |
+| Browser, demo build: Clip tab (speed, transition, keys, ease, freeze, reverse, undo), marks on the timeline, the player's transform, phone width | all work, no page errors |
+
 ## Reference-video test (23 October, live, through the connector only)
 
 The test: copy the edit of a finished reel (Glow Flow, 51 s, vertical) onto a raw talking-head video (77 s, 4K), using only the MCP connector, the way Claude would.

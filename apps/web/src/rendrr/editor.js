@@ -7,7 +7,7 @@ import { StyleArt, CreateLinkModal } from "./screens";
 import { api } from "./api";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
-import { applyOp, asSequence, audioAt, audioSettings, CAPTION_FONTS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, TEXT_ANIMS, TEXT_PRESETS, textPreset, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { applyOp, asSequence, audioAt, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, TEXT_ANIMS, TEXT_PRESETS, textPreset, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -71,9 +71,11 @@ function TemplateFrame({ graphicId, params, start, end, t, aspect }) {
 function LiveOverlays({ frame, clips, media, aspect, playing, plan }) {
   if (!frame) return null;
   const b = frame.broll && media.broll[frame.broll.videoId];
-  return html`${b && html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} />`}
+  // Keyframed overlays move as the render's perspective filter moves them (Phase 5).
+  const moved = (m, child) => (m ? html`<div style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(m) }}>${child}</div>` : child);
+  return html`${b && moved(frame.broll.motion, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} />`)}
     ${frame.graphics.map((g) => { const m = media.graphics[g.graphicId]; const c = clips.find((x) => x.id === g.clipId);
-      return m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`; })}
+      return moved(g.motion, m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`); })}
     ${plan && html`<${TextLayers} plan=${plan} frame=${frame} />`}`;
 }
 
@@ -94,10 +96,12 @@ function TextLayers({ plan, frame }) {
   const W = plan.width, H = plan.height;
   const cs = plan.captionStyle, cd = cs && drawnOf(cs, W, H);
   return html`<div ref=${ref} class="tlayers" data-k=${k} data-captions=${plan.styledCaptions?.length ?? 0} data-texts=${plan.texts?.length ?? 0}><div class="stage" style=${{ width: W + "px", height: H + "px", transform: `scale(${k})` }}>
-    ${frame.texts.map(({ layer: l, opacity, scale, dy }) => { const d = drawnOf(l.style, W, H); const ax = l.style.align === "left" ? 0 : l.style.align === "right" ? 100 : 50;
+    ${frame.texts.map(({ layer: l, opacity, scale, dy, look }) => { const d = drawnOf(l.style, W, H); const ax = l.style.align === "left" ? 0 : l.style.align === "right" ? 100 : 50;
+      // A keyframed layer (Phase 5): its anchor, scale, turn and opacity from textLookAt, as the ASS pieces draw it.
+      const pos = look ? { left: look.x + "px", top: look.y + "px", transform: `translate(${-ax}%, -50%) rotate(${look.rotation}deg) scale(${look.scale})`, opacity: look.opacity } : { left: l.style.x * W + "px", top: l.style.y * H + dy + "px", transform: `translate(${-ax}%, -50%) scale(${scale})`, opacity };
       return html`<div key=${l.clipId} data-text=${l.clipId}>
         ${l.card && html`<div class="tcard" style=${{ background: rgba(l.card.color, l.card.opacity), opacity }} />`}
-        <div class="tblock" style=${{ left: l.style.x * W + "px", top: l.style.y * H + dy + "px", transform: `translate(${-ax}%, -50%) scale(${scale})`, transformOrigin: `${ax}% 50%`, textAlign: l.style.align, opacity }}>
+        <div class="tblock" style=${{ ...pos, transformOrigin: `${ax}% 50%`, textAlign: l.style.align }}>
           ${l.lines.map((line, i) => html`<div key=${i}><span style=${{ ...fontCss(d), ...boxCss(d) }}>${l.style.case === "upper" ? line.toUpperCase() : l.style.case === "lower" ? line.toLowerCase() : line}</span></div>`)}
         </div></div>`; })}
     ${frame.captionLines && cd && html`<div class="tblock cap-layer" id="caption-layer" style=${{ left: cs.x * W + "px", top: cs.y * H + "px", transform: "translate(-50%, -100%)", textAlign: "center" }}>
@@ -191,13 +195,42 @@ function TextTab({ timeline, aspect, captionRules, textClips, selText, onSelect,
 // Sound (Phase 3): the dialogue, music and sound effects play at the render's levels (audioAt: clip gains, fades,
 // ducking, mix fades). An element can't go over full volume, so all of them play `head` lower when a clip is turned
 // up: the balance stays exact. Cleanup and loudness are only in the rendered preview (no WebAudio: no CORS).
+// Speed (Phase 5): an element plays at its part's rate (pitch kept: the browser's default). A reversed or frozen part
+// cannot play in a <video>: the element stays paused on the frame the render shows (showAt), stepped frame by frame.
+// Keyframes move the picture with the same table the render's perspective filter reads; transitions draw both sides
+// with transitionAt, the curves the render's overlays use.
+const motionCss = (m) => (m ? { transform: `translate(${m.x * 100}%, ${m.y * 100}%) rotate(${m.rotation}deg) scale(${m.scale})`, opacity: m.opacity } : {});
+function follow(el, want, playing, rate = 1) {
+  const drift = Math.abs(el.currentTime - want);
+  if (playing && rate > 0) {
+    if (Math.abs(el.playbackRate - rate) > 1e-3) el.playbackRate = rate;
+    if (drift > 0.15 * Math.max(1, rate)) { try { el.currentTime = want; } catch {} }
+    if (el.paused) el.play().catch(() => {});
+  } else { if (!el.paused) el.pause(); if (drift > (playing ? 0.02 : 0.004)) { try { el.currentTime = want; el.addEventListener("seeked", () => { repaint(el); setTimeout(() => repaint(el), 200); }, { once: true }); } catch {} } }
+}
+// Chromium can keep showing the old frame of a paused video after a seek (seen when the layer that covered it during a
+// transition goes away in the same moment): seeks 0.1 ms on, inside the same frame, make it present the new one.
+const repaint = (el) => { if (el.paused) { try { el.currentTime = el.currentTime + 0.0001; } catch {} } };
+// One footage stretch as the render fits it: turned, fitted (cover, 40% down), framed, moved by its keyframes.
+function Footage({ id, url, rotate, framing, motion, aspect, refFn, on = true }) {
+  const turn = turnedVideoStyle(rotate || 0, aspect);
+  return html`<div style=${{ position: "absolute", inset: 0, ...motionCss(motion) }}><div style=${{ position: "absolute", inset: 0, transform: framing ? `translate(${framing.x * 100}%, ${framing.y * 100}%) scale(${framing.scale})` : "none" }}>
+    <video ref=${refFn} data-on=${on ? "1" : "0"} data-video=${id} src=${url} muted playsInline preload="auto" style=${{ objectFit: "cover", background: "#000", ...(turn || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: "50% 40%" }) }} />
+  </div></div>`;
+}
 function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb }) {
   const pic = clock.picture(time), snd = clock.soundAt(time);
   const part = pic ? plan.parts[pic.i] : null;
-  const vref = useRef({}), aref = useRef({}), mref = useRef({}), hold = useRef(0);
+  const fr = useMemo(() => liveFrame(plan, time, clock), [plan, time, clock]);
+  const tr = fr.transition;
+  const vref = useRef({}), aref = useRef({}), mref = useRef({}), tref = useRef({}), hold = useRef(0), box = useRef(null);
+  const [k, setK] = useState(1);
+  useEffect(() => { const el = box.current; if (!el) return; const f = () => setK(el.clientWidth / plan.width); f(); const ro = new ResizeObserver(f); ro.observe(el); return () => ro.disconnect(); }, [plan.width]);
   const head = useMemo(() => Math.max(1, ...(plan.audioMix?.dialogue || []).map((d) => dbToLin(d.gainDb)), ...plan.audio.map((a) => dbToLin(a.gainDb))), [plan]);
   // Sound that is not its picture's own (J/L cuts): its elements load ahead.
   const jl = useMemo(() => plan.sound.some((s) => { const p = plan.parts.find((x) => s.start >= x.start - 1e-3 && s.start < x.end); return !p || p.videoId !== s.videoId || Math.abs((p.srcIn - p.start) - (s.srcIn - s.start)) > 0.02; }), [plan]);
+  // Transitions with both sides drawn, near the playhead: their elements wait on their first frame.
+  const near = useMemo(() => (plan.transitions || []).filter((x) => x.a.length && x.end > x.start && time > x.start - 3 && time < x.end + 0.5), [plan, Math.floor(time * 2)]);
   useEffect(() => {
     pb.attachGate?.(() => {
       const el = part && vref.current[part.videoId];
@@ -209,40 +242,110 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb })
   });
   useEffect(() => () => pb.attachGate?.(null), []);
   useEffect(() => {
-    const follow = (el, want) => {
-      const drift = Math.abs(el.currentTime - want);
-      if (playing) { if (drift > 0.15) { try { el.currentTime = want; } catch {} } if (el.paused) el.play().catch(() => {}); }
-      else { if (!el.paused) el.pause(); if (drift > 0.04) { try { el.currentTime = want; } catch {} } }
-    };
     // The picture's own element plays the sound when the sound is its own footage, else a sound element does.
     const own = !!(snd && part && snd.videoId === part.videoId && Math.abs(snd.src - pic.src) < 0.08);
     const lv = audioAt(plan, time); const vol = (g) => Math.min(1, Math.max(0, g / head));
     for (const [id, el] of Object.entries(vref.current)) {
       const on = part?.videoId === id;
       el.muted = !(on && own && !snd.muted); el.volume = vol(lv.dialogue);
-      if (on) follow(el, pic.src); else if (!el.paused) el.pause();
+      if (on) follow(el, pic.src, playing, pic.rate); else if (!el.paused) el.pause();
     }
     for (const [id, el] of Object.entries(aref.current)) {
       el.volume = vol(lv.dialogue);
-      if (snd && !own && !snd.muted && snd.videoId === id) follow(el, snd.src); else if (!el.paused) el.pause();
+      if (snd && !own && !snd.muted && snd.videoId === id) follow(el, snd.src, playing, snd.rate); else if (!el.paused) el.pause();
+    }
+    // Transition sides: on while the window plays, else parked on the frame they start with.
+    for (const x of near) for (const s of ["a", "b"]) {
+      const el = tref.current[x.clipId + s]; if (!el) continue;
+      const segs = x[s], seg = tr && tr.op === x ? null : segs[0];
+      if (tr && tr.op === x) { const now = tr[s]; follow(el, now.src, playing, now.rate); }
+      else follow(el, showAt(seg, x.start), false);
     }
     // Music loops (as in the render); a sound effect plays once.
     const now = new Map([...lv.music, ...lv.sfx].map((x) => [x.clipId, x]));
     for (const [id, el] of Object.entries(mref.current)) {
       const x = now.get(id); const d = el.duration || 0;
       const want = x && (el.loop && d ? x.src % d : x.src);
-      if (x && (el.loop || !d || want < d - 0.02)) { el.volume = vol(x.gain); follow(el, want); } else if (!el.paused) el.pause();
+      if (x && (el.loop || !d || want < d - 0.02)) { el.volume = vol(x.gain); follow(el, want, playing); } else if (!el.paused) el.pause();
     }
-  }, [time, playing, part, plan, head]);
-  return html`${plan.sources.map((id) => {
+  }, [time, playing, part, plan, head, near]);
+  const look = tr?.look;
+  const blurId = "whip-" + (tr?.op.clipId || "x");
+  return html`<div ref=${box} style="position:absolute;inset:0">${plan.sources.map((id) => {
     const on = part?.videoId === id; const p = on ? part : plan.parts.find((x) => x.videoId === id);
-    const f = p?.framing; const turn = turnedVideoStyle(p?.rotate || 0, aspect);
-    return html`<div key=${id} style=${{ position: "absolute", inset: 0, visibility: on ? "visible" : "hidden", transform: f ? `translate(${f.x * 100}%, ${f.y * 100}%) scale(${f.scale})` : "none" }}>
-      ${urls[id] ? html`<video ref=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} data-on=${on ? "1" : "0"} data-video=${id} src=${urls[id]} muted playsInline preload="auto" style=${{ objectFit: "cover", background: "#000", ...(turn || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: "50% 40%" }) }} />`
+    return html`<div key=${id} style=${{ position: "absolute", inset: 0, visibility: on ? "visible" : "hidden" }}>
+      ${urls[id] ? html`<${Footage} id=${id} url=${urls[id]} rotate=${p?.rotate} framing=${p?.framing} motion=${on ? fr.motion : null} aspect=${aspect} on=${on} refFn=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} />`
         : on && html`<div style="position:absolute;inset:0;display:grid;place-items:center;background:#000;color:#999"><span class="t-small">No preview copy of this video</span></div>`}
       ${urls[id] && html`<audio ref=${(el) => { if (el) aref.current[id] = el; else delete aref.current[id]; }} data-sound=${id} src=${urls[id]} preload=${jl ? "auto" : "none"} />`}
     </div>`;
-  })}${plan.audio.map((a) => sounds[a.assetKey] && html`<audio key=${a.clipId} ref=${(el) => { if (el) mref.current[a.clipId] = el; else delete mref.current[a.clipId]; }} data-music=${a.clipId} data-kind=${a.kind} src=${sounds[a.assetKey]} loop=${a.kind === "music"} preload="auto" />`)}`;
+  })}
+    ${near.map((x) => { const active = tr?.op === x;
+      const side = (s) => { const now = active ? tr[s] : null; const seg = x[s][0]; const l = active ? look[s] : { x: 0, y: 0, opacity: 0 };
+        return html`<div key=${s} data-side=${s} style=${{ position: "absolute", inset: 0, transform: `translate(${(l.x / plan.width) * 100}%, ${(l.y / plan.height) * 100}%)`, opacity: l.opacity }}>
+          ${urls[seg.videoId] && html`<${Footage} id=${seg.videoId} url=${urls[seg.videoId]} rotate=${(now || seg).rotate} framing=${(now || seg).framing} motion=${now?.motion} aspect=${aspect} refFn=${(el) => { if (el) tref.current[x.clipId + s] = el; else delete tref.current[x.clipId + s]; }} />`}</div>`; };
+      return html`<div key=${"tr" + x.clipId} class="tlayer" data-transition=${x.type} style=${{ position: "absolute", inset: 0, overflow: "hidden", background: "#000", visibility: active ? "visible" : "hidden", filter: active && (look.blur.x || look.blur.y) ? `url(#${blurId})` : "none" }}>${side("a")}${side("b")}</div>`; })}
+    ${look?.color && html`<div class="tdip" style=${{ position: "absolute", inset: 0, background: look.color.hex, opacity: look.color.opacity }} />`}
+    ${look && (look.blur.x || look.blur.y) ? html`<svg width="0" height="0" style="position:absolute"><filter id=${blurId} x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation=${`${look.blur.x * k} ${look.blur.y * k}`} /></filter></svg>` : null}
+  </div>${plan.audio.map((a) => sounds[a.assetKey] && html`<audio key=${a.clipId} ref=${(el) => { if (el) mref.current[a.clipId] = el; else delete mref.current[a.clipId]; }} data-music=${a.clipId} data-kind=${a.kind} src=${sounds[a.assetKey]} loop=${a.kind === "music"} preload="auto" />`)}`;
+}
+
+// The Clip tab (Phase 5): the selected clip's speed, the transition on the cut before it (V1) and its keyframes at the
+// playhead (V1, b-roll, text, graphics). Every control sends the connector's own op: set_speed, freeze_frame,
+// set_transition, set_keyframes.
+const KEY_UI = [["x", "Across", -1, 1, 0.01, (v) => Math.round(v * 100) + "%"], ["y", "Down", -1, 1, 0.01, (v) => Math.round(v * 100) + "%"], ["scale", "Scale", 0.1, 3, 0.01, (v) => Math.round(v * 100) + "%"], ["rotation", "Rotation", -180, 180, 1, (v) => Math.round(v) + "°"], ["opacity", "Opacity", 0, 1, 0.01, (v) => Math.round(v * 100) + "%"]];
+const EASE_NAME = { linear: "Linear", in: "Ease in", out: "Ease out", "in-out": "Ease in and out" };
+function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek }) {
+  const [rampSpeed, setRampSpeed] = useState(2);
+  const empty = html`<div class="pb" id="clip-panel" style="padding-top:16px"><p class="t-small muted">Select a clip: a V1 clip for its speed and the transition into it; any clip on V1, a b-roll clip, a text or a graphic for keyframes.</p></div>`;
+  if (!clip) return empty;
+  const v1 = track === "v1" || track === "a1";
+  const keyable = v1 || (track === "v2" && clip.kind === "broll") || (track === "v3" && (clip.kind === "text" || clip.kind === "graphic"));
+  if (!v1 && !keyable) return empty;
+  const len = Math.max(0, clip.end - clip.start), local = r2(clamp(at - clip.start, 0, len));
+  const keys = (v1 ? plan?.clipMotion?.[clip.id]?.keys : clip.keys) || [];
+  const now = motionAt(keyTracks(keys), local);
+  const here = keys.find((k) => Math.abs(k.t - local) < 0.02);
+  const withKey = (patch) => [...keys.filter((k) => k !== here), { ...(here || { t: local }), ...patch }].sort((a, b) => a.t - b.t);
+  const kop = (next) => ({ op: "set_keyframes", track: v1 ? "v1" : track, clipId: clip.id, keys: next });
+  const sp = (patch) => ({ op: "set_speed", clipId: clip.id, ...patch });
+  const tr = clip.transition, planned = plan?.transitions?.find((x) => x.clipId === clip.id);
+  const trOp = (patch) => ({ op: "set_transition", clipId: clip.id, type: tr?.type || "dissolve", duration: tr?.duration, ...(tr?.dir ? { dir: tr.dir } : {}), ...patch });
+  const sl = { H, liveOp };
+  return html`<div class="pb" id="clip-panel" style="padding-top:16px"><div class="col" style="gap:16px">
+    <div class="t-small muted" id="clip-name">${clip.label || clip.id} · ${len.toFixed(2)}s in the edit${v1 ? " · " + speedText(clip) : ""}</div>
+    ${v1 && html`<div class="col" style="gap:10px" id="speed-panel">
+      <b class="t-label">Speed</b>
+      ${clip.freeze ? html`<${OpSlider} id="freeze-len" label="Freeze length" value=${clip.freeze} min=${0.1} max=${10} step=${0.1} show=${(v) => v + " s"} opFor=${(x) => sp({ freeze: x })} ...${sl} />`
+        : html`<${OpSlider} id="clip-speed" label="Speed" value=${clip.speed || 1} min=${0.1} max=${4} step=${0.05} show=${(v) => v + "x"} opFor=${(x) => sp({ speed: x })} disabled=${!!clip.ramp?.length} ...${sl} />
+        <div class="row" style="gap:10px;flex-wrap:wrap">
+          <label class="t-small row" style="gap:6px"><input type="checkbox" id="clip-reverse" checked=${!!clip.reverse} onChange=${(e) => doOp(sp({ reverse: e.target.checked }))} />Reverse</label>
+          ${(clip.speed && clip.speed !== 1) || clip.reverse || clip.ramp?.length ? html`<${Btn} kind="ghost" size="xs" id="speed-normal" onClick=${() => doOp(sp({ speed: 1, reverse: false, ramp: null }))}>Normal speed<//>` : null}
+          <${Btn} kind="ghost" size="xs" id="freeze-here" icon="pause" onClick=${() => doOp({ op: "freeze_frame", clipId: clip.id, at: r2(at), edit: true, length: 1 })}>Freeze this frame (1 s)<//>
+        </div>
+        <div class="col" style="gap:6px" id="ramp">
+          <span class="t-small">Speed ramp${clip.ramp?.length ? ": " + clip.ramp.map((p) => p.speed + "x").join(" → ") : ""}</span>
+          <div class="row" style="gap:6px;align-items:center"><input class="input sm" id="ramp-speed" type="number" min="0.1" max="10" step="0.1" value=${rampSpeed} onInput=${(e) => setRampSpeed(+e.target.value || 1)} style="width:72px" />
+            <${Btn} kind="ghost" size="xs" id="ramp-add" onClick=${() => { const src = r2(srcAt(clip.id, at)); const pts = clip.ramp?.length ? clip.ramp.filter((p) => Math.abs(p.at - src) > 0.01) : [{ at: clip.sourceIn, speed: clip.speed || 1 }]; doOp(sp({ ramp: [...pts, { at: src, speed: rampSpeed }].sort((a, b) => a.at - b.at) })); }}>Ramp to this speed here<//>
+            ${clip.ramp?.length ? html`<${Btn} kind="ghost" size="xs" id="ramp-off" onClick=${() => doOp(sp({ ramp: null }))}>No ramp<//>` : null}</div>
+        </div>`}
+      <p class="t-small muted">Sound keeps its pitch from 0.5x to 4x. Reversed, frozen and outside that range the clip is silent, here and in the render.</p>
+    </div>`}
+    ${v1 && html`<div class="col" style="gap:10px" id="transition-panel">
+      <b class="t-label">Transition into this clip</b>
+      ${first ? html`<p class="t-small muted">The first clip: a dissolve or a dip fades it in from the colour.</p>` : null}
+      <label class="t-small" style="display:grid;gap:4px">Type<select class="input sm" id="transition-type" value=${tr?.type || "cut"} onChange=${(e) => doOp(trOp({ type: e.target.value }))}>${TRANSITIONS.map((t) => html`<option key=${t} value=${t}>${t === "cut" ? "Cut" : t === "dip-black" ? "Dip to black" : t === "dip-white" ? "Dip to white" : t[0].toUpperCase() + t.slice(1)}</option>`)}</select></label>
+      ${tr && html`<${OpSlider} id="transition-duration" label="Duration" value=${tr.duration} min=${0.1} max=${2} step=${0.05} show=${(v) => v + " s"} opFor=${(x) => trOp({ duration: x })} ...${sl} />`}
+      ${tr && (tr.type === "whip" || tr.type === "slide") && html`<label class="t-small" style="display:grid;gap:4px">Direction<select class="input sm" id="transition-dir" value=${tr.dir || "left"} onChange=${(e) => doOp(trOp({ dir: e.target.value }), false)}>${DIRS.map((d) => html`<option key=${d} value=${d}>${d}</option>`)}</select></label>`}
+      ${planned?.note && html`<p class="t-small" id="transition-note" style="color:var(--warn, #b45309)">${planned.end > planned.start ? `Plays ${(planned.end - planned.start).toFixed(2)} s: ` : ""}${planned.note}</p>`}
+    </div>`}
+    ${keyable && html`<div class="col" style="gap:10px" id="keys-panel">
+      <div class="row between"><b class="t-label">Keyframes</b><span class="t-small muted mono">${here ? "key at " : "at "}${local.toFixed(2)}s</span></div>
+      ${KEY_UI.map(([p, label, min, max, step, show]) => html`<${OpSlider} key=${p} id=${"key-" + p} label=${label} value=${Math.round(now[p] / step) * step} min=${min} max=${max} step=${step} show=${show} opFor=${(x) => kop(withKey({ [p]: x }))} ...${sl} />`)}
+      ${here && html`<label class="t-small" style="display:grid;gap:4px">Easing to the next key<select class="input sm" id="key-ease" value=${Array.isArray(here.ease) ? "linear" : here.ease || "linear"} onChange=${(e) => doOp(kop(withKey({ ease: e.target.value })), false)}>${EASES.map((x) => html`<option key=${x} value=${x}>${EASE_NAME[x]}</option>`)}</select></label>`}
+      ${keys.length ? html`<div class="col" style="gap:4px" id="key-list">${keys.map((k, i) => html`<div key=${i} class="row between tlist${here === k ? " on" : ""}"><button class="t-small" style="all:unset;cursor:pointer" data-key=${i} onClick=${() => onSeek(clip.start + k.t)}><span class="mono">${k.t.toFixed(2)}s</span> ${KEY_PROPS.filter((p) => k[p] != null).join(", ")}${k.ease && k.ease !== "linear" ? ` · ${Array.isArray(k.ease) ? "bezier" : k.ease}` : ""}</button><button class="btn icon sm quiet" aria-label="Remove this key" onClick=${() => doOp(kop(keys.filter((x) => x !== k)), false)}><${Icon} name="x" size="12" /></button></div>`)}
+        <${Btn} kind="ghost" size="xs" id="keys-clear" onClick=${() => doOp(kop([]))}>Remove all keyframes<//></div>` : html`<p class="t-small muted">Move a slider to set a key at the playhead. Keys are seconds into the clip; between two keys the value moves with the first key's easing.</p>`}
+    </div>`}
+  </div></div>`;
 }
 
 // A slider that changes the edit live while it moves and makes one undo step when let go.
@@ -594,13 +697,20 @@ function EditorInner({ project, reload, ai, keep }) {
   const ticks = []; for (let t = 0; t <= dur; t += zoom < 30 ? 5 : zoom < 60 ? 2 : 1) ticks.push(t);
   const v1ById = useMemo(() => new Map(lay.tracks.v1.map((c) => [c.id, c])), [lay]);
   const clipText = (k, c) => {
-    if (k === "v1") { const vn = c.sourceVideoId !== main ? others[c.sourceVideoId]?.name || "Other video" : ""; return (vn && vn !== c.label ? vn + " · " : "") + (c.label || vn) + (c.rotate ? ` ↻${c.rotate}°` : ""); }
+    if (k === "v1") { const vn = c.sourceVideoId !== main ? others[c.sourceVideoId]?.name || "Other video" : ""; const sp = c.freeze ? " · freeze" : c.ramp?.length ? " · ramp" : (c.speed && c.speed !== 1 ? ` · ${c.speed}x` : "") + (c.reverse ? " · reversed" : ""); return (vn && vn !== c.label ? vn + " · " : "") + (c.label || vn) + (c.rotate ? ` ↻${c.rotate}°` : "") + sp; }
     if (k === "a1") { const v = v1ById.get(c.id); const j = v && c.start < v.start - 0.005, l = v && v.end < c.end - 0.005; return "Dialogue" + (j ? " · J" : "") + (l ? " · L" : "") + (c.audioMuted ? " · muted" : "") + (v?.audioGain ? " · " + dB(v.audioGain) : ""); }
     if (k === "a2" || k === "a3") { const a = planAudio.get(c.id); return c.label + (a ? " · " + dB(a.gainDb) : ""); }
     return c.label;
   };
   // Sound fades drawn on the clips, as they render (music without its own fades gets the automatic ones).
   const planAudio = useMemo(() => new Map((plan?.audio || []).map((a) => [a.clipId, a])), [plan]);
+  // Phase 5 marks: the transition on the cut before a V1 clip, and keyframes as diamonds where they sit in the clip.
+  const marksOf = (k, c) => {
+    if (k !== "v1" && k !== "v2" && k !== "v3") return null;
+    const keys = k === "v1" ? plan?.clipMotion?.[c.id]?.keys : c.keys;
+    const t = k === "v1" && c.transition ? plan?.transitions?.find((x) => x.clipId === c.id) : null;
+    return html`${t && t.end > t.start && html`<span class="trm" data-transition=${t.type} title=${`${t.type} ${(t.end - t.start).toFixed(2)}s`} style=${{ left: -((t.at - t.start) * zoom) + "px", width: (t.end - t.start) * zoom + "px" }} />`}${(keys || []).map((x, i) => html`<i key=${i} class="kf" style=${{ left: x.t * zoom + "px" }} />`)}`;
+  };
   const fadesOf = (k, c) => {
     const f = k === "a1" ? { i: v1ById.get(c.id)?.audioFadeIn, o: v1ById.get(c.id)?.audioFadeOut } : k === "a2" || k === "a3" ? { i: planAudio.get(c.id)?.fadeIn, o: planAudio.get(c.id)?.fadeOut } : null;
     return f && html`${f.i > 0 && html`<i class="fd in" data-fade="in" style=${{ width: f.i * zoom }} />`}${f.o > 0 && html`<i class="fd out" data-fade="out" style=${{ width: f.o * zoom }} />`}`;
@@ -671,7 +781,7 @@ function EditorInner({ project, reload, ai, keep }) {
               return html`<div key=${c.id} class=${"clip " + (k === "v1" ? "video" : k[0] === "a" ? "audio" : c.kind === "zoom" ? "fx" : "title") + (isOn(k, c) ? " on" : "") + (gone ? " gone" : "") + (other ? " other" : "") + (c.audioMuted ? " muted" : "")} data-clip=${c.id} data-track=${k}
                 title=${gone ? "Not in the edit: its footage is cut" : k === "a1" ? "Its V1 clip's dialogue. Alt-drag an edge for a J or L cut." : k === "v1" ? `${clipText(k, c)} · footage ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}s` : c.label}
                 style=${{ left: px(c.start), width: Math.max(gone ? 4 : 8, (c.end - c.start) * zoom) }}
-                onPointerDown=${clipDown(k, c)}>${fadesOf(k, c)}<span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
+                onPointerDown=${clipDown(k, c)}>${fadesOf(k, c)}${marksOf(k, c)}<span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
             ${k === "v1" && drop != null && html`<div class="tl-drop" id="drop-marker" style=${{ left: px(drop) - 1 }} />`}
           </div>`)}
           <div class="playhead" id="playhead" style=${{ left: px(pb.time) - 1 }}><i /></div>
@@ -682,7 +792,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
 
       <div class="panel">
-        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["audio", "Audio"], ["text", "Text"], ["style", "Style"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
+        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["clip", "Clip"], ["audio", "Audio"], ["text", "Text"], ["style", "Style"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
         ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
           <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted">${S.cut.length} cut</span></div>
           ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
@@ -715,6 +825,7 @@ function EditorInner({ project, reload, ai, keep }) {
             <${Btn} size="sm" type="submit" id="comment-post" disabled=${!draft.trim() || posting}>${posting ? "…" : "Post"}<//>
           </form>
         </div>`}
+        ${rtab === "clip" && html`<${ClipTab} clip=${sel && isV1(sel.track) ? selV1 : selClip} track=${sel?.track} plan=${plan} first=${!!selV1 && lay.tracks.v1.find((c) => c.end - c.start > 0.01)?.id === selV1.id} at=${pb.time} srcAt=${(id, t) => view.editToSource(id, t)} onSeek=${(t) => pb.seek(t)} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "style" && html`<div class="pb" style="padding-top:16px">
@@ -743,4 +854,4 @@ function EditorInner({ project, reload, ai, keep }) {
     ${help && html`<${Modal} title="Keyboard shortcuts" onClose=${() => setHelp(false)}><div class="list">${SHORTCUTS.map(([k, d]) => html`<div key=${k} class="row between" style="padding:6px 4px"><span>${d}</span><span class="kbd">${k}</span></div>`)}</div><//>`}
   </div>`;
 }
-export { EditorPage, TextLayers };
+export { EditorPage, TextLayers, SeqMedia, LiveOverlays };

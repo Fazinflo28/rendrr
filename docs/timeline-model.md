@@ -24,6 +24,13 @@ A timeline with `model: "B"` and `mainVideoId` (the project's footage):
 - **Turn and framing** (`rotate`, `framing`) are per V1 clip.
 - **Captions and text (Phase 4).** `captionStyle` on the timeline is the edit's own caption style (missing = the look's preset, with the project style's word counts). V3 clips with `kind: "text"` are text layers: `text` (line breaks with `\n`), `style` (font, weight, size, colour, stroke, shadow, box, x, y, case, align), `card` (full-frame colour behind), `anim` (none, fade, pop, slide). They hang on a V1 clip like other V3 clips.
 - **Sound (Phase 3).** `audio` on the timeline holds `cleanup` (`none`, `light`, `voice`, `noisy`), `loudness` (LUFS, or `null` for off), `peak` (dBTP), `duck` (dB) and the mix's `fadeIn` / `fadeOut`. `declick` is the fade at every dialogue cut (seconds, default 0.02). `highpass`, `denoise`, `presence`, `deess` and `compress` change the preset's numbers by hand. Missing fields take the defaults: none, −14, −1, 12, 0, 0, 0.02 and the preset's values. V1 clips carry their dialogue's `audioGain`, `audioFadeIn` and `audioFadeOut`. A2 and A3 clips carry `gainDb`, `fadeIn` and `fadeOut`; a music clip without fades gets the automatic ones.
+- **Speed, transitions, keyframes (Phase 5).** A V1 clip can carry:
+  - `speed` (0.1 to 10), `reverse`, `ramp` (speed points `{at, speed}` at its footage seconds, linear between them)
+  - `freeze` (seconds): the clip is a still of the frame at `sourceIn`
+  - `transition` `{type, duration, dir}` on the cut before it: dissolve, dip-black, dip-white, whip, zoom, slide
+  - `keys` (keyframes), stored at footage seconds so they move with the footage when the clip is cut or split; a freeze's are `sourceIn` + seconds into it
+
+  V2 b-roll and V3 text and graphics clips carry `keys` in seconds from their own start. A key is `{t, x, y, scale, rotation, opacity, ease}`.
 - **`start` / `end`** on every clip are edit seconds, written by the layout with `timelineStart`, `timelineEnd` and `linkId`. `stripLayout` removes the last three, so they never make a version.
 
 ### What plays
@@ -35,6 +42,13 @@ A timeline with `model: "B"` and `mainVideoId` (the project's footage):
 - each clip's place, and lookups between edit time and footage time
 
 With `align: 30` (the render plan) every part starts and ends on a frame, exactly as model A's planner did.
+
+Speed (Phase 5): every piece, picture part and sound part has a `rate`, footage seconds per edit second. Below 0 is reversed, 0 is frozen, missing is 1.
+- A part's edit length is its footage / |rate|, in whole frames.
+- `srcAt` / `editOf` map between edit and footage time at any rate.
+- A ramp is split into steps of at most 0.2 s of edit, each at the speed of its middle.
+- A clip off normal speed has no J/L cut at its edges.
+- Its sound follows its picture piece by piece (`atempo`, pitch kept). It is `silent` when reversed, frozen, or outside 0.5x to 4x. Silent sound gets no captions and does not count as speech.
 
 ### Ops on the sequence
 
@@ -57,6 +71,15 @@ The sound (`plan.audioMix`, `audio.ts`):
 4. The worker measures this mix (`ffmpegArgs(..., { measure: true })`), then renders it with `loudnessGainDb` and the true-peak limiter.
 
 `audioAt(plan, t)` in `playback.ts` gives the same levels to the live player.
+
+Speed, transitions and keyframes (Phase 5, `motion.ts`):
+- **Speed.** A part at another speed picks output frame n = source frame floor(|rate| x n) in play order (`settb`, `setpts=ceil(N/rate)`, `fps`). The player's `showAt` seeks into the same frame. A reversed part is read in 1 s chunks, each from its own input with `-ss`, fitted, then `reverse`d. A freeze holds one frame (`tpad`).
+- **Transitions** are planned by `planTransitions`: centred on the cut, whole frames on each side, shorter when a clip next to them is short or a side has too little footage past the cut. The note says why.
+  - A dip is a colour fading in to the cut and out after it.
+  - The zoom transition is a zoom term ("through").
+  - Dissolve, slide and whip are drawn from both sides' segments (each through the same steps as a part) and laid over the joined picture.
+- **Keyframes** become one piecewise-linear table per property (16 pieces per eased segment). The render writes it as an FFmpeg expression for the `perspective` filter (the four corners), with opacity multiplied into the alpha. The player evaluates the same table (`liveFrame`: `motion`, `transition`, overlay and text motion). A keyframed text layer is one ASS event per piece.
+- **Timing.** Every curve in the player is read at the start of the frame showing. Overlays (b-roll, graphics, transitions, dips) start and end on whole frames.
 
 ## Model A (before Phase 2)
 

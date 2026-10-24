@@ -4,7 +4,8 @@
 // Sequences (model B) are planned here; timelines stored in model A go to the unchanged A planner (renderPlanA.ts).
 import { catalogMusic, catalogSfx } from "./catalog";
 import type { Aspect, CaptionLook } from "./constants";
-import { cutRegions, isSequence, mainVideoOf, mergeRanges, sequenceView, type Attached, type PicturePart, type Range, type SequenceView, type SoundPart } from "./sequence";
+import { cutRegions, editOf, isSequence, mainVideoOf, mergeRanges, normalSpeed, rateOf, sequenceView, srcAt, type Attached, type PicturePart, type Range, type SeqClip, type SequenceView, type SoundPart } from "./sequence";
+import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
@@ -34,8 +35,16 @@ export type PlanInput = {
   transcripts?: Record<string, Transcript>;
 };
 
-export type ZoomOp = { start: number; end: number; scale: number; mode: "punch" | "push" };
-export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string };
+/** through: the zoom transition (in to the cut, out after it). */
+export type ZoomOp = { start: number; end: number; scale: number; mode: "punch" | "push" | "through" };
+/** keys: keyframes in seconds from the overlay's start (a b-roll clip with keys is a picture-in-picture). */
+export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string; keys?: Key[] };
+/** A stretch of one video drawn over an edit window: the same steps as a picture part (speed, turn, fit, framing, the
+ *  clip's keyframes). Footage past a part's ends continues at its rate (handles). */
+export type Seg = { videoId: string; srcIn: number; srcOut: number; rate: number; start: number; end: number; rotate: 0 | 90 | 180 | 270; framing: Framing | null; clipId: string };
+/** A transition on the cut at `at`, over [start, end). a / b: what each side shows over the whole window (dissolve,
+ *  slide, whip; dips and zoom draw on the picture itself). asked: the duration the edit asked for. */
+export type TransitionOp = { clipId: string; type: Exclude<TransitionType, "cut">; dir?: Dir; at: number; start: number; end: number; asked: number; a: Seg[]; b: Seg[]; note?: string };
 export type AudioOp = { clipId: string; start: number; end: number; gainDb: number; assetKey: string; kind: "music" | "sfx"; fadeIn?: number; fadeOut?: number };
 /** The sequence's sound settings and the numbers the mix is made from (edit seconds). */
 export type AudioMix = AudioMixSettings & {
@@ -74,6 +83,9 @@ export type RenderPlan = {
   dialogueMutes: Range[];
   captions: CaptionEvent[];
   captionLook: CaptionLook;
+  /** Phase 5: transitions in edit order, and the keyframes of V1 clips (seconds from the clip's start in the edit). */
+  transitions?: TransitionOp[];
+  clipMotion?: Record<string, { start: number; end: number; keys: Key[] }>;
   /** Sequences: the caption style, the captions with their lines and word times, the text layers (Phase 4). */
   captionStyle?: CaptionStyle;
   styledCaptions?: StyledCaption[];
@@ -88,6 +100,8 @@ export class RenderPlanError extends Error {
 }
 
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
+/** A time on the 30 fps output's frame grid. */
+const onFrame = (t: number) => Math.round(t * 30) / 30;
 const sameFraming = (a: Framing | null, b: Framing | null) => (!a && !b) || (!!a && !!b && a.scale === b.scale && a.x === b.x && a.y === b.y);
 const FPS = 30;
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
@@ -166,6 +180,21 @@ function lineEvents(lines: Transcript, captionText: Record<string, string>, cut:
   return events;
 }
 
+/** Dialogue split into runs: one video, footage moving forward. Sound silent at its speed (reversed, frozen, too slow or
+ *  fast) is in no run: nothing is heard there, so nothing is captioned. */
+function soundRuns(view: SequenceView): SoundPart[][] {
+  const runs: SoundPart[][] = [];
+  let gap = true;
+  for (const s of view.sound) {
+    if (s.silent) { gap = true; continue; }
+    const run = runs[runs.length - 1], prev = run?.[run.length - 1];
+    if (!gap && prev && prev.videoId === s.videoId && s.srcIn >= prev.srcOut - 1e-6) run.push(s);
+    else runs.push([s]);
+    gap = false;
+  }
+  return runs;
+}
+
 /** No overlaps: a caption ends when the next one starts. */
 function tidyEvents(events: CaptionEvent[]): CaptionEvent[] {
   events.sort((a, b) => a.start - b.start);
@@ -187,12 +216,7 @@ export function sequenceCaptionGroups(input: PlanInput, view: SequenceView): { t
   const cut = new Set(tl.cut);
   const capClips = (tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "caption" || (!c.kind && c.lineId));
   const visible = capClips.length ? new Set(capClips.map((c) => c.lineId).filter(Boolean) as string[]) : null;
-  const runs: SoundPart[][] = [];
-  for (const s of view.sound) {
-    const run = runs[runs.length - 1], prev = run?.[run.length - 1];
-    if (prev && prev.videoId === s.videoId && s.srcIn >= prev.srcOut - 1e-6) run.push(s);
-    else runs.push([s]);
-  }
+  const runs = soundRuns(view);
   const groups: { text: string; start: number; end: number }[][] = [];
   for (const run of runs) {
     const vid = run[0].videoId;
@@ -200,7 +224,7 @@ export function sequenceCaptionGroups(input: PlanInput, view: SequenceView): { t
     if (!lines?.length) continue;
     const inKept = (t: number) => run.some((s) => t >= s.srcIn && t < s.srcOut);
     const toOutput = (src: number) => {
-      for (const s of run) { if (src < s.srcIn) return r3(s.start); if (src <= s.srcOut) return r3(s.start + (src - s.srcIn)); }
+      for (const s of run) { if (src < s.srcIn) return r3(s.start); if (src <= s.srcOut) return r3(editOf(s, src)); }
       return r3(run[run.length - 1].end);
     };
     for (const line of lines) {
@@ -220,12 +244,7 @@ export function sequenceCaptions(input: PlanInput, view: SequenceView, total: nu
   const cut = new Set(tl.cut);
   const capClips = (tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "caption" || (!c.kind && c.lineId));
   const visible = capClips.length ? new Set(capClips.map((c) => c.lineId).filter(Boolean) as string[]) : null;
-  const runs: SoundPart[][] = [];
-  for (const s of view.sound) {
-    const run = runs[runs.length - 1], prev = run?.[run.length - 1];
-    if (prev && prev.videoId === s.videoId && s.srcIn >= prev.srcOut - 1e-6) run.push(s);
-    else runs.push([s]);
-  }
+  const runs = soundRuns(view);
   const events: CaptionEvent[] = [];
   for (const run of runs) {
     const vid = run[0].videoId;
@@ -233,7 +252,7 @@ export function sequenceCaptions(input: PlanInput, view: SequenceView, total: nu
     if (!lines?.length) continue;
     const inKept = (t: number) => run.some((s) => t >= s.srcIn && t < s.srcOut);
     const toOutput = (src: number) => {
-      for (const s of run) { if (src < s.srcIn) return r3(s.start); if (src <= s.srcOut) return r3(s.start + (src - s.srcIn)); }
+      for (const s of run) { if (src < s.srcIn) return r3(s.start); if (src <= s.srcOut) return r3(editOf(s, src)); }
       return r3(run[run.length - 1].end);
     };
     events.push(...lineEvents(lines, vid === main ? tl.captionText : {}, vid === main ? cut : new Set(), vid === main ? visible : null, inKept, toOutput, total, rules, tl.captionLook));
@@ -306,7 +325,21 @@ export function planRender(input: PlanInput): RenderPlan {
     return e - s >= 0.05 ? { start: s, end: e } : null;
   };
 
+  // Phase 5: V1 keyframes (stored at footage seconds; a freeze: sourceIn + seconds into it) in seconds from the clip's
+  // start in the edit, and the transitions on the cuts.
+  const v1 = tl.tracks.v1 as SeqClip[];
+  const clipById = new Map(v1.map((c) => [c.id, c]));
+  const clipMotion: Record<string, { start: number; end: number; keys: Key[] }> = {};
+  for (const c of v1) {
+    const p = view.clip(c.id);
+    if (!c.keys?.length || !p || !p.pieces.length) continue;
+    const at = (k: Key) => (c.freeze ? Math.min(p.end - p.start, Math.max(0, k.t - c.sourceIn)) : (view.editAt(c.id, k.t) ?? p.start) - p.start);
+    clipMotion[c.id] = { start: r3(p.start), end: r3(p.end), keys: c.keys.map((k) => ({ ...k, t: r3(at(k)) })).sort((a, b) => a.t - b.t) };
+  }
+  const transitions = planTransitions(view, clipById, (vid) => infoOf(vid)?.seconds);
+
   const zooms: ZoomOp[] = [];
+  for (const t of transitions) if (t.type === "zoom" && t.end > t.start) zooms.push({ start: t.start, end: t.end, scale: ZOOM_PEAK, mode: "through" });
   const broll: OverlayOp[] = [];
   for (const c of tl.tracks.v2 as (V2Clip & Attached)[]) {
     const sp = placed(c);
@@ -318,14 +351,16 @@ export function planRender(input: PlanInput): RenderPlan {
       const len = input.brollSeconds[c.videoId];
       const ss = Math.min(c.sourceStart ?? 0, Math.max(0, len - 0.1));
       const end = Math.min(sp.end, sp.start + (len - ss));
-      if (end - sp.start >= 0.05) broll.push({ clipId: c.id, start: sp.start, end: r3(end), sourceStart: ss, videoId: c.videoId });
+      // On whole frames, so the render and the player show it on exactly the same frames.
+      const fs = onFrame(sp.start), fe = onFrame(end);
+      if (fe - fs >= 0.05) broll.push({ clipId: c.id, start: fs, end: fe, sourceStart: ss, videoId: c.videoId, ...(c.keys?.length ? { keys: c.keys } : {}) });
     }
   }
   const graphics: OverlayOp[] = [];
   for (const c of tl.tracks.v3 as (V3Clip & Attached)[]) {
     if (c.kind !== "graphic" || !c.graphicId || (input.graphicsReady && !input.graphicsReady[c.id])) continue;
     const sp = placed(c);
-    if (sp) graphics.push({ clipId: c.id, ...sp, sourceStart: 0, graphicId: c.graphicId });
+    if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: 0, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}) });
   }
   const audio: AudioOp[] = [];
   // Keys come from the catalog only (see catalogMusic), whatever the stored clip says.
@@ -358,8 +393,8 @@ export function planRender(input: PlanInput): RenderPlan {
     dialogue.push({ start: r3(p.soundStart), end: r3(p.soundEnd), gainDb: c.audioGain ?? 0, fadeIn: c.audioFadeIn ?? 0, fadeOut: c.audioFadeOut ?? 0 });
   }
   const audioMix: AudioMix = { ...settings, fadeIn: Math.min(settings.fadeIn, total / 2), fadeOut: Math.min(settings.fadeOut, total / 2), speech, dialogue };
-  // Muted clips: their dialogue is silent.
-  const dialogueMutes = mergeRanges(view.sound.filter((x) => x.muted).map((x) => ({ start: r3(x.start), end: r3(x.end) })).filter((g) => g.end > g.start));
+  // Muted clips, and clips silent at their speed: their dialogue is silent.
+  const dialogueMutes = mergeRanges(view.sound.filter((x) => x.muted || x.silent).map((x) => ({ start: r3(x.start), end: r3(x.end) })).filter((g) => g.end > g.start));
 
   const look = tl.captionLook;
   // Captions and text layers (Phase 4): laid out once here, drawn by libass and by the editor from the same layout.
@@ -372,7 +407,7 @@ export function planRender(input: PlanInput): RenderPlan {
     const sp = placed(c);
     if (!sp) continue;
     const def = textPreset("plain");
-    texts.push({ clipId: c.id, start: Math.round(sp.start * 100) / 100, end: Math.round(sp.end * 100) / 100, lines: c.text.split("\n"), style: c.style ?? def.style, card: c.card ?? null, anim: c.anim ?? def.anim });
+    texts.push({ clipId: c.id, start: Math.round(sp.start * 100) / 100, end: Math.round(sp.end * 100) / 100, lines: c.text.split("\n"), style: c.style ?? def.style, card: c.card ?? null, anim: c.anim ?? def.anim, ...(c.keys?.length ? { keys: c.keys } : {}) });
   }
   const ass = buildStyledAss({ captions: styledCaptions, captionStyle, texts, width, height });
 
@@ -395,6 +430,7 @@ export function planRender(input: PlanInput): RenderPlan {
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
+    ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
     `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${cleanupText(settings) !== "none" ? `, cleanup ${cleanupText(settings)}` : ""}${settings.declick ? `, ${Math.round(settings.declick * 1000)} ms fade at every cut` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
     settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : `Encode final: H.264, ${width}x${height}`,
@@ -402,7 +438,74 @@ export function planRender(input: PlanInput): RenderPlan {
   return {
     model: "B", kind, width, height, fps: 30, aspect: snapshot.aspect, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })), parts, sound, sources, videos,
     outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, captionStyle, styledCaptions, texts, ass, operations, audioMix,
+    transitions, clipMotion,
   };
+}
+
+/**
+ * Transitions on the cuts (Phase 5). Each is centred on its cut and whole frames long on each side. It gets shorter
+ * when a clip next to it is short (a clip with transitions at both ends gives each half of itself) or, for those that
+ * show both sides at once, when a side has less footage past the cut than half the transition.
+ */
+export function planTransitions(view: SequenceView, clipById: Map<string, SeqClip>, secondsOf: (videoId: string) => number | undefined): TransitionOp[] {
+  const out: TransitionOp[] = [];
+  const live = view.clips.filter((c) => c.pieces.length);
+  const pic = view.picture;
+  const f = (x: number) => Math.floor(x * FPS + 1e-6) / FPS;
+  const has = (id?: string) => { const t = id ? clipById.get(id)?.transition : undefined; return !!t && t.type !== "cut"; };
+  const seg = (p: PicturePart, s: number, e: number, clipId: string): Seg => {
+    const r = rateOf(p), a = srcAt(p, s), b = srcAt(p, e);
+    return { videoId: p.videoId, srcIn: r === 0 ? p.srcIn : Math.min(a, b), srcOut: r === 0 ? p.srcOut : Math.max(a, b), rate: r, start: r3(s), end: r3(e), rotate: p.rotate, framing: p.framing, clipId };
+  };
+  // Footage a part has past its end (after) or before its start, in its play direction, as edit seconds.
+  const room = (p: PicturePart, after: boolean) => {
+    const r = rateOf(p);
+    if (r === 0) return Infinity;
+    const len = secondsOf(p.videoId) ?? Infinity;
+    return Math.max(0, after === r > 0 ? len - p.srcOut : p.srcIn) / Math.abs(r);
+  };
+  live.forEach((pl, k) => {
+    const tr = clipById.get(pl.id)!.transition;
+    if (!tr || tr.type === "cut") return;
+    const at = pl.start;
+    const base = { clipId: pl.id, ...(tr.dir ? { dir: tr.dir } : {}), at: r3(at), asked: tr.duration, a: [] as Seg[], b: [] as Seg[] };
+    let half = Math.min(f(tr.duration / 2), f((pl.end - pl.start) / (has(live[k + 1]?.id) ? 2 : 1)));
+    if (k === 0) {
+      // The first clip: a dip or a dissolve fades in from the colour (black for a dissolve).
+      if (tr.type === "dip-black" || tr.type === "dip-white" || tr.type === "dissolve") out.push({ ...base, type: tr.type === "dip-white" ? "dip-white" : "dip-black", start: 0, end: r3(half), ...(tr.type === "dissolve" ? { note: "first clip: fades in from black" } : {}) });
+      else out.push({ ...base, type: tr.type, start: r3(at), end: r3(at), note: "left out: no clip before it" });
+      return;
+    }
+    const prev = live[k - 1];
+    half = Math.min(half, f((prev.end - prev.start) / (has(prev.id) ? 2 : 1)));
+    const aPart = pic.find((p) => p.start < at - 1e-9 && p.end >= at - 1e-9)!, bPart = pic.find((p) => p.start <= at + 1e-9 && p.end > at + 1e-9)!;
+    let note = "";
+    if ((USES_HANDLES as string[]).includes(tr.type)) {
+      const ra = room(aPart, true), rb = room(bPart, false);
+      if (Math.min(ra, rb) < half) { half = f(Math.min(half, ra, rb)); note = `${ra < rb ? "the clip before" : "this clip"} has only ${Math.min(ra, rb).toFixed(2)}s of footage past the cut`; }
+    }
+    if (half < 1 / FPS - 1e-9) { out.push({ ...base, type: tr.type, start: r3(at), end: r3(at), note: `left out: ${note || "a clip next to it is too short"}` }); return; }
+    if (half * 2 < tr.duration - 1 / FPS && !note) note = "a clip next to it is short";
+    const start = at - half, end = at + half;
+    const sides = (USES_HANDLES as string[]).includes(tr.type) ? {
+      a: [...pic.filter((p) => p.end > start + 1e-9 && p.start < at - 1e-9).map((p) => seg(p, Math.max(start, p.start), Math.min(at, p.end), p.clipIds[p.clipIds.length - 1])), seg(aPart, at, end, aPart.clipIds[aPart.clipIds.length - 1])],
+      b: [seg(bPart, start, at, bPart.clipIds[0]), ...pic.filter((p) => p.start < end - 1e-9 && p.end > at + 1e-9).map((p) => seg(p, Math.max(at, p.start), Math.min(end, p.end), p.clipIds[0]))],
+    } : {};
+    out.push({ ...base, ...sides, type: tr.type, start: r3(start), end: r3(end), ...(note ? { note } : {}) });
+  });
+  return out;
+}
+
+/** The render plan's Phase 5 lines: speed, transitions, keyframes. */
+function speedLines(v1: SeqClip[], view: SequenceView, transitions: TransitionOp[], clipMotion: Record<string, unknown>, broll: OverlayOp[], graphics: OverlayOp[], texts: TextLayer[]): string[] {
+  const off = v1.filter((c) => !normalSpeed(c) && view.clip(c.id)?.pieces.length);
+  const tr = transitions.filter((t) => t.end > t.start);
+  const keyed = Object.keys(clipMotion).length + [...broll, ...graphics, ...texts].filter((x) => x.keys?.length).length;
+  return [
+    off.length ? `Speed: ${off.length} ${off.length === 1 ? "clip" : "clips"} (${off.slice(0, 6).map((c) => `${c.id} ${c.freeze ? `freeze ${c.freeze}s` : c.ramp?.length ? "ramp" : `${c.speed ?? 1}x`}${c.reverse ? " reversed" : ""}`).join(", ")}${off.length > 6 ? ", …" : ""}); sound keeps its pitch` : "Speed: all clips at normal speed",
+    tr.length ? `Transitions: ${tr.length} (${tr.slice(0, 6).map((t) => `${t.type} ${(t.end - t.start).toFixed(2)}s`).join(", ")}${tr.length > 6 ? ", …" : ""})` : "Transitions: none (cuts)",
+    keyed ? `Keyframes: ${keyed} ${keyed === 1 ? "clip" : "clips"} animated` : "Keyframes: none",
+  ];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -429,6 +532,11 @@ export function zoomExpr(zooms: ZoomOp[]): string {
   if (!zooms.length) return "1";
   const terms = zooms.map((z) => {
     const s = (z.scale - 1).toFixed(4);
+    if (z.mode === "through") {
+      // The zoom transition: in to the cut (the window's middle) and out after it, both quadratic.
+      const D = Math.max(0.01, z.end - z.start), p = `(t-${n3(z.start)})/${n6(D)}`;
+      return `if(between(t,${n3(z.start)},${n3(z.end)}),${s}*if(lt(${p},0.5),pow(2*${p},2),pow(2-2*${p},2)),0)`;
+    }
     if (z.mode === "push") return `if(between(t,${n3(z.start)},${n3(z.end)}),${s}*(t-${n3(z.start)})/${n3(Math.max(0.1, z.end - z.start))},0)`;
     const ramp = Math.min(0.12, (z.end - z.start) / 3).toFixed(3);
     return `if(between(t,${n3(z.start)},${n3(z.end)}),${s}*min(1,(t-${n3(z.start)})/${ramp})*min(1,(${n3(z.end)}-t)/${ramp}),0)`;
@@ -485,22 +593,56 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       g.push(`[${from}]scale=${sw}:${sh},setsar=1[fscaled${tag}]`);
       g.push(`[fcanvas${tag}][fscaled${tag}]overlay=x=${ox}:y=${oy}:shortest=1,format=yuv420p[${to}]`);
     };
-    const N = plan.parts.length;
-    // One video, one look: cut, join, then fit once (the same graph model A used). Otherwise each part is fitted first.
-    const uniform = plan.sources.length === 1 && plan.parts.every((p) => p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing));
-    for (const vid of plan.sources) {
-      const mine = plan.parts.map((p, i) => ({ p, i })).filter((x) => x.p.videoId === vid);
-      if (!mine.length) continue;
-      splitOf("v", vid, mine.length, (k) => `sv${mine[k].i}`);
-      for (const { p, i } of mine) {
-        if (uniform) g.push(`[sv${i}]${vt(p)}[v${i}]`);
-        else {
-          g.push(`[sv${i}]${vt(p)},${turnOf(p.rotate)}${toneOf(vid)}${fit},format=yuv420p[${p.framing ? `pf${i}` : `v${i}`}]`);
-          if (p.framing) frame(`pf${i}`, p.framing, `v${i}`, String(i));
+    const motion = plan.clipMotion ?? {};
+    // Branches of each video's decoder, handed out as segments ask for them (split once all are known).
+    const branches: Record<string, string[]> = {};
+    const branch = (vid: string) => { const l = `sv${Object.values(branches).reduce((a, b) => a + b.length, 0)}`; (branches[vid] ??= []).push(l); return l; };
+    const pathOf = (vid: string) => (vid === main ? files.source : files.videos?.[vid])!;
+    /**
+     * One stretch of picture as exactly round(length x 30) frames at output size: its footage at its rate (reversed in
+     * 1 s chunks, each from its own input so memory stays small; frozen = one frame held), turned, fitted, framed and
+     * moved by its clip's keyframes. `exact` pads or trims to the frame count (transition sides).
+     */
+    const drawSeg = (x: { videoId: string; srcIn: number; srcOut: number; rate?: number; start: number; end: number; rotate: number; framing: Framing | null; clipIds?: string[]; clipId?: string }, out: string, tag: string, exact = false) => {
+      const N = Math.max(1, Math.round((x.end - x.start) * FPS));
+      const r = rateOf(x);
+      const look = `${turnOf(x.rotate)}${toneOf(x.videoId)}${fit}`;
+      const pad = `,tpad=stop_mode=clone:stop=2,trim=end_frame=${N}`;
+      // At another speed output frame n shows source frame floor(rate x n) of the stretch (in play order): frame j goes to
+      // tick ceil(j / rate) and fps keeps the last frame of each tick. The player shows the same frame (showAt).
+      const pick = (rate: number) => `settb=1/${FPS},setpts=ceil(N/${rate}-0.000001),fps=${FPS}`;
+      let chain: string;
+      if (r < 0) {
+        const parts: string[] = [];
+        for (let b = x.srcOut, j = 0; b > x.srcIn + 1e-6; b -= 1, j++) {
+          const a = Math.max(x.srcIn, b - 1), M = Math.max(1, Math.round((b - a) * FPS));
+          inputs.push("-ss", n6(a), "-t", n3(b - a + 0.25), "-i", pathOf(x.videoId));
+          const ii = idx++;
+          g.push(`[${ii}:v]fps=${FPS},trim=end_frame=${M},${look},reverse,setpts=PTS-STARTPTS[rc${tag}_${j}]`);
+          parts.push(`[rc${tag}_${j}]`);
         }
-      }
-    }
-    g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0[vcat]`);
+        chain = `${parts.join("")}concat=n=${parts.length}:v=1:a=0,${pick(-r)}${pad}`;
+      } else if (r === 0) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
+      else if (r !== 1) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
+      else chain = `[${branch(x.videoId)}]${vt(x)}${exact ? pad : ""},${look}`;
+      const clipId = x.clipId ?? (x.clipIds?.length === 1 ? x.clipIds[0] : undefined);
+      const m = clipId ? motion[clipId] : undefined;
+      if (!x.framing && !m) { g.push(`${chain},format=yuv420p[${out}]`); return; }
+      g.push(`${chain},format=yuv420p[pf${tag}]`);
+      let cur = `pf${tag}`;
+      if (x.framing) { frame(cur, x.framing, `pg${tag}`, tag); cur = `pg${tag}`; }
+      if (m) { motionChain(g, cur, out, m.keys, x.start - m.start, N, W, H, true, tag); return; }
+      g.push(`[${cur}]null[${out}]`);
+    };
+
+    const N = plan.parts.length;
+    // One video, one look, all at normal speed and still: cut, join, then fit once (the same graph model A used).
+    // Otherwise each part is drawn on its own first.
+    const uniform = plan.sources.length === 1 && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]));
+    plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
+    // concat's output counts in microseconds, a hair before each frame's exact time; back on the 1/30 s grid so every
+    // overlay below lines up with its own frame (else each one shows a frame late).
+    g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0${uniform ? "" : `,settb=1/${FPS}`}[vcat]`);
     v = "vcat";
     if (uniform) {
       const p0 = plan.parts[0];
@@ -508,30 +650,122 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       v = "vfit";
       if (p0.framing) { frame(v, p0.framing, "vframed", ""); v = "vframed"; }
     }
+
+    // Transitions (Phase 5), laid over the joined picture: dips are a colour fading in to the cut and out after it;
+    // dissolve, slide and whip are drawn from both sides' footage over the whole window.
+    (plan.transitions ?? []).forEach((t, i) => {
+      const D = t.end - t.start;
+      if (D < 1 / FPS - 1e-9 || t.type === "zoom") return;
+      const span = `enable='between(t,${n6(t.start)},${n6(t.end - 0.5 / FPS)})':eof_action=pass`;
+      if (t.type === "dip-black" || t.type === "dip-white") {
+        const up = t.at - t.start, down = t.end - t.at;
+        g.push(`color=c=${t.type === "dip-black" ? "0x000000" : "0xFFFFFF"}:s=${W}x${H}:r=${FPS}:d=${n6(D)},format=yuva420p${up > 1e-6 ? `,fade=t=in:st=0:d=${n6(up)}:alpha=1` : ""},fade=t=out:st=${n6(up)}:d=${n6(down)}:alpha=1,setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[dp${i}]`);
+        g.push(`[${v}][dp${i}]overlay=${span}[vd${i}]`);
+        v = `vd${i}`;
+        return;
+      }
+      const side = (segs: Seg[], name: string) => {
+        segs.forEach((s, j) => drawSeg(s, `${name}${j}`, `${name}${j}`, true));
+        if (segs.length === 1) return `${name}0`;
+        g.push(`${segs.map((_, j) => `[${name}${j}]`).join("")}concat=n=${segs.length}:v=1:a=0[${name}]`);
+        return name;
+      };
+      const a = side(t.a, `ta${i}_`), b = side(t.b, `tb${i}_`);
+      const [dx, dy] = dirVec(t.dir);
+      const p = `(t/${n6(D)})`;
+      if (t.type === "dissolve") g.push(`[${b}]format=yuva420p,fade=t=in:st=0:d=${n6(D)}:alpha=1[tbf${i}];[${a}][tbf${i}]overlay=format=auto,format=yuv420p[tx${i}]`);
+      else if (t.type === "slide") g.push(`[${a}][${b}]overlay=x='${-dx * W}*(1-${smoothExpr(p)})':y='${-dy * H}*(1-${smoothExpr(p)})':eval=frame,format=yuv420p[tx${i}]`);
+      else {
+        // Whip: both sides move together, blurred along the move (strongest at the cut).
+        const e = smoothExpr(p);
+        const cmds = Array.from({ length: Math.round(D * FPS) }, (_, k) => `${n3(k / FPS)} gblur@wp${i} ${dx ? "sigma" : "sigmaV"} ${Math.max(0.01, (dx ? W : H) * WHIP_BLUR * Math.sin((Math.PI * k) / (D * FPS))).toFixed(2)}`).join(";");
+        g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(D)}[wc${i}]`);
+        g.push(`[wc${i}][${a}]overlay=x='${dx * W}*${e}':y='${dy * H}*${e}':eval=frame[wa${i}]`);
+        g.push(`[wa${i}][${b}]overlay=x='${dx * W}*(${e}-1)':y='${dy * H}*(${e}-1)':eval=frame,sendcmd=c='${cmds}',gblur@wp${i}=sigma=0.01:sigmaV=0.01,format=yuv420p[tx${i}]`);
+      }
+      g.push(`[tx${i}]settb=1/${FPS},setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[txo${i}]`);
+      g.push(`[${v}][txo${i}]overlay=${span}[vt${i}]`);
+      v = `vt${i}`;
+    });
+    // Each video's decoder, split into the branches its segments took.
+    for (const [vid, ls] of Object.entries(branches)) g.push(`[${inOf[vid]}:v]fps=${FPS}${ls.length > 1 ? `,split=${ls.length}${ls.map((l) => `[${l}]`).join("")}` : `[${ls[0]}]`}`);
   }
 
-  // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts, joined in edit order. Every
-  // part fades in and out over the declick time (20 ms by default), so no cut clicks.
-  const S = plan.sound.length;
-  const live = (x: SoundPart) => !x.muted && info(x.videoId).hasAudio && inOf[x.videoId] != null;
-  const declick = (x: SoundPart) => {
+  // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts and parts silent at their speed,
+  // joined in edit order. A clip off normal speed plays its stretch through atempo (pitch kept), its speed changing at
+  // each step's footage moment. Every unit fades in and out over the declick time (20 ms by default), so no cut clicks.
+  const live = (x: SoundPart) => !x.muted && !x.silent && info(x.videoId).hasAudio && inOf[x.videoId] != null;
+  const units: SoundPart[][] = [];
+  for (const x of plan.sound) {
+    const u = units[units.length - 1], prev = u?.[u.length - 1];
+    // A ramp's steps are footage that goes on (each step's ends were put on frames, so they meet within a frame).
+    const goesOn = !!prev && live(prev) && live(x) && prev.clipId === x.clipId && prev.videoId === x.videoId && (rateOf(prev) !== 1 || rateOf(x) !== 1) && rateOf(prev) > 0 && rateOf(x) > 0 && Math.abs(prev.srcOut - x.srcIn) <= 1 / FPS + 1e-6;
+    if (goesOn) u.push(x); else units.push([x]);
+  }
+  const editSamples = (u: SoundPart[]) => Math.max(1, Math.round(u.reduce((acc, x) => acc + (rateOf(x) === 1 ? x.srcOut - x.srcIn : rateOf(x) === 0 ? Math.round((x.end - x.start) * FPS) / FPS : Math.round(((x.srcOut - x.srcIn) / Math.abs(rateOf(x))) * FPS) / FPS), 0) * 48000));
+  const declick = (len: number) => {
     if (!mix || !(mix.declick > 0)) return "";
-    const len = x.srcOut - x.srcIn, d = Math.min(mix.declick, len / 4);
+    const d = Math.min(mix.declick, len / 4);
     return `,afade=t=in:d=${n6(d)},afade=t=out:st=${n6(len - d)}:d=${n6(d)}`;
   };
-  const at = (k: SoundPart) => `atrim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},asetpts=PTS-STARTPTS${declick(k)}`;
+  const at = (k: SoundPart) => `atrim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},asetpts=PTS-STARTPTS${declick(k.srcOut - k.srcIn)}`;
+  const tempo = (u: SoundPart[]) => {
+    const a = u[0].srcIn, n = editSamples(u);
+    const cmds = u.slice(1).map((x) => `${n6(x.srcIn - a)} atempo@at${u[0].start.toFixed(3).replace(".", "_")} tempo ${rateOf(x)}`).join(";");
+    const name = `atempo@at${u[0].start.toFixed(3).replace(".", "_")}`;
+    return `atrim=start=${n6(a)}:end=${n6(u[u.length - 1].srcOut)},asetpts=PTS-STARTPTS,asetnsamples=n=480${cmds ? `,asendcmd=c='${cmds}'` : ""},${name}=tempo=${rateOf(u[0])},apad,atrim=end_sample=${n},asetpts=PTS-STARTPTS${declick(n / 48000)}`;
+  };
   for (const vid of plan.sources) {
-    const mine = plan.sound.map((x, i) => ({ x, i })).filter((y) => y.x.videoId === vid && live(y.x));
+    const mine = units.map((u, i) => ({ u, i })).filter((y) => y.u[0].videoId === vid && live(y.u[0]));
     if (!mine.length) continue;
     splitOf("a", vid, mine.length, (k) => `sa${mine[k].i}`);
-    for (const { x, i } of mine) g.push(`[sa${i}]${at(x)}[a${i}]`);
+    for (const { u, i } of mine) g.push(`[sa${i}]${u.length === 1 && rateOf(u[0]) === 1 ? at(u[0]) : tempo(u)}[a${i}]`);
   }
-  plan.sound.forEach((x, i) => { if (!live(x)) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${Math.max(1, Math.round((x.srcOut - x.srcIn) * 48000))},asetpts=PTS-STARTPTS[a${i}]`); });
-  g.push(`${plan.sound.map((_, i) => `[a${i}]`).join("")}concat=n=${S}:v=0:a=1[acat]`);
+  units.forEach((u, i) => { if (!live(u[0])) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${editSamples(u)},asetpts=PTS-STARTPTS[a${i}]`); });
+  g.push(`${units.map((_, i) => `[a${i}]`).join("")}concat=n=${units.length}:v=0:a=1[acat]`);
 
   if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v);
   mixAudio(plan, files, g, inputs, () => idx++, opts);
   return { args: encodeArgs(plan, inputs, files, opts), filterGraph: g.join(";\n") };
+}
+
+/**
+ * Keyframes as filters on [inp], a W x H picture `frames` long (Phase 5). FFmpeg's perspective filter puts the
+ * picture's four corners where the keys move, scale and turn it, frame by frame, transparent around it; opacity
+ * multiplies its alpha. The curves are the same tables the player reads (motion.ts). opaque: laid on black (V1);
+ * otherwise it keeps its alpha (b-roll, graphics). `offset`: seconds into the clip at the picture's first frame.
+ */
+export function motionChain(g: string[], inp: string, out: string, keys: Key[], offset: number, frames: number, W: number, H: number, opaque: boolean, tag: string) {
+  const tracks = keyTracks(keys);
+  if (!tracks) { g.push(`[${inp}]null[${out}]`); return; }
+  // A picture that only ever gets small is scaled down first (a proper scaler), so the corner mapping does not alias.
+  const [, smax] = scaleRange(tracks);
+  const pre = smax < 0.75 ? Math.max(0.05, smax) : 1;
+  const P = 2, CW = W + 2 * P, CH = H + 2 * P;
+  const tv = `((in-1)/${FPS}+${n6(offset)})`; // perspective counts frames from 1
+  const S = motionExpr(tracks, "scale", tv), X = motionExpr(tracks, "x", tv), Y = motionExpr(tracks, "y", tv);
+  const R = `(${motionExpr(tracks, "rotation", tv)})*PI/180`;
+  const k = pre === 1 ? S : `${S}/${pre}`;
+  const corner = (i: number, sx: number, sy: number) => {
+    const dx = (sx * CW) / 2, dy = (sy * CH) / 2;
+    return `x${i}='${CW / 2}+${W}*${X}+${k}*(${dx}*cos(${R})-(${dy})*sin(${R}))':y${i}='${CH / 2}+${H}*${Y}+${k}*(${dx}*sin(${R})+(${dy})*cos(${R}))'`;
+  };
+  const shrink = pre < 1 ? `,scale=${even(W * pre)}:${even(H * pre)}` : "";
+  g.push(`[${inp}]format=yuva420p${shrink},pad=${CW}:${CH}:(ow-iw)/2:(oh-ih)/2:color=black@0,perspective=${corner(0, -1, -1)}:${corner(1, 1, -1)}:${corner(2, -1, 1)}:${corner(3, 1, 1)}:sense=destination:eval=frame,crop=${W}:${H}:${P}:${P}[mv${tag}]`);
+  let cur = `mv${tag}`;
+  if (tracks.opacity) {
+    // The opacity curve on a 2x2 grey picture (cheap per frame), stretched over the frame and multiplied into the alpha.
+    g.push(`color=c=white:s=2x2:r=${FPS}:d=${n6(frames / FPS + 1)},format=gray,geq=lum='255*clip(${motionExpr(tracks, "opacity", `(T+${n6(offset)})`)},0,1)',scale=${W}:${H},trim=end_frame=${frames}[mk${tag}]`);
+    g.push(`[${cur}]split[ma${tag}][mb${tag}]`);
+    g.push(`[ma${tag}]alphaextract[mc${tag}]`);
+    g.push(`[mc${tag}][mk${tag}]blend=all_mode=multiply[md${tag}]`);
+    g.push(`[mb${tag}][md${tag}]alphamerge[me${tag}]`);
+    cur = `me${tag}`;
+  }
+  if (opaque) {
+    g.push(`color=c=black:s=${W}x${H}:r=${FPS}:d=${n6(frames / FPS + 1)},trim=end_frame=${frames}[mbg${tag}]`);
+    g.push(`[mbg${tag}][${cur}]overlay=format=auto,format=yuv420p[${out}]`);
+  } else g.push(`[${cur}]null[${out}]`);
 }
 
 /** Zooms, b-roll, graphics, captions on [v]; returns the label of the finished picture ([vout]). */
@@ -552,8 +786,15 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     if (!path) return;
     inputs.push("-ss", n3(b.sourceStart), "-t", n3(b.end - b.start), "-i", path);
     const bi = next();
-    g.push(`[${bi}:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,setpts=PTS-STARTPTS+${n3(b.start)}/TB[br${i}]`);
-    g.push(`[${v}][br${i}]overlay=0:0:enable='between(t,${n3(b.start)},${n3(b.end)})':eof_action=pass[vb${i}]`);
+    if (b.keys?.length) {
+      // Keyframed b-roll: moved, scaled, turned and faded over the picture (picture-in-picture).
+      const n = Math.max(1, Math.round((b.end - b.start) * FPS));
+      g.push(`[${bi}:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[bk${i}]`);
+      motionChain(g, `bk${i}`, `bm${i}`, b.keys, 0, n, W, H, false, `b${i}`);
+      g.push(`[bm${i}]settb=1/30,setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
+    } else
+    g.push(`[${bi}:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,settb=1/30,setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
+    g.push(`[${v}][br${i}]overlay=0:0:enable='between(t,${n6(b.start)},${n6(b.end - 0.5 / FPS)})':eof_action=pass[vb${i}]`);
     v = `vb${i}`;
   });
   // 5. Graphics: transparent WebM, decoded with libvpx to keep the alpha channel.
@@ -562,8 +803,15 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     if (!path) return;
     inputs.push("-c:v", "libvpx-vp9", "-i", path);
     const gi = next();
+    if (gr.keys?.length) {
+      // Keyframed graphic: centred on a transparent frame, then moved, scaled, turned and faded.
+      const n = Math.max(1, Math.round((gr.end - gr.start) * FPS));
+      g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=30,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[gk${i}]`);
+      motionChain(g, `gk${i}`, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`);
+      g.push(`[gm${i}]setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
+    } else
     g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
-    g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n3(gr.start)},${n3(gr.end)})':eof_action=pass[vg${i}]`);
+    g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n6(gr.start)},${n6(gr.end - 0.5 / FPS)})':eof_action=pass[vg${i}]`);
     v = `vg${i}`;
   });
   // 6. Captions on top of everything.

@@ -2,10 +2,11 @@
 // (planRender), so the player and the rendered file agree: which video and footage moment plays, which sound plays
 // (it can come from another clip: J/L cuts), the caption on screen, the zoom, the b-roll and graphics on top, and
 // whether the dialogue is muted. Times are edit seconds.
-import type { PicturePart, Range, SoundPart } from "./sequence";
-import type { RenderPlan, ZoomOp } from "./renderPlan";
+import { editOf, rateOf, srcAt, type PicturePart, type Range, type SoundPart } from "./sequence";
+import type { RenderPlan, Seg, TransitionOp, ZoomOp } from "./renderPlan";
 import { dbToLin, dialogueGain, duckFactor, fadeFactor } from "./audio";
-import { activeWord, textAnimAt, type TextLayer } from "./captions";
+import { activeWord, textAnimAt, textLookAt, type TextLayer } from "./captions";
+import { keyTracks, motionAt, transitionAt, type Key, type KeyTracks, type Motion, type TransitionLook } from "./motion";
 
 /** The zoom at edit time t: the same curve as zoomExpr() draws in the render (punch ramps, slow push). */
 export function zoomAt(zooms: ZoomOp[], t: number): number {
@@ -13,7 +14,8 @@ export function zoomAt(zooms: ZoomOp[], t: number): number {
   for (const z of zooms) {
     if (t < z.start || t > z.end) continue;
     const s = z.scale - 1;
-    if (z.mode === "push") sum += (s * (t - z.start)) / Math.max(0.1, z.end - z.start);
+    if (z.mode === "through") { const p = (t - z.start) / Math.max(0.01, z.end - z.start); sum += s * (p < 0.5 ? (2 * p) ** 2 : (2 - 2 * p) ** 2); }
+    else if (z.mode === "push") sum += (s * (t - z.start)) / Math.max(0.1, z.end - z.start);
     else {
       const ramp = Math.min(0.12, (z.end - z.start) / 3);
       sum += s * Math.min(1, (t - z.start) / ramp) * Math.min(1, (z.end - t) / ramp);
@@ -52,18 +54,63 @@ export function sequenceClock(plan: Pick<RenderPlan, "parts" | "sound" | "output
     while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (xs[mid].start <= t) lo = mid; else hi = mid - 1; }
     return lo;
   };
-  const at = (x: PicturePart | SoundPart, t: number) => Math.min(x.srcOut, x.srcIn + Math.max(0, t - x.start));
+  const at = (x: PicturePart | SoundPart, t: number) => Math.min(x.srcOut, Math.max(x.srcIn, srcAt(x, Math.min(Math.max(t, x.start), x.end))));
   return {
     parts, sound, total: plan.outputSeconds,
     /** The picture part playing at edit time t (the last one at the very end). */
     partAt: (t: number) => find(parts, t),
-    picture(t: number): { i: number; videoId: string; src: number } | null { const i = find(parts, t); return i < 0 ? null : { i, videoId: parts[i].videoId, src: at(parts[i], t) }; },
-    soundAt(t: number): { i: number; videoId: string; src: number; muted: boolean } | null { const i = find(sound, t); return i < 0 ? null : { i, videoId: sound[i].videoId, src: at(sound[i], t), muted: sound[i].muted }; },
+    /** src: the moment to show, inside the frame the render shows (a reversed part shows the frame before its moment). */
+    picture(t: number): { i: number; videoId: string; src: number; rate: number } | null { const i = find(parts, t); return i < 0 ? null : { i, videoId: parts[i].videoId, src: showAt(parts[i], t), rate: rateOf(parts[i]) }; },
+    soundAt(t: number): { i: number; videoId: string; src: number; muted: boolean; rate: number } | null { const i = find(sound, t); return i < 0 ? null : { i, videoId: sound[i].videoId, src: at(sound[i], t), muted: sound[i].muted || !!sound[i].silent, rate: rateOf(sound[i]) }; },
     /** Edit time of a footage moment in picture part i. */
-    toEdit: (i: number, src: number) => (parts[i] ? parts[i].start + Math.min(parts[i].end - parts[i].start, Math.max(0, src - parts[i].srcIn)) : 0),
+    toEdit: (i: number, src: number) => (parts[i] ? editOf(parts[i], src) : 0),
   };
 }
 export type SequenceClock = ReturnType<typeof sequenceClock>;
+
+/**
+ * The footage moment a player shows at edit time t of a part or a transition side: inside the frame the render draws
+ * there. At normal speed that is the footage moment itself. Off normal speed the render gives output frame n the
+ * source frame floor(|rate| x n) counted from the part's first frame in play order (its last frame when reversed); a
+ * frozen part holds its one frame.
+ */
+export function showAt(x: { srcIn: number; srcOut: number; start: number; end?: number; rate?: number }, t: number): number {
+  const r = rateOf(x), F = 1 / 30;
+  if (r === 1) return srcAt(x, t);
+  if (r === 0) return x.srcIn + F / 4;
+  const n = Math.max(0, Math.floor((t - x.start) * 30 + 1e-6));
+  const j = Math.floor(Math.abs(r) * n + 1e-6);
+  return r > 0 ? Math.min(x.srcOut, x.srcIn + (j + 0.5) * F) : Math.max(x.srcIn, x.srcOut - (j + 0.5) * F);
+}
+
+// Keyframe tables, made once per plan (the render writes the same tables as FFmpeg expressions).
+const tableCache = new WeakMap<object, Map<string, KeyTracks | null>>();
+function tracksOf(plan: RenderPlan, id: string, keys: Key[] | undefined): KeyTracks | null {
+  let m = tableCache.get(plan);
+  if (!m) { m = new Map(); tableCache.set(plan, m); }
+  if (!m.has(id)) m.set(id, keyTracks(keys));
+  return m.get(id)!;
+}
+/** A V1 clip's keyframe motion at edit time t (null: it has none). */
+export function clipMotionAt(plan: RenderPlan, clipId: string | undefined, t: number): Motion | null {
+  const cm = clipId ? plan.clipMotion?.[clipId] : undefined;
+  return cm ? motionAt(tracksOf(plan, "v1:" + clipId, cm.keys), t - cm.start) : null;
+}
+export type SideNow = { videoId: string; src: number; rate: number; rotate: number; framing: Seg["framing"]; motion: Motion | null };
+export type TransitionNow = { op: TransitionOp; p: number; look: TransitionLook; a: SideNow | null; b: SideNow | null };
+/** The transition drawn at edit time t, with what each side shows then. */
+export function transitionNow(plan: RenderPlan, t: number): TransitionNow | null {
+  const op = (plan.transitions ?? []).find((x) => x.end - x.start >= 1 / 30 - 1e-9 && t >= x.start && t < x.end);
+  if (!op) return null;
+  const side = (segs: Seg[]): SideNow | null => {
+    const s = segs.find((x) => t >= x.start - 1e-9 && t < x.end) ?? segs[segs.length - 1];
+    return s ? { videoId: s.videoId, src: showAt(s, t), rate: s.rate, rotate: s.rotate, framing: s.framing, motion: clipMotionAt(plan, s.clipId, t) } : null;
+  };
+  // A dip that starts the edit (fade in from the colour) is the second half of a dip centred on 0.
+  const D = op.end - op.start;
+  const p = op.at <= op.start + 1e-9 && op.type.startsWith("dip") ? 0.5 + (t - op.start) / (2 * D) : (t - op.start) / D;
+  return { op, p, look: transitionAt(op, p, plan.width, plan.height), a: side(op.a), b: side(op.b) };
+}
 
 export type LiveFrame = {
   videoId: string | null;      // the video whose picture plays
@@ -74,23 +121,33 @@ export type LiveFrame = {
   caption: string | null;
   /** The caption's lines as the render draws them, and which word is being spoken (when the style highlights it). */
   captionLines: { text: string; active: boolean }[][] | null;
-  /** Text layers on screen, bottom first, with their animation at t (opacity, scale, px down). */
-  texts: { layer: TextLayer; opacity: number; scale: number; dy: number }[];
+  /** Text layers on screen, bottom first, with their animation at t (opacity, scale, px down); look: a keyframed
+   *  layer's anchor (px), scale, turn and opacity, its animation included. */
+  texts: { layer: TextLayer; opacity: number; scale: number; dy: number; look?: { x: number; y: number; scale: number; rotation: number; opacity: number } }[];
   zoom: number;
   muted: boolean;              // the dialogue is silent here
-  broll: { clipId: string; videoId: string; src: number } | null;
-  graphics: { clipId: string; graphicId: string; t: number; start: number; end: number }[];
+  broll: { clipId: string; videoId: string; src: number; motion: Motion | null } | null;
+  graphics: { clipId: string; graphicId: string; t: number; start: number; end: number; motion: Motion | null }[];
+  /** Phase 5: the picture's rate (1 normal, below 0 reversed, 0 frozen), its V1 keyframe motion, the transition on. */
+  rate: number;
+  motion: Motion | null;
+  transition: TransitionNow | null;
 };
 
 const inside = (t: number, r: { start: number; end: number }) => t >= r.start && t < r.end;
 
-export function liveFrame(plan: RenderPlan, t: number, clock = sequenceClock(plan)): LiveFrame {
+export function liveFrame(plan: RenderPlan, t0: number, clock = sequenceClock(plan)): LiveFrame {
+  // Every curve (transitions, keyframes, zooms, text animations, captions) at the start of the frame showing, as the
+  // render draws it; the footage moment itself stays exact (the video shows the frame it falls in).
+  const t = Math.floor(t0 * 30 + 1e-6) / 30;
   const cap = plan.captions.find((c) => inside(t, c));
   const sc = plan.styledCaptions?.find((c) => inside(t, c)) ?? null;
   const act = sc && plan.captionStyle?.highlight ? activeWord(sc, t) : null;
   // The last b-roll overlay drawn wins, as in the render (each one is laid over the ones before).
   const br = [...plan.broll].reverse().find((b) => inside(t, b) && b.videoId);
-  const pic = clock.picture(t), snd = clock.soundAt(t);
+  const pic = clock.picture(t0), snd = clock.soundAt(t0);
+  const part = pic ? plan.parts[pic.i] : null;
+  const ov = (x: { clipId: string; keys?: Key[]; start: number }, kind: string) => (x.keys?.length ? motionAt(tracksOf(plan, kind + x.clipId, x.keys), t - x.start) : null);
   return {
     videoId: pic ? pic.videoId : null,
     src: pic ? pic.src : 0,
@@ -98,11 +155,14 @@ export function liveFrame(plan: RenderPlan, t: number, clock = sequenceClock(pla
     sound: snd ? { videoId: snd.videoId, src: snd.src, muted: snd.muted } : null,
     caption: cap ? cap.text : null,
     captionLines: sc ? sc.lines.map((l, i) => l.map((w, j) => ({ text: w.text, active: !!act && act[0] === i && act[1] === j }))) : null,
-    texts: (plan.texts ?? []).filter((x) => inside(t, x)).map((x) => ({ layer: x, ...textAnimAt(x.anim, t - x.start, x.end - x.start, plan.height) })),
+    texts: (plan.texts ?? []).filter((x) => inside(t, x)).map((x) => ({ layer: x, ...textAnimAt(x.anim, t - x.start, x.end - x.start, plan.height), ...(x.keys?.length ? { look: textLookAt(x, t - x.start, plan.width, plan.height) } : {}) })),
     zoom: zoomAt(plan.zooms, t),
     muted: plan.dialogueMutes.some((m) => inside(t, m)),
-    broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start) } : null,
-    graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start, start: g.start, end: g.end })),
+    broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start), motion: ov(br, "v2:") } : null,
+    graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start, start: g.start, end: g.end, motion: ov(g, "v3:") })),
+    rate: pic ? pic.rate : 1,
+    motion: part && part.clipIds.length === 1 ? clipMotionAt(plan, part.clipIds[0], t) : null,
+    transition: transitionNow(plan, t),
   };
 }
 
