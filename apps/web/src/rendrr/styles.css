@@ -895,7 +895,7 @@ a { color: var(--accent-ink); }
 .tool-set { gap: 2px; padding-right: 6px; margin-right: 2px; border-right: 1px solid var(--hair-strong); }
 .clip.video.other { background: var(--accent); color: var(--on-accent); }
 .clip.muted { opacity: .5; }
-.drop { position: absolute; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: var(--accent); pointer-events: none; z-index: 2; }
+.tl-canvas .tl-drop { position: absolute; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: var(--accent); pointer-events: none; z-index: 2; } /* reorder marker (not .drop: that is the file drop zone) */
 .tl-canvas.tool-razor .clip { cursor: crosshair; }
 .tl-canvas.tool-slip .track.v .clip.video, .tl-canvas.tool-slide .track.v .clip.video { cursor: ew-resize; }
 .tl-canvas.tool-roll .clip .h { cursor: col-resize; }

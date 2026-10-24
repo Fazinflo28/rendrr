@@ -556,7 +556,7 @@ function EditorInner({ project, reload, ai, keep }) {
                 title=${gone ? "Not in the edit: its footage is cut" : k === "a1" ? "Its V1 clip's dialogue. Alt-drag an edge for a J or L cut." : k === "v1" ? `${clipText(k, c)} · footage ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}s` : c.label}
                 style=${{ left: px(c.start), width: Math.max(gone ? 4 : 8, (c.end - c.start) * zoom) }}
                 onPointerDown=${clipDown(k, c)}>${fadesOf(k, c)}<span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
-            ${k === "v1" && drop != null && html`<div class="drop" id="drop-marker" style=${{ left: px(drop) - 1 }} />`}
+            ${k === "v1" && drop != null && html`<div class="tl-drop" id="drop-marker" style=${{ left: px(drop) - 1 }} />`}
           </div>`)}
           <div class="playhead" id="playhead" style=${{ left: px(pb.time) - 1 }}><i /></div>
         </div></div>

@@ -165,6 +165,7 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
   - With loudness off, the check flagged "silent 0.42s at 1:09.5 where words should play". The last words were inside the 1 s mix fade-out the edit asked for. The check now ignores silence inside requested fades (the mix's and each dialogue clip's) and still flags it anywhere else.
   - `get_project` showed a music clip with only a fade-out set as "fades 0/2s", but its automatic 0.6 s fade-in still renders. It now reads "fades 0.6 auto/2s", and the Audio tab shows the automatic fades too.
   - Check wording: "2 clips have its own gain" now reads "their own".
+- **Bug you found (from Phase 2), fixed:** adding footage from the computer was broken. Phase 2 styled the timeline's reorder marker with the class `.drop`, which the file drop zones already used. Every drop zone (Add footage, Recreate, the library's empty state, drag-over overlay and add tile) became a 3 px yellow strip that ignored clicks and drops, so "Choose files" could not be clicked. The marker is now `.tl-drop`, scoped to the timeline. A check of every CSS rule added since Phase 1 found no other shared class. A browser pass over every page and modal, desktop and phone: Choose files opens the picker and the file is added, drag-and-drop adds the file, nothing overflows or is squeezed, no page errors.
 
 ## Reference-video test (23 October, live, through the connector only)
 
