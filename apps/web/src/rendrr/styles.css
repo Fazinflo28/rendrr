@@ -597,7 +597,7 @@ tr td:last-child { border-top-right-radius: var(--r-sm); border-bottom-right-rad
 .acard { overflow: visible !important; }
 .athumb { position: relative; background: #000; overflow: hidden; border-radius: var(--r-md) var(--r-md) 0 0; } .athumb .sv { border-radius: 0; aspect-ratio: 4 / 5; }
 /* An edit's card: a frame of the edit (or its footage), whole, on black. */
-.athumb-img { aspect-ratio: 4 / 5; display: grid; } .athumb-img img { width: 100%; height: 100%; object-fit: contain; display: block; } .athumb-img .art { width: 100%; height: 100%; }
+.athumb-img { position: relative; aspect-ratio: 4 / 5; } .athumb-img img, .athumb-img .art { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .acheck { position: absolute; top: 10px; left: 10px; width: 22px; height: 22px; border-radius: 7px; background: rgba(0,0,0,.45); box-shadow: 0 0 0 1px rgba(255,255,255,.5); color: #000; display: grid; place-items: center; backdrop-filter: blur(4px); }
 .acheck.on { background: #fcfdff; } .acheck.static { position: static; background: var(--raised); box-shadow: 0 0 0 1px var(--hair-strong); color: var(--bg); } .acheck.static.on { background: var(--ink); }
 .ainfo { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; justify-content: space-between; color: #fff; font-size: 12px; font-weight: 500; text-shadow: 0 1px 2px rgba(0,0,0,.6); } .ainfo span { display: inline-flex; align-items: center; gap: 4px; }
