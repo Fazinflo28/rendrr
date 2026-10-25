@@ -6,6 +6,7 @@ import {
   Masonry, Dropdown, useNav, useApp,
 } from "./ui";
 import { api } from "./api";
+import { Wordmark } from "./logo";
 const IS_PROD = process.env.NODE_ENV === "production";
 
 /* ---------- login: a centred modal over Explore (Higgsfield layout: showcase left, form right) ---------- */
@@ -36,7 +37,7 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
       </div>
       <form class="hform" onSubmit=${submit} novalidate>
         <${Btn} kind="quiet" icon="x" id="login-close" aria-label="Close" type="button" onClick=${onClose} style="position:absolute;top:14px;right:14px;width:36px" />
-        <div class="logo" style="padding:0;margin:0 auto 8px;justify-content:center"><span class="mark" style="width:40px;height:40px;border-radius:12px"><${Icon} name="logo" size="20" /></span></div>
+        <div class="logo" style="padding:0;margin:0 auto 8px;justify-content:center"><${Wordmark} height=${30} /></div>
         <h1 class="t-title" style="text-align:center;font-size:28px;line-height:34px">${title}</h1>
         <p class="muted" style="text-align:center;margin-bottom:6px">${mode === "login" ? html`Log in and keep editing. New here? <a href="#" onClick=${(e) => { e.preventDefault(); setMode("signup"); setErr(null); }}>Sign up</a>.` : mode === "signup" ? html`Sign up and edit for free. <a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); }}>Back to log in</a>` : html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); setSent(false); }}>Back to log in</a>`}</p>
         ${mode !== "reset" && html`
@@ -70,7 +71,7 @@ function Shell({ children }) {
   const isOn = (p) => (p === "/explore" ? route === "/explore" || route === "/home" : route.startsWith(p));
   return html`<div class=${"shell" + (user ? " in" : "")}>
     <header class="top">
-      <button class="logo" aria-label="Rendrr home" title="Rendrr" onClick=${() => go("/explore")}><span class="mark"><${Icon} name="logo" /></span></button>
+      <button class="logo" aria-label="Rendrr home" title="Rendrr" onClick=${() => go("/explore")}><${Wordmark} height=${20} /></button>
       <nav class="topnav" aria-label="Main">
         ${TOP.map(([p, l]) => html`<button key=${p} class=${"nav" + (isOn(p) ? " on" : "")} data-tip=${l} onClick=${() => go(p)}>${l}</button>`)}
         <span class="navsep" aria-hidden="true" />
