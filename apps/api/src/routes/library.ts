@@ -77,7 +77,7 @@ export default async function library(app: FastifyInstance) {
       if (v.source === "drive" && v.driveFileId) {
         const conn = await prisma.driveConnection.findUnique({ where: { userId: v.userId } });
         const f = await Promise.race([drive.getFile(v.userId, v.driveFileId, !conn || conn.stub).catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 3000))]);
-        const folder = f ? drive.STUB_FOLDERS.find((x) => x.id === f.folderId)?.name || "My Drive" : "My Drive";
+        const folder = f ? await Promise.race([drive.folderName(v.userId, f.folderId, !conn || conn.stub).catch(() => "Google Drive"), new Promise<string>((r) => setTimeout(() => r("Google Drive"), 2000))]) : "My Drive";
         driveFile = f ? { id: f.id, name: f.name, size: fmtSize(f.sizeBytes), seconds: f.seconds, date: f.date, folder, webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view` } : { id: v.driveFileId, folder, webViewLink: `https://drive.google.com/file/d/${v.driveFileId}/view` };
       }
       const keyFrames = await Promise.all(((an?.keyFrames as { t: number; key: string }[]) || []).slice(0, 5).map(async (k, i) => ({ t: k.t, art: ["a", "b", "c", "d", "e"][i % 5], url: await signGet(k.key, 3600) })));
@@ -283,11 +283,15 @@ export default async function library(app: FastifyInstance) {
       return { connected: false, email: null };
     });
     a.get("/drive/files", async (req) => {
-      const folderId = String((req.query as { folderId?: string }).folderId || "root").slice(0, 200);
+      const qs = req.query as { folderId?: string; driveId?: string; view?: string; q?: string; drives?: string };
+      const view = (["folder", "shared", "recent", "search"] as const).find((v) => v === qs.view) || "folder";
       const conn = await driveConn(req.user!.id);
-      const { folders, files } = await drive.listFolder(req.user!.id, folderId, conn.stub);
+      const [{ folders, files, truncated }, drives] = await Promise.all([
+        drive.browse(req.user!.id, { view, folderId: String(qs.folderId || "root").slice(0, 200), driveId: qs.driveId ? String(qs.driveId).slice(0, 200) : undefined, q: String(qs.q || "").slice(0, 100) }, conn.stub),
+        qs.drives ? drive.sharedDrives(req.user!.id, conn.stub).catch(() => []) : Promise.resolve(undefined),
+      ]);
       const linked = new Set((await prisma.video.findMany({ where: { userId: req.user!.id, source: "drive", status: { not: "missing" } }, select: { driveFileId: true } })).map((v) => v.driveFileId));
-      return { folders, files: files.map((f) => ({ id: f.id, folderId: f.folderId, name: f.name, size: fmtSize(f.sizeBytes), seconds: f.seconds, date: f.date, added: linked.has(f.id) })) };
+      return { folders, files: files.map((f) => ({ id: f.id, folderId: f.folderId, name: f.name, size: fmtSize(f.sizeBytes), seconds: f.seconds, date: f.date, added: linked.has(f.id) })), truncated, ...(drives ? { drives } : {}) };
     });
   });
 }

@@ -13,12 +13,17 @@ export const driveRedirectUri = () => env().PUBLIC_API_URL.replace(/\/$/, "") + 
 
 // ---------- fake Drive (stub mode) ----------
 const SAMPLE = { talking: "samples/sample-talking-head.mp4", portrait: "samples/sample-portrait.mp4", broll: "samples/sample-broll.mp4" };
-export const STUB_FOLDERS: DriveFolder[] = [{ id: "root", name: "My Drive" }, { id: "fd1", name: "Podcast raw" }, { id: "fd2", name: "Client footage" }, { id: "fd3", name: "B-roll" }];
+export const STUB_FOLDERS: (DriveFolder & { parent: string | null })[] = [
+  { id: "root", name: "My Drive", parent: null }, { id: "fd1", name: "Podcast raw", parent: "root" }, { id: "fd2", name: "Client footage", parent: "root" },
+  { id: "fd3", name: "B-roll", parent: "root" }, { id: "fd4", name: "BFS Health", parent: "fd2" }, { id: "fd5", name: "Shoot day 2", parent: "fd4" },
+  { id: "fs1", name: "Shared by Sam", parent: "shared" },
+];
 export const STUB_FILES: (DriveFile & { sampleKey: string })[] = [
   { id: "df1", folderId: "fd1", name: "Ep 13 full session.mp4", sizeBytes: 989_324, seconds: 41, date: 0, sampleKey: SAMPLE.talking },
-  { id: "df3", folderId: "fd2", name: "BFS knee pain talking head.mp4", sizeBytes: 987_459, seconds: 41, date: 0, sampleKey: SAMPLE.portrait },
-  { id: "df4", folderId: "fd2", name: "BFS heel pain Q&A.mp4", sizeBytes: 989_324, seconds: 41, date: 0, sampleKey: SAMPLE.talking },
+  { id: "df3", folderId: "fd4", name: "BFS knee pain talking head.mp4", sizeBytes: 987_459, seconds: 41, date: 0, sampleKey: SAMPLE.portrait },
+  { id: "df4", folderId: "fd5", name: "BFS heel pain Q&A.mp4", sizeBytes: 989_324, seconds: 41, date: 0, sampleKey: SAMPLE.talking },
   { id: "df5", folderId: "fd3", name: "Office drone pass.mp4", sizeBytes: 352_889, seconds: 12, date: 0, sampleKey: SAMPLE.broll },
+  { id: "df6", folderId: "fs1", name: "Sam interview cut.mp4", sizeBytes: 352_889, seconds: 12, date: 0, sampleKey: SAMPLE.broll },
   { id: "df7", folderId: "root", name: "Vancouver night reel raw.mp4", sizeBytes: 987_459, seconds: 41, date: 0, sampleKey: SAMPLE.portrait },
 ];
 export const SAMPLE_KEYS = SAMPLE;
@@ -63,31 +68,75 @@ async function driveGet(userId: string, path: string, params: Record<string, str
   if (!r.ok) throw new AppError("We could not reach Google Drive. Try again in a moment.", 502, "drive");
   return r.json() as Promise<Record<string, unknown>>;
 }
-const FIELDS = "id,name,mimeType,size,modifiedTime,webViewLink,parents,videoMediaMetadata(durationMillis,width,height)";
+const FIELDS = "id,name,mimeType,size,modifiedTime,webViewLink,parents,driveId,videoMediaMetadata(durationMillis,width,height)";
 const toFile = (f: Record<string, any>, folderId: string): DriveFile => ({
   id: f.id, folderId, name: f.name, sizeBytes: Number(f.size || 0), seconds: Math.round(Number(f.videoMediaMetadata?.durationMillis || 0) / 1000),
   date: Date.parse(f.modifiedTime) || 0, mimeType: f.mimeType, webViewLink: f.webViewLink, width: f.videoMediaMetadata?.width, height: f.videoMediaMetadata?.height,
 });
 
-export async function listFolder(userId: string, folderId: string, stub: boolean): Promise<{ folders: DriveFolder[]; files: DriveFile[] }> {
-  if (stub || !features().drive) {
-    return { folders: STUB_FOLDERS, files: STUB_FILES.filter((f) => f.folderId === folderId).map(({ sampleKey: _s, ...f }) => ({ ...f, date: Date.now() - 3600_000 * 20 })) };
+/** What the picker asks for: one folder (any depth, My Drive or a shared drive), Shared with me, recent videos anywhere, or a name search anywhere. */
+export type DriveView = "folder" | "shared" | "recent" | "search";
+export type DriveBrowse = { view?: DriveView; folderId?: string; driveId?: string; q?: string };
+export type DriveListing = { folders: (DriveFolder & { date: number; driveId?: string })[]; files: DriveFile[]; truncated: boolean };
+const FOLDER = "application/vnd.google-apps.folder";
+const KINDS = `(mimeType = '${FOLDER}' or mimeType contains 'video/')`;
+const quote = (s: string) => s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+const cleanId = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 200);
+
+function stubBrowse(b: DriveBrowse): DriveListing {
+  const view = b.view || "folder", t = Date.now() - 3600_000 * 20;
+  const text = (b.q || "").trim().toLowerCase();
+  const inView = <T extends { name: string }>(x: T, parentOf: (x: T) => string | null) =>
+    view === "search" ? !!text && x.name.toLowerCase().includes(text) : view === "shared" ? parentOf(x) === "shared" : view === "recent" ? false : parentOf(x) === (b.folderId || "root");
+  const folders = STUB_FOLDERS.filter((f) => f.id !== "root" && inView(f, (x) => x.parent)).map((f) => ({ id: f.id, name: f.name, date: t }));
+  const files = STUB_FILES.filter((f) => view === "recent" || inView(f, (x) => x.folderId)).map(({ sampleKey: _s, ...f }) => ({ ...f, date: t }));
+  return { folders, files, truncated: false };
+}
+
+export async function browse(userId: string, b: DriveBrowse, stub: boolean): Promise<DriveListing> {
+  if (stub || !features().drive) return stubBrowse(b);
+  const view = b.view || "folder";
+  const all = { supportsAllDrives: "true", includeItemsFromAllDrives: "true" };
+  let q: string, orderBy = "folder,name", limit = 1000, extra: Record<string, string> = {};
+  if (view === "shared") q = `sharedWithMe = true and trashed = false and ${KINDS}`;
+  else if (view === "recent") { q = "trashed = false and mimeType contains 'video/'"; orderBy = "modifiedTime desc"; limit = 100; extra = { corpora: "allDrives" }; }
+  else if (view === "search") {
+    const text = (b.q || "").trim().slice(0, 100);
+    if (!text) return { folders: [], files: [], truncated: false };
+    q = `name contains '${quote(text)}' and trashed = false and ${KINDS}`; orderBy = "folder,modifiedTime desc"; limit = 200; extra = { corpora: "allDrives" };
+  } else {
+    q = `'${cleanId(b.folderId || "root") || "root"}' in parents and trashed = false and ${KINDS}`;
+    if (b.driveId) extra = { corpora: "drive", driveId: cleanId(b.driveId) };
   }
-  const id = folderId || "root";
-  const q = `'${id.replace(/'/g, "")}' in parents and trashed = false and (mimeType = 'application/vnd.google-apps.folder' or mimeType contains 'video/')`;
-  const files: Record<string, any>[] = [];
+  const items: Record<string, any>[] = [];
   let pageToken: string | undefined;
   do {
-    const j = await driveGet(userId, "/files", { q, fields: `nextPageToken,files(${FIELDS})`, pageSize: "200", orderBy: "folder,modifiedTime desc", supportsAllDrives: "true", includeItemsFromAllDrives: "true", ...(pageToken ? { pageToken } : {}) });
+    const j = await driveGet(userId, "/files", { q, fields: `nextPageToken,files(${FIELDS})`, pageSize: String(Math.min(limit, 200)), orderBy, ...all, ...extra, ...(pageToken ? { pageToken } : {}) });
     if (!j) break;
-    files.push(...((j.files as Record<string, any>[]) || []));
+    items.push(...((j.files as Record<string, any>[]) || []));
     pageToken = j.nextPageToken as string | undefined;
-  } while (pageToken && files.length < 1000);
-  // Left column: My Drive, its top-level folders, and the folders inside the current one.
-  const top = id === "root" ? files : (((await driveGet(userId, "/files", { q: "'root' in parents and trashed = false and mimeType = 'application/vnd.google-apps.folder'", fields: "files(id,name)", pageSize: "100", orderBy: "name" }))?.files as Record<string, any>[]) || []);
-  const folders: DriveFolder[] = [{ id: "root", name: "My Drive" }, ...top.filter((f) => f.mimeType === "application/vnd.google-apps.folder" || !f.mimeType).map((f) => ({ id: f.id, name: f.name }))];
-  if (id !== "root") for (const f of files.filter((x) => x.mimeType === "application/vnd.google-apps.folder")) if (!folders.some((x) => x.id === f.id)) folders.push({ id: f.id, name: "↳ " + f.name });
-  return { folders, files: files.filter((f) => String(f.mimeType).startsWith("video/")).map((f) => toFile(f, id)) };
+  } while (pageToken && items.length < limit);
+  const parentOf = (f: Record<string, any>) => (view === "folder" ? b.folderId || "root" : (f.parents?.[0] as string) || "");
+  return {
+    folders: items.filter((f) => f.mimeType === FOLDER).map((f) => ({ id: f.id, name: f.name, date: Date.parse(f.modifiedTime) || 0, ...(b.driveId ? { driveId: b.driveId } : f.driveId ? { driveId: f.driveId } : {}) })),
+    files: items.filter((f) => String(f.mimeType).startsWith("video/")).map((f) => toFile(f, parentOf(f))),
+    truncated: !!pageToken,
+  };
+}
+
+/** Shared drives the user is a member of (empty for most personal accounts). */
+export async function sharedDrives(userId: string, stub: boolean): Promise<DriveFolder[]> {
+  if (stub || !features().drive) return [];
+  const j = await driveGet(userId, "/drives", { pageSize: "100", fields: "drives(id,name)" });
+  return (((j?.drives as Record<string, any>[]) || []).map((d) => ({ id: d.id, name: d.name })));
+}
+
+/** The name of the folder a file sits in, for "Google Drive · <folder>". */
+export async function folderName(userId: string, folderId: string, stub: boolean): Promise<string> {
+  if (!folderId || folderId === "root") return "My Drive";
+  if (stub || !features().drive) return STUB_FOLDERS.find((x) => x.id === folderId)?.name || "My Drive";
+  const j = await driveGet(userId, `/files/${encodeURIComponent(folderId)}`, { fields: "name,parents,driveId", supportsAllDrives: "true" }).catch(() => null);
+  return !j ? "Google Drive" : (j.parents as string[] | undefined)?.length || j.driveId ? String(j.name) : "My Drive";
 }
 
 export async function getFile(userId: string, fileId: string, stub: boolean): Promise<(DriveFile & { sampleKey?: string }) | null> {
@@ -97,7 +146,7 @@ export async function getFile(userId: string, fileId: string, stub: boolean): Pr
   }
   const j = await driveGet(userId, `/files/${encodeURIComponent(fileId)}`, { fields: FIELDS, supportsAllDrives: "true" });
   if (!j || (j as Record<string, unknown>).trashed) return null;
-  return toFile(j, "");
+  return toFile(j, ((j as Record<string, any>).parents?.[0] as string) || "");
 }
 export async function mediaRequest(userId: string, fileId: string) {
   return { url: `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, headers: { authorization: "Bearer " + (await accessTokenFor(userId)) } };
