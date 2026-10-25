@@ -18,8 +18,16 @@ function cpuBudget() {
   } catch { /* no cgroup v2 quota */ }
   return availableParallelism();
 }
-/** Browsers recording one graphic at once (each takes a CPU; one CPU is left for the rest of the worker). */
-export const GRAPHIC_WORKERS = Math.max(1, Math.min(6, Math.floor(Number(process.env.GRAPHIC_WORKERS)) || cpuBudget() - 1));
+/** Threads this container may start (cgroup pids.max; it counts threads). Chromium uses about 80 per browser. */
+function threadBudget() {
+  try { const v = readFileSync("/sys/fs/cgroup/pids.max", "utf8").trim(); if (v !== "max" && Number(v) > 0) return Number(v); } catch { /* no limit */ }
+  return Infinity;
+}
+/**
+ * Browsers recording one graphic at once: one CPU each, one CPU left for the rest of the worker, and room left
+ * under the thread limit for a render running at the same time (500 threads) at about 100 per browser.
+ */
+export const GRAPHIC_WORKERS = Math.max(1, Math.min(6, Math.floor(Number(process.env.GRAPHIC_WORKERS)) || Math.min(cpuBudget() - 1, Math.floor((threadBudget() - 500) / 100))));
 
 /**
  * Up to `exactSeconds` a graphic is recorded on every frame; longer ones (up to 4 hours: a whole video) are sampled,
@@ -270,7 +278,8 @@ async function encodePiece(list: { frame: number; file: string }[], end: number,
   await writeFile(txt, list.map((x, i) => `file '${x.file}'\nduration ${(((list[i + 1]?.frame ?? end) - x.frame) / FPS).toFixed(6)}`).join("\n") + "\n" + (final ? `file '${list[list.length - 1].file}'\n` : ""));
   // The encoder's clock is the 30 fps grid every picture sits on (its default, 25 fps, moved pictures by up to 20 ms).
   await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", txt, "-fps_mode", "vfr", "-enc_time_base", `1/${FPS}`,
-    "-c:v", "libvpx-vp9", "-pix_fmt", transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "20", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0", out], { signal });
+    "-c:v", "libvpx-vp9", "-pix_fmt", transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "20", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0",
+    "-threads", "2", out], { signal }); // several pieces encode at once; more threads did not make one faster
   await Promise.all(list.map((x) => rm(x.file, { force: true })));
 }
 
