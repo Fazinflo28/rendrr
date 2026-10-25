@@ -227,6 +227,9 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .thumb .ori { position: absolute; left: 10px; top: 10px; }
 .thumb .veil { position: absolute; inset: 0; background: rgba(0,0,0,.55); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); color: #fafafa; }
 .vcard .meta { padding: var(--s3) var(--s3) var(--s3); display: flex; flex-direction: column; gap: 2px; }
+/* The card's second line: badges on the left give way (clipped), "1 d ago · 414 MB" stays whole on one line. */
+.vcard .meta > .row:nth-child(2) > .row { overflow: hidden; flex: 0 1 auto; }
+.vcard .meta > .row:nth-child(2) > .t-small { white-space: nowrap; flex: none; }
 .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.18); width: 160px; overflow: hidden; }
 .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s ease-in-out; }
 .bar.big > i { background: var(--accent); }
