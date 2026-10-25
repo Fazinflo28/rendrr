@@ -406,6 +406,22 @@ Three items of the plan were not fully built in the first pass. They are now:
 
 The test footage and the edit stay in the smoke account. The original is deleted automatically on 25 October at 20:29 UTC.
 
+## After the 8 phases (25 October, live)
+
+- **Google Drive is on.** The Google keys are on `api` and `worker`, and the app's Google sign-in is set to External. Videos can be added from Drive.
+- **A new edit is the raw footage.** It used to apply the default style (Clean Podcast Clip) straight away, cutting pauses and adding captions. Now every new edit, from the app or the connector, is version 1 only: the footage as recorded, captions off, no style, nothing cut (except words removed on the footage page). Checked live: v1 "Footage as recorded", 77.16 s of 77.16 s, no automatic steps.
+- **References are attached, never applied.** New edit and the editor's Reference tab attach a style or a reference video; Recreate attaches the gallery video. `get_project` shows it to the AI ("Reference the user attached, not applied: style s1 …"). A style counts as the edit's only when the AI applies it with `apply_style`.
+- **Edit cards show the edit itself**: a frame of its latest render, else its footage's thumbnail (before: the style's drawing on every card).
+- **Cuts to the millisecond.**
+  - Cut points, trims and J/L offsets are kept to 1 ms (they were 10 ms), and so are the word times of new transcripts.
+  - `cut_silences` takes pauses from 1 ms, with `keep`: the pause left next to the speech (default 80 ms as before; 0 = tight).
+  - A cut range can be 1 ms. A short word between two cuts is no longer dropped (the leftover limit went from 150 ms to 40 ms).
+  - The sound is cut exactly there. The picture goes on the nearest frame and shows the frame its sound is playing, at most half a frame off at a cut, never adding up.
+  - Live: 39 pauses over 50 ms cut, keeping 20 ms, plus a range cut at 30.1234-30.4567 s. The preview's picture and sound are both 66.23 s; one pause over 0.15 s is left.
+  - Tests: 7 new shared tests (60 cuts on no grid at 30, 25 and 23.976 fps: every frame the right footage frame, no drift). The worker's frame-rate tests measure each cut's picture-sound offset against the exact edit: a constant 5 ms at every cut (the measuring window).
+- **Deleting videos.** The library cards and the footage page have Delete. It asks first, and the raw file stays where it is. Footage that edits use is refused with their names; the app then offers to delete the video and those edits together.
+- **Library is in the top bar**, next to Projects.
+
 ## Reference-video test (23 October, live, through the connector only)
 
 The test: copy the edit of a finished reel (Glow Flow, 51 s, vertical) onto a raw talking-head video (77 s, 4K), using only the MCP connector, the way Claude would.
