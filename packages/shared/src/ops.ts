@@ -39,7 +39,9 @@ const EDIT_OPS = [
   z.object({ op: z.literal("cut_words"), wordIds: z.array(z.string().max(40)).max(50_000).optional(), from: t.optional(), to: t.optional(), edit }),
   z.object({ op: z.literal("restore_words"), wordIds: z.array(z.string().max(40)).max(50_000) }),
   // edges (default on): also the silence at the start and end of every V1 clip (longer than 0.3 s), whatever overSeconds.
-  z.object({ op: z.literal("cut_silences"), overSeconds: z.number().min(0.1).max(30), edges: z.boolean().optional() }),
+  // keep: seconds of pause left next to the speech on each side (default 0.08, and 0.1 before / 0.15 after a clip's
+  // speech); with keep, the clip edges are cut at overSeconds too. Times to the millisecond.
+  z.object({ op: z.literal("cut_silences"), overSeconds: z.number().min(0.001).max(30), keep: z.number().min(0).max(1).optional(), edges: z.boolean().optional() }),
   z.object({ op: z.literal("remove_fillers") }),
   // V1: the whole sequence, in order (start/end = footage of videoId, default the main footage). Keep a clip's id
   // to keep that clip. Other tracks: their clips (footage times, or edit times with edit true).
@@ -168,6 +170,8 @@ export type EditContext = {
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+/** Times an edit sets (cuts, trims, footage in and out, sound offsets, where clips hang): to the millisecond. */
+const rT = (n: number) => Math.round(n * 1000) / 1000;
 const rid = (prefix: string) => prefix + Math.random().toString(36).slice(2, 7);
 const firstWords = (l: Line, n = 3) => l.words.slice(0, n).map((w) => w.text).join(" ") + (l.words.length > n ? "…" : "");
 
@@ -231,14 +235,14 @@ export function buildRawTimeline(tr: Transcript, duration: number, cut: string[]
 // Helpers used by ops.
 // ---------------------------------------------------------------------------------------------
 
-/** Pauses between words longer than `over` seconds. Small padding keeps breaths natural. */
+/** Pauses between words longer than `over` seconds, less `pad` next to each word (keeps breaths natural). */
 export function pauseRanges(words: Word[], over: number, pad = 0.08): Range[] {
   const out: Range[] = [];
   for (let i = 0; i + 1 < words.length; i++) {
     const a = words[i].end, b = words[i + 1].t;
-    if (b - a > over) out.push({ start: r2(a + pad), end: r2(b - pad) });
+    if (b - a > over) out.push({ start: rT(a + pad), end: rT(b - pad) });
   }
-  return out.filter((x) => x.end - x.start > 0.05);
+  return out.filter((x) => x.end - x.start >= 0.001);
 }
 
 const EDGE_SILENCE = 0.3;
@@ -247,7 +251,8 @@ const EDGE_SILENCE = 0.3;
  * when longer than 0.3 s: each cut then sits right on the speech. Small pads keep the breath before the first word
  * and the tail of the last one. Footage seconds of that clip.
  */
-export function clipEdgeSilences(tl: Timeline, words: Word[], videoId = mainVideoOf(tl)): (Range & { clipId: string })[] {
+export function clipEdgeSilences(tl: Timeline, words: Word[], videoId = mainVideoOf(tl), o: { over?: number; keep?: number } = {}): (Range & { clipId: string })[] {
+  const over = o.over ?? EDGE_SILENCE;
   const cut = new Set(videoId === mainVideoOf(tl) ? tl.cut : []);
   const out: (Range & { clipId: string })[] = [];
   for (const c of tl.tracks.v1 as SeqClip[]) {
@@ -255,8 +260,8 @@ export function clipEdgeSilences(tl: Timeline, words: Word[], videoId = mainVide
     const inside = words.filter((w) => !cut.has(w.id) && w.end > c.sourceIn && w.t < c.sourceOut);
     if (!inside.length) continue; // a clip with no words: the audio's own silences decide (fromAudio)
     const first = inside[0], last = inside[inside.length - 1];
-    if (first.t - c.sourceIn > EDGE_SILENCE) out.push({ clipId: c.id, start: c.sourceIn, end: r2(first.t - 0.1) });
-    if (c.sourceOut - last.end > EDGE_SILENCE) out.push({ clipId: c.id, start: r2(last.end + 0.15), end: c.sourceOut });
+    if (first.t - c.sourceIn > over) out.push({ clipId: c.id, start: c.sourceIn, end: rT(first.t - (o.keep ?? 0.1)) });
+    if (c.sourceOut - last.end > over) out.push({ clipId: c.id, start: rT(last.end + (o.keep ?? 0.15)), end: c.sourceOut });
   }
   return out;
 }
@@ -270,14 +275,14 @@ function linesInEdit(tr: Transcript, tl: Timeline, view: SequenceView): { line: 
 }
 
 function zoomClip(start: number, end: number, scale: number, mode: "punch" | "push", auto = false): V2Clip {
-  return { id: rid("z"), start: r2(start), end: r2(end), label: `${mode === "push" ? "Push" : "Zoom"} ${Math.round(scale * 100)}%`, kind: "zoom", zoom: scale, mode, ...(auto ? { auto: true } : {}) } as V2Clip;
+  return { id: rid("z"), start: rT(start), end: rT(end), label: `${mode === "push" ? "Push" : "Zoom"} ${Math.round(scale * 100)}%`, kind: "zoom", zoom: scale, mode, ...(auto ? { auto: true } : {}) } as V2Clip;
 }
 
 /** A clip for another track, placed at edit seconds s..e: it hangs on the V1 clip playing at s. */
 function attachAt<T extends Clip>(view: SequenceView, c: T, s: number, e: number): T {
   const a = view.anchorFor(s);
   if (!a) throw new EditError("The sequence is empty: add a clip to V1 first.");
-  return { ...c, start: r2(s), end: r2(e), anchorId: a.anchorId, anchorAt: r2(a.anchorAt), length: r2(e - s) } as T;
+  return { ...c, start: rT(s), end: rT(e), anchorId: a.anchorId, anchorAt: rT(a.anchorAt), length: rT(e - s) } as T;
 }
 
 const seqClips = (tl: Timeline) => tl.tracks.v1 as SeqClip[];
@@ -452,8 +457,8 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "cut_words": {
       const ids = (op.wordIds ?? []).filter((id) => wordById.has(id));
-      const range = op.from != null && op.to != null ? { start: r2(Math.min(op.from, op.to)), end: r2(Math.max(op.from, op.to)) } : null;
-      if (range && range.end - range.start < 0.04) throw new EditError("The range is too short to cut: from must be at least 0.04 s before to.");
+      const range = op.from != null && op.to != null ? { start: rT(Math.min(op.from, op.to)), end: rT(Math.max(op.from, op.to)) } : null;
+      if (range && range.end - range.start < 0.001 - 1e-9) throw new EditError("The range is too short to cut: from must be at least 0.001 s (1 ms) before to.");
       if (!ids.length && !range) throw new EditError("None of those words exist in this transcript. Use word ids from get_footage with detail \"words\", or a from/to time range.");
       let next: Timeline = { ...tl, cut: Array.from(new Set([...tl.cut, ...ids])) };
       const added = next.cut.length - tl.cut.length;
@@ -490,16 +495,17 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         const before = v1Footage(next);
         next = f();
         const diff = before - v1Footage(next);
-        if (diff > 0.01) { removed += diff; n++; done.push(g); }
+        if (diff > 0.0005) { removed += diff; n++; done.push(g); }
       };
       for (const vid of videos) {
         const ws = wordsOf(vid);
         const sil = vid === main ? ctx.silences : ctx.sources![vid].silences;
         // Each clip's own start and end first (they only shorten clips), then the pauses wherever they play.
-        if (op.edges !== false) for (const g of clipEdgeSilences(next, ws, vid)) take(() => removeSourceRange(next, vid, g.start, g.end, g.clipId), g);
+        const keep = op.keep, edgeOpts = keep != null ? { over: Math.max(op.overSeconds, keep), keep } : {};
+        if (op.edges !== false) for (const g of clipEdgeSilences(next, ws, vid, edgeOpts)) if (g.end - g.start >= 0.001) take(() => removeSourceRange(next, vid, g.start, g.end, g.clipId), g);
         // Long silences the transcript cannot see (no words at all) come from the audio analysis.
-        const fromAudio = sil.filter((s) => s.end - s.start > op.overSeconds && !ws.some((w) => w.t < s.end && w.end > s.start)).map((s) => ({ start: r2(s.start + 0.08), end: r2(s.end - 0.08) }));
-        for (const g of mergeRanges([...pauseRanges(ws, op.overSeconds), ...fromAudio])) take(() => removeSourceRange(next, vid, g.start, g.end), g);
+        const fromAudio = sil.filter((s) => s.end - s.start > op.overSeconds && !ws.some((w) => w.t < s.end && w.end > s.start)).map((s) => ({ start: rT(s.start + (keep ?? 0.08)), end: rT(s.end - (keep ?? 0.08)) })).filter((s) => s.end - s.start >= 0.001);
+        for (const g of mergeRanges([...pauseRanges(ws, op.overSeconds, keep ?? 0.08), ...fromAudio])) take(() => removeSourceRange(next, vid, g.start, g.end), g);
       }
       const summary = n === 0 ? `no pauses over ${op.overSeconds}s left to cut` : n === 1 ? `cut ${fmtClock(done[0].start)} to ${fmtClock(done[0].end)} (silence, ${removed.toFixed(1)}s)` : `cut ${n} silences over ${op.overSeconds}s (${removed.toFixed(1)}s total)`;
       return { snap: { ...snap, timeline: next }, summary, count: n };
@@ -523,7 +529,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
           const prev = c.id && !used.has(c.id) ? old.get(c.id) : undefined;
           const id = c.id && !used.has(c.id) ? c.id : freshId();
           used.add(id);
-          return { ...(prev ?? lookOf(vid)), ...extra, id, label: c.label ?? prev?.label ?? "", start, end, sourceVideoId: vid, sourceIn: r2(start), sourceOut: r2(end) } as SeqClip;
+          return { ...(prev ?? lookOf(vid)), ...extra, id, label: c.label ?? prev?.label ?? "", start, end, sourceVideoId: vid, sourceIn: rT(start), sourceOut: rT(end) } as SeqClip;
         });
         return { snap: { ...snap, timeline: setSeq(tl, clips) }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on V1` };
       }
@@ -554,10 +560,10 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const lay = placeOf(view(), c);
       const at = toEdit(op.at, op.edit);
       if (!(at > lay.s + 0.05 && at < lay.e - 0.05)) throw new EditError(`Split time must be inside the clip (edit ${at2(lay.s)}s to ${at2(lay.e)}s).`);
-      const first = c.fill ? attachAt(view(), { ...c, fill: undefined } as Clip, lay.s, at) : { ...c, length: r2(at - lay.s) };
+      const first = c.fill ? attachAt(view(), { ...c, fill: undefined } as Clip, lay.s, at) : { ...c, length: rT(at - lay.s) };
       // Keyframes are seconds from the clip's start: the second half's start later by the first half's length.
       const ks = (c as { keys?: Key[] }).keys;
-      const moved = ks?.length ? { keys: ks.map((k) => ({ ...k, t: r2(Math.max(0, k.t - (at - lay.s))) })) } : {};
+      const moved = ks?.length ? { keys: ks.map((k) => ({ ...k, t: rT(Math.max(0, k.t - (at - lay.s))) })) } : {};
       const second = attachAt(view(), { ...c, ...moved, fill: undefined, id: rid(op.track + "_"), label: label2(c.label) } as Clip, at, lay.e);
       const clips = (tl.tracks[op.track] as Clip[]).flatMap((x) => (x.id === c.id ? [first as Clip, second] : [x]));
       return { snap: { ...snap, timeline: withTracks(tl, op.track, clips) }, summary: `split ${name(c)} at edit ${fmtClock(at)} (second half is clip ${second.id})` };
@@ -578,11 +584,11 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         const a = op.edit ? view().editToSource(c.id, op.start) : op.start, b = op.edit ? view().editToSource(c.id, op.end) : op.end;
         if (a < -0.005) throw new EditError(`The footage starts at 0s; ${name(c)} cannot start ${(-a).toFixed(2)}s before it.`);
         inFootage(c.sourceVideoId, Math.max(0, a), b);
-        const next = mapClip(tl, c.id, (x) => ({ ...x, sourceIn: r2(Math.max(0, a)), sourceOut: r2(b) }));
+        const next = mapClip(tl, c.id, (x) => ({ ...x, sourceIn: rT(Math.max(0, a)), sourceOut: rT(b) }));
         return { snap: { ...snap, timeline: next }, summary: `trimmed ${name(c)} to ${fmtClock(Math.max(0, a))}–${fmtClock(b)} of its footage` };
       }
       const c = findClip(tl, op.track, op.clipId) as Attached;
-      if (isCaptionMarker(op.track, c)) return { snap: { ...snap, timeline: withTracks(tl, op.track, (tl.tracks[op.track] as Clip[]).map((x) => (x.id === c.id ? { ...x, sourceIn: r2(op.start), sourceOut: r2(op.end) } : x))) }, summary: `trimmed ${name(c)}` };
+      if (isCaptionMarker(op.track, c)) return { snap: { ...snap, timeline: withTracks(tl, op.track, (tl.tracks[op.track] as Clip[]).map((x) => (x.id === c.id ? { ...x, sourceIn: rT(op.start), sourceOut: rT(op.end) } : x))) }, summary: `trimmed ${name(c)}` };
       const s = toEdit(op.start, op.edit), e = op.track === "a3" && !op.edit ? s + (op.end - op.start) : toEdit(op.end, op.edit);
       if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
       const { fill: _f, ...rest } = c;
@@ -619,7 +625,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const s = toEdit(op.start, op.edit), e = toEdit(op.end, op.edit);
       if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
       if (op.sourceStart + (e - s) > v.seconds + 0.05) throw new EditError(`"${v.name}" is only ${v.seconds.toFixed(1)}s long. Pick an earlier sourceStart or a shorter range.`);
-      const c = attachAt(view(), { id: rid("b"), start: 0, end: 0, label: op.label || v.name, kind: "broll", videoId: v.id, sourceStart: r2(op.sourceStart) } as V2Clip, s, e);
+      const c = attachAt(view(), { id: rid("b"), start: 0, end: 0, label: op.label || v.name, kind: "broll", videoId: v.id, sourceStart: rT(op.sourceStart) } as V2Clip, s, e);
       return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, c]) }, summary: `added b-roll ${v.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}` };
     }
     case "set_captions": {
@@ -745,7 +751,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       }
       const id = newSeqClipId(next);
       const label = op.label || (vid === main ? "Main" : ctx.getVideo?.(vid)?.name || "Clip");
-      next = insertSeqClip(next, { id, label, start: 0, end: 0, sourceVideoId: vid, sourceIn: r2(op.from), sourceOut: r2(op.to), ...lookOf(vid) } as SeqClip, index);
+      next = insertSeqClip(next, { id, label, start: 0, end: 0, sourceVideoId: vid, sourceIn: rT(op.from), sourceOut: rT(op.to), ...lookOf(vid) } as SeqClip, index);
       const pos = seqClips(next).findIndex((c) => c.id === id);
       return { snap: { ...snap, timeline: next }, summary: `added clip ${id} (${f.name} ${at2(op.from)}–${at2(op.to)}s) at position ${pos + 1} of ${seqClips(next).length}` };
     }
@@ -778,8 +784,8 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (op.end != null && op.end > 0) { const s = secondsOf(c.sourceVideoId); if (s != null && c.sourceOut + op.end > s + 0.005) throw new EditError(`Only ${(s - c.sourceOut).toFixed(2)}s of footage comes after ${name(c)}, so its sound can run on at most that much.`); }
       let next = setSeq(tl, v1.map((x, k) => {
         let y = x;
-        if (k === i && op.start != null) y = { ...y, audioStart: r2(op.start) };
-        if (k === i + 1 && op.end != null) y = { ...y, audioStart: r2(op.end) };
+        if (k === i && op.start != null) y = { ...y, audioStart: rT(op.start) };
+        if (k === i + 1 && op.end != null) y = { ...y, audioStart: rT(op.end) };
         if (k === i && op.muted != null) { y = { ...y }; if (op.muted) y.audioMuted = true; else delete y.audioMuted; }
         return y;
       }));
@@ -799,7 +805,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (i < 0) findClip(tl, "v1", op.clipId);
       const a = v1[i], b = v1[i + 1];
       if (!b) throw new EditError(`${name(a)} is the last clip: there is no cut after it to roll.`);
-      const aOut = r2(a.sourceOut + op.by), bIn = r2(b.sourceIn + op.by);
+      const aOut = rT(a.sourceOut + op.by), bIn = rT(b.sourceIn + op.by);
       if (aOut < a.sourceIn + 0.1 || bIn > b.sourceOut - 0.1) throw new EditError(`Rolling ${op.by}s would leave a clip shorter than 0.1 s.`);
       if (bIn < 0) throw new EditError(`${name(b)}'s footage starts ${b.sourceIn.toFixed(2)}s in; the cut can move at most ${b.sourceIn.toFixed(2)}s earlier.`);
       const sa = secondsOf(a.sourceVideoId);
@@ -809,14 +815,14 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "slip_clip": {
       const c = findClip(tl, "v1", op.clipId) as SeqClip;
-      const sIn = r2(c.sourceIn + op.by), sOut = r2(c.sourceOut + op.by);
+      const sIn = rT(c.sourceIn + op.by), sOut = rT(c.sourceOut + op.by);
       if (sIn < 0) throw new EditError(`${name(c)} can slip at most ${c.sourceIn.toFixed(2)}s earlier (the footage starts there).`);
       const s = secondsOf(c.sourceVideoId);
       if (s != null && sOut > s + 0.005) throw new EditError(`${name(c)} can slip at most ${(s - c.sourceOut).toFixed(2)}s later (the footage ends there).`);
       let next = mapClip(tl, c.id, (x) => ({ ...x, sourceIn: sIn, sourceOut: sOut }));
       // Clips hanging on it stay where they are in the edit.
       const tracks = { ...next.tracks } as Timeline["tracks"];
-      for (const k of ["v2", "v3", "a2", "a3"] as TrackName[]) (tracks as Record<string, Clip[]>)[k] = (next.tracks[k] as Attached[]).map((x) => (x.anchorId === c.id ? { ...x, anchorAt: r2(Number(x.anchorAt ?? 0) + op.by) } : x));
+      for (const k of ["v2", "v3", "a2", "a3"] as TrackName[]) (tracks as Record<string, Clip[]>)[k] = (next.tracks[k] as Attached[]).map((x) => (x.anchorId === c.id ? { ...x, anchorAt: rT(Number(x.anchorAt ?? 0) + op.by) } : x));
       next = { ...next, tracks };
       return { snap: { ...snap, timeline: next }, summary: `slipped ${name(c)} ${Math.abs(op.by).toFixed(2)}s ${op.by > 0 ? "later" : "earlier"} in its footage (now ${at2(sIn)}–${at2(sOut)}s)` };
     }
@@ -826,7 +832,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (i < 0) findClip(tl, "v1", op.clipId);
       const prev = v1[i - 1], next0 = v1[i + 1];
       if (!prev || !next0) throw new EditError(`${name(v1[i])} needs a clip before and after it to slide between them.`);
-      const pOut = r2(prev.sourceOut + op.by), nIn = r2(next0.sourceIn + op.by);
+      const pOut = rT(prev.sourceOut + op.by), nIn = rT(next0.sourceIn + op.by);
       if (pOut < prev.sourceIn + 0.1 || nIn > next0.sourceOut - 0.1) throw new EditError(`Sliding ${op.by}s would leave a neighbouring clip shorter than 0.1 s.`);
       if (nIn < 0) throw new EditError(`${name(next0)}'s footage starts ${next0.sourceIn.toFixed(2)}s in; the clip can slide at most that much earlier.`);
       const sp = secondsOf(prev.sourceVideoId);
@@ -907,7 +913,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (f > c.sourceIn + 0.05 && f < c.sourceOut - 0.05) { next = splitSeqClip(tl, c.id, f).tl; index++; }
       else if (f >= c.sourceOut - 0.05) index++;
       const id = newSeqClipId(next);
-      const still: SeqClip = { id, label: `Freeze ${op.length}s`, start: 0, end: 0, sourceVideoId: c.sourceVideoId, sourceIn: r2(f), sourceOut: r2(f + 0.04), freeze: r2(op.length), ...(c.rotate ? { rotate: c.rotate } : {}), ...(plainFraming(c.framing) ? { framing: c.framing } : {}) };
+      const still: SeqClip = { id, label: `Freeze ${op.length}s`, start: 0, end: 0, sourceVideoId: c.sourceVideoId, sourceIn: rT(f), sourceOut: rT(f + 0.04), freeze: rT(op.length), ...(c.rotate ? { rotate: c.rotate } : {}), ...(plainFraming(c.framing) ? { framing: c.framing } : {}) };
       next = insertSeqClip(next, still, index);
       return { snap: { ...snap, timeline: next }, summary: `froze the frame at ${at2(f)}s of ${name(c)} for ${op.length}s (clip ${id}, silent)` };
     }
@@ -940,7 +946,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         const len = p.end - p.start;
         for (const k of keys) if (k.t > len + 0.05) throw new EditError(`Keyframe at ${k.t}s is past the end of ${name(c)} (${len.toFixed(2)}s in the edit). Key times are seconds from the clip's start.`);
         // Stored at footage seconds, so the keys move with the footage when the clip is cut or split.
-        const stored = keys.map((k) => ({ ...k, t: r2(c.freeze ? c.sourceIn + Math.min(k.t, len) : view().editToSource(c.id, p.start + Math.min(k.t, len))) }));
+        const stored = keys.map((k) => ({ ...k, t: rT(c.freeze ? c.sourceIn + Math.min(k.t, len) : view().editToSource(c.id, p.start + Math.min(k.t, len))) }));
         const next = mapClip(tl, c.id, (x) => { const { keys: _k, ...rest } = x; return (stored.length ? { ...rest, keys: stored } : rest) as SeqClip; });
         return { snap: { ...snap, timeline: next }, summary: keys.length ? `${name(c)}: ${keyText(keys)}` : `${name(c)}: keyframes removed` };
       }

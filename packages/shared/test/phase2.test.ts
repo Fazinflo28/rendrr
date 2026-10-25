@@ -112,7 +112,7 @@ describe("J and L cuts", () => {
     expect(p.dialogueMutes).toHaveLength(1);
     const g = ffmpegArgs(p, { source: "/m.mp4", output: "/o.mp4" }, source, { loudnessGainDb: 0 }).filterGraph;
     expect(g).toMatch(/anullsrc=r=48000:cl=stereo,atrim=end_sample=\d+/); // the muted clip is silence
-    expect(g).toMatch(/concat=n=\d+:v=0:a=1\[acat\]/);
+    expect(g).toMatch(/concat=n=\d+:v=0:a=1,apad=whole_dur=[\d.]+,atrim=end=[\d.]+\[acat\]/); // the sound ends with the picture
     expect(editCheck(r.snap, tr)).toMatch(/1 L cut, 1 muted/);
   });
   it("refuses offsets the footage cannot give, and on the first or last clip", () => {
@@ -281,7 +281,8 @@ describe("migration A -> B", () => {
     const a: Snapshot = { timeline: randomA(9), name: "t", aspect: "16:9", styleId: "s2" };
     const r = applyOp(a, { op: "rename", name: "x" }, ctx).snap;
     expect(r.timeline.model).toBe("B");
-    expect(planDifferences(planRenderA({ kind: "preview", snapshot: a, transcript: tr, source, videoId: "vid1", brollSeconds }), planRender({ kind: "preview", snapshot: r, transcript: tr, source, videoId: "vid1", brollSeconds }))).toEqual([]);
+    // Like for like: model A put its cuts on frames (a sequence cuts to the millisecond unless asked to).
+    expect(planDifferences(planRenderA({ kind: "preview", snapshot: a, transcript: tr, source, videoId: "vid1", brollSeconds }), planRender({ kind: "preview", snapshot: r, transcript: tr, source, videoId: "vid1", brollSeconds, cutsOnFrames: true }))).toEqual([]);
   });
   it("conversion is stable: converting, laying out and normalizing again changes nothing", () => {
     const b = toModelB(randomA(11), words, "vid1");

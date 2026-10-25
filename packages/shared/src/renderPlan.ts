@@ -38,6 +38,8 @@ export type PlanInput = {
   luts?: Record<string, Lut>;
   /** Videos whose original is HDR, by id (a preview plays SDR copies, so it learns this here for its check line). */
   hdrFootage?: Record<string, HdrTransfer>;
+  /** Cuts on frames as model A rendered them; only to check a conversion from model A (sequenceView cutsOnFrames). */
+  cutsOnFrames?: boolean;
 };
 
 /** through: the zoom transition (in to the cut, out after it). */
@@ -354,7 +356,7 @@ export function planRender(input: PlanInput): RenderPlan {
   // file's real length is left out.
   const out = outputRate(kind, input.source.fps);
   const onFrame = (t: number) => Math.round(t * out.fps) / out.fps;
-  const view = sequenceView(tl, words, { align: out.fps, seconds: Object.fromEntries(used.map((v) => [v, infoOf(v)!.seconds])) });
+  const view = sequenceView(tl, words, { align: out.fps, seconds: Object.fromEntries(used.map((v) => [v, infoOf(v)!.seconds])), cutsOnFrames: input.cutsOnFrames });
   if (!view.picture.length) throw new RenderPlanError("Nothing is left to render. Every part of the video is cut. Restore some words or clips, then try again.");
   const total = r3(view.total);
   const { width, height } = outputSize(snapshot.aspect, kind, tl.export?.resolution);
@@ -982,7 +984,9 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     for (const { u, i } of mine) g.push(`[sa${i}]${u.length === 1 && rateOf(u[0]) === 1 ? at(u[0]) : tempo(u)}[a${i}]`);
   }
   units.forEach((u, i) => { if (!live(u[0])) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${editSamples(u)},asetpts=PTS-STARTPTS[a${i}]`); });
-  g.push(`${units.map((_, i) => `[a${i}]`).join("")}concat=n=${units.length}:v=0:a=1[acat]`);
+  // The sound ends where the edit does, to the millisecond; the picture on its last frame: the sound is padded or
+  // cut to the picture's length (under half a frame).
+  g.push(`${units.map((_, i) => `[a${i}]`).join("")}concat=n=${units.length}:v=0:a=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
 
   if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null });
   mixAudio(plan, files, g, inputs, () => idx++, opts);

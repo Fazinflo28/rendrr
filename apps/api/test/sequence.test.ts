@@ -58,7 +58,8 @@ describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL 
     assert.deepEqual(backup.timeline, JSON.parse(JSON.stringify(aTimeline)));
     const source = { width: 1920, height: 1080, fps: 30, seconds: 30, hasAudio: true };
     const before = planRender({ kind: "preview", snapshot: { timeline: aTimeline, name: "x", aspect: "16:9", styleId: "s2" }, transcript: tr, source, videoId });
-    const after = planRender({ kind: "preview", snapshot: { timeline: p.timeline as never, name: "x", aspect: "16:9", styleId: "s2" }, transcript: tr, source, videoId });
+    // Like for like: model A put its cuts on frames (a sequence cuts to the millisecond unless asked to).
+    const after = planRender({ kind: "preview", snapshot: { timeline: p.timeline as never, name: "x", aspect: "16:9", styleId: "s2" }, transcript: tr, source, videoId, cutsOnFrames: true });
     assert.equal(before.model, "A");
     assert.equal(after.model, "B");
     assert.deepEqual(planDifferences(before, after), []);

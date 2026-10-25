@@ -266,10 +266,12 @@ export function normalizeTimeline(t: Timeline): Timeline {
 
 /**
  * Model B: rounds the fields that decide the edit and fixes audio keys. V1 keeps its order (it is the sequence);
- * main-footage clips stay inside the footage. Edit positions are written afterwards by the layout.
+ * main-footage clips stay inside the footage. Edit positions are written afterwards by the layout. Cut points (a V1
+ * clip's footage in and out) and J/L offsets are kept to the millisecond.
  */
 function normalizeSequence(t: Timeline): Timeline {
   const r = (n: number) => Math.round(n * 100) / 100;
+  const ms = (n: number) => Math.round(n * 1000) / 1000;
   const main = t.mainVideoId || "main";
   const tracks = {} as Tracks;
   for (const name of TRACK_NAMES) {
@@ -278,9 +280,9 @@ function normalizeSequence(t: Timeline): Timeline {
       clips = clips.map((c) => {
         const vid = String(c.sourceVideoId || main);
         const hi = vid === main ? t.duration : 24 * 3600;
-        const sIn = r(Math.max(0, Math.min(Number(c.sourceIn ?? c.start), hi))), sOut = r(Math.max(0, Math.min(Number(c.sourceOut ?? c.end), hi)));
+        const sIn = ms(Math.max(0, Math.min(Number(c.sourceIn ?? c.start), hi))), sOut = ms(Math.max(0, Math.min(Number(c.sourceOut ?? c.end), hi)));
         const x: Clip & Record<string, unknown> = { ...c, sourceVideoId: vid, sourceIn: sIn, sourceOut: sOut };
-        if (x.audioStart != null) { const a = r(Number(x.audioStart)); if (a) x.audioStart = a; else delete x.audioStart; }
+        if (x.audioStart != null) { const a = ms(Number(x.audioStart)); if (a) x.audioStart = a; else delete x.audioStart; }
         if (!x.audioMuted) delete x.audioMuted;
         if (!x.rotate) delete x.rotate;
         for (const k of ["audioGain", "audioFadeIn", "audioFadeOut"]) { if (x[k] != null) { const v = r(Number(x[k])); if (v) x[k] = v; else delete x[k]; } }
@@ -294,7 +296,7 @@ function normalizeSequence(t: Timeline): Timeline {
         if (Array.isArray(x.keys)) { if ((x.keys as unknown[]).length) x.keys = sortKeys(x.keys as { t: number }[]); else delete x.keys; }
         tidyLook(x);
         return x;
-      }).filter((c) => Number(c.sourceOut) - Number(c.sourceIn) >= 0.01);
+      }).filter((c) => Number(c.sourceOut) - Number(c.sourceIn) >= 0.001);
     } else if (name !== "a1") {
       clips = clips.map((c) => {
         const x: Clip & Record<string, unknown> = { ...c, start: r(Math.max(0, c.start)), end: r(Math.max(0, c.end)) };

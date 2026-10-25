@@ -8,7 +8,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { applyOp, buildInitialTimeline, type EditContext, type Op, type Snapshot } from "@rendrr/shared";
+import { applyOp, buildInitialTimeline, sequenceView, type EditContext, type Op, type Snapshot } from "@rendrr/shared";
 import { ffmpegArgs, planRender, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -93,27 +93,33 @@ describe("export: frame rate kept, sizes and codecs", () => {
         }
       }
       assert.equal(wrong, 0, `${wrong} frames show the wrong source frame`);
-      // Sync: at each gap in the sound, the picture shows the source frame of that gap (0.4 s into a second).
+      // Sync: the sound is cut exactly where the edit says; each part's picture starts on the frame nearest its exact
+      // start and shows the footage frame that covers its sound's moment. So at a gap in the sound, picture and sound
+      // are apart by exactly that part's fraction of a frame (d below, from the exact edit), whatever came before it:
+      // no drift, never a frame or more.
+      const exact = sequenceView(edit().timeline, [], { seconds: { v: SECONDS } }).picture;
+      const d = plan.parts.map((p, i) => exact[i].srcIn + (p.start - exact[i].start) - p.srcIn);
+      assert.ok(d.every((x) => x >= -1e-6 && x < 1 / fps), `fractions ${d.map((x) => (x * 1000).toFixed(1)).join(", ")} ms`);
       const g = await gaps(out);
       assert.ok(g.length >= 8, `found ${g.length} gaps`);
-      let worst = 0, best = Infinity;
+      const offs: number[] = [];
       for (const t of g) {
-        // The source frame where this gap starts (0.4 s into its second), and the output frame that shows it: the gap
-        // must start at that frame's time.
         const near = Math.min(k - 1, Math.floor((t + 0.02) * fps));
         const second = Math.round(shown(buf, near) / fps - 0.4);
         const F0 = Math.round((second + 0.4) * fps);
         let m = -1;
         for (let j = Math.max(0, near - 3); j <= Math.min(k - 1, near + 3); j++) if (shown(buf, j) === F0) { m = j; break; }
         assert.ok(m >= 0, `no frame near ${t.toFixed(3)}s shows source frame ${F0}`);
-        // In the footage the gap starts (second + 0.4) - F0/fps after frame F0 starts; the file must keep that.
-        const off = Math.abs((t - m / fps) - ((second + 0.4) - F0 / fps));
-        worst = Math.max(worst, off); best = Math.min(best, off);
-        if (process.env.SHOW) console.log(`  gap at ${t.toFixed(3)}s (source ${second}.4s): offset ${(off * 1000).toFixed(1)} ms`);
+        // In the footage the gap starts (second + 0.4) - F0/fps after frame F0 starts; in the file that less the part's d.
+        const part = plan.parts.findIndex((p) => m / fps >= p.start - 1e-6 && m / fps < p.end - 1e-6);
+        const off = (t - m / fps) - ((second + 0.4) - F0 / fps - d[part]);
+        offs.push(off);
+        if (process.env.SHOW) console.log(`  gap at ${t.toFixed(3)}s (source ${second}.4s, part ${part}, d ${(d[part] * 1000).toFixed(1)} ms): off by ${(off * 1000).toFixed(1)} ms`);
       }
-      console.log(`${name}: ${g.length} gaps, picture-sound offset ${(best * 1000).toFixed(0)}-${(worst * 1000).toFixed(0)} ms (constant = the 2 ms detection window and the tone's ramp; growing would be drift)`);
-      assert.ok(worst - best <= 0.002, `the offset changes along the file by ${((worst - best) * 1000).toFixed(1)} ms`);
-      assert.ok(worst <= 0.012, `picture and sound ${(worst * 1000).toFixed(0)} ms apart`);
+      const lo = Math.min(...offs), hi = Math.max(...offs);
+      console.log(`${name}: ${g.length} gaps, each part's picture ${d.map((x) => (x * 1000).toFixed(0)).join("/")} ms behind its exact cut; the file adds ${(lo * 1000).toFixed(1)} to ${(hi * 1000).toFixed(1)} ms (constant = the detection window and the tone's ramp; varying would be a cut off or drift)`);
+      assert.ok(hi - lo <= 0.002, `the offset changes along the file by ${((hi - lo) * 1000).toFixed(1)} ms`);
+      assert.ok(Math.max(Math.abs(lo), Math.abs(hi)) <= 0.012, `picture and sound ${(Math.max(Math.abs(lo), Math.abs(hi)) * 1000).toFixed(0)} ms off what the edit says`);
       const a = await probe(out);
       assert.ok(Math.abs(a.seconds - plan.outputSeconds) < 0.05, `file ${a.seconds}s, plan ${plan.outputSeconds}s`);
     });

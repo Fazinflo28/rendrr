@@ -27,6 +27,8 @@ export class EditError extends Error {
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+/** Times an edit sets on the sequence (cuts, splits, where clips hang): to the millisecond. */
+const r3 = (n: number) => Math.round(n * 1000) / 1000;
 const rid = (prefix: string) => prefix + Math.random().toString(36).slice(2, 7);
 export const fmtClock = (s: number) => `${Math.floor(Math.max(0, s) / 60)}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, "0")}`;
 
@@ -317,10 +319,12 @@ export function editOf(x: { srcIn: number; srcOut: number; start: number; end: n
 export type ClipPlace = { id: string; videoId: string; start: number; end: number; pieces: Piece[]; soundStart: number; soundEnd: number };
 
 export type ViewOpts = {
-  /** Frames per second: every part starts and ends on a frame of the output (the render plan uses 30). */
+  /** Frames per second of the output: the picture goes on its frames; sound is cut to the millisecond. */
   align?: number;
   /** Each video's length in seconds: footage past its end is left out. */
   seconds?: Record<string, number>;
+  /** Cuts rounded to the nearest frame too, as model A rendered them (only to check a conversion from model A). */
+  cutsOnFrames?: boolean;
 };
 
 export type SequenceView = {
@@ -363,6 +367,23 @@ function cutOut(keep: Range[], remove: Range[]): Range[] {
     cur = next;
   }
   return cur;
+}
+
+/**
+ * A part's picture on the output's frames (`fps`): from the frame nearest its exact edit start to the frame nearest its
+ * end. At normal speed it shows the footage frame playing at each of those frames (its sound's moment), so the
+ * picture is never more than half a frame from its sound. Off normal speed the part is already whole frames from a
+ * frame of the footage and only moves onto the grid. Null: shorter than a frame there.
+ */
+function onFrames(part: PicturePart, len: number | undefined, fps: number): PicturePart | null {
+  const a = Math.round(part.start * fps);
+  const n = rateOf(part) === 1 ? Math.round(part.end * fps) - a : Math.round((part.end - part.start) * fps);
+  if (n < 1) return null;
+  const start = a / fps, end = (a + n) / fps;
+  if (rateOf(part) !== 1) return { ...part, start, end };
+  const top = len != null ? Math.floor(len * fps) / fps : Infinity;
+  const srcIn = Math.max(0, Math.min(Math.floor((part.srcIn + (start - part.start)) * fps + 1e-6) / fps, top - n / fps));
+  return { ...part, start, end, srcIn, srcOut: srcIn + n / fps };
 }
 
 export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): SequenceView {
@@ -411,17 +432,21 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
   for (const r of raws) join(parts, { videoId: r.clip.sourceVideoId, srcIn: r.srcIn, srcOut: r.srcOut, rate: r.rate, hold: r.hold, look: r.clip, raws: [r] });
   parts = parts.filter((p) => editLen(p) >= 0.04);
   if (fps) {
-    // Every part starts and ends on a frame of the output, so the picture and the sound of each part are exactly as
-    // long as planned. At another speed the edit length is whole frames and the footage follows from it.
+    // A part at normal speed keeps its footage to the millisecond: its sound is cut exactly where the edit says (only
+    // the file's real end caps it). Off normal speed the edit length is whole frames and the footage follows from it.
+    // The picture goes on the output's frames below (step 3).
     const f = (x: number) => Math.round(x * fps) / fps;
     const aligned: P[] = [];
     for (const p of parts) {
       const len = lenOf(p.videoId);
       const top = len != null ? Math.floor(len * fps) / fps : Infinity;
       let q: P | null = null;
-      if (p.rate === 1) {
+      if (p.rate === 1 && opts.cutsOnFrames) {
         const a = f(p.srcIn), b = Math.min(f(p.srcOut), top);
         if (b - a >= 1 / fps - 1e-9) q = { ...p, srcIn: a, srcOut: b };
+      } else if (p.rate === 1) {
+        const b = Math.min(p.srcOut, top);
+        if (b - p.srcIn >= 0.001) q = { ...p, srcOut: b };
       } else if (p.rate === 0) {
         const n = Math.round(p.hold * fps);
         const a = Math.max(0, Math.min(f(p.srcIn), top - 1 / fps));
@@ -444,7 +469,10 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
     parts = aligned;
   }
 
-  // 3. Edit times.
+  // 3. Edit times: exact, so every cut is where the edit says. With `align` the picture then goes on the output's
+  // frames: a part starts on the frame nearest its edit time and shows, frame by frame, the footage frame its sound is
+  // playing. Picture and sound are never more than half a frame apart at a cut, and that never adds up over cuts. A
+  // part shorter than a frame there is heard, and its neighbours' frames cover it.
   let acc = 0;
   const picture: PicturePart[] = [];
   const pieces: Piece[] = [];
@@ -453,7 +481,8 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
     acc += editLen(p);
     const part: PicturePart = { videoId: p.videoId, srcIn: p.srcIn, srcOut: p.srcOut, start, end: acc, rotate: (p.look.rotate ?? 0) as Rotation, framing: plainFraming(p.look.framing), clipIds: Array.from(new Set(p.raws.map((r) => r.clip.id))) };
     if (p.rate !== 1) part.rate = p.rate;
-    picture.push(part);
+    const shown = fps ? onFrames(part, lenOf(p.videoId), fps) : part;
+    if (shown) picture.push(shown);
     if (p.rate === 0) { pieces.push({ clipId: p.raws[0].clip.id, videoId: p.videoId, srcIn: p.srcIn, srcOut: p.srcOut, start, end: acc, rate: 0 }); continue; }
     // Each clip's share of the part (the first and last reach the part's ends, which the frame rounding may move).
     p.raws.forEach((r, j) => {
@@ -461,12 +490,12 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
       let a = Math.max(r.srcIn, p.srcIn), b = Math.min(r.srcOut, p.srcOut);
       if (p.rate > 0) { if (first) a = p.srcIn; if (last) b = p.srcOut; } else { if (first) b = p.srcOut; if (last) a = p.srcIn; }
       if (b - a <= 1e-9) return;
-      const x: Piece = { clipId: r.clip.id, videoId: p.videoId, srcIn: a, srcOut: b, start: editOf(part, p.rate > 0 ? a : b), end: editOf(part, p.rate > 0 ? b : a) };
+      const x: Piece = { clipId: r.clip.id, videoId: p.videoId, srcIn: a, srcOut: b, start: editOf(part, p.rate > 0 ? a : b), end: editOf(part, p.rate > 0 ? b : a) }; // exact times
       if (p.rate !== 1) x.rate = p.rate;
       pieces.push(x);
     });
   }
-  const total = acc;
+  const end = acc, total = fps ? Math.round(acc * fps) / fps : acc; // aligned: the picture's whole frames
 
   // 4. Each clip's place. A clip with nothing left sits where it would play, with no length.
   const piecesOf = new Map<string, Piece[]>();
@@ -489,8 +518,8 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
     if (k === 0) { D.push(0); continue; }
     const cur = live[k], prev = live[k - 1];
     if (!normalSpeed(clipById.get(cur.id)!) || !normalSpeed(clipById.get(prev.id)!)) { D.push(cur.start); continue; }
-    let off = Number(clipById.get(cur.id)!.audioStart || 0);
-    if (fps) off = Math.round(off * fps) / fps;
+    let off = Number(clipById.get(cur.id)!.audioStart || 0); // sound only: to the millisecond, like every cut
+    if (fps && opts.cutsOnFrames) off = Math.round(off * fps) / fps;
     let d = cur.start + off;
     d = Math.max(d, cur.start - cur.pieces[0].srcIn); // a J cut can only use footage that exists
     const prevLen = lenOf(prev.videoId) ?? (prev.videoId === main ? tl.duration : undefined);
@@ -505,7 +534,7 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
     else sound.push({ ...s });
   };
   live.forEach((pl, k) => {
-    const a = D[k], b = k + 1 < live.length ? D[k + 1] : total;
+    const a = D[k], b = k + 1 < live.length ? D[k + 1] : end; // the sound ends where the edit does
     pl.soundStart = a; pl.soundEnd = b;
     const clip = clipById.get(pl.id)!;
     const muted = !!clip.audioMuted;
@@ -608,7 +637,7 @@ function layoutSequence(tl: Timeline, words: Word[]): Timeline {
         // Not attached yet (a clip placed by its edit times): it hangs on the V1 clip playing at its start.
         s = c.start; len = c.end - c.start;
         const a = view.anchorFor(s);
-        if (a) { x.anchorId = a.anchorId; x.anchorAt = r2(a.anchorAt); x.length = r2(len); }
+        if (a) { x.anchorId = a.anchorId; x.anchorAt = r3(a.anchorAt); x.length = r3(len); }
       }
       const broll = k === "v2" && x.kind === "broll" && typeof x.videoId === "string";
       const anchor = x.anchorId ? v1.find((v) => v.id === x.anchorId) : undefined;
@@ -692,7 +721,7 @@ export function toModelB(tl: Timeline, words: Word[], mainVideoId = "main", opts
   const { rotate: _r, framing: _f, ...rest } = tl;
   const draft: Timeline = { ...rest, model: "B", mainVideoId: main, tracks: { ...tl.tracks, v1, a1: [] } };
   // Other clips hang on the kept moment their start lands on, with the length they had in the edit.
-  const view = sequenceView(normalizeTimeline(draft), words, { align: 30, seconds: { [main]: seconds } });
+  const view = sequenceView(normalizeTimeline(draft), words, { align: 30, seconds: { [main]: seconds }, cutsOnFrames: true }); // as model A placed them
   const total = r3(map.total);
   for (const k of ATTACHED_TRACKS) {
     const out: Clip[] = [];
@@ -732,7 +761,7 @@ function moveAnchors(tl: Timeline, fromId: string, toId: string, from: number, s
   for (const k of ATTACHED_TRACKS) {
     (tracks as Record<string, Clip[]>)[k] = (tl.tracks[k] as Attached[]).map((c) => {
       if (c.anchorId !== fromId || Number(c.anchorAt ?? 0) < from - 1e-9) return c;
-      return { ...c, anchorId: toId, ...(snap != null && Number(c.anchorAt ?? 0) < snap ? { anchorAt: r2(snap) } : {}) };
+      return { ...c, anchorId: toId, ...(snap != null && Number(c.anchorAt ?? 0) < snap ? { anchorAt: r3(snap) } : {}) };
     });
   }
   return { ...tl, tracks };
@@ -747,13 +776,13 @@ export function splitSeqClip(tl: Timeline, clipId: string, at: number): { tl: Ti
   const c = findClip(tl, "v1", clipId) as SeqClip;
   if (!(at > c.sourceIn + 0.05 && at < c.sourceOut - 0.05)) throw new EditError(`Split time ${r2(at)}s must be inside the clip's footage (${c.sourceIn}s to ${c.sourceOut}s).`);
   const newId = freshIds(tl)(c.id);
-  const v1 = seqOf(tl).flatMap((x) => (x.id !== c.id ? [x] : [{ ...x, sourceOut: r2(at) }, secondHalf({ ...x, id: newId, sourceIn: r2(at), label: label2(x.label) })]));
+  const v1 = seqOf(tl).flatMap((x) => (x.id !== c.id ? [x] : [{ ...x, sourceOut: r3(at) }, secondHalf({ ...x, id: newId, sourceIn: r3(at), label: label2(x.label) })]));
   return { tl: moveAnchors(withV1(tl, v1), c.id, newId, at), newId };
 }
 
 /**
- * Takes a footage range of one video out of the V1 clips that play it (all of them, or only `onlyId`). A leftover
- * under 0.15 s goes too, as in model A. The edit closes up.
+ * Takes a footage range of one video out of the V1 clips that play it (all of them, or only `onlyId`), to the
+ * millisecond. A leftover under 0.04 s (too short to play) goes too. The edit closes up.
  */
 export function removeSourceRange(tl: Timeline, videoId: string, a: number, b: number, onlyId?: string): Timeline {
   const ids = freshIds(tl);
@@ -761,11 +790,11 @@ export function removeSourceRange(tl: Timeline, videoId: string, a: number, b: n
   const moves: [string, string, number, number][] = [];
   for (const c of seqOf(tl)) {
     if (c.sourceVideoId !== videoId || (onlyId && c.id !== onlyId) || b <= c.sourceIn || a >= c.sourceOut) { out.push(c); continue; }
-    const keepA = a - c.sourceIn >= 0.15, keepB = c.sourceOut - b >= 0.15;
-    if (keepA) out.push({ ...c, sourceOut: r2(a) });
+    const keepA = a - c.sourceIn >= 0.04, keepB = c.sourceOut - b >= 0.04;
+    if (keepA) out.push({ ...c, sourceOut: r3(a) });
     if (keepB) {
       const id = keepA ? ids(c.id) : c.id;
-      out.push(keepA ? secondHalf({ ...c, id, sourceIn: r2(b), label: label2(c.label) }) : { ...c, sourceIn: r2(b) });
+      out.push(keepA ? secondHalf({ ...c, id, sourceIn: r3(b), label: label2(c.label) }) : { ...c, sourceIn: r3(b) });
       moves.push([c.id, id, keepA ? a : -Infinity, b]);
     }
   }
@@ -843,7 +872,7 @@ export function reattach(before: Timeline, after: Timeline, words: Word[]): Time
         if (length < 0.05) return [];
       } else if (s >= now.total) return [];
       const a = now.anchorFor(s);
-      return a ? [{ ...c, anchorId: a.anchorId, anchorAt: r2(a.anchorAt), length: r2(length) }] : [];
+      return a ? [{ ...c, anchorId: a.anchorId, anchorAt: r3(a.anchorAt), length: r3(length) }] : [];
     });
   }
   return { ...after, tracks };

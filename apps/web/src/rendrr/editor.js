@@ -252,7 +252,8 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
     for (const [id, el] of Object.entries(vref.current)) {
       const on = part?.videoId === id;
       el.muted = !(on && own && !snd.muted); el.volume = vol(lv.dialogue);
-      if (on) follow(el, pic.src, playing, pic.rate); else if (!el.paused) el.pause();
+      // At normal speed it plays the sound's own moment (cut to the millisecond); its frame is the one the render shows.
+      if (on) follow(el, own && pic.rate === 1 ? snd.src : pic.src, playing, pic.rate); else if (!el.paused) el.pause();
     }
     for (const [id, el] of Object.entries(aref.current)) {
       el.volume = vol(lv.dialogue);

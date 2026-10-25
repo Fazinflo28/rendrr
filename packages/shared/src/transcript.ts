@@ -33,6 +33,7 @@ export function refreshFillers(tr: Transcript): Transcript | null {
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+const r3 = (n: number) => Math.round(n * 1000) / 1000;
 
 /**
  * Builds lines from sentence groups of raw words. Word ids are w0..wN and line ids l0..lN, stable for
@@ -51,7 +52,8 @@ export function buildTranscript(sentences: RawWord[][], { minGap = 0.8, maxWords
   let wid = 0;
   let prevEnd = 0;
   return groups.map((g, li) => {
-    const words: Word[] = g.map((w) => ({ id: "w" + wid, text: w.text, t: r2(w.start), end: r2(Math.max(w.end, w.start + 0.05)), filler: fill[wid++] }));
+    // Word times to the millisecond (as transcribed), so cuts can sit exactly between words.
+    const words: Word[] = g.map((w) => ({ id: "w" + wid, text: w.text, t: r3(w.start), end: r3(Math.max(w.end, w.start + 0.05)), filler: fill[wid++] }));
     const start = words[0].t;
     const gap = li === 0 ? 0 : start - prevEnd;
     prevEnd = words[words.length - 1].end;

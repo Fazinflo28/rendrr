@@ -42,7 +42,8 @@ export type Conversion = { timeline: Timeline; differences: string[]; skipped?: 
 export function convertChecked(snap: Snapshot, transcript: Transcript, opts: { videoId: string; source: SourceInfo; brollSeconds?: Record<string, number> }): Conversion {
   if (isSequence(snap.timeline)) return { timeline: snap.timeline, differences: [], skipped: "already a sequence" };
   const timeline = toModelB(snap.timeline, allWords(transcript), opts.videoId, { seconds: opts.source.seconds });
-  const input = (s: Snapshot): PlanInput => ({ kind: "preview", snapshot: s, transcript, source: opts.source, videoId: opts.videoId, brollSeconds: opts.brollSeconds });
+  // Model A put every cut on a frame, so B is planned the same way here (it cuts to the millisecond otherwise).
+  const input = (s: Snapshot): PlanInput => ({ kind: "preview", snapshot: s, transcript, source: opts.source, videoId: opts.videoId, brollSeconds: opts.brollSeconds, cutsOnFrames: true });
   let a: RenderPlan | null = null, aErr: string | null = null;
   try { a = planRenderA(input(snap)); } catch (e) { aErr = (e as Error).message; }
   let b: RenderPlan | null = null, bErr: string | null = null;
