@@ -37,6 +37,11 @@ function demoBreakdown(v) {
     sheets: b.frames.sheets.map((s) => ({ ...s, url: sheetImage(s.times, shotOf) })), text: breakdownAsText(b) };
 }
 const getReview = api.getReview;
+const listDriveFiles = api.listDriveFiles;
+// The design's fake Drive is flat; the demo nests it (folders in folders, Shared with me, a shared drive) like a real one.
+const DEMO_TREE = { root: ["fd1", "fd2", "fd3"], fd2: ["fdB"], fdB: ["fdC"], shared: ["fdS"] };
+const DEMO_FOLDERS = { fd1: "Podcast raw", fd2: "Client footage", fd3: "B-roll", fdB: "BFS Health", fdC: "Shoot day 2", fdS: "From Sam" };
+const DEMO_FILES = { root: ["df7"], fd1: ["df1"], fdB: ["df3", "df8"], fdC: ["df4", "df6"], fd3: ["df5"], fdS: ["df2"] };
 const logout = api.logout;
 let signedIn = false;
 const track = (fn) => async (...a) => { const r = await fn(...a); signedIn = true; return r; };
@@ -51,6 +56,18 @@ Object.assign(api, {
     return track(api.login)("you@example.com", password);
   },
   completeDrive: async () => ({ connected: true }),
+  listDriveFiles: async (folderId = "root", o = {}) => {
+    const all = (await Promise.all(["root", "fd1", "fd2", "fd3"].map((f) => listDriveFiles(f)))).flatMap((r) => r.files);
+    const byId = Object.fromEntries(all.map((f) => [f.id, f]));
+    const fold = (id) => ({ id, name: DEMO_FOLDERS[id], date: Date.now() - 86400_000 * 3 });
+    const file = (id) => ({ ...byId[id], folderId: Object.keys(DEMO_FILES).find((k) => DEMO_FILES[k].includes(id)) });
+    const view = o.view || "folder", q = (o.q || "").toLowerCase();
+    let folders = [], files = [];
+    if (view === "search") { folders = q ? Object.keys(DEMO_FOLDERS).filter((id) => DEMO_FOLDERS[id].toLowerCase().includes(q)).map(fold) : []; files = q ? all.filter((f) => f.name.toLowerCase().includes(q)).map((f) => file(f.id)) : []; }
+    else if (view === "recent") files = [...all].sort((a, b) => b.date - a.date).map((f) => file(f.id));
+    else { const k = view === "shared" ? "shared" : folderId; folders = (DEMO_TREE[k] || []).map(fold); files = (DEMO_FILES[k] || []).filter((id) => byId[id]).map(file); }
+    return { folders, files, truncated: false, ...(o.drives ? { drives: [{ id: "sd1", name: "Team edits" }] } : {}) };
+  },
   captureDrop: () => {},
   restoreAsset: async () => ({ ok: true }),
   restoreVersion: async () => { await wait(400); return { ok: true }; },

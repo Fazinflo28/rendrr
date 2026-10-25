@@ -172,7 +172,9 @@ export const api: any = {
   },
   completeDrive: (code: string, state: string) => post("/drive/complete", { code, state }),
   disconnectDrive: () => post("/drive/disconnect"),
-  listDriveFiles: (folderId = "root") => get(`/drive/files?folderId=${enc(folderId)}`),
+  // One folder (any depth; a shared drive's folders carry its driveId), or a view: shared | recent | search (q).
+  listDriveFiles: (folderId = "root", o: { view?: string; driveId?: string; q?: string; drives?: boolean } = {}) =>
+    get(`/drive/files?folderId=${enc(folderId)}` + (o.view ? `&view=${enc(o.view)}` : "") + (o.driveId ? `&driveId=${enc(o.driveId)}` : "") + (o.q ? `&q=${enc(o.q)}` : "") + (o.drives ? "&drives=1" : "")),
   // kind "reference": a video whose style to copy (Rendrr reads it like footage; the AI matches it).
   addFromDrive: async (fileIds: string[], kind?: string) => (await post("/videos/drive", { fileIds, ...(kind ? { kind } : {}) })).map(remember),
   addFromComputer: async (files: File[] | null, onProgress?: (p: any) => void, kind?: string) => {

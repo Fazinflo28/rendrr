@@ -113,23 +113,59 @@ function Shell({ children }) {
 
 /* ---------- Add footage: Google Drive (recommended) or this computer ---------- */
 const SourceBadge = ({ source, size = "sm" }) => html`<span class=${"tag src " + (source === "drive" ? "drive" : "local")} title=${source === "drive" ? "Raw file stays in your Google Drive" : "Raw file stays on your computer"}><${Icon} name=${source === "drive" ? "drive" : "laptop"} size="12" />${source === "drive" ? "Google Drive" : "This computer"}</span>`;
+// Drive picker, laid out like Google Drive's list view: places on the left (My Drive, Shared with me, Recent, shared
+// drives), a path you can click back along, folders first then videos, and a search over the whole Drive.
+const DRIVE_HOME = { id: "root", name: "My Drive" };
+const DRIVE_PLACES = [{ ...DRIVE_HOME, icon: "drive" }, { view: "shared", name: "Shared with me", icon: "shared" }, { view: "recent", name: "Recent videos", icon: "clock" }];
+const placeKey = (p) => p.view || p.id;
 function DrivePicker({ onAdd, single, addLabel, onLocal }) {
   const toast = useToast();
   const dq = useAsync(() => api.getDriveStatus(), []);
-  const [folder, setFolder] = useState("root"); const [sel, setSel] = useState([]); const [busy, setBusy] = useState(false);
-  const fq = useAsync(() => (dq.data?.connected ? api.listDriveFiles(folder) : Promise.resolve(null)), [folder, dq.data?.connected]);
+  const [trail, setTrail] = useState([DRIVE_HOME]); const [sel, setSel] = useState([]); const [busy, setBusy] = useState(false);
+  const [text, setText] = useState(""); const [drives, setDrives] = useState([]);
+  const here = trail[trail.length - 1];
+  const fq = useAsync(async () => {
+    if (!dq.data?.connected) return null;
+    const top = here.id === "root" && !here.view;
+    const r = await api.listDriveFiles(here.id || "root", { view: here.view, driveId: here.driveId, q: here.q, drives: top });
+    if (r?.drives) setDrives(r.drives);
+    return r;
+  }, [JSON.stringify(here), dq.data?.connected]);
+  useEffect(() => {
+    const t = text.trim();
+    if (!t) { if (here.view === "search") setTrail([DRIVE_HOME]); return; }
+    const h = setTimeout(() => setTrail([{ view: "search", q: t, name: `Results for "${t}"` }]), 350);
+    return () => clearTimeout(h);
+  }, [text]);
   const connect = async () => { setBusy(true); try { const d = await api.connectDrive(); dq.setData(d); toast("Google Drive connected", { icon: "drive", tone: "brand" }); } catch (e) { toast(e.message); } finally { setBusy(false); } };
   const toggle = (id) => setSel((x) => (single ? [id] : x.includes(id) ? x.filter((i) => i !== id) : [...x, id]));
+  const go = (place) => { setText(""); setTrail([place]); };
+  const open = (f) => setTrail((t) => [...t, { id: f.id, name: f.name, driveId: f.driveId || here.driveId }]);
   if (dq.status === "loading") return html`<${Skeleton} rows=${3} card=${false} />`;
   if (!dq.data?.connected && dq.data?.available === false) return html`<div class="state" id="drive-off" style="padding:32px 16px"><div class="ico"><${Icon} name="drive" /></div><b class="t-heading">Google Drive is not set up yet</b><p>Rendrr needs its Google sign-in keys before it can open your Drive. Add videos from your computer for now.</p>${onLocal && html`<${Btn} icon="laptop" onClick=${onLocal}>Use my computer<//>`}</div>`;
   if (!dq.data?.connected) return html`<div class="state" style="padding:32px 16px"><div class="ico"><${Icon} name="drive" /></div><b class="t-heading">Connect Google Drive</b><p>Pick videos straight from your Drive. We never copy the raw file.</p><${Btn} id="connect-drive" icon="drive" disabled=${busy} onClick=${connect}>${busy ? "Connecting…" : "Connect Google Drive"}<//></div>`;
+  const folders = fq.data?.folders || [], files = fq.data?.files || [];
+  const placeOn = placeKey(trail[0]);
+  const empty = here.view === "search" ? `No videos or folders match "${here.q}".` : here.view === "recent" ? "No videos in your Drive yet." : here.view === "shared" ? "Nothing shared with you holds videos." : "No videos or folders in here.";
+  const Place = (p) => html`<button key=${placeKey(p)} class=${"dplace" + (placeOn === placeKey(p) ? " on" : "")} data-place=${placeKey(p)} title=${p.name} onClick=${() => go(p.icon ? { id: p.id, view: p.view, name: p.name } : { id: p.id, driveId: p.id, name: p.name })}><${Icon} name=${p.icon || "layers"} size="16" /><span>${p.name}</span></button>`;
   return html`<div class="col" style="gap:12px">
-    <div class="row between"><span class="t-small muted"><${Icon} name="drive" size="13" /> Connected as <b style="color:var(--ink)">${dq.data.email}</b></span>${sel.length > 0 && html`<span class="t-small">${sel.length} selected</span>`}</div>
+    <div class="row between dtop"><span class="t-small muted dwho"><${Icon} name="drive" size="13" /> Connected as <b>${dq.data.email}</b></span><label class="dsearch"><${Icon} name="search" size="15" /><input id="drive-search" type="search" placeholder="Search in Drive" value=${text} onInput=${(e) => setText(e.target.value)} aria-label="Search in Drive" /></label></div>
     <div class="dpick">
-      <div class="dfold">${(fq.data?.folders || api.demo && [{ id: "root", name: "My Drive" }]).map((f) => html`<button key=${f.id} class=${"fnav" + (folder === f.id ? " on" : "")} data-folder-id=${f.id} onClick=${() => setFolder(f.id)}><${Icon} name="projects" size="16" />${f.name}</button>`)}</div>
-      <div class="dfiles">${fq.status === "loading" ? html`<${Skeleton} rows=${3} card=${false} />` : (fq.data?.files || []).length === 0 ? html`<p class="t-small muted" style="padding:16px">No videos in this folder.</p>` : (fq.data.files).map((f) => html`<label key=${f.id} class=${"dfile" + (sel.includes(f.id) ? " on" : "") + (f.added && !single ? " dim" : "")}><input type=${single ? "radio" : "checkbox"} name="dfile" checked=${sel.includes(f.id)} disabled=${f.added && !single} onChange=${() => toggle(f.id)} data-file-id=${f.id} /><${Icon} name="film" size="16" /><span class="grow" style="min-width:0"><b class="t-label" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.name}</b><span class="t-small muted">${f.size} · ${fmtLen(f.seconds)} · ${fmtAgo(f.date)}${f.added && !single ? " · already added" : ""}</span></span></label>`)}</div>
+      <nav class="drail" aria-label="Drive places">${DRIVE_PLACES.map(Place)}${drives.length > 0 && html`<span class="drail-head">Shared drives</span>${drives.map(Place)}`}</nav>
+      <div class="dmain">
+        <div class="dbar">
+          <div class="crumbs" id="drive-crumbs">${trail.map((c, i) => html`${i > 0 && html`<${Icon} name="chev" size="14" />`}<button key=${i} class=${i === trail.length - 1 ? "on" : ""} disabled=${i === trail.length - 1} title=${c.name} onClick=${() => setTrail((t) => t.slice(0, i + 1))}>${c.name}</button>`)}</div>
+        </div>
+        <div class="dhead" aria-hidden="true"><span class="dname">Name</span><span>Modified</span><span>Size</span><span>Length</span></div>
+        <div class="dlist" id="drive-list">${fq.status === "loading" ? html`<div style="padding:12px"><${Skeleton} rows=${4} card=${false} /></div>`
+          : fq.status === "error" ? html`<div class="dempty" role="alert"><p>${fq.error?.message || "We could not open this folder."}</p><${Btn} kind="secondary" size="sm" icon="refresh" onClick=${fq.reload}>Try again<//></div>`
+          : folders.length + files.length === 0 ? html`<div class="dempty"><p>${empty}</p></div>`
+          : html`${folders.map((f) => html`<button key=${f.id} class="drow fold" data-folder-id=${f.id} onClick=${() => open(f)}><span class="dname"><span class="dbox" /><${Icon} name="folder" size="18" /><b>${f.name}</b></span><span>${f.date ? fmtAgo(f.date) : ""}</span><span>—</span><span>—</span></button>`)}
+            ${files.map((f) => { const off = f.added && !single; return html`<label key=${f.id} class=${"drow" + (sel.includes(f.id) ? " on" : "") + (off ? " dim" : "")} title=${off ? "Already in your library" : f.name}><span class="dname"><input type=${single ? "radio" : "checkbox"} name="dfile" checked=${sel.includes(f.id)} disabled=${off} onChange=${() => toggle(f.id)} data-file-id=${f.id} /><${Icon} name="film" size="18" /><b>${f.name}</b>${off && html`<span class="tag">Added</span>`}</span><span>${fmtAgo(f.date)}</span><span>${f.size}</span><span>${fmtLen(f.seconds)}</span></label>`; })}
+            ${fq.data?.truncated && html`<p class="t-small muted" style="padding:10px 12px">Showing the first ${folders.length + files.length}. Search to find a video by name.</p>`}`}</div>
+      </div>
     </div>
-    <div class="row between"><span class="t-small muted">Your raw files stay in your Drive. We only keep a light preview copy.</span><${Btn} id="drive-add" disabled=${sel.length === 0 || busy} onClick=${async () => { setBusy(true); try { await onAdd(sel); } finally { setBusy(false); } }}>${addLabel || ("Add " + (sel.length || "") + (sel.length === 1 ? " video" : " videos"))}<//></div>
+    <div class="row between dfoot"><span class="t-small muted">Your raw files stay in your Drive. We only keep a light preview copy.</span><span class="row" style="gap:12px;flex:none">${sel.length > 0 && html`<span class="t-small row" style="gap:8px"><b id="drive-count">${sel.length} selected</b>${!single && html`<button class="dlink" onClick=${() => setSel([])}>Clear</button>`}</span>`}<${Btn} id="drive-add" disabled=${sel.length === 0 || busy} onClick=${async () => { setBusy(true); try { await onAdd(sel); } finally { setBusy(false); } }}>${addLabel || ("Add " + (sel.length || "") + (sel.length === 1 ? " video" : " videos"))}<//></span></div>
   </div>`;
 }
 function AddFootageModal({ onClose, initialKind = "footage" }) {
