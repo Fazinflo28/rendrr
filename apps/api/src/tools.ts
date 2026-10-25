@@ -1,7 +1,7 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
 // Every response is small text; images only when asked for (images: true, get_frames, get_preview_frames).
 // Every write goes through applyTimelineChange.
-import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
+import { AppError, applyTimelineChange, enqueue, notFound, readGraphic, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   allWords, asSequence, breakdownAsText, CreateGraphicInput, describeRules, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
@@ -296,6 +296,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
 
   async list_graphics(c) {
     const custom = await prisma.graphic.findMany({ where: { ownerId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 });
+    // Recording progress of the ones not ready yet: "42%, about 3 min left".
+    const progress: Record<string, string> = {};
+    for (const g of custom.filter((x) => x.status === "rendering" || x.status === "queued")) {
+      const p = await readGraphic(g.id);
+      if (p) progress[g.id] = `${p.percent}%${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}`;
+    }
     // Params as name:type, * = required (the full schemas are long and rarely needed).
     const params = (schema: Record<string, unknown>) => {
       const props = (schema.properties || {}) as Record<string, { type?: string; enum?: string[]; pattern?: string }>;
@@ -305,7 +311,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: [
       "Graphic templates (id | name | seconds | params):",
       ...GRAPHIC_TEMPLATES.map((t) => `${t.id} | ${t.name} | ${t.durationSec}s | ${params(t.paramsSchema)}`),
-      "Custom graphics (id | name | status | seconds | size): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${g.error ? " (" + g.error + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}`).join("\n") : "none (create_graphic)"),
+      "Custom graphics (id | name | status | seconds | size): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${progress[g.id] ? ` ${progress[g.id]}` : ""}${g.error ? " (" + g.error + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}`).join("\n") : "none (create_graphic)"),
       "Music (trackId | name | mood): " + MUSIC_TRACKS.map((m) => `${m.id} | ${m.name} | ${m.mood}`).join("; "),
       "Sound effects for a3 (set_clips clip with sfxId): " + SFX.map((x) => `${x.id} ${x.seconds}s`).join(", "),
     ].join("\n") };
@@ -387,7 +393,10 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const g = await prisma.graphic.create({ data: { ownerId: c.userId, name: (g0.name || "Custom graphic").slice(0, 120), kind: "custom", code: g0.code, durationSec: g0.durationSec, width: g0.width, height: g0.height, transparent: g0.transparent, status: "queued" } });
     await enqueue<GraphicJob>("graphic", { graphicId: g.id }, { jobId: g.id });
     const done = await waitFor(async () => { const x = await prisma.graphic.findUnique({ where: { id: g.id } }); return x && (x.status === "ready" || x.status === "failed") ? x : null; }, 90_000);
-    if (!done) return { text: `Graphic ${g.id} is still rendering. Call list_graphics in a little while to see its status.` };
+    if (!done) {
+      const p = await readGraphic(g.id);
+      return { text: `Graphic ${g.id} is still recording${p ? `: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : ""}. You can place it with apply_edits add_graphic now; renders include it once it is ready (list_graphics shows its status).`, data: { graphicId: g.id } };
+    }
     if (done.status === "failed") return { text: `The graphic did not render: ${done.error}. Fix the code and call create_graphic again.` };
     const images = i.images === true ? await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
     return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}).${images.length ? " 4 check frames attached." : ""} Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };

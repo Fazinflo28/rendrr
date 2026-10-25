@@ -122,7 +122,7 @@ function buildServer(w: Who) {
 // ---------------- HTTP ----------------
 const app = express();
 app.set("trust proxy", true);
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "4mb" })); // a create_graphic call carries up to 1 MB of code
 app.use(clerkMiddleware());
 
 const prm = protectedResourceHandlerClerk({ scopes_supported: ["openid", "profile", "email"], resource_name: "Rendrr" });

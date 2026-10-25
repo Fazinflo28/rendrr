@@ -92,7 +92,7 @@ export const SettingsPatch = z.object({ autoDelete: z.boolean().optional(), them
 
 export const CreateGraphicInput = z.object({
   name: z.string().max(120).optional(),
-  code: z.string().min(1).max(200_000, "That graphic code is too long (200 KB max)."),
+  code: z.string().min(1).max(1_000_000, "That graphic code is too long (1 MB max)."),
   durationSec: z.number().min(0.5).max(4 * 3600, "Graphics can be 4 hours long at most."),
   width: z.number().int().min(64).max(1920),
   height: z.number().int().min(64).max(1920),

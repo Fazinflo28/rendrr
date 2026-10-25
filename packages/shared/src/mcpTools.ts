@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ASPECTS } from "./constants";
 import { CAPTION_FONTS } from "./captions";
 import { EDIT_OP_NAMES } from "./ops";
+import { GRAPHIC_FONTS } from "./graphicHtml";
 
 // The AI tools. One list: the MCP server advertises it, the API validates against it.
 // Kept short on purpose: every word here is sent to the AI at the start of every conversation.
@@ -41,8 +42,12 @@ export const MCP_TOOLS: ToolDef[] = [
   { name: "save_style", title: "Save a style", write: true, description: `Save rules as a style to apply in one step later (apply_edits apply_style). Rules: ${RULE_FIELDS}; anything left out comes from baseStyleId (default: no cuts, clean captions, no zooms, no music). fromVideoId: the reference video the rules come from, so it is not read again.`,
     input: z.object({ name: z.string().min(1).max(80), rules: z.record(z.unknown()), baseStyleId: id("style").optional(), fromVideoId: id("reference video").optional() }) },
   { name: "undo", title: "Undo", write: true, description: "Go back `steps` versions (default 1). Undone versions stay in history.", input: z.object({ projectId, steps: z.number().int().min(1).max(50).optional() }) },
-  { name: "create_graphic", title: "Create a custom graphic", long: true, description: "Make a motion graphic from HTML/CSS/JS, recorded in a locked browser with no network (up to the video's length, max 4 h; 1080x1920). Animate with CSS, or define window.renderFrame(t). Returns its id, size and length (images true: 4 check frames too); place it with apply_edits add_graphic.",
-    input: z.object({ code: z.string().min(1).max(200_000), durationSec: z.number().min(0.5).max(4 * 3600), width: z.number().int().min(64).max(1920), height: z.number().int().min(64).max(1920), transparent: z.boolean().default(true), name: z.string().max(120).optional(), images: z.boolean().optional() }) },
+  { name: "create_graphic", title: "Create a custom graphic", long: true, description: "Make a motion graphic from HTML/CSS/JS, recorded at 30 fps in a browser with no network (up to the video's length, max 4 h; max 1080x1920; code up to 1 MB). " +
+      "Time: CSS animations and transitions, element.animate(), requestAnimationFrame, setTimeout/setInterval, Date.now and performance.now all run on the graphic's clock (a class added at 5 s animates from 5 s); or define window.renderFrame(t), t in seconds. " +
+      `Fonts installed, use by name: ${Object.values(GRAPHIC_FONTS).flat().join(", ")}. Arial/Helvetica draw as Arimo, Times as Tinos, Georgia as Gelasio, Impact as Anton; other fonts and images as data: URLs. ` +
+      "Recording time grows with how much moves: about 1 s per second of full-screen motion at 1080x1920, still stretches almost free; overlays at separate moments are faster as several short graphics than one full-length layer. " +
+      "Waits up to 90 s; a longer recording continues and list_graphics shows its % and time left. Returns id, size, length (images true: 4 check frames); place it with apply_edits add_graphic.",
+    input: z.object({ code: z.string().min(1).max(1_000_000), durationSec: z.number().min(0.5).max(4 * 3600), width: z.number().int().min(64).max(1920), height: z.number().int().min(64).max(1920), transparent: z.boolean().default(true), name: z.string().max(120).optional(), images: z.boolean().optional() }) },
   { name: "link_account", title: "Link to the user's account", write: true, description: "Use when this login shows an empty library but the user has videos on the Rendrr website: they get a code in Rendrr > Connect AI > Link another login; pass it here.",
     input: z.object({ code: z.string().min(4).max(12) }) },
 

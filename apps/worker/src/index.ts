@@ -13,7 +13,7 @@ import { maintenanceJob } from "./jobs/maintenance";
 import { proxyJob } from "./jobs/proxy";
 import { renderFailed, renderJob } from "./jobs/render";
 import { filterThreads } from "./lib/ffmpeg";
-import { recordLimitMs } from "./lib/graphics";
+import { GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
 import { guarded } from "./lib/job";
 
 env(); // fail fast on missing settings
@@ -33,10 +33,10 @@ const renderLimit = async (job: Job) => {
   const r = await prisma.render.findUnique({ where: { id: (job.data as { renderId: string }).renderId }, select: { kind: true, quality: true, project: { select: { video: { select: { seconds: true } } } } } });
   return renderTimeoutMs(r?.kind === "preview" ? "preview" : "final", r?.project.video.seconds ?? 0, r?.quality) + 60_000;
 };
-// Phase 7: a custom graphic's limit grows with its length (long ones are sampled; see recordLong).
+// A custom graphic's limit grows with its length and size (see recordLimitMs).
 const graphicLimit = async (job: Job) => {
-  const g = await prisma.graphic.findUnique({ where: { id: (job.data as { graphicId: string }).graphicId }, select: { durationSec: true } });
-  return Math.max(QUEUES.graphic.timeoutMs, recordLimitMs(g?.durationSec ?? 0) + 60_000);
+  const g = await prisma.graphic.findUnique({ where: { id: (job.data as { graphicId: string }).graphicId }, select: { durationSec: true, width: true, height: true } });
+  return Math.max(QUEUES.graphic.timeoutMs, recordLimitMs(g?.durationSec ?? 0, g?.width, g?.height) + 60_000);
 };
 
 const conc = (name: string, d: number) => Math.max(1, Math.floor(Number(process.env[`CONCURRENCY_${name.toUpperCase()}`]) || d));
@@ -73,7 +73,7 @@ createServer(async (_req, res) => {
 }).listen(port, () => {
   // The CPUs FFmpeg sees and the container's thread limit, which a render's thread count has to stay under.
   const pids = (() => { try { return readFileSync("/sys/fs/cgroup/pids.max", "utf8").trim(); } catch { return "?"; } })();
-  console.log(`[worker] up, health on :${port}; cpus ${availableParallelism()}, pids.max ${pids}, filter threads ${filterThreads()}`);
+  console.log(`[worker] up, health on :${port}; cpus ${availableParallelism()}, pids.max ${pids}, filter threads ${filterThreads()}, graphics browsers ${GRAPHIC_WORKERS}`);
 });
 
 const stop = async () => { await Promise.all(workers.map((w) => w.close())); await prisma.$disconnect(); process.exit(0); };

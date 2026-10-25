@@ -2,19 +2,35 @@ import { downloadFile, headObject, signGet, uploadFile } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { GRAPHIC_TEMPLATES, PREFIX, templateHtml, templateSize, withClock, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-core";
 import { JobError, run } from "./ffmpeg";
 
+/** CPUs this container may use: its cgroup quota when there is one (the host can have many more than we get). */
+function cpuBudget() {
+  try {
+    const [q, p] = readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim().split(/\s+/);
+    if (q !== "max" && Number(q) > 0 && Number(p) > 0) return Math.max(1, Math.floor(Number(q) / Number(p)));
+  } catch { /* no cgroup v2 quota */ }
+  return availableParallelism();
+}
+/** Browsers recording one graphic at once (each takes a CPU; one CPU is left for the rest of the worker). */
+export const GRAPHIC_WORKERS = Math.max(1, Math.min(6, Math.floor(Number(process.env.GRAPHIC_WORKERS)) || cpuBudget() - 1));
+
 /**
- * Up to `exactSeconds` a graphic is recorded frame by frame (as before Phase 7). Longer ones (up to 4 hours: a whole
- * video) are sampled; see recordLong. Their time limit grows with the length.
+ * Up to `exactSeconds` a graphic is recorded on every frame; longer ones (up to 4 hours: a whole video) are sampled,
+ * see recordHtml. Always 30 fps. maxMs caps the recording time of any one graphic.
  */
-export const GRAPHIC_LIMITS = { maxSeconds: 4 * 3600, exactSeconds: 15, maxLong: 1920, maxShort: 1080, killMs: 60_000, fps: 30 };
-export const recordLimitMs = (seconds: number) => (seconds > GRAPHIC_LIMITS.exactSeconds ? GRAPHIC_LIMITS.killMs + Math.round(seconds * 500) : GRAPHIC_LIMITS.killMs);
+export const GRAPHIC_LIMITS = { maxSeconds: 4 * 3600, exactSeconds: 15, maxLong: 1920, maxShort: 1080, fps: 30, maxMs: 25 * 60_000 };
+/** Measured per CPU: about 90 ms to draw and capture a 1080x1920 frame and 20 ms to encode it; smaller is cheaper. */
+const frameCostMs = (w: number, h: number) => 40 + (130 * w * h) / (1080 * 1920);
+/** The time limit for recording a graphic: enough for one that moves on every frame, spread over GRAPHIC_WORKERS. */
+export const recordLimitMs = (seconds: number, w = 1080, h = 1920) =>
+  Math.min(GRAPHIC_LIMITS.maxMs, 90_000 + Math.round((Math.max(0.5, seconds) * GRAPHIC_LIMITS.fps * frameCostMs(w, h)) / GRAPHIC_WORKERS));
 
 function chromiumPath() {
   const c = [process.env.CHROMIUM_PATH, "/usr/bin/chromium", "/usr/bin/chromium-browser", "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"].filter(Boolean) as string[];
@@ -32,7 +48,10 @@ function launchLocked() {
       "--webrtc-ip-handling-policy=disable_non_proxied_udp", // WebRTC would otherwise send UDP around the proxy
       "--js-flags=--max-old-space-size=256", "--renderer-process-limit=1",
       // A long graphic is recorded with two pages; without these the one in the background stops drawing for seconds.
-      "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows"],
+      "--disable-renderer-backgrounding", "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+      // Every capture shows the page as the clock left it: animations are not run on the compositor thread (whose
+      // picture can lag the clock by a frame or two), and images are decoded before they are drawn.
+      "--disable-threaded-animation", "--disable-threaded-scrolling", "--disable-checker-imaging"],
   });
 }
 
@@ -49,11 +68,16 @@ async function openGraphicPage(browser: Browser, html: string, w: number, h: num
   if (transparent) await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
   return { page, cdp };
 }
+type GPage = Awaited<ReturnType<typeof openGraphicPage>>;
 
-/** The picture at time t (seconds on the virtual clock), as PNG bytes. */
-async function shootAt(page: Page, cdp: CDPSession, t: number): Promise<Buffer> {
-  await page.evaluate((x) => (window as unknown as { __rendrrAdvance: (t: number) => void }).__rendrrAdvance(x), t);
-  const shot = await cdp.send("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, captureBeyondViewport: false });
+/** Moves the page's clock through frames from..to (inclusive) one frame at a time, in one call; nothing is drawn. */
+async function stepTo(g: GPage, from: number, to: number) {
+  if (to < from) return;
+  await g.page.evaluate((a, b, fps) => { const adv = (window as unknown as { __rendrrAdvance: (t: number) => void }).__rendrrAdvance; for (let f = a; f <= b; f++) adv(f / fps); }, from, to, GRAPHIC_LIMITS.fps);
+}
+/** The picture now, as PNG bytes; `scale` < 1 draws a smaller one (cheaper, for spotting changes). */
+async function shoot(g: GPage, w: number, h: number, scale = 1): Promise<Buffer> {
+  const shot = await g.cdp.send("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, captureBeyondViewport: false, ...(scale < 1 ? { clip: { x: 0, y: 0, width: w, height: h, scale } } : {}) });
   return Buffer.from(shot.data, "base64");
 }
 
@@ -61,6 +85,9 @@ async function shootAt(page: Page, cdp: CDPSession, t: number): Promise<Buffer> 
 export function changedPixels(a: Buffer, b: Buffer): number {
   if (a.equals(b)) return 0;
   const x = PNG.sync.read(a).data, y = PNG.sync.read(b).data;
+  return changedIn(x, y);
+}
+function changedIn(x: Uint8Array, y: Uint8Array) {
   if (x.length !== y.length) return Infinity;
   let n = 0;
   for (let i = 0; i < x.length; i += 4) {
@@ -69,124 +96,182 @@ export function changedPixels(a: Buffer, b: Buffer): number {
   return n;
 }
 
+type Piece = { file: string; start: number; end: number };
+const CHUNK = 240; // pictures per encoded piece: keeps the PNGs on disk at any time small
+
 /**
- * A graphic over 15 s (up to a whole video), recorded on the 30 fps grid without capturing every frame. A scout page
- * looks every 0.5 s. The same picture: the frame is held. A small change (under 0.2% of the pixels, like a progress
- * bar's edge moving a pixel): the new picture is shown from that moment. A bigger change: a second page, which follows
- * behind, records that half second frame by frame. Both clocks only move forward, so JS graphics see time as they
- * would playing. The WebM keeps each picture's own time (variable frame rate); the render and the player hold it.
- * Missed: something that appears and goes within one half second of an otherwise still graphic.
+ * Records HTML into a transparent WebM in locked headless Chromiums: no network (every request except data: is
+ * blocked), a memory cap, max 1080x1920, 30 fps, and a time limit (recordLimitMs) that fails loudly.
+ *
+ * The graphic's time is split into ranges recorded at once by GRAPHIC_WORKERS browsers. A range's pages first step
+ * their clock frame by frame from 0 to the range's start without drawing, so the graphic sees time exactly as it
+ * would playing (timers, transitions started mid-way and JS state all arrive where they should).
+ * Up to 15 s every frame is captured. Longer graphics are sampled: a scout page draws a quarter-size picture every
+ * 0.5 s; no change: the frame is held; a small change (under 0.2% of the pixels): the full picture from that moment;
+ * a bigger change: a second page, following behind, captures that half second frame by frame. Missed: something
+ * that appears and goes within one half second of an otherwise still graphic. Pictures are encoded in pieces as they
+ * come (variable frame rate: each picture keeps its own time) and the pieces joined, so the file is exactly as long
+ * as the graphic. Returns the paths of four check frames too.
  */
-async function recordLong(html: string, o: { width: number; height: number; durationSec: number; transparent: boolean; dir: string; signal?: AbortSignal; onProgress?: (frac: number) => void }) {
-  const { width: w, height: h } = o;
-  const FPS = GRAPHIC_LIMITS.fps, STEP = 15, frames = Math.max(1, Math.round(o.durationSec * FPS));
-  const small = Math.max(64, Math.round(0.002 * w * h));
-  const limit = recordLimitMs(o.durationSec);
-  const fdir = join(o.dir, "frames-" + Math.random().toString(36).slice(2, 7));
-  await mkdir(fdir, { recursive: true });
-  const browser = await launchLocked();
-  let timedOut = false;
-  const kill = setTimeout(() => { timedOut = true; browser.process()?.kill("SIGKILL"); }, limit);
-  const abort = () => browser.process()?.kill("SIGKILL");
+export async function recordHtml(html: string, o: { width: number; height: number; durationSec: number; transparent: boolean; dir: string; signal?: AbortSignal; onProgress?: (frac: number) => void; workers?: number }) {
+  const w = Math.round(o.width / 2) * 2, h = Math.round(o.height / 2) * 2;
+  if (Math.max(w, h) > GRAPHIC_LIMITS.maxLong || Math.min(w, h) > GRAPHIC_LIMITS.maxShort) throw new JobError("Graphics can be 1080x1920 at most.", "too-big", false);
+  const dur = Math.min(GRAPHIC_LIMITS.maxSeconds, Math.max(0.5, o.durationSec));
+  const FPS = GRAPHIC_LIMITS.fps, STEP = 15, frames = Math.max(1, Math.round(dur * FPS));
+  const sampled = dur > GRAPHIC_LIMITS.exactSeconds;
+  const workers = Math.max(1, Math.min(GRAPHIC_WORKERS, o.workers ?? GRAPHIC_WORKERS));
+  const limit = Math.min(GRAPHIC_LIMITS.maxMs, recordLimitMs(dur, w, h) * Math.max(1, GRAPHIC_WORKERS / workers));
+  // Ranges: a couple per browser for long graphics (so one busy stretch does not hold up the rest), at least 2 s each.
+  const nRanges = Math.max(1, Math.min(sampled ? workers * 2 : workers, Math.floor(frames / 60)));
+  const ranges = Array.from({ length: nRanges }, (_, i) => ({ a: Math.round((i * frames) / nRanges), b: Math.round(((i + 1) * frames) / nRanges) }));
+  const root = join(o.dir, "graphic-" + Math.random().toString(36).slice(2, 7));
+  await mkdir(join(root, "checks"), { recursive: true });
+  const checkAt = [0, Math.floor(frames / 3), Math.floor((2 * frames) / 3), frames - 1];
+  const checkFiles = checkAt.map((_, i) => join(root, "checks", `c${i}.png`));
+
+  const browsers: Browser[] = [];
+  let timedOut = false, stopped = false;
+  const killAll = () => { for (const b of browsers) b.process()?.kill("SIGKILL"); };
+  const kill = setTimeout(() => { timedOut = true; killAll(); }, limit);
+  const abort = () => { stopped = true; killAll(); };
   o.signal?.addEventListener("abort", abort, { once: true });
   const errors: string[] = [];
-  // The pictures kept, each from its frame on (frame numbers on the 30 fps grid), and how many were recorded densely.
-  const kept: { frame: number; file: string }[] = [];
-  let last: Buffer | null = null, dense = 0;
-  const keep = async (frame: number, png: Buffer) => {
-    if (last && last.equals(png)) return;
-    const file = join(fdir, `k${String(kept.length).padStart(6, "0")}.png`);
-    await writeFile(file, png);
-    kept.push({ frame, file });
-    last = png;
-  };
-  try {
+  const codeError = () => new JobError(`The graphic code threw an error: ${errors[0]}${/fetch|network|load/i.test(errors[0]) ? " (graphics have no internet access: inline images and fonts as data: URLs)" : ""}`, "code-error", false);
+  const done = ranges.map(() => 0);
+  let lastP = 0, dense = 0, pictures = 0;
+  const progress = () => { const p = Math.min(0.99, done.reduce((x, y) => x + y, 0) / frames); if (p > lastP) { lastP = p; o.onProgress?.(p); } };
+  const pieces: Piece[][] = ranges.map(() => []);
+  const encodes: Promise<void>[] = [];
+
+  async function recordRange(browser: Browser, ri: number) {
+    const { a, b } = ranges[ri];
+    const rdir = join(root, `r${ri}`);
+    await mkdir(rdir, { recursive: true });
+    let chunk: { frame: number; file: string }[] = [], last: Buffer | null = null, lastFile = "", lastFrame = a, n = 0;
+    const flush = (end: number) => {
+      if (!chunk.length) return;
+      const list = chunk, piece = join(root, `p${ri}-${pieces[ri].length}.webm`);
+      pieces[ri].push({ file: piece, start: list[0].frame, end });
+      chunk = [];
+      encodes.push(encodePiece(list, end, piece, o.transparent, ri === ranges.length - 1 && end === frames, o.signal));
+    };
+    // The picture showing at a check frame is the last one kept at or before it.
+    const checks = async (upTo: number) => { for (const [i, c] of checkAt.entries()) if (c >= lastFrame && c < upTo && c >= a && c < b && lastFile) await copyFile(lastFile, checkFiles[i]); };
+    const keep = async (frame: number, png: Buffer) => {
+      if (last && last.equals(png)) return;
+      await checks(frame);
+      if (chunk.length >= CHUNK) flush(frame);
+      const file = join(rdir, `k${String(n++).padStart(6, "0")}.png`);
+      await writeFile(file, png);
+      chunk.push({ frame, file });
+      last = png; lastFile = file; lastFrame = frame; pictures++;
+    };
     const scout = await openGraphicPage(browser, html, w, h, o.transparent, errors);
-    const rec = await openGraphicPage(browser, html, w, h, o.transparent, errors);
-    await scout.page.bringToFront(); // the page opened last is in front; the scout draws first
-    let prev = await shootAt(scout.page, scout.cdp, 0);
-    await keep(0, prev);
-    for (let at = STEP; ; at += STEP) {
-      const k = Math.min(at, frames - 1);
-      if (o.signal?.aborted) throw new JobError("Stopped.");
-      const cur = await shootAt(scout.page, scout.cdp, k / FPS);
-      const n = changedPixels(prev, cur);
-      if (n > small) {
-        // A real change inside this half second: record it frame by frame (the recorder page is behind, at or before k - STEP).
-        // The page drawn from goes to the front: a background page stops drawing for seconds, flags or not.
-        await rec.page.bringToFront();
-        for (let f = Math.max(1, k - STEP + 1); f < k; f++) { await keep(f, await shootAt(rec.page, rec.cdp, f / FPS)); dense++; }
+    const rec = sampled ? await openGraphicPage(browser, html, w, h, o.transparent, errors) : null;
+    let front: GPage = rec ?? scout; // the page opened last is in front
+    const use = async (g: GPage) => { if (front !== g) { await g.page.bringToFront(); front = g; } return g; };
+    try {
+      await stepTo(scout, 0, a - 1);
+      if (!sampled) {
+        for (let f = a; f < b; f++) {
+          if (stopped) throw new JobError("Stopped.");
+          if (errors.length) throw codeError();
+          if (failed) return;
+          await stepTo(scout, f, f);
+          await keep(f, await shoot(scout, w, h));
+          done[ri] = f + 1 - a; progress();
+        }
+      } else {
+        await stepTo(rec!, 0, a - 1);
+        let recAt = a - 1; // the last frame the follower page's clock has reached
+        await stepTo(scout, a, a);
+        await use(scout);
+        await keep(a, await shoot(scout, w, h));
+        let small = PNG.sync.read(await shoot(scout, w, h, 0.25)).data;
+        const tiny = Math.max(16, Math.round(0.002 * small.length / 4));
+        for (let prev = a; prev < b - 1; ) {
+          if (stopped) throw new JobError("Stopped.");
+          if (errors.length) throw codeError();
+          if (failed) return;
+          const k = Math.min(prev + STEP, b - 1);
+          await stepTo(scout, prev + 1, k);
+          await use(scout);
+          const cur = PNG.sync.read(await shoot(scout, w, h, 0.25)).data;
+          const diff = changedIn(small, cur);
+          if (diff > tiny) {
+            // A real change in this half second: the follower draws every frame of it.
+            await stepTo(rec!, recAt + 1, prev);
+            await use(rec!);
+            for (let f = prev + 1; f < k; f++) { await stepTo(rec!, f, f); await keep(f, await shoot(rec!, w, h)); dense++; }
+            recAt = k - 1;
+            await use(scout);
+          }
+          if (diff > 0) await keep(k, await shoot(scout, w, h));
+          small = cur; prev = k;
+          done[ri] = k + 1 - a; progress();
+        }
       }
-      if (n > small) await scout.page.bringToFront();
-      await keep(k, cur);
-      prev = cur;
-      o.onProgress?.(k / Math.max(1, frames - 1));
-      if (k >= frames - 1) break;
+      await checks(b);
+      flush(b);
+    } finally {
+      await scout.page.close().catch(() => {});
+      await rec?.page.close().catch(() => {});
     }
-    if (errors.length) throw new JobError(`The graphic code threw an error: ${errors[0]}${/fetch|network|load/i.test(errors[0]) ? " (graphics have no internet access: inline images and fonts as data: URLs)" : ""}`, "code-error", false);
+  }
+
+  let failed = false;
+  try {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(workers, ranges.length) }, async () => {
+      const browser = await launchLocked();
+      browsers.push(browser);
+      if (stopped || timedOut) killAll();
+      try { while (next < ranges.length && !failed) await recordRange(browser, next++); }
+      catch (e) { failed = true; throw e; }
+      finally { await browser.close().catch(() => browser.process()?.kill("SIGKILL")); }
+    }));
+    await Promise.all(encodes);
+    if (errors.length) throw codeError();
   } catch (e) {
+    await Promise.allSettled(encodes);
+    if (stopped || o.signal?.aborted) throw new JobError("Stopped.");
+    if (timedOut) {
+      const at = done.reduce((x, y) => x + y, 0);
+      throw new JobError(`The graphic did not finish recording within ${Math.round(limit / 1000)} s (${Math.round((100 * at) / frames)}% done): it moved on ${dense} of the ${at} frames recorded so far. Recording costs about ${(frameCostMs(w, h) / workers / 1000 * FPS).toFixed(1)} s per second of motion at ${w}x${h}; make it move less of the time, draw it smaller, or split it into shorter graphics placed where they are needed.`, "graphic-slow", false);
+    }
     if (e instanceof JobError) throw e;
-    if (o.signal?.aborted) throw new JobError("Stopped.");
-    if (timedOut) throw new JobError(`The graphic did not finish recording within ${Math.round(limit / 1000)} s: it changes on ${dense} of the ${frames} frames recorded so far. A long graphic must stay still most of the time (a bar, a logo, a title that comes and goes); make it change less often or shorten it.`, "graphic-slow", false);
     throw new JobError(`The graphic crashed while recording: ${(e as Error).message.slice(0, 200)}`, "graphic", true);
   } finally {
     clearTimeout(kill);
     o.signal?.removeEventListener("abort", abort);
-    await browser.close().catch(() => browser.process()?.kill("SIGKILL"));
+    killAll();
   }
-  // Each picture lasts until the next one; the list ends on the last frame so the file is exactly as long as the graphic.
-  const list = kept.map((x, i) => `file '${x.file}'\nduration ${(((kept[i + 1]?.frame ?? frames) - x.frame) / FPS).toFixed(6)}`).join("\n") + `\nfile '${kept[kept.length - 1].file}'\n`;
-  const listPath = join(fdir, "list.txt");
-  await writeFile(listPath, list);
+  // The pieces, in time order, joined without re-encoding; each lasts exactly until the next one starts.
+  const all = pieces.flat().sort((x, y) => x.start - y.start);
   const out = join(o.dir, `g-${Math.random().toString(36).slice(2, 7)}.webm`);
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", listPath, "-fps_mode", "vfr",
-    "-c:v", "libvpx-vp9", "-pix_fmt", o.transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "20", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0", out], { signal: o.signal });
-  const at = (f: number) => kept.reduce((best, x) => (x.frame <= f ? x : best), kept[0]).file;
-  const pick = [0, Math.floor(frames / 3), Math.floor((2 * frames) / 3), frames - 1].map(at);
-  return { path: out, checkFrames: pick, seconds: frames / FPS, width: w, height: h, pictures: kept.length, dense };
+  if (all.length === 1) await rename(all[0].file, out);
+  else {
+    const list = join(root, "pieces.txt");
+    await writeFile(list, all.map((p) => `file '${p.file}'\nduration ${((p.end - p.start) / FPS).toFixed(6)}`).join("\n") + "\n");
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", out], { signal: o.signal });
+  }
+  o.onProgress?.(1);
+  return { path: out, checkFrames: checkFiles, seconds: frames / FPS, width: w, height: h, pictures, dense };
 }
 
 /**
- * Records HTML into a transparent WebM in a locked headless Chromium: no network (every request except
- * data: is blocked), a memory cap, max 1080x1920, and a kill switch (60 s; longer for long graphics).
- * Returns the paths of four check frames too. Over 15 s the graphic is sampled (recordLong).
+ * Kept pictures as one WebM piece, each shown until the next one (variable frame rate), the last until `end` (a
+ * frame number). The graphic's final piece repeats its last picture at `end` so the file is exactly as long as the
+ * graphic; the PNGs are deleted once encoded.
  */
-export async function recordHtml(html: string, o: { width: number; height: number; durationSec: number; transparent: boolean; dir: string; signal?: AbortSignal; onProgress?: (frac: number) => void }) {
-  const w = Math.round(o.width / 2) * 2, h = Math.round(o.height / 2) * 2;
-  if (Math.max(w, h) > GRAPHIC_LIMITS.maxLong || Math.min(w, h) > GRAPHIC_LIMITS.maxShort) throw new JobError("Graphics can be 1080x1920 at most.", "too-big", false);
-  const dur = Math.min(GRAPHIC_LIMITS.maxSeconds, Math.max(0.5, o.durationSec));
-  if (dur > GRAPHIC_LIMITS.exactSeconds) return recordLong(html, { ...o, width: w, height: h, durationSec: dur });
-  // Big, long graphics are captured at fewer frames per second (played back at 30) to stay inside the 60 s limit.
-  const px = w * h;
-  const fps = px > 1.2e6 ? (dur > 6 ? 12 : 20) : px > 5e5 ? (dur > 8 ? 20 : 30) : 30;
-  const frames = Math.max(1, Math.round(dur * fps));
-  const fdir = join(o.dir, "frames-" + Math.random().toString(36).slice(2, 7));
-  await mkdir(fdir, { recursive: true });
-  const browser = await launchLocked();
-  const kill = setTimeout(() => { browser.process()?.kill("SIGKILL"); }, GRAPHIC_LIMITS.killMs);
-  const abort = () => browser.process()?.kill("SIGKILL");
-  o.signal?.addEventListener("abort", abort, { once: true });
-  const errors: string[] = [];
-  try {
-    const { page, cdp } = await openGraphicPage(browser, html, w, h, o.transparent, errors);
-    for (let i = 0; i < frames; i++) {
-      if (o.signal?.aborted) throw new JobError("Stopped.");
-      await writeFile(join(fdir, `f${String(i).padStart(5, "0")}.png`), await shootAt(page, cdp, i / fps));
-    }
-    if (errors.length) throw new JobError(`The graphic code threw an error: ${errors[0]}${/fetch|network|load/i.test(errors[0]) ? " (graphics have no internet access: inline images and fonts as data: URLs)" : ""}`, "code-error", false);
-  } catch (e) {
-    if (e instanceof JobError) throw e;
-    if (o.signal?.aborted) throw new JobError("Stopped.");
-    throw new JobError(`The graphic did not render in time (60 second limit) or crashed: ${(e as Error).message.slice(0, 200)}`, "graphic", true);
-  } finally {
-    clearTimeout(kill);
-    o.signal?.removeEventListener("abort", abort);
-    await browser.close().catch(() => browser.process()?.kill("SIGKILL"));
-  }
-  const out = join(o.dir, `g-${Math.random().toString(36).slice(2, 7)}.webm`);
-  await encodeFrames(fdir, fps, out, o.transparent, o.signal);
-  const pick = [0, Math.floor(frames / 3), Math.floor((2 * frames) / 3), frames - 1].map((i) => join(fdir, `f${String(Math.min(frames - 1, i)).padStart(5, "0")}.png`));
-  return { path: out, checkFrames: pick, seconds: frames / fps, width: w, height: h };
+async function encodePiece(list: { frame: number; file: string }[], end: number, out: string, transparent: boolean, final: boolean, signal?: AbortSignal) {
+  const FPS = GRAPHIC_LIMITS.fps;
+  const txt = out.replace(/\.webm$/, ".txt");
+  await writeFile(txt, list.map((x, i) => `file '${x.file}'\nduration ${(((list[i + 1]?.frame ?? end) - x.frame) / FPS).toFixed(6)}`).join("\n") + "\n" + (final ? `file '${list[list.length - 1].file}'\n` : ""));
+  // The encoder's clock is the 30 fps grid every picture sits on (its default, 25 fps, moved pictures by up to 20 ms).
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", txt, "-fps_mode", "vfr", "-enc_time_base", `1/${FPS}`,
+    "-c:v", "libvpx-vp9", "-pix_fmt", transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "20", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0", out], { signal });
+  await Promise.all(list.map((x) => rm(x.file, { force: true })));
 }
 
 /**
@@ -228,7 +313,8 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
     const hash = createHash("sha256").update(JSON.stringify([id, html, w, h, dur, GRAPHIC_ENCODER])).digest("hex").slice(0, 24);
     const key = `${PREFIX.graphics}${o.userId}/tpl-${hash}.webm`;
     if (await headObject(key)) { await downloadFile(key, local); return { path: local, seconds: dur }; }
-    const r = await recordHtml(html, { width: w, height: h, durationSec: dur, transparent: true, dir: o.dir, signal: o.signal, onProgress: o.onProgress });
+    // Inside a render: two browsers, so the render's own encoding keeps its CPUs.
+    const r = await recordHtml(html, { width: w, height: h, durationSec: dur, transparent: true, dir: o.dir, signal: o.signal, onProgress: o.onProgress, workers: 2 });
     await uploadFile(key, r.path, "video/webm");
     return { path: r.path, seconds: r.seconds };
   }

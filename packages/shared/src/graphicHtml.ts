@@ -84,23 +84,55 @@ const o=t<0.25?t/0.25:t>dur-0.35?Math.max(0,(dur-t)/0.35):1;document.getElementB
   throw new Error("Unknown template " + id);
 }
 
-// Runs inside the page before any of its code: time is virtual and moves only when we say so.
+// Runs inside the page before any of its code: time is virtual and moves only when we say so. Everything a graphic
+// can time itself by follows it: performance.now, Date.now, requestAnimationFrame, setTimeout/setInterval (they fire
+// in order, each with the clock at its own due time), CSS animations and transitions and element.animate(). Each
+// animation runs from the moment it appeared (a class added at 5 s starts its transition at 5 s), not from 0.
 export const GRAPHIC_CLOCK = `(() => {
-  let now = 0; const start = 1700000000000; let rafs = [];
+  let now = 0, ticks = 0; const start = 1700000000000; let rafs = [], timers = [];
   const perf = performance.now.bind(performance);
+  const born = new WeakMap();
+  const seen = (at) => { for (const a of document.getAnimations()) if (!born.has(a)) born.set(a, at); };
   performance.now = () => now * 1000;
   Date.now = () => start + now * 1000;
   window.requestAnimationFrame = (cb) => { rafs.push(cb); return rafs.length; };
   window.cancelAnimationFrame = () => {};
+  const add = (fn, ms, args, every) => { const id = ++ticks; timers.push({ id, at: now + Math.max(0, Number(ms) || 0) / 1000, fn, args, every }); return id; };
+  window.setTimeout = (fn, ms, ...args) => add(fn, ms, args, 0);
+  window.setInterval = (fn, ms, ...args) => add(fn, Math.max(1, Number(ms) || 0), args, Math.max(1, Number(ms) || 0) / 1000);
+  window.clearTimeout = window.clearInterval = (id) => { timers = timers.filter((x) => x.id !== id); };
+  const call = (x) => { try { typeof x.fn === "function" ? x.fn(...x.args) : (0, eval)(String(x.fn)); } catch (e) { console.error(e); } };
   window.__rendrrAdvance = (t) => {
+    for (let guard = 0; guard < 100000; guard++) {
+      let next = null; for (const x of timers) if (x.at <= t && (!next || x.at < next.at || (x.at === next.at && x.id < next.id))) next = x;
+      if (!next) break;
+      now = Math.max(now, next.at);
+      if (next.every) next.at += next.every; else timers = timers.filter((x) => x !== next);
+      call(next); seen(now);
+    }
     now = t;
     const list = rafs; rafs = [];
     for (const cb of list) { try { cb(t * 1000); } catch (e) { console.error(e); } }
-    for (const a of document.getAnimations()) { try { a.pause(); a.currentTime = t * 1000; } catch (e) {} }
     if (typeof window.renderFrame === "function") window.renderFrame(t);
+    seen(t);
+    for (const a of document.getAnimations()) { try { a.pause(); a.currentTime = Math.max(0, (t - born.get(a)) * 1000); } catch (e) {} }
     return perf();
   };
 })();`;
+
+/**
+ * Font families installed in the graphics browser (worker image: apps/worker/fonts.txt plus Inter, Noto and the
+ * caption fonts). Arial and Helvetica draw as Arimo, Times New Roman as Tinos, Georgia as Gelasio, Calibri as
+ * Carlito, Courier as Cousine (each metric-compatible), Impact as Anton; anything else falls back to Noto Sans.
+ */
+export const GRAPHIC_FONTS = {
+  sans: ["Inter", "Open Sans", "Roboto", "Lato", "Montserrat", "Poppins", "Raleway", "Nunito", "Work Sans", "DM Sans", "Manrope", "Outfit", "Plus Jakarta Sans", "Sora", "Rubik", "Barlow", "Archivo", "Space Grotesk", "Lexend", "Figtree", "Urbanist", "Kanit", "Source Sans 3", "Mulish", "Quicksand", "Josefin Sans", "Exo 2", "Inter Tight", "IBM Plex Sans", "Noto Sans"],
+  display: ["Oswald", "Bebas Neue", "Anton", "Archivo Black", "League Spartan", "Fjalla One", "Teko", "Barlow Condensed", "Roboto Condensed", "Black Ops One", "Russo One", "Press Start 2P", "Abril Fatface", "Alfa Slab One", "Bungee", "Titan One", "Righteous", "Lilita One", "Luckiest Guy", "Bangers", "Fredoka", "Baloo 2", "Comfortaa"],
+  serif: ["Playfair Display", "Merriweather", "Lora", "DM Serif Display", "Libre Baskerville", "EB Garamond", "Cormorant Garamond", "Roboto Slab", "Bitter", "Fraunces", "Noto Serif"],
+  hand: ["Kalam", "Caveat", "Permanent Marker", "Pacifico", "Dancing Script", "Shadows Into Light", "Patrick Hand", "Indie Flower", "Architects Daughter", "Satisfy", "Great Vibes", "Lobster"],
+  mono: ["Roboto Mono", "JetBrains Mono", "Fira Code", "Space Mono", "IBM Plex Mono", "Source Code Pro"],
+};
+export const GRAPHIC_FONT_ALIASES: Record<string, string> = { Arial: "Arimo", Helvetica: "Arimo", "Helvetica Neue": "Arimo", "Times New Roman": "Tinos", Georgia: "Gelasio", Calibri: "Carlito", "Courier New": "Cousine", Impact: "Anton" };
 
 export const wrapGraphicHtml = (code: string, w: number, h: number) =>
   /<html|<body/i.test(code) ? code : `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;width:${w}px;height:${h}px;overflow:hidden;background:transparent;font-family:Inter,system-ui,sans-serif}</style></head><body>${code}</body></html>`;

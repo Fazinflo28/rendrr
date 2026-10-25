@@ -60,6 +60,17 @@ export async function readRender(id: string): Promise<RenderProgress | null> {
   const s = await redis().get(renderChannel(id));
   return s ? (JSON.parse(s) as RenderProgress) : null;
 }
+/** A custom graphic's recording progress, for list_graphics and create_graphic (kept an hour). */
+export type GraphicProgress = { percent: number; etaSec: number | null };
+const graphicKey = (id: string) => `graphic:${id}:progress`;
+export async function publishGraphic(id: string, p: GraphicProgress) {
+  await redis().set(graphicKey(id), JSON.stringify(p), "EX", 3600);
+}
+export async function readGraphic(id: string): Promise<GraphicProgress | null> {
+  const s = await redis().get(graphicKey(id)).catch(() => null);
+  return s ? (JSON.parse(s) as GraphicProgress) : null;
+}
+
 export async function publishProject(id: string, msg: { version: number; by: string; text?: string }) {
   await redis().publish(projectChannel(id), JSON.stringify(msg));
 }
