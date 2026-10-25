@@ -123,10 +123,15 @@ export default async function library(app: FastifyInstance) {
       return videoOut(await prisma.video.findUniqueOrThrow({ where: { id: v.id } }));
     });
 
+    // ?edits=delete: the edits made from it go too (the app asks first, naming them). Without it, footage in use stays.
     a.delete("/videos/:id", async (req) => {
       const v = await ownedVideo(req.user!.id, (req.params as { id: string }).id);
-      const used = await prisma.project.count({ where: { videoId: v.id, deletedAt: null } });
-      if (used) throw new AppError(`This footage is used by ${used} ${used === 1 ? "edit" : "edits"}. Delete ${used === 1 ? "it" : "them"} first.`, 409, "in-use");
+      const edits = await prisma.project.findMany({ where: { videoId: v.id, deletedAt: null }, select: { id: true, name: true }, orderBy: { updatedAt: "desc" } });
+      if (edits.length && (req.query as { edits?: string }).edits !== "delete") {
+        const names = edits.slice(0, 5).map((p) => `"${p.name}"`).join(", ") + (edits.length > 5 ? ` and ${edits.length - 5} more` : "");
+        throw new AppError(`"${v.name}" is used by ${edits.length} ${edits.length === 1 ? "edit" : "edits"}: ${names}. Deleting it deletes ${edits.length === 1 ? "that edit" : "those edits"} too.`, 409, "in-use");
+      }
+      if (edits.length) await prisma.project.updateMany({ where: { id: { in: edits.map((p) => p.id) } }, data: { deletedAt: new Date() } });
       const an = await prisma.footageAnalysis.findUnique({ where: { videoId: v.id } });
       await deleteObjects([v.proxyKey, v.audioKey, v.thumbKey, ...(((an?.keyFrames as { key: string }[]) || []).map((k) => k.key))]);
       await deletePrefix(framesPrefix(v)); // key frames, contact sheets, frames taken for the AI

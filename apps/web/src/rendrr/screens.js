@@ -58,7 +58,7 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
 }
 
 /* ---------- app shell: one top bar (Higgsfield-style), no side rail ---------- */
-const TOP = [["/explore", "Explore"], ["/projects", "Projects"]];
+const TOP = [["/explore", "Explore"], ["/projects", "Projects"], ["/library", "Library"]];
 const MENU = [["/library", "Library", "library"], ["/usage", "Usage", "usage"], ["/billing", "Billing", "key"], ["/settings", "Settings", "settings"], ["/connect", "Connect AI", "connect"]];
 function Shell({ children }) {
   const { route, go } = useNav(); const { user, usage, setUser, openAdd, addOpen, closeAdd, openLogin, requireUser } = useApp(); const toast = useToast();
@@ -152,6 +152,20 @@ function AddFootageModal({ onClose, initialKind = "footage" }) {
   <//>`;
 }
 
+/* ---------- Delete a video: asks first; when edits use it, names them and asks again ---------- */
+function DeleteVideoModal({ video, onClose, onDeleted }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false); const [inUse, setInUse] = useState(null);
+  const go_ = async () => {
+    setBusy(true);
+    try { await api.removeVideo(video.id, !!inUse); toast(`Deleted "${video.name}"`, { icon: "check", tone: "brand" }); onDeleted(); }
+    catch (e) { if (e.code === "in-use" && !inUse) setInUse(e.message); else toast(e.message); setBusy(false); }
+  };
+  const where = video.source === "drive" ? "your Google Drive" : "your computer";
+  return html`<${Modal} title=${inUse ? "Its edits go too" : `Delete "${video.name}"?`} sub=${inUse || `Rendrr's preview copy, transcript and analysis are removed. The raw file stays in ${where}.`} onClose=${busy ? undefined : onClose}
+    footer=${html`<${Btn} kind="ghost" onClick=${onClose} disabled=${busy}>Cancel<//><${Btn} id="confirm-delete-video" icon="trash" disabled=${busy} onClick=${go_}>${busy ? "Deleting…" : inUse ? "Delete the video and its edits" : "Delete"}<//>`} />`;
+}
+
 /* ---------- Recreate: pick footage (Drive or computer) > pick a project > straight into the editor ---------- */
 function RecreateModal({ g, onClose }) {
   const { go } = useNav(); const toast = useToast();
@@ -216,7 +230,7 @@ const ATTN = ["failed", "missing", "expired", "paused"];
 function LibraryPage() {
   const { go } = useNav(); const { startUpload, openAdd } = useApp(); const toast = useToast();
   const q = useAsync(() => api.listVideos(), []);
-  const [filter, setFilter] = useState("All"); const [search, setSearch] = useState(""); const [over, setOver] = useState(false); const [reconnect, setReconnect] = useState(null);
+  const [filter, setFilter] = useState("All"); const [search, setSearch] = useState(""); const [over, setOver] = useState(false); const [reconnect, setReconnect] = useState(null); const [remove, setRemove] = useState(null);
   useEffect(() => { const k = () => q.reload(); window.addEventListener("rendrr:library", k); return () => window.removeEventListener("rendrr:library", k); }, []);
   // Local previews are made in this tab: if it goes away mid preview, they pause until the user comes back.
   useEffect(() => { const vis = () => { if (document.hidden) { api.pauseLocalPreviews(); } q.reload(); }; document.addEventListener("visibilitychange", vis); window.addEventListener("pagehide", api.pauseLocalPreviews); return () => { document.removeEventListener("visibilitychange", vis); window.removeEventListener("pagehide", api.pauseLocalPreviews); }; }, []);
@@ -251,7 +265,8 @@ function LibraryPage() {
                   : v.status === "paused" ? html`<${Btn} size="xs" icon="play" data-resume=${v.id} onClick=${(e) => act(e, () => api.resumeLocalPreview(v.id), "Resumed")}>Resume<//>`
                   : v.status === "missing" ? html`<${Btn} size="xs" icon="drive" data-reconnect=${v.id} onClick=${(e) => { e.stopPropagation(); setReconnect(v); }}>Reconnect file<//>`
                   : v.status === "expired" ? html`<${Btn} size="xs" icon="refresh" data-rebuild=${v.id} onClick=${(e) => act(e, () => api.rebuildPreview(v.id), "Rebuilding the preview")}>Rebuild preview<//>`
-                  : html`<span class="t-small muted">${fmtAgo(v.date)} · ${v.size}</span>`}</div>
+                  : html`<span class="t-small muted">${fmtAgo(v.date)} · ${v.size}</span>`}
+                  <${Btn} kind="quiet" size="xs" icon="trash" aria-label=${"Delete " + v.name} data-delete=${v.id} onClick=${(e) => { e.stopPropagation(); setRemove(v); }} /></div>
                 ${v.status === "failed" && html`<span class="t-small muted">${v.error}</span>`}
               </div>
             </button>`)}
@@ -260,6 +275,7 @@ function LibraryPage() {
         </div>`;
       }}
     <//>
+    ${remove && html`<${DeleteVideoModal} video=${remove} onClose=${() => setRemove(null)} onDeleted=${() => { setRemove(null); q.reload(); }} />`}
     ${reconnect && html`<${Modal} title="Reconnect file" sub=${"Pick '" + reconnect.name + "' again in your Drive. The raw file was moved or deleted."} onClose=${() => setReconnect(null)} wide><${DrivePicker} single addLabel="Reconnect" onAdd=${async (ids) => { try { await api.reconnectDriveFile(reconnect.id, ids[0]); toast("Reconnected. Linking again.", { icon: "drive", tone: "brand" }); setReconnect(null); q.reload(); } catch (e) { toast(e.message); } }} /><//>`}
   </div>`;
 }
@@ -299,7 +315,7 @@ function FootagePage({ id }) {
   const polls = useRef(0);
   useEffect(() => { if (!v || (v.breakdown && v.status === "ready") || ["failed", "missing", "expired"].includes(v.status) || polls.current > 75) return; const t = setTimeout(() => { polls.current++; api.getVideo(id).then((x) => q.setData(x)).catch(() => {}); }, 4000); return () => clearTimeout(t); }, [v]);
   const pb = usePlayback(dur);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(false); const [remove, setRemove] = useState(false);
   const start = async () => { setBusy(true); try { const p = await api.createProject({ videoId: id }); toast("Project created", { icon: "check", tone: "brand" }); go("/editor/" + p.id); } catch (e) { toast(e.message); setBusy(false); } };
   const current = v?.transcript.flatMap((l) => l.words).filter((w) => w.t <= pb.time).pop();
   const line = v?.transcript.find((l) => l.words.includes(current));
@@ -316,7 +332,8 @@ function FootagePage({ id }) {
     <div class="row"><${Btn} kind="quiet" size="sm" icon="back" onClick=${() => go("/library")}>Library<//></div>
     <${Async} q=${q} skeleton=${html`<div class="two"><div class="skeleton" style="aspect-ratio:16/9;border-radius:20px" /><${Skeleton} rows=${6} /></div>`}>${(v) => html`
       <div class="page-head" style="padding-top:0"><div><h1 class="t-title">${v.name}</h1><p class="muted row" style="gap:8px;flex-wrap:wrap"><${SourceBadge} source=${v.source} />${v.kind === "reference" && html`<span class="tag accent">Reference</span>`} ${fmtLen(v.seconds)} · ${v.size} · ${v.orientation} · Added ${fmtAgo(v.date)}</p></div>
-        <${Btn} id="start-edit" icon="spark" disabled=${busy || v.status !== "ready"} onClick=${start}>${busy ? "Creating…" : "Start an edit"}<//></div>
+        <div class="row" style="gap:8px"><${Btn} kind="ghost" icon="trash" id="delete-video" onClick=${() => setRemove(true)}>Delete<//><${Btn} id="start-edit" icon="spark" disabled=${busy || v.status !== "ready"} onClick=${start}>${busy ? "Creating…" : "Start an edit"}<//></div>
+        ${remove && html`<${DeleteVideoModal} video=${v} onClose=${() => setRemove(false)} onDeleted=${() => go("/library")} />`}</div>
       ${v.status !== "ready" && html`<div class="card flat row"><span class="dot brand pulse" />This footage is not ready yet (${v.stepName || v.status}). You can start an edit once it is ready.</div>`}
       <div class="card tight storagebox" id="storage-box"><div class="sb-cell"><span class="t-small muted">Raw file location</span><b class="t-label row" style="gap:6px"><${Icon} name=${v.source === "drive" ? "drive" : "laptop"} size="14" />${v.source === "drive" ? "Google Drive · " + (v.driveFile?.folder || "My Drive") : "This computer · " + (v.originalName || v.name)}</b></div>
         <div class="sb-cell"><span class="t-small muted">Preview copy</span><b class="t-label">${v.previewSize || "Not made yet"}${v.previewDays != null ? html` <span class="muted" style="font-weight:400">· Deletes in ${v.previewDays} days</span>` : ""}</b></div>

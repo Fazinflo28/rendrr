@@ -140,7 +140,8 @@ export const api: any = {
     }
     return v;
   },
-  removeVideo: (id: string) => del(`/videos/${enc(id)}`),
+  // withEdits: the edits made from it are deleted too (after the user said yes to that).
+  removeVideo: (id: string, withEdits = false) => del(`/videos/${enc(id)}${withEdits ? "?edits=delete" : ""}`),
 
   // ---- Google Drive ----
   getDriveStatus: () => get("/drive/status"),
