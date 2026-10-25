@@ -140,7 +140,7 @@ export function unknownEditFields(e: unknown): { unknown: string[]; known: strin
 }
 export type EditOp = z.infer<typeof EditOpSchema>;
 export const OpSchema = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("replace"), timeline: TimelineSchema, name: z.string().max(200).optional(), aspect: AspectSchema.optional(), styleId: z.string().max(80).optional() }),
+  z.object({ op: z.literal("replace"), timeline: TimelineSchema, name: z.string().max(200).optional(), aspect: AspectSchema.optional(), styleId: z.string().max(80).nullable().optional() }),
   ...EDIT_OPS,
   z.object({ op: z.literal("restore_snapshot"), snapshot: SnapshotSchema, note: z.string().max(300) }),
   z.object({ op: z.literal("batch"), ops: z.array(EditOpSchema).min(1).max(50) }),
@@ -219,6 +219,12 @@ export function buildInitialTimelineA(tr: Transcript, duration: number, captionL
 /** The first sequence for new footage: one clip per paragraph, in footage order, captions on. */
 export function buildInitialTimeline(tr: Transcript, duration: number, captionLook: "clean" | "bold" | "outline", cut: string[] = [], videoId = "main"): Timeline {
   return toModelB(buildInitialTimelineA(tr, duration, captionLook, cut), allWords(tr), videoId);
+}
+
+/** A new edit: the footage as recorded and nothing applied (no style, captions off). `cut`: words the user removed
+ *  on the footage page before starting it. Everything else comes from the user or their AI. */
+export function buildRawTimeline(tr: Transcript, duration: number, cut: string[] = [], videoId = "main"): Timeline {
+  return { ...buildInitialTimeline(tr, duration, "clean", cut, videoId), captionsOn: false };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -442,7 +448,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     case "replace": {
       // The editor sends the whole timeline. Keep the server's duration: the footage length never changes.
       const next = { ...op.timeline, duration: tl.duration || op.timeline.duration };
-      return { snap: { timeline: next, name: op.name ?? snap.name, aspect: (op.aspect ?? snap.aspect) as Aspect, styleId: op.styleId ?? snap.styleId }, summary: "edited in the editor" };
+      return { snap: { timeline: next, name: op.name ?? snap.name, aspect: (op.aspect ?? snap.aspect) as Aspect, styleId: op.styleId === undefined ? snap.styleId : op.styleId }, summary: "edited in the editor" };
     }
     case "cut_words": {
       const ids = (op.wordIds ?? []).filter((id) => wordById.has(id));
@@ -630,7 +636,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "set_caption_style": {
       const { op: _o, look: lk, ...fields } = op;
-      const rules = ctx.getStyle(snap.styleId)?.rules.captions;
+      const rules = snap.styleId ? ctx.getStyle(snap.styleId)?.rules.captions : undefined;
       const base = lk ? presetStyle(lk, snap.aspect) : captionStyleOf(tl, snap.aspect, rules);
       const style = CaptionStyleSchema.parse({ ...base, ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) });
       if (fields.wordsAtOnce != null && fields.wordsPerLine == null) style.wordsPerLine = Math.min(style.wordsAtOnce, Math.max(style.wordsPerLine, Math.ceil(style.wordsAtOnce / style.lines)));
@@ -1156,7 +1162,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
   const main = view.mainVideoId;
   const look = lookText(tl);
   const lines: string[] = [];
-  lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${view.total.toFixed(1)}s, aspect ${snap.aspect}${look ? ", " + look : ""}, style ${snap.styleId}.`);
+  lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${view.total.toFixed(1)}s, aspect ${snap.aspect}${look ? ", " + look : ""}${snap.styleId ? `, style ${snap.styleId}` : ""}.`);
   lines.push(`Cut words: ${tl.cut.length}. Captions ${tl.captionsOn ? "on (" + (tl.captionStyle ? "own style: " + styleText(tl.captionStyle) : tl.captionLook) + ")" : "off"}. Edited caption lines: ${Object.entries(tl.captionText).filter(([id, txt]) => { const l = tr.find((x) => x.id === id); return l && l.words.map((w) => w.text).join(" ") !== txt; }).length}.`);
   lines.push(`Sound: ${audioText(audioSettings(tl))}.`);
   lines.push(exportText(snap, footage) + ".");

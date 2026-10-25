@@ -169,12 +169,13 @@ export const TrackNameSchema = z.enum(["v1", "v2", "v3", "a1", "a2", "a3"]);
 export const AspectSchema = z.enum(ASPECTS);
 export const CaptionLookSchema = z.enum(CAPTION_LOOKS);
 
-// Version snapshots hold the timeline plus the project fields an edit can change.
+// Version snapshots hold the timeline plus the project fields an edit can change. styleId: the style apply_style
+// applied (its caption rules shape the captions), null when none was (a new edit is the raw footage).
 export const SnapshotSchema = z.object({
   timeline: TimelineSchema,
   name: z.string().max(200),
   aspect: AspectSchema,
-  styleId: z.string().max(80),
+  styleId: z.string().max(80).nullable(),
 });
 export type Snapshot = z.infer<typeof SnapshotSchema>;
 

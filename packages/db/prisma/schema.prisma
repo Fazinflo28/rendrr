@@ -143,7 +143,8 @@ model Project {
   folder         Folder    @relation(fields: [folderId], references: [id], onDelete: Cascade)
   videoId        String
   video          Video     @relation(fields: [videoId], references: [id], onDelete: Restrict)
-  styleId        String
+  styleId        String? // the style apply_style applied; null: none (a new edit starts as the raw footage)
+  reference      Json? // { kind: style | recipe | video, id, name }: attached for the user's AI to read, never applied
   name           String
   status         String    @default("Draft")
   aspect         String    @default("16:9")

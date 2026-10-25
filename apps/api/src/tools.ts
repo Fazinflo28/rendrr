@@ -5,7 +5,7 @@ import { AppError, applyTimelineChange, enqueue, notFound, restoreVersion, signG
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   allWords, asSequence, breakdownAsText, CreateGraphicInput, describeRules, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
-  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
+  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources } from "./services/sequence";
 import { createProject, getOwnedProject } from "./services/projects";
@@ -101,6 +101,13 @@ async function recipeOut(c: Ctx, refId: string): Promise<ToolOut | null> {
     for (const k of ((rr?.framesKeys as string[]) || []).slice(0, 3)) frames.push(await signGet(k, 900));
   }
   return { text: `RECIPE "${r?.name ?? g!.title}" (match the rhythm, not the footage): ${JSON.stringify(r?.recipe ?? g!.recipe)}`, images: frames };
+}
+
+/** The reference the user attached to an edit, for the AI to read (Rendrr never applies it). */
+function referenceLine(ref: ReferenceRef | null): string | null {
+  if (!ref) return null;
+  const how = ref.kind === "style" ? `style ${ref.id} "${ref.name}" (get_style)` : `${ref.kind === "recipe" ? "recipe" : "reference video"} ${ref.id} "${ref.name}" (get_footage)`;
+  return `Reference the user attached, not applied: ${how}. Read it and make your own edits.`;
 }
 
 /** Rules a style saved by an AI starts from: nothing cut, clean captions, no zooms, no music. */
@@ -269,18 +276,19 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const ps = await prisma.project.findMany({ where: { userId: c.userId, deletedAt: null, ...(i.folderId ? { folderId: i.folderId } : {}) }, orderBy: { updatedAt: "desc" }, take: 500, include: { folder: true } });
     if (!ps.length) return { text: `${await accountLine(c.userId)} No edits yet: use create_project. ${i.folderId ? "" : EMPTY_HINT}`.trim() };
     const pg = pageOf(ps, i);
-    return { text: `Edits ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${ps.length} (id | name | folder | style | aspect | status | version):\n` + pg.shown.map((p) => `${p.id} | ${p.name} | ${p.folder.name} | ${p.styleId} | ${p.aspect} | ${p.status} | v${p.currentVersion}`).join("\n") + pg.tail };
+    return { text: `Edits ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${ps.length} (id | name | folder | style applied | aspect | status | version):\n` + pg.shown.map((p) => `${p.id} | ${p.name} | ${p.folder.name} | ${p.styleId ?? "none"} | ${p.aspect} | ${p.status} | v${p.currentVersion}`).join("\n") + pg.tail };
   },
 
   async get_project(c, i) {
     const p = await getOwnedProject(c.userId, i.projectId);
     const v = await prisma.video.findUniqueOrThrow({ where: { id: p.videoId }, include: { analysis: true } });
     const snap = { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId } as unknown as Snapshot;
-    const style = await prisma.style.findUnique({ where: { id: p.styleId } });
+    const style = p.styleId ? await prisma.style.findUnique({ where: { id: p.styleId } }) : null;
     const preview = await prisma.render.findFirst({ where: { projectId: p.id, status: "done", kind: "preview" }, orderBy: { createdAt: "desc" } });
     // Phase 6: the user's imported LUTs (for set_grade lut) and whether the footage is HDR, only when there are any.
     const luts = await prisma.lut.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, name: true } });
-    return { text: clip([`Edit "${p.name}" (${p.id}) on footage ${v.id} "${v.name}"${v.hdr ? ` (HDR ${v.hdr === "pq" ? "PQ" : "HLG"}: the final keeps it unless set_export hdr sdr)` : ""}. ${p.status}, v${p.currentVersion}, style ${style?.name ?? p.styleId}.`,
+    return { text: clip([`Edit "${p.name}" (${p.id}) on footage ${v.id} "${v.name}"${v.hdr ? ` (HDR ${v.hdr === "pq" ? "PQ" : "HLG"}: the final keeps it unless set_export hdr sdr)` : ""}. ${p.status}, v${p.currentVersion}, ${p.styleId ? `style ${style?.name ?? p.styleId} applied` : "no style applied"}.`,
+      ...[referenceLine(p.reference as ReferenceRef | null)].filter((x): x is string => !!x),
       summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || [], 60, p.videoId, (id) => luts.find((l) => l.id === id)?.name, footageOf(v)),
       ...(luts.length ? [`Your LUTs (set_grade lut id): ${luts.map((l) => `${l.id} "${l.name}"`).join(", ")}`] : []),
       preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet."].join("\n")) };
@@ -340,8 +348,9 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
 
   // ---------------- write ----------------
   async create_project(c, i) {
-    const p = await createProject(c.userId, i, { autoStyle: false, actorKind: c.ai === "chatgpt" ? "chatgpt" : "claude" });
-    return { text: `Created edit "${p.name}" (${p.id}), v1 = the footage as recorded, ${p.aspect}, style ${p.styleId}. Next: apply_edits.`, data: { projectId: p.id } };
+    const p = await createProject(c.userId, i, { actorKind: c.ai === "chatgpt" ? "chatgpt" : "claude" });
+    const ref = referenceLine(p.reference as ReferenceRef | null);
+    return { text: `Created edit "${p.name}" (${p.id}), v1 = the footage as recorded (nothing cut, captions off, no style), ${p.aspect}.${ref ? " " + ref : ""} Next: apply_edits.`, data: { projectId: p.id } };
   },
   apply_edits: (c, i) => applyEdits(c, i.projectId, parseEdits(i.edits || []), i.note, i),
 

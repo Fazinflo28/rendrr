@@ -1,6 +1,6 @@
 import { AppError, checkPassword, env, hashPassword, notFound, sealLatestVersion, signGet, token as newToken } from "@rendrr/core";
 import { prisma, type Project, type Review, type ReviewComment } from "@rendrr/db";
-import { CreateReviewInput, PublishInput, REVIEW_SIGNED_URL_SECONDS, RequestChangesInput, ReviewCommentInput, ReviewPasswordInput, fmtShortDate, outputDuration, allWords, type Timeline, type Transcript, type V2Clip } from "@rendrr/shared";
+import { CreateReviewInput, DEFAULT_STYLE_ID, PublishInput, REVIEW_SIGNED_URL_SECONDS, RequestChangesInput, ReviewCommentInput, ReviewPasswordInput, fmtShortDate, outputDuration, allWords, type ReferenceRef, type Timeline, type Transcript, type V2Clip } from "@rendrr/shared";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { authenticate } from "../auth";
@@ -10,6 +10,9 @@ import { startRender } from "../services/render";
 
 const keyFor = (r: Review) => createHmac("sha256", env().ENCRYPTION_KEY || env().CLERK_SECRET_KEY || "dev").update(`${r.token}:${r.passwordHash || ""}`).digest("base64url");
 const unlocked = (req: FastifyRequest, r: Review) => !r.passwordHash || req.headers["x-review-key"] === keyFor(r);
+/** Explore files every video under a style's category: the style the edit applied, else its style reference, else
+ *  the default category. */
+const galleryStyleOf = (p: Project) => p.styleId ?? ((p.reference as ReferenceRef | null)?.kind === "style" ? (p.reference as ReferenceRef).id : DEFAULT_STYLE_ID);
 
 function parseExpiry(input: { expires?: string | null; expiresDays?: number }) {
   if (input.expiresDays) { const d = new Date(Date.now() + input.expiresDays * 86400_000); return { expiresAt: d, expiresLabel: fmtShortDate(d) }; }
@@ -224,7 +227,7 @@ export default async function reviews(app: FastifyInstance) {
         structure: { lines: tr.length, broll: tl.tracks.v2.filter((c) => (c as V2Clip).kind === "broll").length, graphics: tl.tracks.v3.filter((c) => (c as { kind?: string }).kind === "graphic").length, music: tl.tracks.a2.map((c) => (c as { label: string }).label) },
       };
       const g = await prisma.galleryItem.create({ data: {
-        projectId: p.id, userId: me.id, author: me.name || "Someone", title: (input.title || p.name).slice(0, 200), styleId: p.styleId, ori: p.aspect,
+        projectId: p.id, userId: me.id, author: me.name || "Someone", title: (input.title || p.name).slice(0, 200), styleId: galleryStyleOf(p), ori: p.aspect,
         platforms: input.platforms?.length ? input.platforms : ["instagram"], allowRecreate: input.allowRecreate !== false, recipe,
       } });
       await prisma.reference.create({ data: { id: g.id, userId: me.id, name: g.title, recipe } }).catch(() => {});

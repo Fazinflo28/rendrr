@@ -1,7 +1,7 @@
 // Database rows -> the exact shapes ui/rendrr-ui.html's fake api returned. Signed URLs only, never raw keys.
 import { signGet } from "@rendrr/core";
 import type { AiAction, Folder, GalleryItem, Project, ProjectComment, Review, ReviewComment, Style, User, Video } from "@rendrr/db";
-import { DAY_MS, DRIVE_STEPS, fmtShortDate, fmtSize, LOCAL_STEPS } from "@rendrr/shared";
+import { DAY_MS, DRIVE_STEPS, fmtShortDate, fmtSize, LOCAL_STEPS, type ReferenceRef } from "@rendrr/shared";
 
 const ms = (d: Date | null | undefined) => (d ? d.getTime() : null);
 const num = (b: bigint | number | null | undefined) => (b == null ? null : Number(b));
@@ -39,7 +39,7 @@ export function folderOut(f: Folder, extra: { count?: number; shares?: number } 
 }
 
 export function projectOut(p: Project) {
-  return { id: p.id, folderId: p.folderId, name: p.name, videoId: p.videoId, styleId: p.styleId, status: p.status, aspect: p.aspect, updated: p.updatedAt.getTime(), version: p.currentVersion, art: p.art, size: fmtSize(p.sizeBytes), seconds: p.outputSeconds || null };
+  return { id: p.id, folderId: p.folderId, name: p.name, videoId: p.videoId, styleId: p.styleId, reference: (p.reference as ReferenceRef | null) ?? null, status: p.status, aspect: p.aspect, updated: p.updatedAt.getTime(), version: p.currentVersion, art: p.art, size: fmtSize(p.sizeBytes), seconds: p.outputSeconds || null };
 }
 
 export function commentOut(c: ReviewComment) {

@@ -58,7 +58,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
   };
 }
 
-export function snapshotOf(p: { timeline: unknown; name: string; aspect: string; styleId: string }): Snapshot {
+export function snapshotOf(p: { timeline: unknown; name: string; aspect: string; styleId: string | null }): Snapshot {
   return { timeline: TimelineSchema.parse(p.timeline) as Timeline, name: p.name, aspect: p.aspect as Snapshot["aspect"], styleId: p.styleId };
 }
 

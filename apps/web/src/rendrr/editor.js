@@ -3,7 +3,7 @@
 // edits, autosave conflicts, real undo/restore, the rendered preview plays in the player, real downloads.
 // Phase 2: the edit is a sequence (clips of any video, in any order, J/L cuts) with Premiere's tools.
 import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, turnedVideoStyle, Art, useNav, useApp } from "./ui";
-import { StyleArt, CreateLinkModal } from "./screens";
+import { StyleArt, CreateLinkModal, ReferencePicker } from "./screens";
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
 import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./color";
@@ -479,7 +479,14 @@ function EditorInner({ project, reload, ai, keep }) {
   const [saved, setSaved] = useState("Saved");
   const [status, setStatus] = useState(project.status);
   const cutSet = useMemo(() => new Set(S.cut), [S.cut]);
-  const style = (sq.data || []).find((s) => s.id === S.styleId) || project.style;
+  const style = (sq.data || []).find((s) => s.id === S.styleId) || project.style; // only a style the AI applied
+  // The reference the user attached for their AI: stored with the edit, never applied to it.
+  const [reference, setReference] = useState(project.reference || null);
+  const attach = async (r) => {
+    const before = reference; setReference(r);
+    try { await api.updateProject(project.id, { reference: r ? { kind: r.kind, id: r.id } : null }); toast(r ? "Attached for your AI to read" : "Reference taken off", { icon: "check", tone: "brand" }); }
+    catch (e) { setReference(before); toast(e.message); }
+  };
   const captionRules = useMemo(() => { const r = StyleRulesSchema.safeParse(style?.rules); return r.success ? r.data.captions : undefined; }, [style]);
   // Phase 6: the user's LUTs, and the numbers of the ones this edit's grades use (the plan needs them, as the render).
   const lutQ = useAsync(() => api.listLuts().catch(() => []), []);
@@ -813,7 +820,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
 
       <div class="panel">
-        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["clip", "Clip"], ["color", "Color"], ["audio", "Audio"], ["text", "Text"], ["style", "Style"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
+        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["clip", "Clip"], ["color", "Color"], ["audio", "Audio"], ["text", "Text"], ["style", "Reference"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
         ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
           <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted">${S.cut.length} cut</span></div>
           ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
@@ -850,12 +857,14 @@ function EditorInner({ project, reload, ai, keep }) {
         ${rtab === "color" && html`<${ColorTab} clip=${colorClip} track=${sel?.track} projectId=${project.id} clips=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")]} lutList=${lutQ.data || []} reloadLuts=${() => lutQ.reload()} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mode=${colorMode} setMode=${setColorMode} draft=${pathDraft} setDraft=${setPathDraft} toast=${toast} />`}
         ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
-        ${rtab === "style" && html`<div class="pb" style="padding-top:16px">
-          ${style && html`<div class="col" style="gap:12px">
+        ${rtab === "style" && html`<div class="pb" style="padding-top:16px"><div class="col" style="gap:16px">
+          <div class="col" style="gap:8px"><b class="t-label">Reference</b><p class="t-small muted">Attached for your AI to read. Nothing from it is applied to the edit.</p>
+            <${ReferencePicker} id="edit-reference" value=${reference} onChange=${attach} /></div>
+          ${style ? html`<div class="col" style="gap:12px"><b class="t-label">Style your AI applied</b>
             <${StyleArt} s=${style} />
             <pre class="code" id="style-code">${styleCode(style, S).split("\n").map((ln, i) => { const m = ln.match(/^(\s*)([a-z_]+):(.*)$/); return html`<div key=${i}>${m ? html`${m[1]}<span class="k">${m[2]}:</span>${m[3]}` : ln}</div>`; })}</pre>
-          </div>`}
-        </div>`}
+          </div>` : html`<p class="t-small muted" id="no-style">No style applied. The edit is your raw footage plus the changes you and your AI make.</p>`}
+        </div></div>`}
       </div>
     </div>
 

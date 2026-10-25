@@ -1,6 +1,6 @@
-import { abortMultipart, AppError, applyTimelineChange, deleteObjects, notFound, signGet } from "@rendrr/core";
+import { abortMultipart, AppError, deleteObjects, notFound, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, asSequence, aspectFor, buildInitialTimeline, catalogMusic, catalogSfx, DEFAULT_STYLE_ID, outputDuration, refreshFillers, type Snapshot, type Transcript } from "@rendrr/shared";
+import { allWords, asSequence, aspectFor, buildRawTimeline, catalogMusic, catalogSfx, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript } from "@rendrr/shared";
 import { playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
@@ -18,17 +18,34 @@ export async function getOwnedProject(userId: string, id: string): Promise<Proje
   return p;
 }
 
+/** Checks a reference the user may attach (theirs, built in, or a gallery video that allows recreating) and names it. */
+export async function resolveReference(userId: string, ref: { kind: ReferenceRef["kind"]; id: string }): Promise<ReferenceRef> {
+  if (ref.kind === "style") {
+    const s = await prisma.style.findFirst({ where: { id: ref.id, OR: [{ ownerId: null }, { ownerId: userId }] } });
+    if (s) return { kind: "style", id: s.id, name: s.name };
+  } else if (ref.kind === "video") {
+    const v = await prisma.video.findUnique({ where: { id: ref.id } });
+    if (v && v.userId === userId) return { kind: "video", id: v.id, name: v.name };
+  } else {
+    const g = await prisma.galleryItem.findUnique({ where: { id: ref.id } });
+    if (g && (g.userId === userId || g.allowRecreate)) return { kind: "recipe", id: g.id, name: g.title };
+    const r = await prisma.reference.findUnique({ where: { id: ref.id } });
+    if (r && r.userId === userId) return { kind: "recipe", id: r.id, name: r.name };
+  }
+  throw new AppError("That reference is not available any more. Pick another one.", 400, "no-reference");
+}
+
 /**
- * Creates an edit. Version 1 is the footage as recorded. When `autoStyle` is on (edits made in the app),
- * the style's rules run straight away as version 2, logged as a Rendrr action so it can be undone.
+ * Creates an edit. Version 1 is the footage as recorded and nothing else: no style, no captions, no cuts (only words
+ * the user removed on the footage page). A reference (a style, a gallery recipe or a reference video; `styleId` from
+ * the connector is a style reference) is attached for the user's AI to read. Rendrr never applies it.
  */
-export async function createProject(userId: string, input: { videoId: string; styleId?: string | null; name?: string | null; folderId?: string | null; cut?: string[]; aspect?: string }, opts: { autoStyle: boolean; actorKind?: "user" | "claude" | "chatgpt" }) {
+export async function createProject(userId: string, input: { videoId: string; styleId?: string | null; reference?: { kind: ReferenceRef["kind"]; id: string } | null; name?: string | null; folderId?: string | null; cut?: string[]; aspect?: string }, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}) {
   const v = await prisma.video.findUnique({ where: { id: input.videoId }, include: { analysis: true } });
   if (!v || v.userId !== userId) throw new AppError("Pick footage first.", 400, "no-footage");
   if (v.status !== "ready" || !v.analysis) throw new AppError(`"${v.name}" is not ready yet. Wait until it finishes processing.`, 409, "not-ready");
-  const styleId = input.styleId || DEFAULT_STYLE_ID;
-  const style = await prisma.style.findFirst({ where: { id: styleId, OR: [{ ownerId: null }, { ownerId: userId }] } });
-  if (!style) throw new AppError("That style does not exist.", 400, "no-style");
+  const asked = input.reference ?? (input.styleId ? { kind: "style" as const, id: input.styleId } : null);
+  const reference = asked ? await resolveReference(userId, asked) : null;
   let folderId = input.folderId || null;
   if (folderId) {
     const f = await prisma.folder.findUnique({ where: { id: folderId } });
@@ -36,26 +53,25 @@ export async function createProject(userId: string, input: { videoId: string; st
   }
   folderId ||= await defaultFolderId(userId);
   const transcript = v.analysis.transcript as unknown as Transcript;
-  const timeline = buildInitialTimeline(transcript, v.seconds, style.captionLook as "clean" | "bold" | "outline", Array.isArray(input.cut) ? input.cut : [], v.id);
+  const timeline = buildRawTimeline(transcript, v.seconds, Array.isArray(input.cut) ? input.cut : [], v.id);
   const aspect = input.aspect || aspectFor(v.orientation);
   const name = (input.name || "").trim() || v.name + " edit";
-  const snap: Snapshot = { timeline, name, aspect: aspect as Snapshot["aspect"], styleId };
+  const snap: Snapshot = { timeline, name, aspect: aspect as Snapshot["aspect"], styleId: null };
   const p = await prisma.project.create({
     data: {
-      userId, folderId, videoId: v.id, styleId, name, aspect, status: "Draft", art: v.art,
+      userId, folderId, videoId: v.id, styleId: null, ...(reference ? { reference } : {}), name, aspect, status: "Draft", art: v.art,
       timeline: timeline as unknown as Prisma.InputJsonValue, currentVersion: 1, outputSeconds: Math.round(outputDuration(timeline, allWords(transcript)) * 100) / 100,
       versions: { create: { v: 1, note: input.cut?.length ? `First cut (${input.cut.length} words removed)` : "Footage as recorded", timeline: snap as unknown as Prisma.InputJsonValue, createdBy: opts.actorKind || "user", sealed: true } },
     },
   });
   await prisma.folder.update({ where: { id: folderId }, data: { updatedAt: new Date() } });
-  if (opts.autoStyle) await applyTimelineChange(p.id, { op: "apply_style", styleId }, { kind: "rendrr", userId, toolName: "apply_style", input: { styleId } });
-  return prisma.project.findUniqueOrThrow({ where: { id: p.id } });
+  return p;
 }
 
 export async function listProjects(userId: string) {
   const ps = await prisma.project.findMany({ where: { userId, deletedAt: null }, orderBy: { updatedAt: "desc" }, include: { video: true, folder: true } });
   const styles = new Map((await prisma.style.findMany()).map((s) => [s.id, s]));
-  return Promise.all(ps.map(async (p) => ({ ...projectOut(p), style: styles.get(p.styleId) ? styleOut(styles.get(p.styleId)!) : undefined, video: await videoOut(p.video), folder: folderOut(p.folder) })));
+  return Promise.all(ps.map(async (p) => ({ ...projectOut(p), style: p.styleId && styles.get(p.styleId) ? styleOut(styles.get(p.styleId)!) : undefined, video: await videoOut(p.video), folder: folderOut(p.folder) })));
 }
 
 /** Latest finished render of each kind for a project version (or any version). */
@@ -67,7 +83,7 @@ export async function projectFull(userId: string, id: string) {
   const p = await getOwnedProject(userId, id);
   const [video, style, versions, reviews, activity, notes, owner] = await Promise.all([
     prisma.video.findUniqueOrThrow({ where: { id: p.videoId }, include: { analysis: true } }),
-    prisma.style.findUnique({ where: { id: p.styleId } }),
+    p.styleId ? prisma.style.findUnique({ where: { id: p.styleId } }) : null,
     prisma.projectVersion.findMany({ where: { projectId: p.id }, orderBy: { v: "asc" }, select: { v: true, note: true, createdAt: true, updatedAt: true, createdBy: true } }),
     prisma.review.findMany({ where: { OR: [{ projectId: p.id }, { folderId: p.folderId }] }, include: { comments: true } }),
     prisma.aiAction.findMany({ where: { projectId: p.id, undone: false }, orderBy: { createdAt: "desc" }, take: 50 }),

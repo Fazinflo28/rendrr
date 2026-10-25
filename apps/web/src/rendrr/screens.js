@@ -180,11 +180,11 @@ function RecreateModal({ g, onClose }) {
     setBusy(true);
     try { let fid = folder; if (fid === "new") fid = madeFolder.current || (madeFolder.current = (await api.createFolder(newName)).id);
       await whenReady(); setWait(null);
-      const p = await api.createProject({ videoId: video.id, styleId: g.styleId, folderId: fid, name: "Recreate: " + g.title });
+      const p = await api.createProject({ videoId: video.id, reference: { kind: "recipe", id: g.id }, folderId: fid, name: "Recreate: " + g.title });
       api.countRecreate(g.id); toast("Project created. Opening the editor.", { icon: "spark", tone: "brand" }); onClose(); go("/editor/" + p.id);
     } catch (e) { if (alive.current) { toast(e.message); setBusy(false); setWait(null); } }
   };
-  return html`<${Modal} title="Recreate this video" sub=${"Same style (" + g.style.name + "), your own footage. The AI matches the cut."} onClose=${onClose} wide>
+  return html`<${Modal} title="Recreate this video" sub="Your footage starts raw. This video is attached as a reference: your AI reads it and makes the edit." onClose=${onClose} wide>
     <div class="steps-row"><span class=${"stp" + (step === "source" ? " on" : " done")}>1. Footage</span><span class="stp-sep" /><span class=${"stp" + (step === "project" ? " on" : "")}>2. Project</span></div>
     ${step === "source" ? html`
       <div class="srcpick">
@@ -342,14 +342,36 @@ function FootagePage({ id }) {
 }
 
 /* ---------- /projects ---------- */
-function NewProjectModal({ onClose, onCreated, styleId, folderId, defaultName = "", title = "New edit", sub = "Pick footage and a style. The AI does the first pass." }) {
-  const vq = useAsync(() => api.listVideos(), []); const sq = useAsync(() => api.listStyles(), []); const fq = useAsync(() => api.listFoldersLite(), []);
-  const [videoId, setVideoId] = useState(""); const [style, setStyle] = useState(styleId || "s2"); const [name, setName] = useState(defaultName); const [folder, setFolder] = useState(folderId || ""); const [busy, setBusy] = useState(false); const [err, setErr] = useState(null);
+/* A reference for an edit: a style or a reference video (or the gallery recipe it already has). The AI reads it;
+   nothing from it is applied. */
+function ReferencePicker({ id, value, onChange, disabled }) {
+  const sq = useAsync(() => api.listStyles(), []); const vq = useAsync(() => api.listVideos(), []);
+  const styles = sq.data || []; const refs = (vq.data || []).filter((v) => v.kind === "reference");
+  const key = value ? value.kind + ":" + value.id : "";
+  const known = !value || (value.kind === "style" ? styles.some((s) => s.id === value.id) : value.kind === "video" && refs.some((v) => v.id === value.id));
+  const pick = (k) => {
+    if (!k) return onChange(null);
+    const [kind, rid] = [k.slice(0, k.indexOf(":")), k.slice(k.indexOf(":") + 1)];
+    if (kind === "style") { const s = styles.find((x) => x.id === rid); return onChange({ kind, id: rid, name: s?.name || rid }); }
+    if (kind === "video") { const v = refs.find((x) => x.id === rid); return onChange({ kind, id: rid, name: v?.name || rid }); }
+    onChange(value);
+  };
+  return html`<select id=${id} class="input" value=${key} disabled=${disabled} onChange=${(e) => pick(e.target.value)}>
+    <option value="">None: raw footage only</option>
+    ${!known && html`<option value=${key}>${value.kind === "recipe" ? "Gallery video" : "Reference"}: ${value.name}</option>`}
+    ${styles.length > 0 && html`<optgroup label="Styles">${styles.map((s) => html`<option key=${s.id} value=${"style:" + s.id}>${s.name}</option>`)}</optgroup>`}
+    ${refs.length > 0 && html`<optgroup label="Reference videos">${refs.map((v) => html`<option key=${v.id} value=${"video:" + v.id}>${v.name}</option>`)}</optgroup>`}
+  </select>`;
+}
+
+function NewProjectModal({ onClose, onCreated, styleId, folderId, defaultName = "", title = "New edit", sub = "Pick footage. The edit starts as your raw footage; your AI makes every change." }) {
+  const vq = useAsync(() => api.listVideos(), []); const fq = useAsync(() => api.listFoldersLite(), []);
+  const [videoId, setVideoId] = useState(""); const [reference, setReference] = useState(styleId ? { kind: "style", id: styleId, name: "" } : null); const [name, setName] = useState(defaultName); const [folder, setFolder] = useState(folderId || ""); const [busy, setBusy] = useState(false); const [err, setErr] = useState(null);
   const ready = (vq.data || []).filter((v) => v.status === "ready");
-  const create = async () => { setBusy(true); setErr(null); try { const p = await api.createProject({ videoId, styleId: style, name, folderId: folder || fq.data?.[0]?.id }); onCreated(p); } catch (e) { setErr(e.message); setBusy(false); } };
+  const create = async () => { setBusy(true); setErr(null); try { const p = await api.createProject({ videoId, reference, name, folderId: folder || fq.data?.[0]?.id }); onCreated(p); } catch (e) { setErr(e.message); setBusy(false); } };
   return html`<${Modal} title=${title} sub=${sub} onClose=${onClose} footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="create-project" disabled=${busy || !videoId} onClick=${create}>${busy ? "Creating…" : "Create project"}<//>`}>
     <${Field} label="Footage" id="np-video"><select id="np-video" class="input" value=${videoId} onChange=${(e) => setVideoId(e.target.value)}><option value="">Choose footage…</option>${ready.map((v) => html`<option key=${v.id} value=${v.id}>${v.name} (${fmtLen(v.seconds)})</option>`)}</select><//>
-    <${Field} label="Style" id="np-style"><select id="np-style" class="input" value=${style} onChange=${(e) => setStyle(e.target.value)}>${(sq.data || []).map((s) => html`<option key=${s.id} value=${s.id}>${s.name}</option>`)}</select><//>
+    <${Field} label="Reference (optional)" id="np-reference" hint="Attached for your AI to read. Nothing from it is applied."><${ReferencePicker} id="np-reference" value=${reference} onChange=${setReference} /><//>
     <${Field} label="Project folder" id="np-folder"><select id="np-folder" class="input" value=${folder || fq.data?.[0]?.id || ""} onChange=${(e) => setFolder(e.target.value)}>${(fq.data || []).map((f) => html`<option key=${f.id} value=${f.id}>${f.name}</option>`)}</select><//>
     <${Field} label="Name" id="np-name" hint="Optional. We will name it after the footage."><input id="np-name" class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Podcast highlights" /><//>
     ${err && html`<p role="alert" class="t-small">${err}</p>`}
@@ -407,13 +429,13 @@ function FolderPage({ id }) {
                 <div class="ainfo"><span><${Icon} name="comment" size="12" />${p.comments}</span><span class="mono">${dur(p)}</span></div></div>
               <div style="padding:12px 14px 14px" class="col" ><div class="row between"><b class="t-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.name}</b><div style="position:relative" onClick=${(e) => e.stopPropagation()}><${Btn} kind="quiet" size="xs" icon="more" aria-label="More" onClick=${() => setMenu(menu === p.id ? null : p.id)} />
                 ${menu === p.id && html`<div class="menu" style="top:30px"><button class="item" onClick=${() => { setShare({ folder: f, projectId: p.id }); setMenu(null); }}><${Icon} name="link" />Share this video</button><button class="item" onClick=${() => { go("/editor/" + p.id); }}><${Icon} name="scissors" />Open in editor</button><button class="item" onClick=${() => { del(p); setMenu(null); }}><${Icon} name="trash" />Delete</button></div>`}</div></div>
-                <span class="t-small muted">${user?.name || "You"} · ${fmtAgo(p.updated)} · ${p.style?.name}</span>
+                <span class="t-small muted">${user?.name || "You"} · ${fmtAgo(p.updated)} · ${p.style?.name || "No style"}</span>
                 <select class="input sm astatus" aria-label="Status" value=${p.status} onClick=${(e) => e.stopPropagation()} onChange=${(e) => setStatus(p, e.target.value)}>${["Draft", "Rendering", "Preview ready", "In review", "Changes requested", "Approved", "Final ready"].map((st) => html`<option key=${st} value=${st}>${st}</option>`)}</select></div>
             </div>`)}
-          </div>` : html`<div class="card tight"><table><thead><tr><th></th><th>Name</th><th>Style</th><th>Status</th><th>Comments</th><th>Length</th><th>Updated</th><th></th></tr></thead><tbody>${list.map((p) => html`<tr key=${p.id} class="click" data-asset=${p.id} onClick=${() => go("/editor/" + p.id)}><td onClick=${(e) => e.stopPropagation()}><button class=${"acheck static" + (sel.includes(p.id) ? " on" : "")} aria-label="Select" onClick=${(e) => toggleSel(e, p.id)}>${sel.includes(p.id) && html`<${Icon} name="check" size="12" />`}</button></td><td><b class="t-label">${p.name}</b></td><td class="muted">${p.style?.name}</td><td><${StatusChip} status=${p.status} /></td><td class="muted mono">${p.comments}</td><td class="muted mono">${dur(p)}</td><td class="muted">${fmtAgo(p.updated)}</td><td onClick=${(e) => e.stopPropagation()}><${Btn} kind="ghost" size="xs" icon="link" onClick=${() => setShare({ folder: f, projectId: p.id })}>Share<//></td></tr>`)}</tbody></table></div>`}
+          </div>` : html`<div class="card tight"><table><thead><tr><th></th><th>Name</th><th>Style</th><th>Status</th><th>Comments</th><th>Length</th><th>Updated</th><th></th></tr></thead><tbody>${list.map((p) => html`<tr key=${p.id} class="click" data-asset=${p.id} onClick=${() => go("/editor/" + p.id)}><td onClick=${(e) => e.stopPropagation()}><button class=${"acheck static" + (sel.includes(p.id) ? " on" : "")} aria-label="Select" onClick=${(e) => toggleSel(e, p.id)}>${sel.includes(p.id) && html`<${Icon} name="check" size="12" />`}</button></td><td><b class="t-label">${p.name}</b></td><td class="muted">${p.style?.name || "No style"}</td><td><${StatusChip} status=${p.status} /></td><td class="muted mono">${p.comments}</td><td class="muted mono">${dur(p)}</td><td class="muted">${fmtAgo(p.updated)}</td><td onClick=${(e) => e.stopPropagation()}><${Btn} kind="ghost" size="xs" icon="link" onClick=${() => setShare({ folder: f, projectId: p.id })}>Share<//></td></tr>`)}</tbody></table></div>`}
         </div>`}
         ${section === "collections" && html`<${EmptyState} icon="projects" title="No collections yet" text="Collections group assets across folders, like 'Best hooks' or 'Client approved'." action=${html`<${Btn} kind="secondary" size="sm" onClick=${() => toast("Collections are coming in the next build")}>New collection<//>`} />`}
-        ${section === "deleted" && (deleted.length === 0 ? html`<${EmptyState} icon="trash" title="Nothing deleted" text="Deleted edits stay here for 30 days." />` : html`<div class="card tight"><table><tbody>${deleted.map((p) => html`<tr key=${p.id}><td><b class="t-label">${p.name}</b></td><td class="muted">${p.style?.name}</td><td style="text-align:right"><${Btn} kind="ghost" size="xs" icon="refresh" onClick=${async () => { try { await api.restoreAsset(p.id); setDeleted((x) => x.filter((i) => i.id !== p.id)); toast("Restored", { icon: "check", tone: "brand" }); q.reload(); } catch (e) { toast(e.message); } }}>Restore<//></td></tr>`)}</tbody></table></div>`)}
+        ${section === "deleted" && (deleted.length === 0 ? html`<${EmptyState} icon="trash" title="Nothing deleted" text="Deleted edits stay here for 30 days." />` : html`<div class="card tight"><table><tbody>${deleted.map((p) => html`<tr key=${p.id}><td><b class="t-label">${p.name}</b></td><td class="muted">${p.style?.name || "No style"}</td><td style="text-align:right"><${Btn} kind="ghost" size="xs" icon="refresh" onClick=${async () => { try { await api.restoreAsset(p.id); setDeleted((x) => x.filter((i) => i.id !== p.id)); toast("Restored", { icon: "check", tone: "brand" }); q.reload(); } catch (e) { toast(e.message); } }}>Restore<//></td></tr>`)}</tbody></table></div>`)}
       </div>
     </div>
     ${np && html`<${NewProjectModal} folderId=${f.id} onClose=${() => setNp(false)} onCreated=${(p) => { setNp(false); go("/editor/" + p.id); }} />`}
@@ -422,12 +444,15 @@ function FolderPage({ id }) {
 
 /* ---------- /styles ---------- */
 // A looping "video" preview for a style pack: pure CSS animation, no media files.
-function StyleVideo({ s, ori, className = "", style }) {
+const RAW_LOOK = { ori: ["16:9", "9:16", "1:1"], type: "raw", captionLook: "clean" }; // an edit with no style: the footage
+function StyleVideo({ s: given, ori, className = "", style }) {
+  const s = given || RAW_LOOK;
   const o = ori && s.ori.includes(ori) ? ori : (ori === "All" || !ori ? s.ori[0] : ori);
   const ar = { "9:16": "9 / 16", "16:9": "16 / 9", "1:1": "1 / 1" }[o];
   const person = (extra = "") => html`<div class=${"sv-person " + extra}><i class="sv-head" /><i class="sv-body" /></div>`;
   const cap = (words, look = s.captionLook) => html`<div class=${"sv-cap " + look}>${words.map((w, i) => html`<span key=${i} style=${{ animationDelay: (i * 1) + "s" }}>${w}</span>`)}</div>`;
   const scene = {
+    "raw": () => html`<div class="sv-scene">${person()}</div>`,
     "talking-head": () => html`<div class="sv-scene sv-punch">${person()}</div>${cap(["Nobody", "tells you", "this part"])}`,
     "podcast-clip": () => html`<div class="sv-two"><div class="sv-scene sv-spk a">${person("sm")}</div><div class="sv-scene sv-spk b">${person("sm")}</div></div><div class="sv-lower"><b>Ronnii K</b><span>Founder, Fazinflo</span></div>${cap(["The first", "ten clients", "are the hardest"], "clean")}`,
     "clipping": () => html`<div class="sv-scene sv-cutA">${person()}</div><div class="sv-scene sv-cutB">${person("left")}</div><div class="sv-rec">REC</div>`,
@@ -551,7 +576,7 @@ function PublishModal({ plats, onClose, onPublished }) {
   const go_ = async () => { setBusy(true); setErr(null); try { const g = await api.publishToGallery({ projectId, title: title || proj?.name, platforms: chosen, allowRecreate: allow }); toast("Published to the gallery", { icon: "check", tone: "brand" }); onPublished(g); } catch (e) { setErr(e.message); setBusy(false); } };
   return html`<${Modal} title="Publish a video" sub="Share a project with the community. Others can like it and recreate the style with their footage." onClose=${onClose} footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="publish-go" icon="globe" disabled=${busy || !projectId} onClick=${go_}>${busy ? "Publishing…" : "Publish"}<//>`}>
     <${Field} label="Project" id="pb-project"><select id="pb-project" class="input" value=${projectId} onChange=${(e) => { setProjectId(e.target.value); const p = (pq.data || []).find((x) => x.id === e.target.value); if (p && !title) setTitle(p.name); }}><option value="">Choose a project…</option>${(pq.data || []).map((p) => html`<option key=${p.id} value=${p.id}>${p.name} · ${p.status}</option>`)}</select><//>
-    ${proj && html`<div class="row" style="gap:12px"><div style="width:160px"><${StyleVideo} s=${proj.style} ori=${proj.aspect} className="fill" /></div><div class="col" style="gap:4px"><b class="t-label">${proj.style?.name}</b><span class="t-small muted">${ORI_LABEL[proj.aspect]} · v${proj.version}</span></div></div>`}
+    ${proj && html`<div class="row" style="gap:12px"><div style="width:160px"><${StyleVideo} s=${proj.style} ori=${proj.aspect} className="fill" /></div><div class="col" style="gap:4px"><b class="t-label">${proj.style?.name || "No style"}</b><span class="t-small muted">${ORI_LABEL[proj.aspect]} · v${proj.version}</span></div></div>`}
     <${Field} label="Title" id="pb-title"><input id="pb-title" class="input" value=${title} onInput=${(e) => setTitle(e.target.value)} placeholder="Give it a catchy title" /><//>
     <div class="col" style="gap:8px"><span class="t-small muted" style="padding-left:16px">Made for</span><div class="row wrap" style="gap:8px">${plats.map(([k, l]) => html`<button key=${k} type="button" class=${"chip sm " + (chosen.includes(k) ? "ink" : "neutral")} aria-pressed=${chosen.includes(k)} onClick=${() => toggle(k)}>${l}</button>`)}</div></div>
     <div class="row between"><div><b class="t-label">Let others recreate it</b><p class="t-small muted">They get the style, not your footage.</p></div><${Toggle} id="pb-allow" on=${allow} onChange=${setAllow} label="Allow recreate" /></div>
@@ -791,6 +816,6 @@ function BillingPage() {
 
 export {
   LoginPage, Shell, SourceBadge, DrivePicker, AddFootageModal, LibraryPage, FootagePage, NewProjectModal, ProjectsPage, FolderPage,
-  StyleVideo, StyleArt, StylesPage, StylePacks, HomePage, CreatePage, ExploreFeed, PublishModal, CreateLinkModal, ClientReviewPage, ConnectPage, UsagePage, Heatmap,
+  StyleVideo, StyleArt, ReferencePicker, StylesPage, StylePacks, HomePage, CreatePage, ExploreFeed, PublishModal, CreateLinkModal, ClientReviewPage, ConnectPage, UsagePage, Heatmap,
   BillingPage, SettingsPage,
 };

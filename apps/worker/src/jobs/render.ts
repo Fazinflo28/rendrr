@@ -96,7 +96,7 @@ export async function renderJob(ctx: Ctx) {
 
     // ---- Reading timeline ----
     await send(i, 0.2);
-    const style = await prisma.style.findUnique({ where: { id: snapshot.styleId } });
+    const style = snapshot.styleId ? await prisma.style.findUnique({ where: { id: snapshot.styleId } }) : null;
     const rules = style ? StyleRulesSchema.safeParse(style.rules) : null;
     const brollIds = Array.from(new Set(snapshot.timeline.tracks.v2.map((c) => (c as { videoId?: string }).videoId).filter(Boolean) as string[]));
     const brollVideos = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId: video.userId, proxyKey: { not: null } } }) : [];

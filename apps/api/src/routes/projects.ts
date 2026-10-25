@@ -1,12 +1,12 @@
 import { AppError, applyTimelineChange, notFound, projectChannel, restoreVersion } from "@rendrr/core";
-import { prisma, type Prisma } from "@rendrr/db";
+import { prisma, Prisma } from "@rendrr/db";
 import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
 import { projectChat } from "../services/aiChat";
-import { createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles } from "../services/projects";
+import { createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference } from "../services/projects";
 
 /** Server-sent events on a raw response. Keeps CORS headers that Fastify already set. */
 export default async function projects(app: FastifyInstance) {
@@ -34,7 +34,7 @@ export default async function projects(app: FastifyInstance) {
     const reviews = await prisma.review.findMany({ where: { OR: [{ folderId: f.id }, { projectId: { in: ps.map((p) => p.id) } }] }, include: { comments: { select: { projectId: true } } }, orderBy: { createdAt: "desc" } });
     return {
       ...folderOut(f),
-      assets: ps.map((p) => ({ ...projectOut(p), style: styles.get(p.styleId) ? styleOut(styles.get(p.styleId)!) : undefined,
+      assets: ps.map((p) => ({ ...projectOut(p), style: p.styleId && styles.get(p.styleId) ? styleOut(styles.get(p.styleId)!) : undefined,
         comments: reviews.filter((r) => r.projectId === p.id || r.folderId === f.id).reduce((n, r) => n + r.comments.filter((c) => !c.projectId || c.projectId === p.id).length, 0) })),
       shares: reviews.map((r) => ({ token: r.token, folderId: r.folderId, projectId: r.projectId, approved: r.approved, version: r.version })),
     };
@@ -73,7 +73,7 @@ export default async function projects(app: FastifyInstance) {
 
   app.post("/projects", async (req) => {
     const input = CreateProjectInput.parse(req.body);
-    const p = await createProject(req.user!.id, input, { autoStyle: true });
+    const p = await createProject(req.user!.id, input);
     return projectOut(p);
   });
 
@@ -95,6 +95,8 @@ export default async function projects(app: FastifyInstance) {
       }
     }
     if (patch.status && patch.status !== p.status) await prisma.project.update({ where: { id }, data: { status: patch.status } });
+    // A reference is attached for the AI to read, or taken off. It changes nothing in the edit.
+    if (patch.reference !== undefined) await prisma.project.update({ where: { id }, data: { reference: patch.reference ? await resolveReference(userId, patch.reference) : Prisma.DbNull } });
     return projectOut(await prisma.project.findUniqueOrThrow({ where: { id } }));
   });
 
