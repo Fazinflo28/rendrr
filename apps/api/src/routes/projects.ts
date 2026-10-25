@@ -1,4 +1,4 @@
-import { AppError, applyTimelineChange, notFound, projectChannel, restoreVersion } from "@rendrr/core";
+import { AppError, applyTimelineChange, notFound, projectChannel, restoreVersion, signGet } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
 import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
@@ -7,6 +7,21 @@ import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
 import { projectChat } from "../services/aiChat";
 import { createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference } from "../services/projects";
+
+/** A picture of each edit for its card: a frame of its latest render (the edit as it looks), else its footage's
+ *  thumbnail. Signed for an hour. */
+async function editThumbs(ps: { id: string; videoId: string }[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!ps.length) return out;
+  const renders = await prisma.render.findMany({ where: { projectId: { in: ps.map((p) => p.id) }, status: "done" }, orderBy: { createdAt: "desc" }, select: { projectId: true, framesKeys: true } });
+  const videos = new Map((await prisma.video.findMany({ where: { id: { in: ps.map((p) => p.videoId) } }, select: { id: true, thumbKey: true } })).map((v) => [v.id, v.thumbKey]));
+  await Promise.all(ps.map(async (p) => {
+    const frames = renders.filter((r) => r.projectId === p.id).map((r) => (r.framesKeys as string[]) || []).find((k) => k.length);
+    const key = frames?.[0] ?? videos.get(p.videoId);
+    if (key) out.set(p.id, await signGet(key, 3600));
+  }));
+  return out;
+}
 
 /** Server-sent events on a raw response. Keeps CORS headers that Fastify already set. */
 export default async function projects(app: FastifyInstance) {
@@ -32,9 +47,10 @@ export default async function projects(app: FastifyInstance) {
     const ps = await prisma.project.findMany({ where: { folderId: f.id, deletedAt: null }, orderBy: { updatedAt: "desc" } });
     const styles = new Map((await prisma.style.findMany()).map((s) => [s.id, s]));
     const reviews = await prisma.review.findMany({ where: { OR: [{ folderId: f.id }, { projectId: { in: ps.map((p) => p.id) } }] }, include: { comments: { select: { projectId: true } } }, orderBy: { createdAt: "desc" } });
+    const thumbs = await editThumbs(ps);
     return {
       ...folderOut(f),
-      assets: ps.map((p) => ({ ...projectOut(p), style: p.styleId && styles.get(p.styleId) ? styleOut(styles.get(p.styleId)!) : undefined,
+      assets: ps.map((p) => ({ ...projectOut(p), style: p.styleId && styles.get(p.styleId) ? styleOut(styles.get(p.styleId)!) : undefined, thumb: thumbs.get(p.id) ?? null,
         comments: reviews.filter((r) => r.projectId === p.id || r.folderId === f.id).reduce((n, r) => n + r.comments.filter((c) => !c.projectId || c.projectId === p.id).length, 0) })),
       shares: reviews.map((r) => ({ token: r.token, folderId: r.folderId, projectId: r.projectId, approved: r.approved, version: r.version })),
     };
