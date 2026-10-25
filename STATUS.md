@@ -428,8 +428,9 @@ The test footage and the edit stay in the smoke account. The original is deleted
   - *Limits.* The time limit comes from measured cost (about 1 s per second of full-screen motion at 1080x1920 with 5 browsers), at most 25 min. Graphics up to 15 s at 1080x1920 were captured at 12 fps; now always 30 fps.
   - *Timing.* Animations started mid-way (a class added at 5 s, `element.animate()` later) jumped to their end, and `setTimeout`/`setInterval` ran on the wall clock. Now every animation runs from the moment it appears and timers follow the graphic's clock. The encoder also snapped pictures to a 25 fps grid (up to 20 ms early or late); it uses the 30 fps grid now.
   - *Fonts.* Every font name (Montserrat, Open Sans, Kalam, even Arial) drew as Noto Sans. The worker image now has 82 Google Fonts families (pinned, open licences) and metric-compatible stand-ins for Arial, Helvetica, Times, Georgia, Calibri, Courier and Impact; the build stops if they are missing. `create_graphic` lists them.
-  - *Progress.* `create_graphic` and `list_graphics` say how far a recording is and the time left. Code can be 1 MB (was 200 KB).
+  - *Progress.* `create_graphic` and `list_graphics` say how far a recording is and the time left. Code can be 1 MB (was 200 KB). The graphics browser has no WebGL (it never had); the tool now says so, so the AI uses CSS, SVG or canvas 2D.
   - Tests: the graphic clock (timers, a transition started by setTimeout, element.animate, a transition crossing two browsers' ranges), all 82 fonts drawing as themselves, and the existing long-graphic tests.
+  - Live (smoke-test account): the worker runs 5 graphics browsers; a 20 s 1080x1920 graphic with Montserrat, Open Sans, Kalam and Arial text and two timer-started transitions recorded in 3.4 s, its check frames showing the real fonts and each transition where its timer put it. The image build fetched all 315 font files and passed its font check.
 
 ## Reference-video test (23 October, live, through the connector only)
 
