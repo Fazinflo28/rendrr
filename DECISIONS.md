@@ -248,3 +248,12 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Long graphics | Over 15 s a graphic is sampled every 0.5 s by a scout page. Unchanged: held. Under 0.2% of pixels changed: shown from the sample (a progress bar's edge moves under a pixel per sample). More: a second page that only moves forward records that half second frame by frame. So JS graphics never see time go back. The page drawn from is brought to the front, because Chromium stops drawing a background page. The WebM has a variable frame rate. The limit is 60 s + 0.5 s per second. A graphic that changes nearly every frame for minutes fails with a plain message. Missed: something that comes and goes within half a second of a still stretch. `framerate` blending was tried and dropped: it has no alpha formats. |
 | A clip longer than its graphic | It holds the last frame, in the render (`tpad`) and in the player (the `<video>` holds it). Before Phase 7 the render dropped the graphic at the end of its file while the editor held it. |
 
+## After the 8 phases (25 October)
+
+| Question | Decision |
+|---|---|
+| A new edit | The footage as recorded and nothing else: no style, captions off, nothing cut (only words the user removed on the footage page). It used to apply the default style (Clean Podcast Clip) straight away. |
+| References | A style, a gallery recipe or a reference video can be attached to an edit (`Project.reference`). The AI reads it in `get_project`; Rendrr never applies it. `Project.styleId` is now only the style the AI applied with `apply_style`, so only an applied style's caption rules shape the captions. |
+| Cut precision | To the millisecond. The sound is cut exactly; the picture goes on the nearest frame and shows the frame its sound plays, at most half a frame off at a cut and never adding up. The alternative, moving the frame grid itself to the cuts, would have moved every overlay, caption and transition off whole frames. |
+| `cut_silences` | `keep` sets the pause left next to the speech (default 0.08 s as before, 0 = tight); pauses from 1 ms can be cut. |
+| Deleting a video | Footage that edits use is refused with their names; the app then offers to delete the video and those edits together. The raw file is never touched. |

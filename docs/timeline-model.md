@@ -48,7 +48,12 @@ A timeline with `model: "B"` and `mainVideoId` (the project's footage):
 - **sound parts:** they cover the whole edit; muted ones keep their footage, so captions follow them
 - each clip's place, and lookups between edit time and footage time
 
-With `align: 30` (the render plan) every part starts and ends on a frame, exactly as model A's planner did.
+With `align` (the render plan's frame rate) the edit is timed exactly and the picture is put on frames:
+- **Sound** is cut where the edit says, to the millisecond. A part at normal speed keeps its exact footage in and out (only the file's last whole frame caps it).
+- **Picture**: each part starts on the frame nearest its exact edit time and shows, frame by frame, the footage frame its sound is playing (the frame that covers that moment). Picture and sound are at most half a frame apart at a cut, and that never adds up over cuts. A part shorter than a frame is heard; its neighbours' frames cover it.
+- The edit's length is the picture's whole frames; the render pads or cuts the sound to it (under half a frame).
+- `cutsOnFrames` rounds the cuts to frames as model A's planner did. It is only used to check a conversion from model A, like for like.
+- Cut points, trims, footage in/out and J/L offsets are stored to the millisecond (1/100 s before). Parts under 0.04 s are dropped, and a cut leaves no leftover under 0.04 s.
 
 Speed (Phase 5): every piece, picture part and sound part has a `rate`, footage seconds per edit second. Below 0 is reversed, 0 is frozen, missing is 1.
 - A part's edit length is its footage / |rate|, in whole frames.
@@ -107,7 +112,7 @@ Graphics and export (Phase 7):
 - **Size.** `outputSize(aspect, kind, resolution)`: a final's short side is 720, 1080 or 2160 in the edit's shape; previews stay 540.
 - **Frame rate.**
   - `outputRate(kind, sourceFps)`: a final plays at its main footage's rate, snapped to the nearest standard rate within 0.5% and capped at 60; previews are 30.
-  - The plan carries it (`plan.fps`, `plan.rate` as FFmpeg's fraction). The sequence is aligned to it, so every part is a whole number of output frames.
+  - The plan carries it (`plan.fps`, `plan.rate` as FFmpeg's fraction). The picture is aligned to it, so every picture part is a whole number of output frames; the sound is cut to the millisecond (see "What plays").
   - The graph's `fps=`, `r=`, `settb=` and frame counts and the encoder's `-r`/`-g` all use it. At 30 every string is as before.
 - **Codec.** HEVC is libx265 with `hvc1` and BT.709 tags (`fast`, `faster` at 4K). HDR kept is always HEVC 10-bit.
 - **Graphics of any length.**

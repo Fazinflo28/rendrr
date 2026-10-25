@@ -170,6 +170,8 @@ export type EditContext = {
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
+/** A time as text: 1/100 s as before, with the millisecond when there is one ("2.00", "5.123"), so the AI sees exact cuts. */
+export function msText(s: number): string { const t = s.toFixed(3); return t.endsWith("0") ? t.slice(0, -1) : t; }
 /** Times an edit sets (cuts, trims, footage in and out, sound offsets, where clips hang): to the millisecond. */
 const rT = (n: number) => Math.round(n * 1000) / 1000;
 const rid = (prefix: string) => prefix + Math.random().toString(36).slice(2, 7);
@@ -447,7 +449,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     return f;
   };
   const v1Footage = (x: Timeline) => seqClips(x).reduce((a, c) => a + c.sourceOut - c.sourceIn, 0);
-  const at2 = (s: number) => s.toFixed(2);
+  const at2 = msText;
 
   switch (op.op) {
     case "replace": {
@@ -1189,8 +1191,9 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
     if (c.keys?.length) extra.push(`keys ${c.keys.map((k) => (Math.max(0, (c.freeze ? k.t - c.sourceIn : (view.editAt(c.id, k.t) ?? p.start) - p.start))).toFixed(2)).join(",")}s`);
     const lk = lookTags(c);
     if (lk) extra.push(lk);
-    const at = p.end > p.start ? ` @${p.start.toFixed(2)}-${p.end.toFixed(2)}` : " (all cut)";
-    return `  ${c.id} ${vName(c.sourceVideoId)} ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}${at} "${c.label}"${extra.length ? " " + extra.join(" ") : ""}`;
+    const ms = msText;
+    const at = p.end > p.start ? ` @${ms(p.start)}-${ms(p.end)}` : " (all cut)";
+    return `  ${c.id} ${vName(c.sourceVideoId)} ${ms(c.sourceIn)}-${ms(c.sourceOut)}${at} "${c.label}"${extra.length ? " " + extra.join(" ") : ""}`;
   });
   lines.push(`V1 sequence: ${v1.length ? "\n" + shownV1.join("\n") + (v1.length > maxPerTrack ? `\n  …and ${v1.length - maxPerTrack} more` : "") : "empty"}`);
   const names: Partial<Record<TrackName, string>> = { v2: "V2 b-roll/zooms", v3: "V3 titles", a2: "A2 music", a3: "A3 sfx" };

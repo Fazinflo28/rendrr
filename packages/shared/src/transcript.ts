@@ -34,6 +34,8 @@ export function refreshFillers(tr: Transcript): Transcript | null {
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
+/** A word time as text: 1/100 s, with the millisecond when there is one ("2.00", "5.123"). */
+const ms = (n: number) => { const t = n.toFixed(3); return t.endsWith("0") ? t.slice(0, -1) : t; };
 
 /**
  * Builds lines from sentence groups of raw words. Word ids are w0..wN and line ids l0..lN, stable for
@@ -119,7 +121,7 @@ export function transcriptAsText(tr: Transcript, cut?: Set<string>, detail: "sen
       const words = cut ? l.words.filter((w) => !cut.has(w.id)) : l.words;
       if (!words.length) return null;
       // Each word: text(id@start-end), seconds in the footage.
-      if (detail === "words") return `${l.id} [${fmt(l.start)}] ` + words.map((w) => `${w.text}(${w.id}@${w.t.toFixed(2)}-${w.end.toFixed(2)}${w.filler ? ",filler" : ""})`).join(" ");
+      if (detail === "words") return `${l.id} [${fmt(l.start)}] ` + words.map((w) => `${w.text}(${w.id}@${ms(w.t)}-${ms(w.end)}${w.filler ? ",filler" : ""})`).join(" ");
       return `${l.id} [${fmt(l.start)}] ${words.map((w) => w.text).join(" ")}`;
     })
     .filter(Boolean)
