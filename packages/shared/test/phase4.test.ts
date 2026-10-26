@@ -75,7 +75,7 @@ describe("the caption layout", () => {
 describe("text layers", () => {
   it("add_text with a preset, set_text changes it; they hang on V1 like other V3 clips", () => {
     const r = edit(snap(), { op: "add_text", text: "Ten clients\nin 90 days", start: 1, end: 4, preset: "title" });
-    expect(r.summary).toMatch(/added text "Ten clients" at 0:01 \(Montserrat 900, 9% size/);
+    expect(r.summary).toMatch(/added text "Ten clients" at 0:01 \(clip \w+; Montserrat 900, 9% size/);
     const c = r.snap.timeline.tracks.v3.find((x) => (x as { kind?: string }).kind === "text") as unknown as { id: string; anchorId: string; text: string; anim: string; style: TextStyle };
     expect(c).toMatchObject({ text: "Ten clients\nin 90 days", anim: "pop", style: { font: "Montserrat", case: "upper" } });
     expect(c.anchorId).toBeTruthy();

@@ -64,7 +64,11 @@ const EDIT_OPS = [
   z.object({ op: z.literal("set_aspect"), aspect: AspectSchema }),
   // Position and scale of the footage in the frame (Premiere's Motion). Leave a field out to keep it.
   // clipIds: those V1 clips (default every clip of the main footage).
-  z.object({ op: z.literal("set_framing"), scale: z.number().min(0.25).max(4).optional(), x: z.number().min(-1).max(1).optional(), y: z.number().min(-1).max(1).optional(), clipIds: z.array(clipId).max(2000).optional() }),
+  // fitFaceTo: the face in each clip at x, y of the frame (0-1 from the top left), r = half the face's height as a share
+  // of the frame's (scale and offset worked out per clip). faces: the measured faces, filled in by Rendrr.
+  z.object({ op: z.literal("set_framing"), scale: z.number().min(0.25).max(4).optional(), x: z.number().min(-1).max(1).optional(), y: z.number().min(-1).max(1).optional(), clipIds: z.array(clipId).max(2000).optional(),
+    fitFaceTo: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), r: z.number().min(0.02).max(0.5) }).optional(),
+    faces: z.record(z.object({ u: z.number(), v: z.number(), r: z.number().positive(), found: z.number().optional(), of: z.number().optional() }).nullable()).optional() }),
   // Turn the footage clockwise (footage filmed sideways); 0 puts it back.
   z.object({ op: z.literal("set_rotation"), degrees: RotationSchema, clipIds: z.array(clipId).max(2000).optional() }),
   z.object({ op: z.literal("rename"), name: z.string().min(1).max(200) }),
@@ -527,20 +531,33 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         const used = new Set<string>();
         const taken = new Set([...old.keys(), ...op.clips.map((c) => c.id).filter(Boolean) as string[]]);
         const freshId = () => { let id = rid("vc_"); while (taken.has(id)) id = rid("vc_"); taken.add(id); return id; };
-        const clips = op.clips.map((c) => {
-          const { videoId: v, id: _id, start, end, timelineStart: _a, timelineEnd: _b, linkId: _l, ...extra } = c as typeof c & Record<string, unknown>;
+        const fresh: string[] = [];
+        const clips = op.clips.map((c, i) => {
+          const { videoId: v, id: _id, start, end, timelineStart: _a, timelineEnd: _b, linkId: _l, framing: fr, ...extra } = c as typeof c & Record<string, unknown>;
           const vid = videoIdOf((v as string | undefined) ?? (extra.sourceVideoId as string | undefined));
           inFootage(vid, start, end);
           const prev = c.id && !used.has(c.id) ? old.get(c.id) : undefined;
           const id = c.id && !used.has(c.id) ? c.id : freshId();
+          if (!old.has(id)) fresh.push(id);
           used.add(id);
-          return { ...(prev ?? lookOf(vid)), ...extra, id, label: c.label ?? prev?.label ?? "", start, end, sourceVideoId: vid, sourceIn: rT(start), sourceOut: rT(end) } as SeqClip;
+          const out = { ...(prev ?? lookOf(vid)), ...extra, id, label: c.label ?? prev?.label ?? "", start, end, sourceVideoId: vid, sourceIn: rT(start), sourceOut: rT(end) } as SeqClip;
+          // Each clip's own framing ({scale, x, y}, as set_framing; null: fill the frame again).
+          if (fr !== undefined) {
+            delete (out as { framing?: Framing }).framing;
+            if (fr !== null) {
+              const f = FramingSchema.safeParse(fr);
+              if (!f.success) throw new EditError(`Clip ${i + 1}'s framing is {scale 0.25-4, x -1 to 1, y -1 to 1}: ${f.error.issues[0].path.join(".") || "framing"} ${f.error.issues[0].message.toLowerCase()}.`);
+              if (plainFraming(f.data)) (out as { framing?: Framing }).framing = f.data;
+            }
+          }
+          return out;
         });
-        return { snap: { ...snap, timeline: setSeq(tl, clips) }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on V1` };
+        return { snap: { ...snap, timeline: setSeq(tl, clips) }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on V1${newIds(fresh)}` };
       }
       // Another track: each clip hangs on the V1 clip playing at its start.
       let dropped = 0;
       const clips: Clip[] = [];
+      const before = new Set((tl.tracks[op.track] as Clip[]).map((x) => x.id));
       op.clips.forEach((c, i) => {
         const base = { ...c, id: c.id || rid(op.track + "_" + i) } as Clip;
         if (isCaptionMarker(op.track, base)) { clips.push({ ...base, sourceVideoId: main, sourceIn: c.start, sourceOut: c.end } as Clip); return; }
@@ -549,7 +566,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         const { anchorId: _x, anchorAt: _y, length: _z, fill: _f, ...rest } = base as Attached;
         clips.push(attachAt(view(), rest as Clip, s, e));
       });
-      return { snap: { ...snap, timeline: withTracks(tl, op.track, clips) }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on ${op.track.toUpperCase()}${dropped ? ` (${dropped} not in the edit, left out)` : ""}` };
+      return { snap: { ...snap, timeline: withTracks(tl, op.track, clips) }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on ${op.track.toUpperCase()}${dropped ? ` (${dropped} not in the edit, left out)` : ""}${newIds(clips.filter((x) => !before.has(x.id) && !isCaptionMarker(op.track, x)).map((x) => x.id))}` };
     }
     case "split_clip": {
       if (op.track === "v1" || op.track === "a1") {
@@ -620,7 +637,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (!(op.end > op.start)) throw new EditError("A zoom must end after it starts.");
       if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
       const z = attachAt(view(), zoomClip(s, e, op.scale, e - s > 4 ? "push" : "punch"), s, e);
-      return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, z]) }, summary: `added zoom at ${op.edit ? "edit " : ""}${fmtClock(op.start)}` };
+      return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, z]) }, summary: `added zoom at ${op.edit ? "edit " : ""}${fmtClock(op.start)} (clip ${z.id})` };
     }
     case "add_broll": {
       const v = ctx.getVideo?.(op.videoId);
@@ -631,7 +648,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
       if (op.sourceStart + (e - s) > v.seconds + 0.05) throw new EditError(`"${v.name}" is only ${v.seconds.toFixed(1)}s long. Pick an earlier sourceStart or a shorter range.`);
       const c = attachAt(view(), { id: rid("b"), start: 0, end: 0, label: op.label || v.name, kind: "broll", videoId: v.id, sourceStart: rT(op.sourceStart) } as V2Clip, s, e);
-      return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, c]) }, summary: `added b-roll ${v.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}` };
+      return { snap: { ...snap, timeline: withTracks(tl, "v2", [...tl.tracks.v2, c]) }, summary: `added b-roll ${v.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)} (clip ${c.id})` };
     }
     case "set_captions": {
       if (op.styleId) {
@@ -660,7 +677,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const p = textPreset(op.preset ?? "plain");
       const style = TextStyleSchema.parse({ ...p.style, ...pickStyle(op) });
       const c = attachAt(view(), { id: rid("t"), start: 0, end: 0, label: op.label || op.text.split("\n")[0].slice(0, 60), kind: "text" as const, text: op.text, style, card: op.card ?? null, anim: op.anim ?? p.anim } as Clip, s0, e0);
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added text "${op.text.split("\n")[0].slice(0, 40)}" at ${op.edit ? "edit " : ""}${fmtClock(op.start)} (${styleText(style)})` };
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added text "${op.text.split("\n")[0].slice(0, 40)}" at ${op.edit ? "edit " : ""}${fmtClock(op.start)} (clip ${c.id}; ${styleText(style)})` };
     }
     case "set_text": {
       const c = findClip(tl, "v3", op.clipId) as Clip & { kind?: string; text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim };
@@ -686,11 +703,11 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (!track) throw new EditError(`No music track or mood called "${op.trackId}". Moods: ${Array.from(new Set(MUSIC_TRACKS.map((m) => m.mood))).join(", ")}.`);
       const base = { id: rid("m"), start: 0, end: 0, label: track.name, trackId: track.id, assetKey: track.key, gainDb: op.gainDb ?? -18 };
       // A bed under the whole edit replaces the old one; a ranged clip is added next to what is there.
-      if (op.start == null && op.end == null) return { snap: { ...snap, timeline: withTracks(tl, "a2", [{ ...base, end: r2(view().total), fill: true } as Clip]) }, summary: `added music: ${track.name}` };
+      if (op.start == null && op.end == null) return { snap: { ...snap, timeline: withTracks(tl, "a2", [{ ...base, end: r2(view().total), fill: true } as Clip]) }, summary: `added music: ${track.name} (clip ${base.id})` };
       const s = op.start == null ? 0 : toEdit(op.start, op.edit), e = op.end == null ? view().total : toEdit(op.end, op.edit);
       if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
       const keep = (tl.tracks.a2 as Attached[]).filter((c) => { const p = placeOf(view(), c); return p.e <= s || p.s >= e; });
-      return { snap: { ...snap, timeline: withTracks(tl, "a2", [...keep, attachAt(view(), base as Clip, s, e)]) }, summary: `added music: ${track.name}` };
+      return { snap: { ...snap, timeline: withTracks(tl, "a2", [...keep, attachAt(view(), base as Clip, s, e)]) }, summary: `added music: ${track.name} (clip ${base.id})` };
     }
     case "add_graphic": {
       const g = ctx.getGraphic?.(op.graphicId);
@@ -711,6 +728,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, name: op.name }, summary: `renamed the edit to "${op.name}"` };
     case "set_framing": {
       const ids = targets(tl, op.clipIds);
+      if (op.fitFaceTo) return fitFaces(snap, op.fitFaceTo, op, ids);
       let shown: Framing | null = null;
       const next = setSeq(tl, seqClips(tl).map((c) => {
         if (!ids.has(c.id)) return c;
@@ -1117,6 +1135,46 @@ const clipAudioText = (gainDb: number, fi: number, fo: number) => [`${gainDb > 0
 
 const label2 = (l: string) => (/\(2\)$/.test(l) ? l : l ? l + " (2)" : "");
 /** V1 clips an op works on: the ids given, else every clip of the main footage. */
+/** The ids of clips an edit made, for its summary (so the next edit can name them without reading the project). */
+function newIds(ids: string[]): string {
+  return ids.length ? ` (new ${ids.length === 1 ? "clip" : "clips"}: ${ids.slice(0, 30).join(", ")}${ids.length > 30 ? ` and ${ids.length - 30} more` : ""})` : "";
+}
+
+/**
+ * set_framing fitFaceTo: each clip framed so its face (measured on its frames turned and fitted as the render draws
+ * them) lands at x, y of the frame with half its height r. The render scales the fitted picture by `scale` about the
+ * centre and moves it by (x, y) frames: a point u of the picture lands at (1 - scale) / 2 + x + u * scale.
+ */
+function fitFaces(snap: Snapshot, to: { x: number; y: number; r: number }, op: { scale?: number; x?: number; y?: number; faces?: Record<string, { u: number; v: number; r: number } | null> }, ids: Set<string>): { snap: Snapshot; summary: string } {
+  if (op.scale != null || op.x != null || op.y != null) throw new EditError("fitFaceTo works out scale, x and y from the face: send one or the other.");
+  if (!op.faces) throw new EditError("fitFaceTo needs the faces measured: send it through apply_edits, which measures them.");
+  const tl = snap.timeline;
+  const none: string[] = [], short: string[] = [], empty: string[] = [];
+  let last: Framing | null = null, n = 0;
+  const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
+  const next = setSeq(tl, seqClips(tl).map((c) => {
+    if (!ids.has(c.id)) return c;
+    const f = op.faces![c.id];
+    if (!f) { none.push(c.id); return c; }
+    const s0 = to.r / f.r, sc = clamp(s0, 0.25, 4);
+    const x0 = to.x - (1 - sc) / 2 - f.u * sc, y0 = to.y - (1 - sc) / 2 - f.v * sc;
+    const fr = FramingSchema.parse({ scale: rT(sc), x: rT(clamp(x0, -1, 1)), y: rT(clamp(y0, -1, 1)) });
+    if (sc !== s0 || Math.abs(x0) > 1 || Math.abs(y0) > 1) short.push(c.id);
+    // The moved picture no longer reaches an edge of the frame: black (or what is under V1) shows there.
+    const half = (fr.scale - 1) / 2 + 1e-9;
+    if (fr.scale < 1 || Math.abs(fr.x) > half || Math.abs(fr.y) > half) empty.push(c.id);
+    last = fr; n++;
+    const { framing: _f, ...rest } = c;
+    return (plainFraming(fr) ? { ...rest, framing: fr } : rest) as SeqClip;
+  }));
+  const list = (xs: string[]) => xs.slice(0, 12).join(", ") + (xs.length > 12 ? ` and ${xs.length - 12} more` : "");
+  const lastF = last as Framing | null;
+  return { snap: { ...snap, timeline: next }, summary: `put the face at ${to.x}, ${to.y} (radius ${to.r} of the frame) in ${n} ${n === 1 ? "clip" : "clips"}${n === 1 && lastF ? ` (${framingText(lastF)})` : ""}`
+    + (none.length ? `; no face found in ${list(none)}: left as ${none.length === 1 ? "it was" : "they were"}` : "")
+    + (short.length ? `; ${list(short)} could not get there within scale 0.25-4 and offset -1 to 1 (as close as allowed)` : "")
+    + (empty.length ? `; ${list(empty)} no longer ${empty.length === 1 ? "fills" : "fill"} the frame (an edge shows black)` : "") };
+}
+
 function targets(tl: Timeline, ids?: string[]): Set<string> {
   if (ids) { for (const id of ids) findClip(tl, "v1", id); return new Set(ids); }
   const main = mainVideoOf(tl);

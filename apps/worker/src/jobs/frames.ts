@@ -1,17 +1,19 @@
-import { headObject, signGet, uploadFile, type ColorSampleJob, type ColorSamples, type FramesJob } from "@rendrr/core";
+import { headObject, signGet, uploadFile, type ColorSampleJob, type ColorSamples, type FaceJob, type FaceSamples, type FramesJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { frameAt, JobError, rgbFrames } from "../lib/ffmpeg";
+import { detectFaces, faceOf } from "../lib/faces";
 import type { Ctx } from "../lib/job";
 import { framesPrefix } from "./breakdown";
 
 // Frames for the AI to look at: from a preview render (get_preview_frames, output times) or from footage and
 // references (get_frames, original times). Render frames are kept next to the render and expire with it; footage
 // frames sit with the video's other frames and go when its preview copy goes.
-export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples> {
-  const { renderId, videoId, times, colorSamples: cs } = ctx.job.data as FramesJob;
+export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | FaceSamples> {
+  const { renderId, videoId, times, colorSamples: cs, faces } = ctx.job.data as FramesJob;
   if (cs) return colorSamples(ctx, cs);
+  if (faces) return faceSamples(ctx, faces);
   if (videoId) return videoFrames(ctx, videoId, times);
   const r = renderId ? await prisma.render.findUnique({ where: { id: renderId } }) : null;
   if (!r?.outputKey) return [];
@@ -66,5 +68,25 @@ async function colorSamples(ctx: Ctx, cs: ColorSampleJob): Promise<ColorSamples>
     if (!rgb.length) throw new JobError(`Could not read frames of clip ${c.id}.`, "frames", false);
     out[c.id] = { w, h, rgb: rgb.toString("base64") };
   }
+  return out;
+}
+
+/** Item 6: where the face is in each clip (set_framing fitFaceTo): 3 frames per clip, turned and fitted as the render
+ *  draws them, all read by one YuNet run. A clip with no face on any frame is null. */
+async function faceSamples(ctx: Ctx, fj: FaceJob): Promise<FaceSamples> {
+  const clips = fj.clips.slice(0, 40);
+  const videos = await prisma.video.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.videoId))) } }, select: { id: true, proxyKey: true, name: true } });
+  const frames: Buffer[] = [], counts: number[] = [];
+  const size = fj.w * fj.h * 3;
+  for (const c of clips) {
+    const v = videos.find((x) => x.id === c.videoId);
+    if (!v?.proxyKey) throw new JobError(`The preview copy of a video in this edit is gone${v ? ` ("${v.name}")` : ""}. Rebuild it from your Library, then try again.`, "expired", false);
+    const rgb = await rgbFrames(await signGet(v.proxyKey, 600), c.srcIn, c.srcOut, { w: fj.w, h: fj.h, rotate: c.rotate, fitY: c.fitY, n: 3, dir: ctx.dir, signal: ctx.signal });
+    frames.push(rgb); counts.push(rgb.length / size);
+  }
+  const boxes = await detectFaces(Buffer.concat(frames), fj.w, fj.h, ctx.dir, ctx.signal);
+  const out: FaceSamples = {};
+  let at = 0;
+  clips.forEach((c, i) => { out[c.id] = faceOf(boxes.slice(at, at + counts[i]), fj.w, fj.h); at += counts[i]; });
   return out;
 }

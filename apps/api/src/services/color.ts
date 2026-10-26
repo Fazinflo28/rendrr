@@ -1,6 +1,6 @@
-import { AppError, enqueue, getText, newRedis, type ColorSamples, type FramesJob } from "@rendrr/core";
+import { AppError, enqueue, getText, newRedis, type ColorSamples, type FaceSamples, type FramesJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { mainVideoOf, parseCube, QUEUES, type ClipLook, type EditOp, type Lut, type Timeline } from "@rendrr/shared";
+import { isSequence, mainVideoOf, parseCube, QUEUES, type ClipLook, type EditOp, type Lut, type Timeline } from "@rendrr/shared";
 import { QueueEvents } from "bullmq";
 
 // Phase 6: shot matching measures frames of the clips (the worker reads their preview copies, the pixels the editor
@@ -30,17 +30,49 @@ export async function colorSamples(tl: Timeline, aspect: string, ids: string[]):
   }
 }
 
+/**
+ * Where the face is in each of these V1 clips, on frames turned and fitted as the render shows them (set_framing
+ * fitFaceTo). Fails loudly like colorSamples; a clip with no face found comes back null.
+ */
+export async function faceSamples(tl: Timeline, aspect: string, ids: string[]): Promise<FaceSamples> {
+  const main = mainVideoOf(tl);
+  // 360 px on the short side: YuNet's face box at that size matches its size in a full-size frame best.
+  const [w, h] = aspect === "9:16" ? [360, 640] : aspect === "1:1" ? [480, 480] : [640, 360];
+  const v1 = tl.tracks.v1 as unknown as { id: string; sourceVideoId?: string; sourceIn: number; sourceOut: number; rotate?: number; freeze?: number }[];
+  const clips = ids.slice(0, 40).map((id) => {
+    const c = v1.find((x) => x.id === id);
+    if (!c) throw new AppError(`There is no clip "${id}" on V1. Read the project again to get the current clip ids. Nothing was changed.`, 400, "invalid-edit");
+    return { id, videoId: c.sourceVideoId || main, srcIn: c.sourceIn, srcOut: c.freeze ? c.sourceIn + 0.04 : c.sourceOut, rotate: c.rotate ?? 0, fitY: 0.4 };
+  });
+  events ||= new QueueEvents(QUEUES.frames.name, { connection: newRedis() });
+  const job = await enqueue<FramesJob>("frames", { times: [], faces: { w, h, clips } });
+  try {
+    return (await job.waitUntilFinished(events, SAMPLE_WAIT_MS)) as FaceSamples;
+  } catch (e) {
+    const msg = (e as Error).message || "";
+    throw new AppError(/timed out/i.test(msg) ? `Finding the faces took over ${SAMPLE_WAIT_MS / 1000} s and was stopped. Nothing was changed; try again with fewer clips.` : `Could not find the faces: ${msg.slice(0, 200)}. Nothing was changed.`, 503, "measure");
+  }
+}
+
 /** Closes the queue listener (tests; the server keeps it for its lifetime). */
 export async function closeColorEvents() { await events?.close(); events = null; }
 
-/** match_color ops get the measured frames of their clips (the op itself is pure: it needs them sent in). */
+/** match_color and set_framing fitFaceTo ops get their measurements (the ops themselves are pure: they need them sent in). */
 export async function withMeasurements(projectId: string, edits: EditOp[]): Promise<EditOp[]> {
-  if (!edits.some((e) => e.op === "match_color" && !e.measured)) return edits;
+  const faces = (e: EditOp) => e.op === "set_framing" && !!e.fitFaceTo && !e.faces;
+  if (!edits.some((e) => (e.op === "match_color" && !e.measured) || faces(e))) return edits;
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timeline: true, aspect: true } });
+  const tl = p.timeline as unknown as Timeline;
   const out: EditOp[] = [];
   for (const e of edits) {
-    if (e.op !== "match_color" || e.measured) { out.push(e); continue; }
-    out.push({ ...e, measured: await colorSamples(p.timeline as unknown as Timeline, p.aspect, Array.from(new Set([e.to, ...e.clipIds]))) });
+    if (e.op === "match_color" && !e.measured) out.push({ ...e, measured: await colorSamples(tl, p.aspect, Array.from(new Set([e.to, ...e.clipIds]))) });
+    else if (e.op === "set_framing" && faces(e)) {
+      // The clips it frames: those named, else every clip of the main footage (as set_framing does).
+      const main = mainVideoOf(tl);
+      const ids = e.clipIds ?? (isSequence(tl) ? (tl.tracks.v1 as unknown as { id: string; sourceVideoId?: string }[]).filter((c) => (c.sourceVideoId || main) === main).map((c) => c.id) : []);
+      if (ids.length > 40) throw new AppError(`fitFaceTo measures 40 clips at most; this edit has ${ids.length}. Send clipIds in groups of 40. Nothing was changed.`, 400, "invalid-edit");
+      out.push({ ...e, faces: await faceSamples(tl, p.aspect, ids) });
+    } else out.push(e);
   }
   return out;
 }

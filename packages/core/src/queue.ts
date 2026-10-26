@@ -28,11 +28,16 @@ export type RenderJob = { renderId: string };
 export type GraphicJob = { graphicId: string; params?: Record<string, unknown> };
 export type MaintenanceJob = { task: "cleanup" | "ensure-assets" };
 /** Frames at given times: from a render (output times) or from footage / a reference (original times). */
-export type FramesJob = { renderId?: string; videoId?: string; times: number[]; colorSamples?: ColorSampleJob };
+export type FramesJob = { renderId?: string; videoId?: string; times: number[]; colorSamples?: ColorSampleJob; faces?: FaceJob };
 /** Phase 6: small frames of clips as the editor shows them (turned, fitted), for shot matching. fitY: 0.4 for V1
  *  (40% down, like the render's fit), 0.5 for b-roll. */
 export type ColorSampleJob = { w: number; h: number; clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number; fitY: number }[] };
 export type ColorSamples = Record<string, { w: number; h: number; rgb: string }>;
+/** Where the face is in V1 clips (set_framing fitFaceTo), found on 3 frames per clip turned and fitted at w x h. */
+export type FaceJob = ColorSampleJob;
+/** By clip: the face's centre (u across, v down, 0-1 of the fitted frame) and half its height as a share of the
+ *  frame's, the median of the frames it was found on (found of `of`); null when no frame had a face. */
+export type FaceSamples = Record<string, { u: number; v: number; r: number; found: number; of: number } | null>;
 export type BreakdownJob = { videoId: string };
 
 export async function enqueue<T extends object>(name: QueueName, data: T, opts: JobsOptions = {}) {

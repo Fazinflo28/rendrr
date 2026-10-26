@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 24 October 2026 (UTC). New: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
+Last updated: 26 October 2026 (UTC). New: long graphics, reusable graphics, fonts, quick tool calls, the graphic check and face framing (see "Faster graphics and framing" below). Before that: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
 
 ## 1. Links
 
@@ -20,6 +20,19 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
+
+## Faster graphics and framing (26 October)
+
+Six fixes for long, graphics-heavy edits through the connector. Each has its own tests; the full suites pass after each.
+
+| # | What | Tests |
+|---|---|---|
+| 1 | Long graphics: scanned first, cost estimated (over 25 min fails in seconds with the reason), recorded in balanced ranges by several browsers, one file. The 393 s 1920x1080 canvas graphic records in about 2 min. `window.renderFramePure` (opt-in) skips frames not recorded; `Math.random` is seeded. | `worker/test/graphic-scan.test.ts`, `worker/scripts/repro-long-graphic.ts` |
+| 2 | One graphic, many placements: `create_graphic params` (window.params), `add_graphic from` (start part way in) and `params` (its own values, recorded once per set and cached). The editor plays each placement's own file. | `shared/test/graphic-reuse.test.ts`, `worker/test/graphic-reuse.test.ts`, `api/test/graphic-reuse.test.ts`, `web/demo/graphic-match.mjs` |
+| 3 | Fonts: 82 Google Fonts installed ('Open Sans' 700 is its real bold); `add_font` and Settings › Fonts add a file once, used by name; a font that is not there is named in a warning. New `Font` table and `Graphic.warnings`. | `worker/test/graphic-font-warnings.test.ts`, `api/test/fonts.test.ts` |
+| 4 | Tool calls answer within 8 s: `create_graphic`, `render_preview` and `render_final` return the id and progress; `get_graphic` (new) and `get_render` are polled. | `api/test/long-calls.test.ts` |
+| 5 | The graphic check measures 8 moments across the part on screen (min / avg / max) and calls a graphic invisible only if all are blank. | `worker/test/graphic-cover.test.ts`, `shared/test/phase1.test.ts` |
+| 6 | `set_framing fitFaceTo {x, y, r}` (YuNet finds the face, the op frames each clip), `set_clips` framing per clip, new clip ids in every edit's result. | `shared/test/framing-faces.test.ts`, `worker/test/faces.test.ts`, `api/test/fit-face.test.ts` |
 
 ## Phase 1: the editor plays what renders
 
