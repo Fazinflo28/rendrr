@@ -82,7 +82,7 @@ function App() {
   return h("div", { id: "stage", style: { position: "relative", width: plan.width + "px", height: plan.height + "px", overflow: "hidden", background: "#000" } },
     h("div", { style: { position: "absolute", inset: 0, overflow: "hidden", background: "#000", transform: "scale(" + f.zoom + ")", transformOrigin: "50% 40%" } },
       h(SeqMedia, { plan, clock, time: t, playing: false, urls: { v: "/main.webm" }, sounds: {}, aspect: plan.aspect, pb })),
-    h(LiveOverlays, { frame: f, clips: [], media: { broll: { g: { url: "/green.webm" } }, graphics: {} }, aspect: plan.aspect, playing: false, plan }));
+    h(LiveOverlays, { frame: f, clips: [], media: { broll: { g: { url: "/green.webm" } }, graphicClips: {} }, aspect: plan.aspect, playing: false, plan }));
 }
 createRoot(document.getElementById("root")).render(h(App));
 window.__seek = (t) => setT(t);`);

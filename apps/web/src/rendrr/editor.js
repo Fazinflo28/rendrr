@@ -81,7 +81,7 @@ function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts }) {
   // Keyframed overlays move as the render's perspective filter moves them (Phase 5).
   const moved = (m, child) => (m ? html`<div style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(m) }}>${child}</div>` : child);
   return html`${b && moved(frame.broll.motion, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} />`)}
-    ${frame.graphics.map((g) => { const m = media.graphics[g.graphicId]; const c = clips.find((x) => x.id === g.clipId);
+    ${frame.graphics.map((g) => { const m = media.graphicClips[g.clipId]; const c = clips.find((x) => x.id === g.clipId);
       return moved(g.motion, m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`); })}
     ${plan && html`<${TextLayers} plan=${plan} frame=${frame} />`}`;
 }
@@ -465,7 +465,8 @@ function EditorInner({ project, reload, ai, keep }) {
   // The other videos on V1: sent with the project, plus any added here (their preview copy is fetched then).
   const [added, setAdded] = useState({});
   const others = useMemo(() => ({ ...(project.videos || {}), ...added }), [project, added]);
-  const media = useMemo(() => ({ broll: project.brollMedia || {}, graphics: project.graphicMedia || {}, audio: project.audioMedia || {} }), [project]);
+  // Custom graphics by clip: a placement with its own params plays its own recording (g.t includes add_graphic from).
+  const media = useMemo(() => ({ broll: project.brollMedia || {}, graphicClips: project.graphicClipMedia || {}, audio: project.audioMedia || {} }), [project]);
   const urls = useMemo(() => ({ ...Object.fromEntries(Object.entries(others).map(([id, v]) => [id, v.url || null])), [main]: project.video?.proxyUrl || null }), [others, main, project]);
   const [sel, setSel] = useState(null); // {track,id}
   const [wsel, setWsel] = useState(null); // {a,b} word indexes
@@ -503,7 +504,7 @@ function EditorInner({ project, reload, ai, keep }) {
         transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript || []])),
         brollSeconds: Object.fromEntries(Object.entries(media.broll).map(([id, b]) => [id, b.seconds])),
         // Templates draw live; a custom graphic shows once its recorded file is there (as in the render).
-        graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, GRAPHIC_TEMPLATES.some((g) => g.id === c.graphicId) || !!media.graphics[c.graphicId]])), luts });
+        graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, GRAPHIC_TEMPLATES.some((g) => g.id === c.graphicId) || !!media.graphicClips[c.id]])), luts });
     } catch { return null; } // everything is cut
   }, [timeline, S.aspect, captionRules, media, others, luts]);
   const clock = useMemo(() => sequenceClock(plan || { parts: [], sound: [], outputSeconds: 0 }), [plan]);

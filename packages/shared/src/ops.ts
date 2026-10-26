@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { findMusic, MUSIC_TRACKS, SFX } from "./catalog";
+import { findMusic, MUSIC_TRACKS, placementParams, SFX } from "./catalog";
 import type { Aspect } from "./constants";
 import { mergeRules, StyleRulesPatchSchema, type StyleRules } from "./styles";
 import {
@@ -58,7 +58,9 @@ const EDIT_OPS = [
   z.object({ op: z.literal("set_captions"), on: z.boolean(), look: CaptionLookSchema.optional(), styleId: z.string().max(80).optional() }),
   z.object({ op: z.literal("edit_caption"), lineId: z.string().max(40), text: z.string().max(2000) }),
   z.object({ op: z.literal("add_music"), trackId: z.string().max(80), gainDb: z.number().min(-40).max(6).optional(), start: t.optional(), end: t.optional(), edit }),
-  z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), label: z.string().max(200).optional(), edit }),
+  // from: seconds into a custom graphic where this placement starts (one recording placed many times). params: a
+  // template's fields, or values for a custom graphic's window.params (each new set is recorded once, then cached).
+  z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), from: z.number().min(0).max(4 * 3600).optional(), label: z.string().max(200).optional(), edit }),
   z.object({ op: z.literal("set_aspect"), aspect: AspectSchema }),
   // Position and scale of the footage in the frame (Premiere's Motion). Leave a field out to keep it.
   // clipIds: those V1 clips (default every clip of the main footage).
@@ -150,7 +152,8 @@ export const OpSchema = z.discriminatedUnion("op", [
 export type Op = z.infer<typeof OpSchema>;
 
 export type StyleLite = { id: string; name: string; captionLook: "clean" | "bold" | "outline"; rules: StyleRules };
-export type GraphicLite = { id: string; name: string; durationSec: number };
+/** custom: made with create_graphic (params: its declared params and their defaults). */
+export type GraphicLite = { id: string; name: string; durationSec: number; custom?: boolean; params?: Record<string, unknown> };
 export type VideoLite = { id: string; name: string; seconds: number; ready: boolean };
 export type EditContext = {
   /** The project's footage (the sequence's main video). */
@@ -695,8 +698,12 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (!(op.end > op.start)) throw new EditError("A graphic must end after it starts.");
       const s = toEdit(op.start, op.edit), e = toEdit(op.end, op.edit);
       if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
-      const c = attachAt(view(), { id: rid("g"), start: 0, end: 0, label: op.label || g.name, kind: "graphic" as const, graphicId: g.id, params: op.params } as Clip, s, e);
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added graphic ${g.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}` };
+      const from = op.from && op.from >= 0.001 ? rT(op.from) : 0;
+      if (from && !g.custom) throw new EditError("from works on custom graphics (create_graphic). A template is drawn for each placement: it always starts at its beginning.");
+      if (from && from > g.durationSec - 0.05) throw new EditError(`from ${at2(from)}s is past the end of ${g.name} (${at2(g.durationSec)}s long).`);
+      if (g.custom) { const p = placementParams(g.name, g.params ?? {}, op.params); if ("error" in p) throw new EditError(p.error); }
+      const c = attachAt(view(), { id: rid("g"), start: 0, end: 0, label: op.label || g.name, kind: "graphic" as const, graphicId: g.id, params: op.params, ...(from ? { sourceStart: from } : {}) } as Clip, s, e);
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added graphic ${g.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}${from ? ` from ${at2(from)}s of it` : ""} (clip ${c.id})` };
     }
     case "set_aspect":
       return { snap: { ...snap, aspect: op.aspect }, summary: `changed shape to ${op.aspect}` };
@@ -1205,7 +1212,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
       const auto = k === "a2" ? autoMusicFades(c.end - c.start) : { fadeIn: 0, fadeOut: 0 };
       const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
       const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
-      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
+      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
       const lk = k === "v2" ? lookTags(c as Clip & ClipLook) : "";
       const on = (c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "") + (Array.isArray(c.keys) && c.keys.length ? ` keys ${(c.keys as Key[]).map((k) => k.t).join(",")}s` : "") + (c.under ? " under V1" : "") + (lk ? " " + lk : "");
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;

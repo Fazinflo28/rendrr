@@ -24,7 +24,8 @@ export function queue(name: QueueName): Queue {
 export type ProxyJob = { videoId: string };
 export type AnalyzeJob = { videoId: string };
 export type RenderJob = { renderId: string };
-export type GraphicJob = { graphicId: string };
+/** params: record a variant of a custom graphic with these window.params (all of them, defaults filled in). */
+export type GraphicJob = { graphicId: string; params?: Record<string, unknown> };
 export type MaintenanceJob = { task: "cleanup" | "ensure-assets" };
 /** Frames at given times: from a render (output times) or from footage / a reference (original times). */
 export type FramesJob = { renderId?: string; videoId?: string; times: number[]; colorSamples?: ColorSampleJob };

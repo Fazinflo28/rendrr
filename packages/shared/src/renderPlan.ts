@@ -2,7 +2,7 @@
 // planRender() is pure: it turns a snapshot + transcript into an ordered plan in OUTPUT time.
 // ffmpegArgs() turns a plan + local file paths into one FFmpeg command (a single pass: fast and lossless between steps).
 // Sequences (model B) are planned here; timelines stored in model A go to the unchanged A planner (renderPlanA.ts).
-import { catalogMusic, catalogSfx } from "./catalog";
+import { catalogMusic, catalogSfx, GRAPHIC_TEMPLATES } from "./catalog";
 import type { Aspect, CaptionLook } from "./constants";
 import { cutRegions, editOf, isSequence, mainVideoOf, mergeRanges, normalSpeed, rateOf, sequenceView, srcAt, type Attached, type PicturePart, type Range, type SeqClip, type SequenceView, type SoundPart } from "./sequence";
 import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
@@ -405,7 +405,9 @@ export function planRender(input: PlanInput): RenderPlan {
   for (const c of tl.tracks.v3 as (V3Clip & Attached)[]) {
     if (c.kind !== "graphic" || !c.graphicId || (input.graphicsReady && !input.graphicsReady[c.id])) continue;
     const sp = placed(c);
-    if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: 0, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}) });
+    // A custom graphic can start part way into its recording (add_graphic from); a template is drawn for each clip.
+    const from = !GRAPHIC_TEMPLATES.some((t) => t.id === c.graphicId) && c.sourceStart ? c.sourceStart : 0;
+    if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: from, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}) });
   }
   const audio: AudioOp[] = [];
   // Keys come from the catalog only (see catalogMusic), whatever the stored clip says.
@@ -1078,14 +1080,17 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     const toHdr = cc.hdrLut ? `,scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrap16le,lut3d=file=${q(cc.hdrLut)}:interp=trilinear,scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd,format=${cc.PFA}` : "";
     const n = Math.max(1, Math.round((gr.end - gr.start) * FPS));
     // Phase 7: a file shorter than its clip (a custom graphic placed longer than its recording) holds its last frame.
-    const hold = (files.graphicSeconds?.[gr.clipId] ?? Infinity) < gr.end - gr.start - 0.5 / FPS;
+    const hold = (files.graphicSeconds?.[gr.clipId] ?? Infinity) - gr.sourceStart < gr.end - gr.start - 0.5 / FPS;
+    // Started part way in (add_graphic from): put on the frame grid first, then cut. The recording keeps one picture
+    // for a still stretch, so seeking the file would skip the picture already showing at that time.
+    const from = gr.sourceStart > 0 ? `fps=${R},trim=start_frame=${Math.round(gr.sourceStart * FPS)},setpts=PTS-STARTPTS,` : "";
     if (gr.keys?.length) {
       // Keyframed graphic: centred on a transparent frame, then moved, scaled, turned and faded.
-      g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=${R},tpad=stop_mode=clone:stop=${hold ? -1 : 2},trim=end_frame=${n}${toHdr}[gk${i}]`);
+      g.push(`[${gi}:v]${from}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=${R},tpad=stop_mode=clone:stop=${hold ? -1 : 2},trim=end_frame=${n}${toHdr}[gk${i}]`);
       motionChain(g, `gk${i}`, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`, { hdr: !!plan.hdr, fr });
       g.push(`[gm${i}]setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     } else
-    g.push(`[${gi}:v]${hold ? `fps=${R},tpad=stop_mode=clone:stop=-1,trim=end_frame=${n},` : ""}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease${toHdr},setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
+    g.push(`[${gi}:v]${from}${hold ? `fps=${R},tpad=stop_mode=clone:stop=-1,trim=end_frame=${n},` : ""}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease${toHdr},setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n6(gr.start)},${n6(gr.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vg${i}]`);
     v = `vg${i}`;
   });

@@ -97,6 +97,10 @@ export const CreateGraphicInput = z.object({
   width: z.number().int().min(64).max(1920),
   height: z.number().int().min(64).max(1920),
   transparent: z.boolean().default(true),
+  /** Default values the code reads from window.params; each placement (add_graphic params) can change them. */
+  params: z.record(z.string().regex(/^[A-Za-z_$][\w$]{0,39}$/, "Param names are like JavaScript names (letters, digits, _), up to 40 characters."), z.unknown()).default({})
+    .refine((p) => Object.keys(p).length <= 30, "30 params at most.")
+    .refine((p) => JSON.stringify(p).length <= 8000, "Params are 8 KB of JSON at most."),
 }).refine((g) => Math.min(g.width, g.height) <= 1080, "Graphics can be 1080x1920 at most.");
 
 export const LoginInput = z.object({ email: z.string().trim().min(1, "Enter your email to continue.").max(200), password: z.string().min(1, "Enter your password.").max(200) });

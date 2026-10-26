@@ -31,6 +31,8 @@ A timeline with `model: "B"` and `mainVideoId` (the project's footage):
   - `keys` (keyframes), stored at footage seconds so they move with the footage when the clip is cut or split; a freeze's are `sourceIn` + seconds into it
 
   V2 b-roll and V3 text and graphics clips carry `keys` in seconds from their own start. A key is `{t, x, y, scale, rotation, opacity, ease}`.
+
+  A V3 custom graphic clip can carry `sourceStart` (seconds into the recording where it starts, from `add_graphic from`) and `params` (values for the graphic's `window.params`; a placement whose values differ from the graphic's plays its own recording, kept by its values).
 - **Colour and compositing (Phase 6).** V1 clips and V2 b-roll clips can carry:
   - `grade`: `exposure` (stops), `contrast`, `temperature`, `tint` (−100 to 100), `saturation` (%), `curves` (`master`, `r`, `g`, `b`: points `[in, out]` 0–1) and `lut` `{id, amount, input}` (an imported .cube)
   - `key` `{color, similarity, blend, spill}`: a chroma key

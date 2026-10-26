@@ -91,7 +91,7 @@ function App() {
   return h("div", { id: "stage", style: { position: "relative", width: plan.width + "px", height: plan.height + "px", overflow: "hidden", background: "#000" } },
     h("div", { style: { position: "absolute", inset: 0, overflow: "hidden", background: "#000" } },
       h(SeqMedia, { plan, clock, time: t, playing: false, urls: { v: "/main.webm", gs: "/gs.webm", pt: "/pat.webm" }, sounds: {}, aspect: plan.aspect, pb, broll, luts })),
-    h(LiveOverlays, { frame: f, clips: [], media: { broll, graphics: {} }, aspect: plan.aspect, playing: false, plan, luts }));
+    h(LiveOverlays, { frame: f, clips: [], media: { broll, graphicClips: {} }, aspect: plan.aspect, playing: false, plan, luts }));
 }
 createRoot(document.getElementById("root")).render(h(App));
 window.__seek = (t) => setT(t);`);

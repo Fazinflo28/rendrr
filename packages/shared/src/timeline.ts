@@ -51,6 +51,8 @@ export const V3ClipSchema = ClipSchema.extend({
   lineId: z.string().max(80).optional(),
   graphicId: z.string().max(80).optional(),
   params: z.record(z.unknown()).optional(),
+  /** Custom graphics: seconds into the recording where this placement starts (add_graphic from). */
+  sourceStart: time.optional(),
   /** Text layers (kind "text"): the text (line breaks with \n), its style, a full-frame card behind it, its animation. */
   text: z.string().max(1000).optional(),
   style: TextStyleSchema.optional(),

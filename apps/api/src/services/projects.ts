@@ -1,6 +1,6 @@
-import { abortMultipart, AppError, deleteObjects, notFound, signGet } from "@rendrr/core";
+import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, asSequence, aspectFor, buildRawTimeline, catalogMusic, catalogSfx, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript } from "@rendrr/shared";
+import { allWords, asSequence, aspectFor, buildRawTimeline, catalogMusic, catalogSfx, GRAPHIC_TEMPLATES, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
@@ -121,24 +121,34 @@ export async function projectFull(userId: string, id: string) {
 
 /**
  * The files the editor's live player overlays, so it shows what the render will: b-roll videos (their preview
- * copies), custom graphics (their recorded transparent WebM), by id, and the built-in music and sound effects the
- * edit uses, by storage key (from the catalog only). Templates are drawn live from their HTML.
+ * copies), custom graphics by clip (the recorded transparent WebM each placement plays: its own params' recording
+ * when it has one), and the built-in music and sound effects the edit uses, by storage key (from the catalog only).
+ * Templates are drawn live from their HTML.
  */
 async function playerMedia(userId: string, tl: Snapshot["timeline"]) {
   const brollIds = Array.from(new Set(tl.tracks.v2.map((c) => (c as { videoId?: string }).videoId).filter(Boolean) as string[]));
-  const graphicIds = Array.from(new Set(tl.tracks.v3.map((c) => (c as { graphicId?: string }).graphicId).filter(Boolean) as string[]));
-  const [vids, gs] = await Promise.all([
-    brollIds.length ? prisma.video.findMany({ where: { id: { in: brollIds }, userId, proxyKey: { not: null } } }) : [],
-    graphicIds.length ? prisma.graphic.findMany({ where: { id: { in: graphicIds }, OR: [{ ownerId: userId }, { ownerId: null }], status: "ready", renderedKey: { not: null } } }) : [],
-  ]);
+  const vids = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId, proxyKey: { not: null } } }) : [];
   return {
     brollMedia: Object.fromEntries(await Promise.all(vids.map(async (v) => [v.id, { url: await signGet(v.proxyKey!, 6 * 3600), seconds: v.seconds }] as const))),
-    graphicMedia: Object.fromEntries(await Promise.all(gs.map(async (g) => [g.id, { url: await signGet(g.renderedKey!, 6 * 3600), width: g.width, height: g.height, seconds: g.durationSec }] as const))),
+    graphicClipMedia: Object.fromEntries(await Promise.all((await graphicPlacements(userId, tl)).filter((x) => "key" in x).map(async (x) => [x.clipId, { url: await signGet((x as { key: string }).key, 6 * 3600), width: x.width, height: x.height, seconds: x.seconds }] as const))),
     audioMedia: Object.fromEntries(await Promise.all(Array.from(new Set([
       ...tl.tracks.a2.map((c) => catalogMusic(c as { trackId?: string; assetKey?: string })?.key),
       ...tl.tracks.a3.map((c) => catalogSfx(c as { sfxId?: string; assetKey?: string })?.key),
     ].filter((k): k is string => !!k))).map(async (k) => [k, await signGet(k, 6 * 3600)] as const))),
   };
+}
+
+/** Each custom graphic placement: the storage key of the file it plays, or why there is none yet (state). */
+export async function graphicPlacements(userId: string, tl: Snapshot["timeline"]) {
+  const clips = (tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId && !GRAPHIC_TEMPLATES.some((t) => t.id === c.graphicId));
+  if (!clips.length) return [];
+  const gs = await prisma.graphic.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.graphicId!))) }, ownerId: userId, kind: "custom" },
+    select: { id: true, ownerId: true, paramsSchema: true, status: true, renderedKey: true, error: true, durationSec: true, width: true, height: true } });
+  const out = await Promise.all(clips.map(async (c) => {
+    const g = gs.find((x) => x.id === c.graphicId);
+    return g ? { clipId: c.id, own: !!c.params && Object.keys(c.params).length > 0, width: g.width, height: g.height, seconds: g.durationSec, ...(await placementMedia(g, c.params)) } : null;
+  }));
+  return out.filter((x): x is NonNullable<typeof x> => !!x);
 }
 
 /** Deletes the stored files of these edits (renders, frames, raw originals) before their rows are removed. */

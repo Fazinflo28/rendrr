@@ -59,3 +59,33 @@ export const GRAPHIC_TEMPLATES: GraphicTemplate[] = [
   { id: "gt_logo_reveal", name: "Logo reveal", durationSec: 3, transparent: true,
     paramsSchema: obj({ text: str("Brand name shown with the logo", "Rendrr", 40), logo: { type: "string", description: "Use \"brand\" for the logo saved in Settings, or leave empty", default: "brand", maxLength: 20 }, color: color("Text colour", "#ffffff") }) },
 ];
+
+// ---- custom graphic params (window.params) ----
+const jsonType = (v: unknown) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);
+/** Each param's default value, from a graphic's params schema (a template's or a custom graphic's). */
+export function graphicDefaults(schema: unknown): Record<string, unknown> {
+  const props = (schema as { properties?: Record<string, { default?: unknown }> } | null)?.properties || {};
+  return Object.fromEntries(Object.entries(props).map(([k, p]) => [k, p?.default ?? null]));
+}
+/** The params schema kept for a custom graphic: each name it declared, with its type and default value. */
+export function customParamsSchema(defaults: Record<string, unknown>) {
+  return { type: "object", properties: Object.fromEntries(Object.entries(defaults).map(([k, v]) => [k, { type: jsonType(v), default: v }])), additionalProperties: false };
+}
+/**
+ * What one placement of a custom graphic draws with: its defaults, each replaced by the placement's value. A name the
+ * graphic did not declare, or a value of another type than the default (null defaults take anything), is refused.
+ */
+export function placementParams(name: string, defaults: Record<string, unknown>, params: Record<string, unknown> = {}): { params: Record<string, unknown> } | { error: string } {
+  const keys = Object.keys(defaults);
+  for (const [k, v] of Object.entries(params)) {
+    if (!(k in defaults)) return { error: keys.length ? `${name} has no param "${k}". Its params: ${keys.join(", ")}.` : `${name} has no params. Declare them in create_graphic params (default values the code reads from window.params).` };
+    if (defaults[k] !== null && jsonType(v) !== jsonType(defaults[k])) return { error: `Param "${k}" of ${name} takes a ${jsonType(defaults[k])} (default ${JSON.stringify(defaults[k])}), not a ${jsonType(v)}.` };
+  }
+  return { params: { ...defaults, ...params } };
+}
+/** JSON with object keys sorted at every level: the same values always give the same text (cache keys). */
+export function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  if (v && typeof v === "object") return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson((v as Record<string, unknown>)[k])}`).join(",")}}`;
+  return JSON.stringify(v ?? null);
+}

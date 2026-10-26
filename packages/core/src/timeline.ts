@@ -1,10 +1,11 @@
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  allWords, applyOp, EditError, GRAPHIC_TEMPLATES, outputDuration, stripLayout, StyleRulesSchema, TimelineSchema,
+  allWords, applyOp, EditError, graphicDefaults, GRAPHIC_TEMPLATES, outputDuration, stripLayout, StyleRulesSchema, TimelineSchema,
   type Actor, type EditContext, type Lut, type Op, type Silence, type Snapshot, type StyleLite, type Timeline, type Transcript,
 } from "@rendrr/shared";
 import { AppError, notFound } from "./errors";
 import { publishProject } from "./queue";
+import { prewarmGraphics } from "./graphics";
 
 // ---------------------------------------------------------------------------------------------
 // applyTimelineChange: the ONLY code path that writes a project's timeline.
@@ -35,7 +36,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
   const styles = await tx.style.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] } });
   const styleMap = new Map<string, StyleLite>(styles.map((s) => [s.id, { id: s.id, name: s.name, captionLook: s.captionLook as StyleLite["captionLook"], rules: StyleRulesSchema.parse(s.rules) }]));
   const videos = await tx.video.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
-  const graphics = await tx.graphic.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] }, select: { id: true, name: true, durationSec: true, status: true } });
+  const graphics = await tx.graphic.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] }, select: { id: true, name: true, durationSec: true, status: true, kind: true, paramsSchema: true } });
   const lutRows = await tx.lut.findMany({ where: { userId }, select: { id: true, name: true } });
   const onV1 = Array.from(new Set([...((timeline as Timeline | undefined)?.tracks?.v1 ?? []).map((c) => (c as { sourceVideoId?: string }).sourceVideoId), ...alsoIds].filter((v): v is string => !!v && v !== video.id)));
   const others = onV1.length ? await tx.video.findMany({ where: { id: { in: onV1 }, userId }, include: { analysis: true } }) : [];
@@ -51,7 +52,8 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
     getGraphic: (id) => {
       const g = graphics.find((x) => x.id === id) || GRAPHIC_TEMPLATES.find((x) => x.id === id);
       if (!g || ("status" in g && g.status === "failed")) return undefined;
-      return { id: g.id, name: g.name, durationSec: g.durationSec };
+      const custom = "kind" in g && g.kind === "custom";
+      return { id: g.id, name: g.name, durationSec: g.durationSec, ...(custom ? { custom, params: graphicDefaults(g.paramsSchema) } : {}) };
     },
     getLut: (id) => lutRows.find((l) => l.id === id),
     lutData: (id) => luts[id],
@@ -135,6 +137,8 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
   if (!result.unchanged && (actor.kind !== "user" || result.createdVersion)) {
     await publishProject(projectId, { version: result.version, by: actor.kind, text: result.summary }).catch(() => {});
   }
+  // Custom graphics placed with their own params: their recordings start now (the editor shows them when ready).
+  if (!result.unchanged) await prewarmGraphics(actor.userId, result.snapshot.timeline).catch((e) => console.error("[graphics] prewarm:", (e as Error).message));
   return result;
 }
 

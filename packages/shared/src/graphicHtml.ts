@@ -142,6 +142,16 @@ export const GRAPHIC_FONT_ALIASES: Record<string, string> = { Arial: "Arimo", He
 export const wrapGraphicHtml = (code: string, w: number, h: number) =>
   /<html|<body/i.test(code) ? code : `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;width:${w}px;height:${h}px;overflow:hidden;background:transparent;font-family:Inter,system-ui,sans-serif}</style></head><body>${code}</body></html>`;
 
+/**
+ * A custom graphic's window.params: the values it was created with, each replaced by the placement's own. Set before
+ * the graphic's own scripts run, so it can read them at load. JSON with "<" escaped, so a value cannot end the script.
+ */
+export function withParams(code: string, params: Record<string, unknown>) {
+  const tag = `<script>window.params=Object.freeze(${JSON.stringify(params).replace(/</g, "\\u003c")});</script>`;
+  for (const re of [/<head[^>]*>/i, /<body[^>]*>/i, /<html[^>]*>/i]) if (re.test(code)) return code.replace(re, (m) => m + tag);
+  return tag + code;
+}
+
 /** The virtual clock must run before any of the page's own scripts, so it goes first in <head>. */
 export function withClock(html: string) {
   const tag = `<script>${GRAPHIC_CLOCK}</script>`;

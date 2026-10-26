@@ -1,6 +1,6 @@
-import { downloadFile, headObject, signGet, uploadFile } from "@rendrr/core";
+import { downloadFile, graphicVariant, headObject, queue, readGraphic, signGet, uploadFile, type GraphicVariant } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { GRAPHIC_TEMPLATES, PREFIX, templateHtml, templateSize, withClock, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
+import { GRAPHIC_TEMPLATES, PREFIX, templateHtml, templateSize, withClock, withParams, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -357,9 +357,32 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
   }
   const g = await prisma.graphic.findUnique({ where: { id } });
   if (!g || (g.ownerId && g.ownerId !== o.userId) || g.status !== "ready" || !g.renderedKey) return null;
-  await downloadFile(g.renderedKey, local);
+  // A placement with its own params plays its own recording: from storage, from the job recording it now, or
+  // recorded here (then kept, so the next render and the editor have it).
+  const v = g.code ? graphicVariant(g, clip.params) : null;
+  if (v && !(await headObject(v.key))) {
+    await waitForVariant(v, recordLimitMs(g.durationSec, g.width, g.height), o.signal, o.onProgress);
+    if (!(await headObject(v.key))) {
+      const r = await recordHtml(withParams(g.code!, v.params), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: o.dir, signal: o.signal, onProgress: o.onProgress, workers: 2 });
+      await uploadFile(v.key, r.path, "video/webm");
+      return { path: r.path, seconds: r.seconds };
+    }
+  }
+  await downloadFile(v ? v.key : g.renderedKey, local);
   // A custom graphic plays as recorded; a clip longer than that holds its last frame (as the player does).
   return { path: local, seconds: g.durationSec };
+}
+
+/** While the graphic queue is recording this variant (prewarmed by the edit), wait for it rather than record it twice. */
+async function waitForVariant(v: GraphicVariant, limitMs: number, signal?: AbortSignal, onProgress?: (frac: number) => void) {
+  const end = Date.now() + limitMs;
+  while (Date.now() < end && !signal?.aborted) {
+    const job = await queue("graphic").getJob(v.jobId).catch(() => null);
+    if (!job || (await job.getState()) !== "active" || (await headObject(v.key))) return;
+    const p = await readGraphic(v.progressId);
+    if (p) onProgress?.(p.percent / 100);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
 }
 
 export async function readCheckFrame(path: string) { return readFile(path); }
