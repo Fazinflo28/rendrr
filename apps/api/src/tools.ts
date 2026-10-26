@@ -149,6 +149,9 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   return { text: `Done (v${r.version}, ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s): ${r.summary}.`, data: { version: r.version } };
 }
 
+/** The longest a tool call waits for a job: clients drop calls after about a minute (some sooner), so a longer
+ *  recording or render answers with its id and is polled (get_graphic, get_render). */
+export const TOOL_WAIT_MS = 8_000;
 async function waitFor<T>(fn: () => Promise<T | null>, ms: number, every = 1000): Promise<T | null> {
   const end = Date.now() + ms;
   while (Date.now() < end) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, every)); }
@@ -410,10 +413,10 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const g0 = CreateGraphicInput.parse(i);
     const g = await prisma.graphic.create({ data: { ownerId: c.userId, name: (g0.name || "Custom graphic").slice(0, 120), kind: "custom", code: g0.code, paramsSchema: customParamsSchema(g0.params) as Prisma.InputJsonValue, durationSec: g0.durationSec, width: g0.width, height: g0.height, transparent: g0.transparent, status: "queued" } });
     await enqueue<GraphicJob>("graphic", { graphicId: g.id }, { jobId: g.id });
-    const done = await waitFor(async () => { const x = await prisma.graphic.findUnique({ where: { id: g.id } }); return x && (x.status === "ready" || x.status === "failed") ? x : null; }, 90_000);
+    const done = await waitFor(async () => { const x = await prisma.graphic.findUnique({ where: { id: g.id } }); return x && (x.status === "ready" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS, 500);
     if (!done) {
       const p = await readGraphic(g.id);
-      return { text: `Graphic ${g.id} is still recording${p ? `: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : ""}. You can place it with apply_edits add_graphic now; renders include it once it is ready (list_graphics shows its status).`, data: { graphicId: g.id } };
+      return { text: `Graphic ${g.id} is recording${p ? `: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : " (queued)"}. It keeps going: get_graphic shows how far it got${p?.etaSec ? ` (look again in about ${fmtLeft(Math.min(p.etaSec, 300))})` : ""}. You can place it with apply_edits add_graphic now; renders include it once it is ready.`, data: { graphicId: g.id, status: "rendering" } };
     }
     if (done.status === "failed") return { text: `The graphic did not render: ${done.error}. Fix the code and call create_graphic again.` };
     const images = i.images === true ? await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
@@ -429,6 +432,19 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: `${r.replaced ? "Replaced" : "Added"} font "${r.family}" ${r.weight}${r.style === "italic" ? " italic" : ""} (${r.format}, ${Math.round(r.size / 1024)} KB).${r.installed ? ` ${r.family} is also installed: graphics that name it now draw with this file.` : ""} Use it in create_graphic code by name: ${css}, or ctx.font = "${r.style === "italic" ? "italic " : ""}${r.weight} 48px '${r.family}'".`, data: { fontId: r.id } };
   },
 
+  async get_graphic(c, i) {
+    const g = await prisma.graphic.findUnique({ where: { id: i.graphicId } });
+    if (!g || g.ownerId !== c.userId) throw notFound("That graphic does not exist. list_graphics shows yours.");
+    const head = `${g.id} | ${g.name}`, size = `${+g.durationSec.toFixed(2)}s | ${g.width}x${g.height}${g.transparent ? ", transparent" : ""}`;
+    if (g.status === "failed") return { text: `${head} | failed: ${(g.error || "unknown error").replace(/\.$/, "")}. Fix the code and call create_graphic again.` };
+    if (g.status !== "ready") {
+      const p = await readGraphic(g.id);
+      return { text: `${head} | ${p ? `recording: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : g.status} | ${size}. Look again in a little while; add_graphic can place it now.` };
+    }
+    const images = i.images === true ? await Promise.all(((g.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
+    return { text: `${head} | ready | ${size}${defaultsText(g.paramsSchema).replace(/^ \| /, " | params ")}.${warningsText(g.warnings)}${images.length ? " 4 check frames attached." : ""} Place it with apply_edits add_graphic.`, images };
+  },
+
   async link_account(c, i) {
     if (!c.loginId) throw new AppError("This connection did not say which login it is. Reconnect Rendrr and try again.");
     const r = await redeemLinkCode(c.loginId, i.code);
@@ -439,7 +455,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   // ---------------- render and share ----------------
   async render_preview(c, i) {
     const r = await startRender(c.userId, i.projectId, "preview");
-    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, 60_000);
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     return renderOut(r.id);
   },
   async render_final(c, i) {
@@ -450,7 +466,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       if (code === "drive") return { text: "The original file is no longer reachable in Google Drive. Ask the user to reconnect it in the Rendrr Library." };
       throw e;
     }
-    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, 180_000, 2000);
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     return renderOut(r.id);
   },
   async get_render(c, i) {
