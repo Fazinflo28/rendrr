@@ -9,6 +9,7 @@ import {
 import { ffmpegArgs, planRender } from "../src/renderPlan";
 import { planRenderA } from "../src/renderPlanA";
 import { convertChecked, planDifferences } from "../src/migrate";
+import { cutPauses } from "./ai-cuts";
 
 const tr = stubTranscript(40);
 const words = tr.flatMap((l) => l.words);
@@ -182,12 +183,12 @@ describe("old ops keep working; edit:true takes edit seconds", () => {
     expect(g.end - g.start).toBeCloseTo(2, 1);
     expect((g as Seq).anchorId).toBe(b.id);
   });
-  it("apply_style rebuilds a plain cut, and keeps a rearranged sequence", () => {
+  it("apply_style leaves the sequence as it is, plain or rearranged", () => {
     const plain = edit(snap(), { op: "apply_style", styleId: "s1" }).snap;
-    expect(v1(plain).length).toBeGreaterThan(0);
+    expect(v1(plain)).toEqual(v1(snap()));
     const moved = edit(snap(), { op: "move_clip", clipId: v1(snap())[2].id, index: 0 }).snap;
     const styled = edit(moved, { op: "apply_style", styleId: "s1" }).snap;
-    expect(v1(styled)[0].sourceIn).toBeGreaterThan(v1(styled)[1].sourceIn); // still out of footage order
+    expect(v1(styled)).toEqual(v1(moved)); // still out of footage order, nothing cut
   });
   it("set_rotation on some clips turns only those (each part fitted on its own)", () => {
     const s = snap();
@@ -293,7 +294,7 @@ describe("migration A -> B", () => {
 
 describe("the check measures the file against the render's own length", () => {
   it("a few frames of alignment over many parts are not a flag; a real difference is", () => {
-    const s = edit(snap(), { op: "cut_silences", overSeconds: 0.3 }).snap;
+    const s = cutPauses(snap(), ctx, 0.3);
     const p = plan(s);
     const ok = { videoSeconds: p.outputSeconds, audioSeconds: p.outputSeconds, black: [], silences: [], lufs: -14, peakDb: -2, graphics: [] };
     expect(editCheck(s, tr, { measured: ok, planned: p.outputSeconds })).not.toMatch(/file is/);

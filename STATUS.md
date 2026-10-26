@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 26 October 2026 (UTC). New: long graphics, reusable graphics, fonts, quick tool calls, the graphic check and face framing (see "Faster graphics and framing" below). Before that: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
+Last updated: 26 October 2026 (UTC). New: Rendrr is the engine, the AI is the editor. Part 1: marks instead of automatic edits (see "Rendrr is the engine" below). Before that: long graphics, reusable graphics, fonts, quick tool calls, the graphic check and face framing (see "Faster graphics and framing" below). Before that: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
 
 ## 1. Links
 
@@ -20,6 +20,21 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
+
+## Rendrr is the engine (26 October, night)
+
+Rendrr measures, marks, renders and checks. It never cuts, trims or reorders on its own: every change is an explicit edit the AI sends.
+
+### Part 1: marks instead of automatic edits
+
+| What | Where | Tests |
+|---|---|---|
+| Marks: what Rendrr noticed, with exact footage times. 17 kinds; Rendrr makes silence, filler, retake, stumble, false_start, director_note, scene_change, low_light, loud_peak, music_beat from the analysis it already has (Part 2 adds breath, click, clipped audio, focus, face). Worked out on read, the same ids every time; never stored. | `shared/src/marks.ts` | `shared/test/marks.test.ts` |
+| The AI's own marks (`add_marks`, `update_mark`, `delete_mark` in `apply_edits`) and its notes on Rendrr's (label, note, hidden) are kept with the edit (`timeline.marks`, `timeline.markEdits`), so undo takes them back. Old edits have neither and load as before. | `shared/src/ops.ts`, `timeline.ts` | `shared/test/marks.test.ts`, `api/test/marks.test.ts` |
+| New read tools: `mark_silences` (id, start, end, length, level_db), `mark_fillers` (id, wordId, text, start, end), `list_marks` (kind, source, from/to, edit seconds), `get_retakes` (groups of takes, each measured and scored, never picked). On an edit each mark says where it plays, or that it is cut. 28 tools now. | `api/src/tools.ts`, `api/src/services/marks.ts`, `shared/src/mcpTools.ts` | `api/test/marks.test.ts` |
+| `cut_silences` and `remove_fillers` are retired: a call gets a clear answer with what to do instead, and nothing is saved. They are no longer offered to the AI. | `shared/src/ops.ts` | `shared/test/edits.test.ts` |
+| `apply_style` sets the style's looks only (its captions). Its other rules (pauses, fillers, zooms, music, sound effects) come back as text for the AI to carry out. It no longer rebuilds the clips, cuts, zooms or adds music. `get_style` says the same. | `shared/src/ops.ts`, `api/src/tools.ts` | `shared/test/ops.test.ts`, `phase2.test.ts` |
+| The editor's Cut silences button is gone. | `web/src/rendrr/editor.js` | `next build`, browser match tests |
 
 ## Faster graphics and framing (26 October)
 

@@ -1,6 +1,6 @@
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  allWords, applyOp, EditError, graphicDefaults, GRAPHIC_TEMPLATES, outputDuration, stripLayout, StyleRulesSchema, TimelineSchema,
+  allWords, applyOp, EditError, footageInputOf, footageMarks, graphicDefaults, GRAPHIC_TEMPLATES, outputDuration, stripLayout, StyleRulesSchema, TimelineSchema,
   type Actor, type EditContext, type Lut, type Op, type Silence, type Snapshot, type StyleLite, type Timeline, type Transcript,
 } from "@rendrr/shared";
 import { AppError, notFound } from "./errors";
@@ -40,6 +40,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
   const lutRows = await tx.lut.findMany({ where: { userId }, select: { id: true, name: true } });
   const onV1 = Array.from(new Set([...((timeline as Timeline | undefined)?.tracks?.v1 ?? []).map((c) => (c as { sourceVideoId?: string }).sourceVideoId), ...alsoIds].filter((v): v is string => !!v && v !== video.id)));
   const others = onV1.length ? await tx.video.findMany({ where: { id: { in: onV1 }, userId }, include: { analysis: true } }) : [];
+  let markIds: Set<string> | null = null;
   return {
     videoId: video.id,
     sources: Object.fromEntries(others.map((o) => [o.id, { transcript: (o.analysis?.transcript as unknown as Transcript) || [], silences: (o.analysis?.silences as unknown as Silence[]) || [] }])),
@@ -57,6 +58,8 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
     },
     getLut: (id) => lutRows.find((l) => l.id === id),
     lutData: (id) => luts[id],
+    // Rendrr's marks on the edit's videos, worked out only when an op names one.
+    rendrrMarkIds: () => (markIds ??= new Set([video, ...others].flatMap((v) => footageMarks(footageInputOf(v.id, v.analysis, v.seconds)).map((m) => m.id)))),
   };
 }
 

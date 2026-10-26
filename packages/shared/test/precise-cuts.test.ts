@@ -1,7 +1,8 @@
 // Cuts to the millisecond: the sound is cut exactly where the edit says; the picture goes on the nearest frame and
 // shows the footage frame its sound is playing, never more than half a frame off, however many cuts.
 import { describe, expect, it } from "vitest";
-import { applyOp, buildRawTimeline, sequenceView, STYLES, stubTranscript, type EditContext, type EditOp, type Snapshot } from "../src/index";
+import { applyOp, buildRawTimeline, sequenceView, silenceMarks, STYLES, stubTranscript, type EditContext, type EditOp, type Snapshot } from "../src/index";
+import { cutPauses } from "./ai-cuts";
 import { ffmpegArgs, planRender } from "../src/renderPlan";
 
 const tr = stubTranscript(30);
@@ -72,14 +73,17 @@ describe("cuts to the millisecond", () => {
     });
   }
 
-  it("cut_silences keep 0 takes every pause out and leaves every word; the default leaves 80 ms", () => {
-    const tight = edit(raw(), { op: "cut_silences", overSeconds: 0.001, keep: 0 });
+  it("every gap between words cut exactly takes every pause out and leaves every word; 80 ms kept each side leaves more", () => {
+    // Silence marks start at 0.15 s; the shorter gaps too, from the word times.
+    const gaps = [{ start: 0, end: words[0].t }, ...words.slice(1).map((w, i) => ({ start: words[i].end, end: w.t })), { start: words[words.length - 1].end, end: 30 }].filter((g) => g.end - g.start >= 0.001);
+    expect(silenceMarks({ videoId: "v", transcript: tr, silences: [], duration: 30 }).every((m) => gaps.some((g) => g.start === m.start && g.end === m.end))).toBe(true);
+    const tight = edit(raw(), ...gaps.map((g) => ({ op: "cut_words" as const, from: g.start, to: g.end })));
     const v = sequenceView(tight.timeline, words);
     const heard = (w: { t: number; end: number }) => v.pieces.some((x) => x.srcIn <= w.t + 1e-6 && x.srcOut >= w.end - 1e-6);
     expect(words.every(heard)).toBe(true); // short words are not lost
     const talk = words.reduce((a, w) => a + (w.end - w.t), 0);
     expect(v.total).toBeCloseTo(talk, 2); // nothing but speech is left
-    const loose = sequenceView(edit(raw(), { op: "cut_silences", overSeconds: 0.001 }).timeline, words);
+    const loose = sequenceView(cutPauses(raw(), ctx, 0.001).timeline, words);
     expect(loose.total).toBeGreaterThan(v.total + 0.1); // 80 ms each side of each pause stays
   });
 

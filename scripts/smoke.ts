@@ -152,8 +152,12 @@ async function main() {
       if ((r.images || []).length !== 2) throw new Error(`${(r.images || []).length} frames came back`);
       return [r, String(r.text).split("\n")[0]];
     });
-    await step("AI: edit in one call (apply_edits: style with 2 zooms, silences, fillers, captions, music)", async () => {
-      const r = await tool("apply_edits", { projectId: project.id, note: "Smoke test edit.", edits: [{ op: "apply_style", styleId: "s4", overrides: { zoom: { mode: "count", count: 2 } } }, { op: "cut_silences", overSeconds: 0.5 }, { op: "remove_fillers" }, { op: "set_captions", on: true, look: "bold" }, { op: "add_music", trackId: "upbeat" }] });
+    await step("AI: edit in one call (apply_edits: style, the marked silences and fillers it chose, captions, zooms, music)", async () => {
+      const sil = String((await tool("mark_silences", { projectId: project.id, minLength: 0.5 })).text);
+      const fil = String((await tool("mark_fillers", { projectId: project.id })).text);
+      const cuts = [...sil.matchAll(/\nsil_\S+ ([\d.]+)-([\d.]+) /g)].slice(0, 20).map((m) => ({ op: "cut_words", from: +m[1] + 0.08, to: +m[2] - 0.08 })).filter((c) => c.to - c.from > 0.05);
+      const fillers = [...fil.matchAll(/\nfil_\S+ (w\d+) /g)].map((m) => m[1]);
+      const r = await tool("apply_edits", { projectId: project.id, note: "Smoke test edit.", edits: [{ op: "apply_style", styleId: "s4" }, ...cuts, ...(fillers.length ? [{ op: "cut_words", wordIds: fillers }] : []), { op: "set_captions", on: true, look: "bold" }, { op: "add_zoom", start: 3, end: 4.5, scale: 1.15 }, { op: "add_zoom", start: 12, end: 13.5, scale: 1.15 }, { op: "add_music", trackId: "upbeat" }] });
       if (!/^Done \(v\d+/.test(r.text)) throw new Error(r.text);
       const chat = await api(`/projects/${project.id}/ai-chat`);
       if (!chat.some((m: any) => m.text === "Smoke test edit." && m.workflow?.length >= 5)) throw new Error("the note and steps are not in the AI tab");

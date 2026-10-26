@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { findMusic, MUSIC_TRACKS, placementParams, SFX } from "./catalog";
+import { findMusic, MUSIC_TRACKS, placementParams } from "./catalog";
 import type { Aspect } from "./constants";
 import { mergeRules, StyleRulesPatchSchema, type StyleRules } from "./styles";
 import {
@@ -10,11 +10,13 @@ import {
 import { autoMusicFades, CLEANUP_KNOBS, cleanupText } from "./audio";
 import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema, presetStyle, styleText, TEXT_ANIMS, TEXT_PRESETS, textPreset, TextStylePatchSchema, TextStyleSchema, type Card, type TextAnim, type TextStyle } from "./captions";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
+import { MARK_KINDS, type Mark, type MarkEdit } from "./timeline";
+import { editToFootage, RENDRR_MARK } from "./marks";
 import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutRefSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, type ChromaKey, type ClipLook, type Grade, type Lut } from "./look";
 import {
-  asSequence, EditError, findClip, fmtClock, insertSeqClip, isPlainSequence, layoutTimeline, mainVideoOf, mergeRanges, moveSeqClip, newSeqClipId, normalSpeed,
+  asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
   type Attached, type Range, type SeqClip, type SequenceView,
 } from "./sequence";
@@ -38,10 +40,9 @@ const EDIT_OPS = [
   // wordIds cut those words (restore_words brings them back); from/to removes exactly that range, words or not.
   z.object({ op: z.literal("cut_words"), wordIds: z.array(z.string().max(40)).max(50_000).optional(), from: t.optional(), to: t.optional(), edit }),
   z.object({ op: z.literal("restore_words"), wordIds: z.array(z.string().max(40)).max(50_000) }),
-  // edges (default on): also the silence at the start and end of every V1 clip (longer than 0.3 s), whatever overSeconds.
-  // keep: seconds of pause left next to the speech on each side (default 0.08, and 0.1 before / 0.15 after a clip's
-  // speech); with keep, the clip edges are cut at overSeconds too. Times to the millisecond.
-  z.object({ op: z.literal("cut_silences"), overSeconds: z.number().min(0.001).max(30), keep: z.number().min(0).max(1).optional(), edges: z.boolean().optional() }),
+  // Retired: Rendrr no longer cuts on its own. Kept so an older call is answered with what to do instead (mark_silences
+  // or mark_fillers, then cut_words); not offered to the AI.
+  z.object({ op: z.literal("cut_silences"), overSeconds: z.number().min(0.001).max(30).optional(), keep: z.number().min(0).max(1).optional(), edges: z.boolean().optional() }),
   z.object({ op: z.literal("remove_fillers") }),
   // V1: the whole sequence, in order (start/end = footage of videoId, default the main footage). Keep a clip's id
   // to keep that clip. Other tracks: their clips (footage times, or edit times with edit true).
@@ -135,9 +136,18 @@ const EDIT_OPS = [
   z.object({ op: z.literal("set_under"), clipId, under: z.boolean() }),
   // How the final file is made: hdr keep (HDR footage stays HDR) or sdr (converted).
   z.object({ op: z.literal("set_export"), hdr: z.enum(["keep", "sdr"]).optional(), resolution: z.enum(RESOLUTIONS).optional(), codec: z.enum(CODECS).optional() }),
+  // ---- marks: notes on the footage, kept with the edit; they never change the video ----
+  // A mark on a moment (end left out) or a range of a video (default the main footage; edit true: edit seconds).
+  z.object({ op: z.literal("add_marks"), marks: z.array(z.object({ kind: z.enum(MARK_KINDS), start: t, end: t.optional(), label: z.string().max(200).optional(), note: z.string().max(2000).optional(), confidence: z.number().min(0).max(1).optional(), videoId: z.string().max(80).optional() })).min(1).max(500), edit }),
+  // Your mark: any field. Rendrr's: label, note and hidden only (null puts Rendrr's label back, or clears a note).
+  z.object({ op: z.literal("update_mark"), id: z.string().max(80), kind: z.enum(MARK_KINDS).optional(), start: t.optional(), end: t.optional(), label: z.string().max(200).nullable().optional(), note: z.string().max(2000).nullable().optional(), confidence: z.number().min(0).max(1).optional(), hidden: z.boolean().optional(), edit }),
+  // Your marks go; Rendrr's are hidden in this edit (update_mark hidden false shows one again).
+  z.object({ op: z.literal("delete_mark"), id: z.string().max(80).optional(), ids: z.array(z.string().max(80)).max(5000).optional() }),
 ] as const;
+/** Ops an older client may still send but the AI is no longer offered. */
+export const RETIRED_OPS = ["cut_silences", "remove_fillers"] as const;
 export const EditOpSchema = z.discriminatedUnion("op", [...EDIT_OPS]);
-export const EDIT_OP_NAMES = EDIT_OPS.map((o) => o.shape.op.value) as [EditOp["op"], ...EditOp["op"][]];
+export const EDIT_OP_NAMES = EDIT_OPS.map((o) => o.shape.op.value).filter((n) => !(RETIRED_OPS as readonly string[]).includes(n)) as [EditOp["op"], ...EditOp["op"][]];
 /** The fields of an edit its op does not have (a typo would otherwise be dropped silently and do nothing). */
 export function unknownEditFields(e: unknown): { unknown: string[]; known: string[] } {
   const op = (e as { op?: unknown })?.op;
@@ -169,11 +179,13 @@ export type EditContext = {
   getStyle: (id: string) => StyleLite | undefined;
   getVideo?: (id: string) => VideoLite | undefined;
   getGraphic?: (id: string) => GraphicLite | undefined;
-  /** Other videos on V1: their transcripts and silences (cut_silences works on them too). */
+  /** Other videos on V1: their transcripts and silences. */
   sources?: Record<string, { transcript: Transcript; silences: Silence[] }>;
   /** The user's imported LUTs (Phase 6): their names, and their numbers where an op needs them (match_color). */
   getLut?: (id: string) => { id: string; name: string } | undefined;
   lutData?: (id: string) => Lut | undefined;
+  /** The ids of Rendrr's own marks on the videos of this edit (for update_mark and delete_mark); missing: not checked. */
+  rendrrMarkIds?: () => Set<string>;
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -244,45 +256,6 @@ export function buildRawTimeline(tr: Transcript, duration: number, cut: string[]
 // Helpers used by ops.
 // ---------------------------------------------------------------------------------------------
 
-/** Pauses between words longer than `over` seconds, less `pad` next to each word (keeps breaths natural). */
-export function pauseRanges(words: Word[], over: number, pad = 0.08): Range[] {
-  const out: Range[] = [];
-  for (let i = 0; i + 1 < words.length; i++) {
-    const a = words[i].end, b = words[i + 1].t;
-    if (b - a > over) out.push({ start: rT(a + pad), end: rT(b - pad) });
-  }
-  return out.filter((x) => x.end - x.start >= 0.001);
-}
-
-const EDGE_SILENCE = 0.3;
-/**
- * The silence at the start and end of every V1 clip of a video, before its first and after its last spoken word,
- * when longer than 0.3 s: each cut then sits right on the speech. Small pads keep the breath before the first word
- * and the tail of the last one. Footage seconds of that clip.
- */
-export function clipEdgeSilences(tl: Timeline, words: Word[], videoId = mainVideoOf(tl), o: { over?: number; keep?: number } = {}): (Range & { clipId: string })[] {
-  const over = o.over ?? EDGE_SILENCE;
-  const cut = new Set(videoId === mainVideoOf(tl) ? tl.cut : []);
-  const out: (Range & { clipId: string })[] = [];
-  for (const c of tl.tracks.v1 as SeqClip[]) {
-    if (c.sourceVideoId !== videoId) continue;
-    const inside = words.filter((w) => !cut.has(w.id) && w.end > c.sourceIn && w.t < c.sourceOut);
-    if (!inside.length) continue; // a clip with no words: the audio's own silences decide (fromAudio)
-    const first = inside[0], last = inside[inside.length - 1];
-    if (first.t - c.sourceIn > over) out.push({ clipId: c.id, start: c.sourceIn, end: rT(first.t - (o.keep ?? 0.1)) });
-    if (c.sourceOut - last.end > over) out.push({ clipId: c.id, start: rT(last.end + (o.keep ?? 0.15)), end: c.sourceOut });
-  }
-  return out;
-}
-
-/** Transcript lines with a word that plays in the edit, with the edit time of the line's start. */
-function linesInEdit(tr: Transcript, tl: Timeline, view: SequenceView): { line: Line; at: number; end: number }[] {
-  const cut = new Set(tl.cut);
-  const main = view.mainVideoId;
-  const plays = (w: Word) => !cut.has(w.id) && view.pieces.some((p) => p.videoId === main && w.t >= p.srcIn && w.t < p.srcOut);
-  return tr.filter((l) => l.words.some(plays)).map((l) => ({ line: l, at: view.videoToEdit(main, l.start) ?? 0, end: view.videoToEdit(main, l.end) ?? 0 }));
-}
-
 function zoomClip(start: number, end: number, scale: number, mode: "punch" | "push", auto = false): V2Clip {
   return { id: rid("z"), start: rT(start), end: rT(end), label: `${mode === "push" ? "Push" : "Zoom"} ${Math.round(scale * 100)}%`, kind: "zoom", zoom: scale, mode, ...(auto ? { auto: true } : {}) } as V2Clip;
 }
@@ -300,99 +273,32 @@ const mapClip = (tl: Timeline, id: string, f: (c: SeqClip) => SeqClip) => setSeq
 const name = (c: Clip) => c.label || c.id;
 
 // ---------------------------------------------------------------------------------------------
-// applyStyle: the machine-readable rules in action. Server side, deterministic, no AI. A plain cut of the footage
-// starts again from the paragraph cut (so switching styles does not stack old silence cuts); a sequence that was
-// rearranged or mixes videos is kept, and only gets the cuts.
+// applyStyle: a style's looks only (its captions). Rendrr never cuts, trims, zooms or adds music on its own: the
+// style's other rules come back as text for the AI to carry out with explicit edits.
 // ---------------------------------------------------------------------------------------------
-function applyStyleRules(snap: Snapshot, style: StyleLite, ctx: EditContext): { snap: Snapshot; summary: string } {
+export function styleGuidance(rules: StyleRules): string[] {
+  const z = rules.zoom, out: string[] = [];
+  if (rules.trimEdges) out.push("trim the dead air before the first and after the last word");
+  if (rules.cutSilencesOver != null) out.push(`cut pauses over ${rules.cutSilencesOver}s (mark_silences, then cut_words from/to)`);
+  if (rules.removeFillers) out.push("cut the filler words (mark_fillers, then cut_words)");
+  if (z.mode === "newSentence") out.push(`zoom ${Math.round(z.scale * 100)}% on each new sentence, held ${z.holdSec ?? 1.6}s, at least 2s apart`);
+  else if (z.mode === "interval") out.push(`zoom ${Math.round(z.scale * 100)}% every ${z.everySec ?? 3}s, held ${z.holdSec ?? Math.min(1.5, (z.everySec ?? 3) / 2)}s`);
+  else if (z.mode === "slowPush") out.push(`a slow push to ${Math.round(z.scale * 100)}% over each shot longer than 1.5s`);
+  else if (z.mode === "count") out.push(`${z.count ?? 3} zooms of ${Math.round(z.scale * 100)}% on sentence starts, spread over the edit`);
+  if (rules.sfxOnZoom) out.push(`sound effect ${rules.sfxOnZoom} on each zoom`);
+  if (rules.music.mood) out.push(`music: ${rules.music.mood} at ${rules.music.gainDb} dB`);
+  return out;
+}
+
+function applyStyleLooks(snap: Snapshot, style: StyleLite): { snap: Snapshot; summary: string } {
   const rules = style.rules;
-  const words = allWords(ctx.transcript);
-  const main = mainVideoOf(snap.timeline);
-  let tl: Timeline = { ...snap.timeline };
-  const did: string[] = [];
-
-  if (isPlainSequence(tl)) {
-    const before = tl;
-    const look = seqClips(tl)[0] ? { ...(seqClips(tl)[0].rotate ? { rotate: seqClips(tl)[0].rotate } : {}), ...(plainFraming(seqClips(tl)[0].framing) ? { framing: seqClips(tl)[0].framing } : {}) } : {};
-    tl = setSeq(tl, paragraphClips(ctx.transcript, ctx.duration).map((c) => ({ ...c, sourceVideoId: main, sourceIn: c.start, sourceOut: c.end, ...look }) as SeqClip));
-    tl = reattach(before, tl, words);
-  }
-  // Drop what an earlier style added automatically; keep everything people or the AI placed by hand.
-  const notAuto = <T extends Clip>(c: T) => !(c as Record<string, unknown>).auto;
-  tl = { ...tl, tracks: { ...tl.tracks, v2: tl.tracks.v2.filter(notAuto), a2: tl.tracks.a2.filter(notAuto), a3: tl.tracks.a3.filter(notAuto) } };
-
-  if (rules.trimEdges && words.length) {
-    const before = tl;
-    const a = Math.max(0, words[0].t - 0.15), b = Math.min(ctx.duration, words[words.length - 1].end + 0.3);
-    tl = removeSourceRange(removeSourceRange(tl, main, 0, a), main, b, ctx.duration + 1);
-    tl = reattach(before, tl, words);
-    did.push("trimmed the start and end");
-  }
-  if (rules.cutSilencesOver != null) {
-    const r = applyOpInner({ ...snap, timeline: tl }, { op: "cut_silences", overSeconds: rules.cutSilencesOver, edges: false }, ctx); // styles trim edges by their own rule
-    tl = r.snap.timeline;
-    if (r.count) did.push(`cut ${r.count} ${r.count === 1 ? "pause" : "pauses"} over ${rules.cutSilencesOver}s`);
-  }
-  if (rules.removeFillers) {
-    const r = applyOpInner({ ...snap, timeline: tl }, { op: "remove_fillers" }, ctx);
-    tl = r.snap.timeline;
-    if (r.count) did.push(`removed ${r.count} filler ${r.count === 1 ? "word" : "words"}`);
-  }
-
-  // Zooms land on what people will actually see (edit seconds).
-  const view = sequenceView(tl, words);
-  const total = view.total;
-  const spans: { s: number; e: number; mode: "punch" | "push" }[] = [];
-  const z = rules.zoom;
-  if (z.mode === "newSentence") {
-    let lastAt = -99;
-    for (const { line, at } of linesInEdit(ctx.transcript, tl, view)) {
-      if (at - lastAt < 2) continue;
-      const end = view.videoToEdit(main, Math.min(line.end, line.start + (z.holdSec ?? 1.6))) ?? at;
-      if (end - at < 0.3) continue;
-      spans.push({ s: at, e: end, mode: "punch" });
-      lastAt = at;
-    }
-  } else if (z.mode === "interval" && total > 0) {
-    const every = z.everySec ?? 3, hold = z.holdSec ?? Math.min(1.5, every / 2);
-    for (let o = every; o < total - 0.3; o += every) if (Math.min(total, o + hold) - o > 0.2) spans.push({ s: o, e: Math.min(total, o + hold), mode: "punch" });
-  } else if (z.mode === "slowPush") {
-    for (const p of view.picture) if (p.end - p.start > 1.5) spans.push({ s: p.start, e: p.end, mode: "push" });
-  } else if (z.mode === "count" && total > 0) {
-    // Exactly `count` zooms on sentence starts, picked evenly across the edit (evenly spaced moments without speech).
-    const n = z.count ?? 3, hold = z.holdSec ?? 1.6;
-    const starts: { at: number; end: number }[] = [];
-    let lastAt = -99;
-    for (const { line, at } of linesInEdit(ctx.transcript, tl, view)) {
-      if (at - lastAt < 1.5) continue;
-      starts.push({ at, end: view.videoToEdit(main, Math.min(line.end, line.start + hold)) ?? at });
-      lastAt = at;
-    }
-    const picks = starts.length >= n
-      ? Array.from({ length: n }, (_, k) => starts[Math.min(starts.length - 1, Math.floor(((k + 0.5) * starts.length) / n))])
-      : Array.from({ length: n }, (_, k) => { const o = (total * (k + 0.5)) / n; return { at: o, end: Math.min(total, o + hold) }; });
-    for (const p of picks) if (p.end - p.at > 0.2) spans.push({ s: p.at, e: p.end, mode: "punch" });
-  }
-  const zooms = spans.map((x) => attachAt(view, zoomClip(x.s, x.e, z.scale, x.mode, true), x.s, x.e));
-  if (zooms.length) did.push(`added ${zooms.length} ${zooms.length === 1 ? "zoom" : "zooms"}`);
-  const sfx = rules.sfxOnZoom ? SFX.find((s) => s.id === rules.sfxOnZoom) : undefined;
-  const sfxClips = sfx ? zooms.filter((x) => (x as Record<string, unknown>).mode === "punch").map((x) => attachAt(view, { id: rid("x"), start: 0, end: 0, label: sfx.name, sfxId: sfx.id, assetKey: sfx.key, auto: true } as Clip, x.start, x.start + sfx.seconds)) : [];
-
-  const music = rules.music.mood ? findMusic(rules.music.mood) : undefined;
-  const musicClips = music ? [{ id: rid("m"), start: 0, end: r2(total), label: music.name, trackId: music.id, assetKey: music.key, gainDb: rules.music.gainDb, auto: true, fill: true }] : [];
-  if (music) did.push(`music ${music.name}`);
-
   // A style with a full caption style gives exactly those captions; otherwise the look's preset (with its word counts).
-  const { captionStyle: _cs, ...noStyle } = tl;
-  tl = {
-    ...noStyle,
-    ...(rules.captions.style ? { captionStyle: rules.captions.style } : {}),
-    captionsOn: rules.captions.on,
-    captionLook: rules.captions.look,
-    tracks: { ...tl.tracks, v2: [...tl.tracks.v2, ...zooms], a2: [...tl.tracks.a2, ...musicClips], a3: [...tl.tracks.a3, ...sfxClips] },
-  };
-  did.push(rules.captions.on ? `captions ${rules.captions.look}` : "captions off");
-  return { snap: { ...snap, styleId: style.id, timeline: tl }, summary: `applied style ${style.name}` + (did.length ? ": " + did.join(", ") : "") };
+  const { captionStyle: _cs, ...noStyle } = snap.timeline;
+  const tl: Timeline = { ...noStyle, ...(rules.captions.style ? { captionStyle: rules.captions.style } : {}), captionsOn: rules.captions.on, captionLook: rules.captions.look };
+  const rest = styleGuidance(rules);
+  const summary = `applied style ${style.name} (looks only): ${rules.captions.on ? `captions ${rules.captions.look}` : "captions off"}` +
+    (rest.length ? `. Its other rules, for you to do with explicit edits if you want them: ${rest.join("; ")}` : "");
+  return { snap: { ...snap, styleId: style.id, timeline: tl }, summary };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -461,7 +367,8 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
   switch (op.op) {
     case "replace": {
       // The editor sends the whole timeline. Keep the server's duration: the footage length never changes.
-      const next = { ...op.timeline, duration: tl.duration || op.timeline.duration };
+      // Marks are the AI's: an editor that does not send them keeps them as they are.
+      const next = { ...op.timeline, duration: tl.duration || op.timeline.duration, ...(op.timeline.marks === undefined && tl.marks ? { marks: tl.marks } : {}), ...(op.timeline.markEdits === undefined && tl.markEdits ? { markEdits: tl.markEdits } : {}) };
       return { snap: { timeline: next, name: op.name ?? snap.name, aspect: (op.aspect ?? snap.aspect) as Aspect, styleId: op.styleId === undefined ? snap.styleId : op.styleId }, summary: "edited in the editor" };
     }
     case "cut_words": {
@@ -494,35 +401,10 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const n = tl.cut.length - cut.length;
       return { snap: { ...snap, timeline: { ...tl, cut } }, summary: `restored ${n} ${n === 1 ? "word" : "words"}`, count: n };
     }
-    case "cut_silences": {
-      // Every video on V1 whose transcript Rendrr has: the main footage, and the others in ctx.sources.
-      const videos = Array.from(new Set(seqClips(tl).map((c) => c.sourceVideoId))).filter((v) => v === main || ctx.sources?.[v]);
-      let next = tl;
-      let removed = 0, n = 0;
-      const done: Range[] = [];
-      const take = (f: () => Timeline, g: Range) => {
-        const before = v1Footage(next);
-        next = f();
-        const diff = before - v1Footage(next);
-        if (diff > 0.0005) { removed += diff; n++; done.push(g); }
-      };
-      for (const vid of videos) {
-        const ws = wordsOf(vid);
-        const sil = vid === main ? ctx.silences : ctx.sources![vid].silences;
-        // Each clip's own start and end first (they only shorten clips), then the pauses wherever they play.
-        const keep = op.keep, edgeOpts = keep != null ? { over: Math.max(op.overSeconds, keep), keep } : {};
-        if (op.edges !== false) for (const g of clipEdgeSilences(next, ws, vid, edgeOpts)) if (g.end - g.start >= 0.001) take(() => removeSourceRange(next, vid, g.start, g.end, g.clipId), g);
-        // Long silences the transcript cannot see (no words at all) come from the audio analysis.
-        const fromAudio = sil.filter((s) => s.end - s.start > op.overSeconds && !ws.some((w) => w.t < s.end && w.end > s.start)).map((s) => ({ start: rT(s.start + (keep ?? 0.08)), end: rT(s.end - (keep ?? 0.08)) })).filter((s) => s.end - s.start >= 0.001);
-        for (const g of mergeRanges([...pauseRanges(ws, op.overSeconds, keep ?? 0.08), ...fromAudio])) take(() => removeSourceRange(next, vid, g.start, g.end), g);
-      }
-      const summary = n === 0 ? `no pauses over ${op.overSeconds}s left to cut` : n === 1 ? `cut ${fmtClock(done[0].start)} to ${fmtClock(done[0].end)} (silence, ${removed.toFixed(1)}s)` : `cut ${n} silences over ${op.overSeconds}s (${removed.toFixed(1)}s total)`;
-      return { snap: { ...snap, timeline: next }, summary, count: n };
-    }
-    case "remove_fillers": {
-      const ids = words.filter((w) => w.filler && !tl.cut.includes(w.id)).map((w) => w.id);
-      return { snap: { ...snap, timeline: { ...tl, cut: [...tl.cut, ...ids] } }, summary: ids.length ? `removed ${ids.length} filler ${ids.length === 1 ? "word" : "words"}` : "no filler words left to remove", count: ids.length };
-    }
+    case "cut_silences":
+      throw new EditError("cut_silences is retired: Rendrr no longer cuts on its own. Use mark_silences to list the silences with exact times, then cut the ones you choose with cut_words {from, to}.");
+    case "remove_fillers":
+      throw new EditError("remove_fillers is retired: Rendrr no longer cuts on its own. Use mark_fillers to list the filler words with their word ids, then cut the ones you choose with cut_words {wordIds}.");
     case "set_clips": {
       if (op.track === "a1" && op.linked === false) throw new EditError("In the sequence the dialogue follows its picture. Use set_audio_offset for J/L cuts or to mute a clip.");
       if (op.track === "v1" || op.track === "a1") {
@@ -751,7 +633,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     case "apply_style": {
       const style = ctx.getStyle(op.styleId);
       if (!style) throw new EditError("That style does not exist. Use list_styles to see the ids.");
-      return applyStyleRules(snap, op.overrides ? { ...style, rules: mergeRules(style.rules, op.overrides) } : style, ctx);
+      return applyStyleLooks(snap, op.overrides ? { ...style, rules: mergeRules(style.rules, op.overrides) } : style);
     }
     case "restore_snapshot":
       return { snap: op.snapshot, summary: op.note };
@@ -1070,7 +952,92 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const said = [op.resolution && `final ${op.resolution === "4k" ? "4K" : op.resolution}`, op.codec && (op.codec === "hevc" ? "HEVC" : "H.264"), op.hdr && `HDR ${op.hdr === "sdr" ? "converted to SDR" : "kept when the footage is HDR"}`].filter(Boolean);
       return { snap: { ...snap, timeline: next }, summary: `export: ${said.join(", ")}` };
     }
+
+    // ---- marks ----
+    case "add_marks": {
+      const have = new Set((tl.marks ?? []).map((m) => m.id));
+      const made: Mark[] = op.marks.map((m, i) => {
+        const at = markPlace(m.start, m.end ?? m.start, m.videoId, op.edit, op.marks.length > 1 ? `Mark ${i + 1}` : "The mark");
+        let id = rid("mk_");
+        while (have.has(id)) id = rid("mk_");
+        have.add(id);
+        return { id, kind: m.kind, ...at, source: "ai" as const, ...(m.label ? { label: m.label } : {}), ...(m.note ? { note: m.note } : {}), ...(m.confidence != null ? { confidence: m.confidence } : {}) };
+      });
+      const marks = [...(tl.marks ?? []), ...made];
+      if (marks.length > 5000) throw new EditError(`An edit keeps up to 5000 of your marks (this would make ${marks.length}): delete some first with delete_mark.`);
+      const one = made[0];
+      return { snap: { ...snap, timeline: { ...tl, marks } }, count: made.length, summary: made.length === 1 ? `added mark ${one.id} (${one.kind} ${markWhere(one)})` : `added ${made.length} marks: ${made.slice(0, 20).map((m) => m.id).join(", ")}${made.length > 20 ? ", …" : ""}` };
+    }
+    case "update_mark": {
+      const mine = (tl.marks ?? []).find((m) => m.id === op.id);
+      if (mine) {
+        if (op.hidden != null) throw new EditError("hidden is for Rendrr's marks; delete_mark removes one of yours.");
+        let next: Mark = { ...mine };
+        if (op.start != null || op.end != null) {
+          if (op.edit && op.start == null) throw new EditError("With edit true, send start (and end for a range) in edit seconds.");
+          const s = op.start ?? mine.start, e = op.end ?? (op.edit ? op.start! : Math.max(s, mine.end));
+          next = { ...next, ...markPlace(s, e, op.edit ? undefined : mine.videoId, op.edit, "The mark") };
+        }
+        if (op.kind) next.kind = op.kind;
+        if (op.confidence != null) next.confidence = op.confidence;
+        if (op.label !== undefined) { if (op.label === null) delete next.label; else next.label = op.label; }
+        if (op.note !== undefined) { if (op.note === null) delete next.note; else next.note = op.note; }
+        return { snap: { ...snap, timeline: { ...tl, marks: (tl.marks ?? []).map((m) => (m.id === op.id ? next : m)) } }, summary: `updated mark ${op.id} (${next.kind} ${markWhere(next)})` };
+      }
+      rendrrMark(op.id);
+      if (op.kind || op.start != null || op.end != null || op.confidence != null) throw new EditError(`${op.id} is one of Rendrr's marks: its kind, times and confidence are measured. Change its label, note or hidden, or add your own mark with add_marks.`);
+      const cur: MarkEdit = { ...(tl.markEdits?.[op.id] ?? {}) };
+      if (op.label !== undefined) { if (op.label === null) delete cur.label; else cur.label = op.label; }
+      if (op.note !== undefined) { if (op.note === null) delete cur.note; else cur.note = op.note; }
+      if (op.hidden !== undefined) { if (op.hidden) cur.hidden = true; else delete cur.hidden; }
+      const said = [op.label !== undefined && (op.label === null ? "its own label back" : "label"), op.note !== undefined && (op.note === null ? "note cleared" : "note"), op.hidden !== undefined && (op.hidden ? "hidden in this edit" : "shown again")].filter(Boolean);
+      return { snap: { ...snap, timeline: withMarkEdits(tl, { [op.id]: cur }) }, summary: `updated Rendrr's mark ${op.id}${said.length ? `: ${said.join(", ")}` : ""}` };
+    }
+    case "delete_mark": {
+      const ids = Array.from(new Set([...(op.ids ?? []), ...(op.id ? [op.id] : [])]));
+      if (!ids.length) throw new EditError("delete_mark needs id or ids (list_marks gives them).");
+      const mine = new Set((tl.marks ?? []).map((m) => m.id));
+      const gone = ids.filter((id) => mine.has(id)), hid = ids.filter((id) => !mine.has(id));
+      hid.forEach(rendrrMark);
+      let next: Timeline = { ...tl, marks: (tl.marks ?? []).filter((m) => !gone.includes(m.id)) };
+      if (!next.marks!.length) delete next.marks;
+      if (hid.length) next = withMarkEdits(next, Object.fromEntries(hid.map((id) => [id, { ...(tl.markEdits?.[id] ?? {}), hidden: true }])));
+      const said = [gone.length && `deleted ${gone.length} ${gone.length === 1 ? "mark" : "marks"}`, hid.length && `hid ${hid.length === 1 ? `Rendrr's mark ${hid[0]}` : `${hid.length} of Rendrr's marks`} in this edit (update_mark hidden false shows ${hid.length === 1 ? "it" : "one"} again)`].filter(Boolean);
+      return { snap: { ...snap, timeline: next }, summary: said.join("; "), count: ids.length };
+    }
   }
+
+  /** Where a mark goes: footage seconds of a video (default the main footage), or edit seconds with edit true. */
+  function markPlace(start: number, end: number, videoId: string | undefined, isEdit: boolean | undefined, what: string): { videoId: string; start: number; end: number } {
+    if (end < start) throw new EditError(`${what} ends (${at2(end)}s) before it starts (${at2(start)}s).`);
+    if (isEdit) {
+      const v = view();
+      if (start > v.total + 0.001) throw new EditError(`${what} starts at edit ${at2(start)}s, but the edit is ${at2(v.total)}s long.`);
+      const a = editToFootage(v, start), b = end > start ? editToFootage(v, Math.min(end, v.total), "end") : a;
+      if (!a || !b) throw new EditError("The sequence is empty: add a clip to V1 first.");
+      if (a.videoId !== b.videoId || b.t < a.t) throw new EditError(`${what} (edit ${at2(start)}s to ${at2(end)}s) runs across a cut to other footage: send one mark per clip, or footage seconds.`);
+      return { videoId: a.videoId, start: a.t, end: b.t };
+    }
+    const vid = videoIdOf(videoId);
+    const f = vid === main ? { name: "the footage", seconds: ctx.duration } : (() => { const x = ctx.getVideo?.(vid); if (!x) throw new EditError(`Video "${vid}" is not in your library. Use list_footage for the ids.`); return { name: `"${x.name}"`, seconds: x.seconds }; })();
+    if (end > f.seconds + 0.05) throw new EditError(`${what} ends at ${at2(end)}s, but ${f.name} is only ${f.seconds.toFixed(1)}s long.`);
+    return { videoId: vid, start: rT(start), end: rT(end) };
+  }
+  /** A Rendrr mark id that names a real mark (when the caller can say which exist). */
+  function rendrrMark(id: string) {
+    const known = RENDRR_MARK.test(id) ? ctx.rendrrMarkIds?.() : undefined;
+    if (!RENDRR_MARK.test(id) || (known && !known.has(id))) throw new EditError(`There is no mark ${id} in this edit. list_marks gives the ids.`);
+  }
+}
+
+const markWhere = (m: Mark) => (m.end > m.start ? `${msText(m.start)}s to ${msText(m.end)}s` : `at ${msText(m.start)}s`);
+/** The AI's notes on Rendrr's marks, merged; an empty note is dropped, and so is an empty record. */
+function withMarkEdits(tl: Timeline, patch: Record<string, MarkEdit>): Timeline {
+  const all = { ...(tl.markEdits ?? {}) };
+  for (const [id, e] of Object.entries(patch)) { if (Object.keys(e).length) all[id] = e; else delete all[id]; }
+  const next: Timeline = { ...tl, markEdits: all };
+  if (!Object.keys(all).length) delete next.markEdits;
+  return next;
 }
 
 /** Phase 6: a clip that takes a look (a V1 clip or a b-roll clip). */

@@ -137,6 +137,28 @@ export type Codec = (typeof CODECS)[number];
 export const ExportSchema = z.object({ hdr: z.enum(["keep", "sdr"]).optional(), resolution: z.enum(RESOLUTIONS).optional(), codec: z.enum(CODECS).optional() });
 export type ExportSettings = z.infer<typeof ExportSchema>;
 
+// Marks (see marks.ts): what Rendrr or the AI noticed, in footage seconds. The AI's own are kept with the edit.
+export const MARK_KINDS = ["silence", "filler", "retake", "stumble", "false_start", "off_camera", "director_note", "breath", "click_pop", "loud_peak", "clipped_audio", "low_light", "out_of_focus", "scene_change", "face_lost", "music_beat", "custom"] as const;
+export type MarkKind = (typeof MARK_KINDS)[number];
+
+const markTime = z.number().finite().min(0).max(24 * 3600);
+export const MarkSchema = z.object({
+  id: z.string().min(1).max(80),
+  kind: z.enum(MARK_KINDS),
+  /** The footage the times are in (missing: the edit's main footage). */
+  videoId: z.string().max(80).optional(),
+  start: markTime,
+  end: markTime,
+  label: z.string().max(200).optional(),
+  note: z.string().max(2000).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  source: z.enum(["rendrr", "ai"]),
+});
+export type Mark = z.infer<typeof MarkSchema>;
+/** The AI's note on one of Rendrr's marks in this edit, or that it is hidden here. */
+export const MarkEditSchema = z.object({ hidden: z.boolean().optional(), label: z.string().max(200).optional(), note: z.string().max(2000).optional() });
+export type MarkEdit = z.infer<typeof MarkEditSchema>;
+
 export const TimelineSchema = z.object({
   /** "B" = the sequence model. Missing = model A (stored before Phase 2; converted when edited). */
   model: z.literal("B").optional(),
@@ -155,6 +177,10 @@ export const TimelineSchema = z.object({
   framing: FramingSchema.optional(),
   audio: AudioSettingsSchema.optional(),
   export: ExportSchema.optional(),
+  /** The AI's marks on the footage (Rendrr's own come from the analysis, never stored here). */
+  marks: z.array(MarkSchema).max(5000).optional(),
+  /** The AI's notes on Rendrr's marks in this edit, or that one is hidden here, by mark id. */
+  markEdits: z.record(MarkEditSchema).optional(),
 });
 
 export type Clip = z.infer<typeof ClipSchema>;

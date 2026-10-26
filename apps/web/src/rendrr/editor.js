@@ -552,10 +552,7 @@ function EditorInner({ project, reload, ai, keep }) {
     doOp({ op: "split_clip", track: isV1(target.track) ? "v1" : target.track, clipId: target.id, at: r2(t), edit: true });
   };
   const removeSel = () => { if (!sel) return; if (doOp({ op: "delete_clip", track: sel.track, clipId: sel.id })) setSel(null); };
-  // Cut silences: the connector's own op (pauses over the limit, the silence at each clip's start and end).
-  const [silOver, setSilOver] = useState(0.5);
   const [frameOpen, setFrameOpen] = useState(false); const frameBase = useRef(null);
-  const cutSilences = () => doOp({ op: "cut_silences", overSeconds: silOver });
   const selClip = sel ? lay.tracks[sel.track]?.find((c) => c.id === sel.id) : null;
   const selV1 = sel && isV1(sel.track) ? lay.tracks.v1.find((c) => c.id === sel.id) : null;
   const isOn = (k, c) => !!sel && c.id === sel.id && (k === sel.track || (isV1(k) && isV1(sel.track)));
@@ -794,7 +791,6 @@ function EditorInner({ project, reload, ai, keep }) {
           <button class="tool" id="rotate" title=${"Turn " + (selV1 ? "this clip" : "the footage") + " 90° clockwise (footage filmed sideways)"} onClick=${() => doOp({ op: "set_rotation", degrees: (rotNow + 90) % 360, clipIds: lookIds })}><${Icon} name="refresh" size="15" />Rotate${rotNow ? " " + rotNow + "°" : ""}</button>
           <span style="position:relative"><button class="tool" id="frame-btn" title=${"Position and scale of " + (selV1 ? "this clip" : "the footage")} onClick=${() => setFrameOpen((o) => !o)}><${Icon} name="image" size="15" />Frame</button>
             ${frameOpen && html`<div class="menu" id="frame-pop" style="left:0;right:auto;top:36px;min-width:240px;padding:12px;display:grid;gap:8px"><span class="t-small muted">${selV1 ? "This clip" : "Every clip of the footage"}</span>${[["scale", "Scale", 0.5, 2, 0.01], ["x", "Left / right", -0.5, 0.5, 0.01], ["y", "Up / down", -0.5, 0.5, 0.01]].map(([k, l, lo, hi, st]) => html`<label key=${k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${frNow[k]}</span><input type="range" data-frame=${k} min=${lo} max=${hi} step=${st} value=${frNow[k]} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => liveOp(H.state, { op: "set_framing", [k]: +e.target.value, clipIds: lookIds })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}<${Btn} kind="ghost" size="xs" onClick=${() => doOp({ op: "set_framing", scale: 1, x: 0, y: 0, clipIds: lookIds }, false)}>Reset<//></div>`}</span>
-          <span class="row" style="gap:2px"><button class="tool" id="cut-silences" title="Cut pauses longer than the limit, and the silence at the start and end of every clip" onClick=${cutSilences}><${Icon} name="scissors" size="15" />Cut silences</button><select class="tool" id="silence-over" aria-label="Pauses longer than" value=${silOver} onChange=${(e) => setSilOver(+e.target.value)}>${[0.3, 0.5, 0.8, 1, 1.5].map((x) => html`<option key=${x} value=${x}>over ${x}s</option>`)}</select></span>
           <button class="tool" id="delete-clip" disabled=${!sel} onClick=${removeSel}><${Icon} name="trash" size="15" />Delete<span class="kbd">⌫</span></button>
           ${selV1 && html`<button class="tool" id="mute-clip" title="Silence this clip's dialogue, or bring it back" onClick=${toggleMute}><${Icon} name="mic" size="15" />${selV1.audioMuted ? "Unmute" : "Mute"}</button>`}
           ${selClip && html`<span class="t-small muted" style="margin-left:4px">${selClip.label}</span>`}

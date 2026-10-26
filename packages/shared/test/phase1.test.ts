@@ -1,11 +1,12 @@
 // Phase 1: ripple, linked clips, the player plays the plan, the check measures the file, and the op fixes.
 import { describe, expect, it } from "vitest";
 import {
-  applyOp, buildInitialTimeline, editCheck, layoutTimeline, liveFrame, MCP_TOOLS, outputDuration, parseMeasureLog,
+  applyOp, buildInitialTimeline, editCheck, layoutTimeline, liveFrame, MCP_TOOLS, outputDuration, parseMeasureLog, silenceMarks,
   playerGraphicHtml, sequenceClock, sequenceView, STYLES, stripLayout, stubTranscript, transcriptAsText, zoomAt,
   type Clip, type EditContext, type FileMeasure, type Snapshot, type Transcript,
 } from "../src/index";
 import { ffmpegArgs, planRender, zoomExpr } from "../src/renderPlan";
+import { cutPauses } from "./ai-cuts";
 
 const tr = stubTranscript(40);
 const words = tr.flatMap((l) => l.words);
@@ -92,15 +93,18 @@ describe("op fixes", () => {
     { id: "l1", start: 3.6, end: 5, gapBefore: 0, words: [{ id: "w2", text: "Second", t: 3.6, end: 4, filler: false }, { id: "w3", text: "part.", t: 4.1, end: 5, filler: false }] },
   ];
   const c2: EditContext = { ...ctx, transcript: t2, duration: 10 };
-  it("cut_silences removes silence at the start and end of every clip", () => {
+  it("the silence before the first word, between words and after the last is marked; cut_words cuts exactly what the AI picks", () => {
+    const m = silenceMarks({ videoId: "vid1", transcript: t2, silences: [{ start: 5.2, end: 10 }], duration: 10 });
+    expect(m.map((x) => [x.start, x.end, x.label, x.level_db])).toEqual([[0, 1.5, "before the first word", null], [3, 3.6, "between words", null], [5, 10, "after the last word", null]]);
+    // The audio is quiet from 5.2 s: the stretch after the last word has some sound first (level unknown) and is marked once.
+    expect(m.map((x) => x.id)).toEqual(["sil_0_vid1", "sil_3000_vid1", "sil_5000_vid1"]);
     const tl = buildInitialTimeline(t2, 10, "clean", [], "vid1");
     const clip = (id: string, a: number, b: number) => ({ id, start: a, end: b, label: "", sourceVideoId: "vid1", sourceIn: a, sourceOut: b });
     const s: Snapshot = { timeline: { ...tl, tracks: { ...tl.tracks, v1: [clip("a", 0, 3.2), clip("b", 3.2, 10)] } }, name: "t", aspect: "16:9", styleId: "s2" };
-    const r = applyOp(s, { op: "cut_silences", overSeconds: 1 }, c2).snap; // no pause between words is over 1 s
-    expect(seq(r).map((c) => [c.sourceIn, c.sourceOut])).toEqual([[1.4, 3.2], [3.5, 5.15]]); // clip a: head; clip b: head and tail
+    const r = applyOp(s, { op: "batch", ops: [{ op: "cut_words", from: 0, to: 1.4 }, { op: "cut_words", from: 5.15, to: 10 }] }, c2).snap;
+    expect(seq(r).map((c) => [c.sourceIn, c.sourceOut])).toEqual([[1.4, 3.2], [3.2, 5.15]]);
     expect(r.timeline.tracks.a1.map((c) => [c.start, c.end])).toEqual(r.timeline.tracks.v1.map((c) => [c.start, c.end]));
-    const off = applyOp(s, { op: "cut_silences", overSeconds: 1, edges: false }, c2).snap;
-    expect(seq(off).map((c) => c.sourceIn)).toEqual([0, 3.2]);
+    expect(() => applyOp(s, { op: "cut_silences", overSeconds: 1 }, c2)).toThrow(/retired/);
   });
   it("cut_words with a time range works when the range has no words", () => {
     const s: Snapshot = { timeline: buildInitialTimeline(t2, 10, "clean", [], "vid1"), name: "t", aspect: "16:9", styleId: "s2" };
@@ -119,7 +123,7 @@ describe("op fixes", () => {
 const allW = (t: Transcript) => t.flatMap((l) => l.words);
 
 describe("the live player plays what renders", () => {
-  const edited = applyOp(snap(), { op: "batch", ops: [{ op: "cut_silences", overSeconds: 0.4 }, { op: "add_zoom", start: 5, end: 6, scale: 1.3 }, { op: "add_graphic", graphicId: "gt_title_card", start: 8, end: 11, params: {} }] }, ctx).snap;
+  const edited = applyOp(cutPauses(snap(), ctx, 0.4), { op: "batch", ops: [{ op: "add_zoom", start: 5, end: 6, scale: 1.3 }, { op: "add_graphic", graphicId: "gt_title_card", start: 8, end: 11, params: {} }] }, ctx).snap;
   const plan = planRender({ kind: "preview", snapshot: edited, transcript: tr, source });
   const clock = sequenceClock(plan);
   it("edit time and footage time round trip over the picture parts", () => {
@@ -223,7 +227,7 @@ describe("connector: text first", () => {
     expect(Object.keys(MCP_TOOLS.find((t) => t.name === "create_graphic")!.input.shape)).toContain("images");
   });
   it("kept parts used by the check are the same ones the render plays", () => {
-    const s = applyOp(snap(), { op: "cut_silences", overSeconds: 0.4 }, ctx).snap;
+    const s = cutPauses(snap(), ctx, 0.4);
     const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source });
     expect(plan.parts.length).toBe(sequenceView(s.timeline, words).picture.length);
   });

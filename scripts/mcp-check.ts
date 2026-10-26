@@ -30,16 +30,19 @@ say("get_style s1", await call("get_style", { styleId: "s1" }));
 const created = say("create_project", await call("create_project", { videoId: vid, styleId: "s1", name: "MCP check" }));
 const pid = /\(([a-z0-9]{20,})\)/.exec(created)?.[1];
 if (!pid) process.exit(1);
+say("mark_silences", await call("mark_silences", { projectId: pid, limit: 10 }));
+say("mark_fillers", await call("mark_fillers", { projectId: pid, limit: 10 }));
+say("get_retakes", await call("get_retakes", { projectId: pid, limit: 3 }));
+say("list_marks", await call("list_marks", { projectId: pid, limit: 10 }));
 say("apply_edits", await call("apply_edits", { projectId: pid, note: "First pass from the MCP check.", edits: [
-  { op: "apply_style", styleId: "s1", overrides: { zoom: { mode: "count", count: 2 } } },
-  { op: "cut_silences", overSeconds: 0.3 }, { op: "remove_fillers" }, { op: "cut_words", from: 0, to: 2 },
+  { op: "apply_style", styleId: "s1" }, { op: "cut_words", from: 0, to: 2 }, { op: "add_marks", marks: [{ kind: "custom", start: 3, end: 4, note: "MCP check" }] },
   { op: "add_zoom", start: 5, end: 7, scale: 1.2 }, { op: "add_music", trackId: "lofi", gainDb: -20 },
   { op: "set_captions", on: true, look: "outline" }, { op: "edit_caption", lineId: "l0", text: "So the thing NOBODY tells you about starting an agency" },
   { op: "add_graphic", graphicId: "gt_lower_third", start: 1, end: 5, params: { name: "Ronnii K", role: "Founder" } },
 ] }));
 say("get_project", await call("get_project", { projectId: pid }));
 say("undo", await call("undo", { projectId: pid }));
-say("bad input", await call("apply_edits", { projectId: pid, edits: [{ op: "remove_fillers" }, { op: "trim_clip", track: "v1", clipId: "nope", start: 1, end: 2 }] }));
+say("bad input", await call("apply_edits", { projectId: pid, edits: [{ op: "set_captions", on: true }, { op: "trim_clip", track: "v1", clipId: "nope", start: 1, end: 2 }] }));
 say("list_graphics", await call("list_graphics"));
 say("get_comments", await call("get_comments", { projectId: pid }));
 if (render) {

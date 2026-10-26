@@ -70,7 +70,7 @@ async function imageContent(urls: string[] = []) {
 
 function buildServer(w: Who) {
   const server = new McpServer({ name: "rendrr", version: "1.0.0", title: "Rendrr" }, {
-    instructions: "Rendrr edits video: you decide, Rendrr measures, applies exactly what you send and renders. get_footage reads any video as text plus one overview image; apply_edits makes all changes in one call; render_preview returns a text check. Times are seconds in the ORIGINAL footage. Guide: rendrr://how-to-edit.",
+    instructions: "Rendrr edits video: you decide, Rendrr measures and marks (never cuts on its own), applies exactly what you send and renders. get_footage reads any video as text plus one overview image; apply_edits makes all changes in one call; render_preview returns a text check. Times are seconds in the ORIGINAL footage. Guide: rendrr://how-to-edit.",
   });
 
   for (const def of MCP_TOOLS) {
@@ -106,15 +106,16 @@ function buildServer(w: Who) {
 
   server.registerPrompt("edit-footage", {
     title: "Edit footage",
-    description: "A first pass of an edit: read the footage and style, cut, caption, render a preview and check it.",
+    description: "A first pass of an edit: read the footage, its marks and the style, cut, caption, render a preview and check it.",
     argsSchema: { videoId: z.string().describe("Footage id from list_footage"), styleId: z.string().describe("Style id from list_styles, for example s1") },
   }, ({ videoId, styleId }) => ({
     messages: [{ role: "user", content: { type: "text", text:
       `Edit my footage ${videoId} in style ${styleId} with Rendrr.\n\n` +
       `1. get_footage("${videoId}") and get_style("${styleId}"). Tell me in two lines what the video is about and the strongest hook.\n` +
-      `2. create_project, then one apply_edits call: apply_style ${styleId}, the cuts that put the hook in the first 3 seconds (cut_words with ids from detail "words"), caption fixes and zooms on the key lines. Keep sentences whole. Add a short note.\n` +
-      `3. render_preview and read its check. Fix with another apply_edits if it shows pauses, fillers or missing captions.\n` +
-      `4. Tell me what you did. Ask before rendering the final.\n\nGuide: rendrr://how-to-edit` } }],
+      `2. mark_silences, mark_fillers and get_retakes on the footage: Rendrr measures, you decide what goes.\n` +
+      `3. create_project, then one apply_edits call: apply_style ${styleId} (its captions; it lists its other rules for you), the cuts you chose (cut_words with word ids or from/to), the best take of each retake, the hook in the first 3 seconds, caption fixes and zooms on the key lines. Keep sentences whole. Add a short note.\n` +
+      `4. render_preview and read its check. Fix with another apply_edits if it shows pauses, fillers or missing captions.\n` +
+      `5. Tell me what you did. Ask before rendering the final.\n\nGuide: rendrr://how-to-edit` } }],
   }));
   return server;
 }

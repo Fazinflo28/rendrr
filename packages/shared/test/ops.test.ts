@@ -4,6 +4,7 @@ import {
   STYLES, stubTranscript, subtractRanges, TimelineSchema, type EditContext, type Snapshot,
 } from "../src/index";
 import { buildAss, ffmpegArgs, outputSize, planRender, zoomExpr } from "../src/renderPlan";
+import { cutPauses } from "./ai-cuts";
 
 const tr = stubTranscript(40);
 const words = tr.flatMap((l) => l.words);
@@ -109,19 +110,19 @@ describe("ops", () => {
   it("refuses unknown words with a friendly message", () => {
     expect(() => applyOp(snap(), { op: "cut_words", wordIds: ["nope"] }, ctx)).toThrow(/None of those words/);
   });
-  it("cut_silences shortens the output and never breaks the timeline", () => {
+  it("cutting the marked pauses shortens the output and never breaks the timeline", () => {
     const before = outputDuration(snap().timeline, words);
-    const a = applyOp(snap(), { op: "cut_silences", overSeconds: 0.3 }, ctx);
-    expect(outputDuration(a.snap.timeline, words)).toBeLessThan(before);
-    expect(TimelineSchema.safeParse(a.snap.timeline).success).toBe(true);
-    const again = applyOp(a.snap, { op: "cut_silences", overSeconds: 0.3 }, ctx);
-    expect(again.summary).toMatch(/no pauses/);
+    const a = cutPauses(snap(), ctx, 0.3);
+    expect(outputDuration(a.timeline, words)).toBeLessThan(before);
+    expect(TimelineSchema.safeParse(a.timeline).success).toBe(true);
+    expect(outputDuration(cutPauses(a, ctx, 0.3).timeline, words)).toBeCloseTo(outputDuration(a.timeline, words), 3); // cut already
   });
-  it("apply_style twice does not stack automatic zooms and music", () => {
+  it("apply_style twice changes the looks only: no zooms, music or cuts of its own", () => {
     const a = applyOp(snap(), { op: "apply_style", styleId: "s1" }, ctx);
     const b = applyOp(a.snap, { op: "apply_style", styleId: "s1" }, ctx);
-    expect(b.snap.timeline.tracks.v2.length).toBe(a.snap.timeline.tracks.v2.length);
-    expect(b.snap.timeline.tracks.a2.length).toBe(1);
+    expect(b.snap.timeline.tracks.v2.length).toBe(0);
+    expect(b.snap.timeline.tracks.a2.length).toBe(0);
+    expect(b.snap.timeline.tracks.v1).toEqual(snap().timeline.tracks.v1);
     expect(b.snap.timeline.captionLook).toBe("bold");
   });
   it("apply_style keeps clips placed by hand", () => {
@@ -155,7 +156,9 @@ describe("render plan", () => {
     expect(outputSize("1:1", "final")).toEqual({ width: 1080, height: 1080 });
   });
   it("plans cuts, captions and audio in output time", () => {
-    const s = applyOp(snap(), { op: "apply_style", styleId: "s1" }, ctx).snap;
+    // The AI's pass: the style's captions, the pauses it chose to cut, music.
+    const styled = cutPauses(applyOp(snap(), { op: "apply_style", styleId: "s1" }, ctx).snap, ctx, 0.3);
+    const s = applyOp(styled, { op: "add_music", trackId: "upbeat" }, ctx).snap;
     const plan = planRender({ kind: "preview", snapshot: { ...s, aspect: "9:16" }, transcript: tr, source: { width: 1280, height: 720, fps: 30, seconds: 40, hasAudio: true } });
     expect(plan.outputSeconds).toBeLessThan(40);
     expect(plan.captions.length).toBeGreaterThan(0);

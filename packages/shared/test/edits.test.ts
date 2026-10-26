@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyOp, buildBreakdown, buildInitialTimeline, editCheck, EditError, markFillers, MCP_TOOLS, mergeRules, refreshFillers, STYLES, stubTranscript,
+  allWords, applyOp, buildBreakdown, buildInitialTimeline, EDIT_OP_NAMES, editCheck, EditError, markFillers, MCP_TOOLS, mergeRules, refreshFillers, STYLES, stubTranscript,
   type EditContext, type Measured, type Snapshot, type Transcript,
 } from "../src/index";
 
@@ -8,27 +8,39 @@ const tr = stubTranscript(40);
 const ctx: EditContext = { transcript: tr, silences: [], sceneCuts: [], duration: 40, getStyle: (id) => STYLES.find((s) => s.id === id), getVideo: () => undefined, getGraphic: () => undefined };
 const snap = (): Snapshot => ({ timeline: buildInitialTimeline(tr, 40, "clean"), name: "t", aspect: "16:9", styleId: "s2" });
 const zooms = (s: Snapshot) => s.timeline.tracks.v2.filter((c) => (c as Record<string, unknown>).kind === "zoom");
+const fillerIds = allWords(tr).filter((w) => w.filler).map((w) => w.id);
 
 describe("apply_edits: a list of edits as one change", () => {
   it("runs every edit in order and sums them up in one summary", () => {
-    const r = applyOp(snap(), { op: "batch", ops: [{ op: "cut_silences", overSeconds: 0.4 }, { op: "remove_fillers" }, { op: "set_captions", on: true, look: "bold" }, { op: "add_zoom", start: 2, end: 3, scale: 1.15 }, { op: "add_zoom", start: 10, end: 11, scale: 1.15 }, { op: "add_music", trackId: "upbeat" }] }, ctx);
+    const r = applyOp(snap(), { op: "batch", ops: [{ op: "cut_words", from: 3, to: 3.5 }, { op: "add_marks", marks: [{ kind: "custom", start: 1 }] }, { op: "set_captions", on: true, look: "bold" }, { op: "add_zoom", start: 2, end: 3, scale: 1.15 }, { op: "add_zoom", start: 10, end: 11, scale: 1.15 }, { op: "add_music", trackId: "upbeat" }] }, ctx);
     expect(r.summary.split("; ")).toHaveLength(6);
     expect(r.snap.timeline.captionLook).toBe("bold");
     expect(zooms(r.snap)).toHaveLength(2);
     expect(r.snap.timeline.tracks.a2).toHaveLength(1);
   });
   it("saves nothing when one edit fails, and says which", () => {
-    expect(() => applyOp(snap(), { op: "batch", ops: [{ op: "remove_fillers" }, { op: "add_zoom", start: 5, end: 4, scale: 1.1 }] }, ctx)).toThrow(/Edit 2 \(add_zoom\).*Nothing was changed/);
+    expect(() => applyOp(snap(), { op: "batch", ops: [{ op: "set_captions", on: true }, { op: "add_zoom", start: 5, end: 4, scale: 1.1 }] }, ctx)).toThrow(/Edit 2 \(add_zoom\).*Nothing was changed/);
     expect(() => applyOp(snap(), { op: "batch", ops: [{ op: "add_music", trackId: "no-such-mood" }] }, ctx)).toThrow(EditError);
   });
 });
 
-describe("rule-based first pass with overrides", () => {
-  it("places exactly the asked number of zooms", () => {
-    for (const count of [1, 2, 5]) {
-      const r = applyOp(snap(), { op: "apply_style", styleId: "s1", overrides: { zoom: { mode: "count", count } } }, ctx);
-      expect(zooms(r.snap)).toHaveLength(count);
-    }
+describe("Rendrr never edits on its own", () => {
+  it("apply_style sets the style's looks only, and names its other rules for the AI to do", () => {
+    const before = snap();
+    const r = applyOp(before, { op: "apply_style", styleId: "s1", overrides: { zoom: { mode: "count", count: 3 } } }, ctx);
+    expect(zooms(r.snap)).toHaveLength(0);
+    expect(r.snap.timeline.tracks.v1).toEqual(before.timeline.tracks.v1);
+    expect(r.snap.timeline.tracks.a2).toEqual([]);
+    expect(r.snap.timeline.cut).toEqual(before.timeline.cut);
+    expect(r.snap.styleId).toBe("s1");
+    expect(r.summary).toMatch(/applied style .* \(looks only\): captions \w+\. Its other rules, for you to do with explicit edits if you want them: .*3 zooms of \d+% on sentence starts/);
+  });
+  it("cut_silences and remove_fillers are retired: a clear answer with what to do instead", () => {
+    expect(() => applyOp(snap(), { op: "cut_silences", overSeconds: 0.4 }, ctx)).toThrow(/cut_silences is retired.*mark_silences.*cut_words \{from, to\}/);
+    expect(() => applyOp(snap(), { op: "remove_fillers" }, ctx)).toThrow(/remove_fillers is retired.*mark_fillers.*cut_words \{wordIds\}/);
+    expect(EDIT_OP_NAMES).not.toContain("cut_silences");
+    expect(EDIT_OP_NAMES).not.toContain("remove_fillers");
+    expect(EDIT_OP_NAMES).toEqual(expect.arrayContaining(["add_marks", "update_mark", "delete_mark"]));
   });
   it("keeps the style's other rules and changes only the overridden ones", () => {
     const s1 = STYLES.find((s) => s.id === "s1")!.rules;
@@ -61,7 +73,7 @@ describe("the check after a render", () => {
     expect(raw).toMatch(/Loudness of the file: -14.2 LUFS, true peak -0.4 dBTP \(target -14 LUFS, ceiling -1 dBTP\)/);
     expect(raw).toMatch(/Flags: .*true peak -0.4 dBTP over the -1 dBTP ceiling/);
     expect(raw).toMatch(/Sound: cleanup none, -14 LUFS \/ -1 dBTP, music 12 dB down under speech/);
-    const edited = applyOp(s, { op: "batch", ops: [{ op: "cut_silences", overSeconds: 0.4 }, { op: "remove_fillers" }, { op: "add_zoom", start: 2, end: 3, scale: 1.2 }, { op: "add_music", trackId: "upbeat" }] }, ctx).snap;
+    const edited = applyOp(s, { op: "batch", ops: [{ op: "cut_words", wordIds: fillerIds }, { op: "add_zoom", start: 2, end: 3, scale: 1.2 }, { op: "add_music", trackId: "upbeat" }] }, ctx).snap;
     const out = editCheck(edited, tr, { pauseOver: 0.4 });
     expect(out).toMatch(/Fillers left: none/);
     expect(out).toMatch(/Zooms 1: 0:0\d\.\d 120%/);
@@ -93,11 +105,12 @@ describe("overview sheet", () => {
 
 describe("connector tool list", () => {
   it("stays small", () => {
-    // 23: add_font (a font file once, used by name in graphics); 24: get_graphic (long recordings are polled).
-    expect(MCP_TOOLS.length).toBeLessThanOrEqual(24);
+    // 23: add_font (a font file once, used by name in graphics); 24: get_graphic (long recordings are polled);
+    // 28: mark_silences, mark_fillers, list_marks, get_retakes (Rendrr measures, the AI cuts).
+    expect(MCP_TOOLS.length).toBeLessThanOrEqual(28);
     const names = MCP_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
-    for (const gone of ["cut_silences", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);
+    for (const gone of ["cut_silences", "remove_fillers", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);
     expect(names).toEqual(expect.arrayContaining(["apply_edits", "save_style", "link_account"]));
   });
 });

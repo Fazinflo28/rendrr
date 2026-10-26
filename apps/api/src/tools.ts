@@ -5,7 +5,7 @@ import { AppError, applyTimelineChange, enqueue, notFound, readGraphic, restoreV
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   AddFontInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
-  MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
+  MARK_KINDS, MCP_TOOLS, styleGuidance, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources } from "./services/sequence";
 import { createProject, getOwnedProject, graphicPlacements } from "./services/projects";
@@ -15,6 +15,7 @@ import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
 import { lutsFor, withMeasurements } from "./services/color";
+import { allMarks, inRange, markScope, retakesOf } from "./services/marks";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
 /** loginId: the Clerk user who called (a linked login opens its account's userId). */
@@ -192,6 +193,14 @@ async function placementLine(userId: string, tl: Timeline): Promise<string[]> {
   return [...out, `Graphic placements with no file yet: ${waiting.map((x) => `${x.clipId} ${why(x)}${x.own ? " (its params)" : ""}`).join(", ")}. A render records a placement's own params if it has to; a graphic still recording is left out until it is ready.`];
 }
 /** What a graphic's recording noticed (a font that was not there), as one sentence ("" when nothing). */
+/** How many marks the edit's footage has, by kind, and the AI's own (list_marks lists them). */
+function marksLine(v: { id: string; seconds: number; analysis: unknown }, tl: Timeline): string {
+  const counts: Record<string, number> = {};
+  for (const m of footageMarks(footageInputOf(v.id, v.analysis as never, v.seconds))) if (m.kind !== "music_beat" && !tl.markEdits?.[m.id]?.hidden) counts[m.kind] = (counts[m.kind] || 0) + 1;
+  const byKind = Object.entries(counts).sort((a, b) => MARK_KINDS.indexOf(a[0] as never) - MARK_KINDS.indexOf(b[0] as never));
+  const mine = tl.marks?.length ?? 0, notes = Object.keys(tl.markEdits ?? {}).length;
+  return `Marks on the footage (list_marks, mark_silences, mark_fillers, get_retakes): ${byKind.map(([k, n]) => `${k} ${n}`).join(", ") || "none"}${mine ? `; ${mine} of yours` : ""}${notes ? `; your notes on ${notes} of Rendrr's` : ""}.`;
+}
 const warningsText = (w: unknown) => (Array.isArray(w) && w.length ? ` Warning: ${w.join(" ")}` : "");
 /** A custom graphic's params and their default values, for list_graphics ("" when it has none). */
 const defaultsText = (schema: unknown) => { const d = graphicDefaults(schema); return Object.keys(d).length ? ` | ${JSON.stringify(d).slice(0, 300)}` : ""; };
@@ -282,7 +291,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async get_style(c, i) {
     const s = await prisma.style.findFirst({ where: { id: i.styleId, OR: [{ ownerId: null }, { ownerId: c.userId }] } });
     if (!s) throw notFound("That style does not exist. Use list_styles for the ids.");
-    return { text: [`${s.name} (${s.id}), ${s.type}: ${s.vibe}`, `Cut pace: ${s.cutPace}. Captions: ${s.captionRule} (${s.captionLook}). Zooms: ${s.zoomRules}. Music: ${s.musicVibe}.`, `Rules apply_style runs: ${JSON.stringify(s.rules)}`].join("\n") };
+    return { text: [`${s.name} (${s.id}), ${s.type}: ${s.vibe}`, `Cut pace: ${s.cutPace}. Captions: ${s.captionRule} (${s.captionLook}). Zooms: ${s.zoomRules}. Music: ${s.musicVibe}.`, `apply_style sets its captions only. Its other rules, for you to carry out with explicit edits: ${styleGuidance(StyleRulesSchema.parse(s.rules)).join("; ") || "none"}.`, `Rules: ${JSON.stringify(s.rules)}`].join("\n") };
   },
 
   async list_folders(c) {
@@ -309,8 +318,70 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       ...[referenceLine(p.reference as ReferenceRef | null)].filter((x): x is string => !!x),
       summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || [], 60, p.videoId, (id) => luts.find((l) => l.id === id)?.name, footageOf(v)),
       ...(await placementLine(c.userId, p.timeline as unknown as Timeline)),
+      marksLine(v, p.timeline as unknown as Timeline),
       ...(luts.length ? [`Your LUTs (set_grade lut id): ${luts.map((l) => `${l.id} "${l.name}"`).join(", ")}`] : []),
       preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet."].join("\n")) };
+  },
+
+  // ---------------- marks: measured, never acted on ----------------
+  async mark_silences(c, i) {
+    const scope = await markScope(c.userId, i);
+    const min = i.minLength ?? 0.3;
+    const all = inRange(allMarks(scope).filter((m) => m.kind === "silence" && m.end - m.start >= min - 1e-9 && !m.hidden), i, scope);
+    const cut = all.filter((m) => m.edit === null);
+    const rows = i.includeCut ? all : all.filter((m) => m.edit !== null);
+    const pg = pageOf(rows, { offset: i.offset, limit: i.limit ?? 100 });
+    const multi = scope.inputs.length > 1;
+    const head = `SILENCES ${min}s+ in ${scope.title}: ${rows.length}${scope.view && cut.length && !i.includeCut ? ` (${cut.length} more already cut from the edit: includeCut true lists them)` : ""}. Footage seconds; level_db -35: the audio is quiet there, null: a gap between words with some sound (a breath, a tail).`;
+    const cols = `id ${multi ? "video " : ""}start-end length level_db${scope.view ? " | edit start-end" : ""}`;
+    const body = pg.shown.map((m) => `${m.id} ${multi ? m.videoId + " " : ""}${m.start}-${m.end} ${(m.end - m.start).toFixed(3)} ${m.level_db ?? "null"}${m.edit === undefined ? "" : m.edit === null ? " | cut" : ` | edit ${m.edit.start}-${m.edit.end}${m.edit.partly ? " partly cut" : ""}`}`).join("\n");
+    return { text: clip([head, cols, body || "(none)", pg.tail.trim(), `Nothing was cut. To cut one: apply_edits cut_words {from, to} with its footage times${multi ? " (main footage; another video's: its edit times and edit true)" : scope.view ? " (or its edit times and edit true)" : ""}.`].filter(Boolean).join("\n")) };
+  },
+
+  async mark_fillers(c, i) {
+    const scope = await markScope(c.userId, i);
+    const all = inRange(allMarks(scope).filter((m) => m.kind === "filler" && !m.hidden), i, scope);
+    const cut = all.filter((m) => m.edit === null);
+    const rows = i.includeCut ? all : all.filter((m) => m.edit !== null);
+    const pg = pageOf(rows, { offset: i.offset, limit: i.limit ?? 100 });
+    const multi = scope.inputs.length > 1;
+    const head = `FILLERS in ${scope.title}: ${rows.length}${scope.view && cut.length && !i.includeCut ? ` (${cut.length} more already cut: includeCut true lists them)` : ""}. Footage seconds.`;
+    const cols = `id ${multi ? "video " : ""}wordId "text" start-end${scope.view ? " | edit start-end" : ""}`;
+    const body = pg.shown.map((m) => `${m.id} ${multi ? m.videoId + " " : ""}${m.wordId} "${m.text}" ${m.start}-${m.end}${m.edit === undefined ? "" : m.edit === null ? " | cut" : ` | edit ${m.edit.start}-${m.edit.end}`}`).join("\n");
+    return { text: clip([head, cols, body || "(none)", pg.tail.trim(), `Nothing was cut. To cut some: apply_edits cut_words {wordIds}${multi ? " (main footage; another video's: cut_words {from, to, edit: true} with its edit times)" : ""}.`].filter(Boolean).join("\n")) };
+  },
+
+  async list_marks(c, i) {
+    const scope = await markScope(c.userId, i);
+    const kinds: string[] | null = i.kind == null ? null : Array.isArray(i.kind) ? i.kind : [i.kind];
+    const every = inRange(allMarks(scope), i, scope).filter((m) => (!i.source || m.source === i.source) && (i.includeHidden || !m.hidden));
+    const rows = every.filter((m) => (kinds ? kinds.includes(m.kind) : m.kind !== "music_beat"));
+    const counts: Record<string, number> = Object.fromEntries(MARK_KINDS.map((k) => [k, 0]));
+    for (const m of every) counts[m.kind]++;
+    for (const k of MARK_KINDS) if (!counts[k]) delete counts[k];
+    const pg = pageOf(rows, { offset: i.offset, limit: i.limit ?? 100 });
+    const beats = !kinds && counts.music_beat ? `; music_beat ${counts.music_beat} not listed: kind "music_beat"` : "";
+    const head = `MARKS on ${scope.title}: ${rows.length} (${Object.entries(counts).filter(([k]) => kinds ? kinds.includes(k) : k !== "music_beat").map(([k, n]) => `${k} ${n}`).join(", ") || "none"}${beats}). Footage seconds; rendrr = measured, ai = yours.`;
+    const cols = `id kind${scope.inputs.length > 1 ? " video" : ""} start-end source confidence "label" (note)${scope.view ? " | edit start-end, or cut" : ""}`;
+    return { text: clip([head, cols, marksText(pg.shown, { video: scope.inputs.length > 1 }) || "(none)", pg.tail.trim()].filter(Boolean).join("\n")) };
+  },
+
+  async get_retakes(c, i) {
+    const scope = await markScope(c.userId, i);
+    let groups = retakesOf(scope);
+    if (i.from != null || i.to != null) {
+      if (i.edit && !scope.view) throw new AppError("edit true needs projectId (edit seconds belong to an edit).", 400, "invalid-input");
+      const a = i.from ?? 0, b = i.to ?? Infinity;
+      groups = groups.filter((g) => g.takes.some((t) => {
+        const at = i.edit ? markInEdit(scope.view!, g.videoId, t.start, t.end) : { start: t.start, end: t.end };
+        return at && at.end >= a && at.start <= b;
+      }));
+    }
+    const pg = pageOf(groups, { offset: i.offset, limit: i.limit ?? 15 });
+    const multi = scope.inputs.length > 1;
+    const out = pg.shown.map((g) => ({ groupId: g.groupId, ...(multi ? { videoId: g.videoId } : {}), takes: g.takes.map((t) => ({ ...t, text: t.text.length > 160 ? t.text.slice(0, 157) + "…" : t.text, ...(scope.view ? { edit: markInEdit(scope.view, g.videoId, t.start, t.end) } : {}) })) }));
+    const head = `RETAKES in ${scope.title}: ${groups.length} ${groups.length === 1 ? "group" : "groups"} of lines said more than once. Footage seconds. confidence: how alike the take is to the others; score 0-1: 0.5 complete + 0.2 few fillers + 0.2 few stumbles + 0.1 ends a sentence. These are measurements: Rendrr never picks a take, you choose and cut the others.${scope.view ? " edit: where the take plays (null: cut already)." : ""}`;
+    return { text: clip([head, JSON.stringify(out), pg.tail.trim()].filter(Boolean).join("\n")) };
   },
 
   async list_graphics(c) {
