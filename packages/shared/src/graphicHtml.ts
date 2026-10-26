@@ -88,8 +88,13 @@ const o=t<0.25?t/0.25:t>dur-0.35?Math.max(0,(dur-t)/0.35):1;document.getElementB
 // can time itself by follows it: performance.now, Date.now, requestAnimationFrame, setTimeout/setInterval (they fire
 // in order, each with the clock at its own due time), CSS animations and transitions and element.animate(). Each
 // animation runs from the moment it appeared (a class added at 5 s starts its transition at 5 s), not from 0.
+// Math.random is seeded, so every browser recording a part of the graphic sees the same "random" values.
+// __rendrrAdvance(t, false) moves time without calling renderFrame: the recorder does that for frames it does not
+// capture, only when the graphic says renderFrame draws the whole frame from t alone (window.renderFramePure = true).
 export const GRAPHIC_CLOCK = `(() => {
   let now = 0, ticks = 0; const start = 1700000000000; let rafs = [], timers = [];
+  let seed = 0x5eed1234;
+  Math.random = () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let r = Math.imul(seed ^ (seed >>> 15), 1 | seed); r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r; return ((r ^ (r >>> 14)) >>> 0) / 4294967296; };
   const perf = performance.now.bind(performance);
   const born = new WeakMap();
   const seen = (at) => { for (const a of document.getAnimations()) if (!born.has(a)) born.set(a, at); };
@@ -102,7 +107,7 @@ export const GRAPHIC_CLOCK = `(() => {
   window.setInterval = (fn, ms, ...args) => add(fn, Math.max(1, Number(ms) || 0), args, Math.max(1, Number(ms) || 0) / 1000);
   window.clearTimeout = window.clearInterval = (id) => { timers = timers.filter((x) => x.id !== id); };
   const call = (x) => { try { typeof x.fn === "function" ? x.fn(...x.args) : (0, eval)(String(x.fn)); } catch (e) { console.error(e); } };
-  window.__rendrrAdvance = (t) => {
+  window.__rendrrAdvance = (t, draw) => {
     for (let guard = 0; guard < 100000; guard++) {
       let next = null; for (const x of timers) if (x.at <= t && (!next || x.at < next.at || (x.at === next.at && x.id < next.id))) next = x;
       if (!next) break;
@@ -113,7 +118,7 @@ export const GRAPHIC_CLOCK = `(() => {
     now = t;
     const list = rafs; rafs = [];
     for (const cb of list) { try { cb(t * 1000); } catch (e) { console.error(e); } }
-    if (typeof window.renderFrame === "function") window.renderFrame(t);
+    if (draw !== false && typeof window.renderFrame === "function") window.renderFrame(t);
     seen(t);
     for (const a of document.getAnimations()) { try { a.pause(); a.currentTime = Math.max(0, (t - born.get(a)) * 1000); } catch (e) {} }
     return perf();

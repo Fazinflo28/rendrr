@@ -74,14 +74,22 @@ async function openGraphicPage(browser: Browser, html: string, w: number, h: num
   await page.evaluate(() => (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready);
   const cdp = await page.createCDPSession();
   if (transparent) await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
-  return { page, cdp };
+  // The graphic says renderFrame(t) draws the whole frame from t alone: frames not captured can skip it.
+  const pure = await page.evaluate(() => (window as unknown as { renderFramePure?: unknown }).renderFramePure === true);
+  return { page, cdp, pure };
 }
 type GPage = Awaited<ReturnType<typeof openGraphicPage>>;
 
-/** Moves the page's clock through frames from..to (inclusive) one frame at a time, in one call; nothing is drawn. */
-async function stepTo(g: GPage, from: number, to: number) {
+/**
+ * Moves the page's clock through frames from..to (inclusive), one frame at a time, in one call. renderFrame runs on
+ * each of them, unless the graphic declared it pure: then only on the last one when `drawLast` (it is captured next).
+ */
+async function stepTo(g: GPage, from: number, to: number, drawLast = true) {
   if (to < from) return;
-  await g.page.evaluate((a, b, fps) => { const adv = (window as unknown as { __rendrrAdvance: (t: number) => void }).__rendrrAdvance; for (let f = a; f <= b; f++) adv(f / fps); }, from, to, GRAPHIC_LIMITS.fps);
+  await g.page.evaluate((a, b, fps, pure, last) => {
+    const adv = (window as unknown as { __rendrrAdvance: (t: number, draw?: boolean) => void }).__rendrrAdvance;
+    for (let f = a; f <= b; f++) adv(f / fps, !pure || (last && f === b));
+  }, from, to, GRAPHIC_LIMITS.fps, g.pure, drawLast);
 }
 /** The picture now, as PNG bytes; `scale` < 1 draws a smaller one (cheaper, for spotting changes). */
 async function shoot(g: GPage, w: number, h: number, scale = 1): Promise<Buffer> {
@@ -105,154 +113,174 @@ function changedIn(x: Uint8Array, y: Uint8Array) {
 }
 
 type Piece = { file: string; start: number; end: number };
-const CHUNK = 240; // pictures per encoded piece: keeps the PNGs on disk at any time small
+const CHUNK = 90; // pictures per encoded piece: encoding keeps pace with capturing, and few PNGs sit on disk
 
 /**
  * Records HTML into a transparent WebM in locked headless Chromiums: no network (every request except data: is
- * blocked), a memory cap, max 1080x1920, 30 fps, and a time limit (recordLimitMs) that fails loudly.
+ * blocked), a memory cap, max 1080x1920 (or 1920x1080), 30 fps, and time limits that fail loudly.
  *
- * The graphic's time is split into ranges recorded at once by GRAPHIC_WORKERS browsers. A range's pages first step
- * their clock frame by frame from 0 to the range's start without drawing, so the graphic sees time exactly as it
- * would playing (timers, transitions started mid-way and JS state all arrive where they should).
- * Up to 15 s every frame is captured. Longer graphics are sampled: a scout page draws a quarter-size picture every
- * 0.5 s; no change: the frame is held; a small change (under 0.2% of the pixels): the full picture from that moment;
- * a bigger change: a second page, following behind, captures that half second frame by frame. Missed: something
- * that appears and goes within one half second of an otherwise still graphic. Pictures are encoded in pieces as they
- * come (variable frame rate: each picture keeps its own time) and the pieces joined, so the file is exactly as long
- * as the graphic. Returns the paths of four check frames too.
+ * Up to 15 s every frame is captured. A longer graphic is first scanned (in parallel): a quarter-size picture every
+ * 0.5 s says which half seconds change. No change: the frame is held. A small change (under 0.2% of the pixels): the
+ * full picture from that moment. A bigger change: every frame of that half second. The scan gives the cost before any
+ * recording: over the limit, it fails at once and says why. Then the frames to capture are split into ranges with
+ * the same amount of work, one browser each. A range's page steps its clock frame by frame from 0, so timers,
+ * transitions and JS state arrive as if playing; renderFrame runs on every frame unless the graphic sets
+ * window.renderFramePure = true (it draws the whole frame from t alone), then only on captured frames. Pictures are
+ * encoded in pieces as they come (variable frame rate: each keeps its own time) and joined, so the file is exactly as
+ * long as the graphic. Missed: something that appears and goes within one half second of an otherwise still graphic.
  */
-export async function recordHtml(html: string, o: { width: number; height: number; durationSec: number; transparent: boolean; dir: string; signal?: AbortSignal; onProgress?: (frac: number) => void; workers?: number }) {
+export async function recordHtml(html: string, o: { width: number; height: number; durationSec: number; transparent: boolean; dir: string; signal?: AbortSignal; onProgress?: (frac: number) => void; workers?: number; maxMs?: number }) {
   const w = Math.round(o.width / 2) * 2, h = Math.round(o.height / 2) * 2;
   if (Math.max(w, h) > GRAPHIC_LIMITS.maxLong || Math.min(w, h) > GRAPHIC_LIMITS.maxShort) throw new JobError("Graphics can be 1080x1920 at most.", "too-big", false);
   const dur = Math.min(GRAPHIC_LIMITS.maxSeconds, Math.max(0.5, o.durationSec));
   const FPS = GRAPHIC_LIMITS.fps, STEP = 15, frames = Math.max(1, Math.round(dur * FPS));
   const sampled = dur > GRAPHIC_LIMITS.exactSeconds;
   const workers = Math.max(1, Math.min(GRAPHIC_WORKERS, o.workers ?? GRAPHIC_WORKERS));
-  const limit = Math.min(GRAPHIC_LIMITS.maxMs, recordLimitMs(dur, w, h) * Math.max(1, GRAPHIC_WORKERS / workers));
-  // Ranges: a couple per browser for long graphics (so one busy stretch does not hold up the rest), at least 2 s each.
-  const nRanges = Math.max(1, Math.min(sampled ? workers * 2 : workers, Math.floor(frames / 60)));
-  const ranges = Array.from({ length: nRanges }, (_, i) => ({ a: Math.round((i * frames) / nRanges), b: Math.round(((i + 1) * frames) / nRanges) }));
+  const maxMs = Math.min(GRAPHIC_LIMITS.maxMs, o.maxMs ?? GRAPHIC_LIMITS.maxMs);
+  const cost = frameCostMs(w, h);
+  const t0 = Date.now();
   const root = join(o.dir, "graphic-" + Math.random().toString(36).slice(2, 7));
   await mkdir(join(root, "checks"), { recursive: true });
   const checkAt = [0, Math.floor(frames / 3), Math.floor((2 * frames) / 3), frames - 1];
   const checkFiles = checkAt.map((_, i) => join(root, "checks", `c${i}.png`));
 
+  // One kill switch with a deadline that moves: the scan's, then the recording's.
   const browsers: Browser[] = [];
-  let timedOut = false, stopped = false;
+  let phase: "scan" | "record" = sampled ? "scan" : "record", timedOut: "scan" | "record" | null = null, stopped = false;
   const killAll = () => { for (const b of browsers) b.process()?.kill("SIGKILL"); };
-  const kill = setTimeout(() => { timedOut = true; killAll(); }, limit);
+  let deadline = t0 + (sampled ? Math.min(maxMs, 60_000 + Math.round((frames * 10) / workers)) : Math.min(maxMs, 60_000 + Math.round((frames * cost) / workers)));
+  const watch = setInterval(() => { if (Date.now() > deadline && !timedOut) { timedOut = phase; killAll(); } }, 250);
   const abort = () => { stopped = true; killAll(); };
   o.signal?.addEventListener("abort", abort, { once: true });
   const errors: string[] = [];
   const codeError = () => new JobError(`The graphic code threw an error: ${errors[0]}${/fetch|network|load/i.test(errors[0]) ? " (graphics have no internet access: inline images and fonts as data: URLs)" : ""}`, "code-error", false);
-  const done = ranges.map(() => 0);
-  let lastP = 0, dense = 0, pictures = 0;
-  const progress = () => { const p = Math.min(0.99, done.reduce((x, y) => x + y, 0) / frames); if (p > lastP) { lastP = p; o.onProgress?.(p); } };
-  const pieces: Piece[][] = ranges.map(() => []);
-  const encodes: Promise<void>[] = [];
-
-  async function recordRange(browser: Browser, ri: number) {
-    const { a, b } = ranges[ri];
-    const rdir = join(root, `r${ri}`);
-    await mkdir(rdir, { recursive: true });
-    let chunk: { frame: number; file: string }[] = [], last: Buffer | null = null, lastFile = "", lastFrame = a, n = 0;
-    const flush = (end: number) => {
-      if (!chunk.length) return;
-      const list = chunk, piece = join(root, `p${ri}-${pieces[ri].length}.webm`);
-      pieces[ri].push({ file: piece, start: list[0].frame, end });
-      chunk = [];
-      encodes.push(encodePiece(list, end, piece, o.transparent, ri === ranges.length - 1 && end === frames, o.signal));
-    };
-    // The picture showing at a check frame is the last one kept at or before it.
-    const checks = async (upTo: number) => { for (const [i, c] of checkAt.entries()) if (c >= lastFrame && c < upTo && c >= a && c < b && lastFile) await copyFile(lastFile, checkFiles[i]); };
-    const keep = async (frame: number, png: Buffer) => {
-      if (last && last.equals(png)) return;
-      await checks(frame);
-      if (chunk.length >= CHUNK) flush(frame);
-      const file = join(rdir, `k${String(n++).padStart(6, "0")}.png`);
-      await writeFile(file, png);
-      chunk.push({ frame, file });
-      last = png; lastFile = file; lastFrame = frame; pictures++;
-    };
-    const scout = await openGraphicPage(browser, html, w, h, o.transparent, errors);
-    const rec = sampled ? await openGraphicPage(browser, html, w, h, o.transparent, errors) : null;
-    let front: GPage = rec ?? scout; // the page opened last is in front
-    const use = async (g: GPage) => { if (front !== g) { await g.page.bringToFront(); front = g; } return g; };
-    try {
-      await stepTo(scout, 0, a - 1);
-      if (!sampled) {
-        for (let f = a; f < b; f++) {
-          if (stopped) throw new JobError("Stopped.");
-          if (errors.length) throw codeError();
-          if (failed) return;
-          await stepTo(scout, f, f);
-          await keep(f, await shoot(scout, w, h));
-          done[ri] = f + 1 - a; progress();
-        }
-      } else {
-        await stepTo(rec!, 0, a - 1);
-        let recAt = a - 1; // the last frame the follower page's clock has reached
-        await stepTo(scout, a, a);
-        await use(scout);
-        await keep(a, await shoot(scout, w, h));
-        let small = PNG.sync.read(await shoot(scout, w, h, 0.25)).data;
-        const tiny = Math.max(16, Math.round(0.002 * small.length / 4));
-        for (let prev = a; prev < b - 1; ) {
-          if (stopped) throw new JobError("Stopped.");
-          if (errors.length) throw codeError();
-          if (failed) return;
-          const k = Math.min(prev + STEP, b - 1);
-          await stepTo(scout, prev + 1, k);
-          await use(scout);
-          const cur = PNG.sync.read(await shoot(scout, w, h, 0.25)).data;
-          const diff = changedIn(small, cur);
-          if (diff > tiny) {
-            // A real change in this half second: the follower draws every frame of it.
-            await stepTo(rec!, recAt + 1, prev);
-            await use(rec!);
-            for (let f = prev + 1; f < k; f++) { await stepTo(rec!, f, f); await keep(f, await shoot(rec!, w, h)); dense++; }
-            recAt = k - 1;
-            await use(scout);
-          }
-          if (diff > 0) await keep(k, await shoot(scout, w, h));
-          small = cur; prev = k;
-          done[ri] = k + 1 - a; progress();
-        }
-      }
-      await checks(b);
-      flush(b);
-    } finally {
-      await scout.page.close().catch(() => {});
-      await rec?.page.close().catch(() => {});
-    }
-  }
-
-  let failed = false;
-  try {
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(workers, ranges.length) }, async () => {
-      const browser = await launchLocked();
-      browsers.push(browser);
-      if (stopped || timedOut) killAll();
-      try { while (next < ranges.length && !failed) await recordRange(browser, next++); }
+  const check = () => { if (stopped) throw new JobError("Stopped."); if (errors.length) throw codeError(); };
+  let lastP = 0;
+  const progress = (p: number) => { p = Math.min(0.99, p); if (p > lastP) { lastP = p; o.onProgress?.(p); } };
+  const pool = async (n: number, jobs: number, run: (browser: Browser, i: number) => Promise<void>) => {
+    let next = 0, failed = false;
+    await Promise.all(Array.from({ length: Math.min(n, jobs) }, async (_, k) => {
+      let browser = browsers[k];
+      if (!browser) { browser = await launchLocked(); browsers[k] = browser; if (stopped || timedOut) killAll(); }
+      try { while (next < jobs && !failed) await run(browser, next++); }
       catch (e) { failed = true; throw e; }
-      finally { await browser.close().catch(() => browser.process()?.kill("SIGKILL")); }
     }));
+  };
+
+  // Which frames are captured: all of them up to 15 s; for longer graphics, what the scan finds.
+  const capture = new Uint8Array(frames);
+  let dense = 0, pictures = 0;
+  const pieces: Piece[][] = [];
+  const encodes: Promise<void>[] = [];
+  try {
+    if (!sampled) capture.fill(1);
+    else {
+      const samples: number[] = [];
+      for (let k = 0; k < frames; k += STEP) samples.push(k);
+      if (samples[samples.length - 1] !== frames - 1) samples.push(frames - 1);
+      const level = new Uint8Array(samples.length); // 0 still, 1 a small change, 2 a real change since the sample before
+      const parts = Math.max(1, Math.min(workers, Math.floor(samples.length / 8)));
+      let scanned = 0;
+      await pool(workers, parts, async (browser, pi) => {
+        const i0 = Math.round((pi * samples.length) / parts), i1 = Math.round(((pi + 1) * samples.length) / parts);
+        const g = await openGraphicPage(browser, html, w, h, o.transparent, errors);
+        try {
+          const base = i0 > 0 ? i0 - 1 : 0;
+          await stepTo(g, 0, samples[base], true);
+          let prev = PNG.sync.read(await shoot(g, w, h, 0.25)).data;
+          const tiny = Math.max(16, Math.round((0.002 * prev.length) / 4));
+          for (let i = Math.max(1, i0); i < i1; i++) {
+            check();
+            await stepTo(g, samples[i - 1] + 1, samples[i], true);
+            const cur = PNG.sync.read(await shoot(g, w, h, 0.25)).data;
+            const d = changedIn(prev, cur);
+            level[i] = d > tiny ? 2 : d > 0 ? 1 : 0;
+            prev = cur;
+            progress((0.1 * ++scanned) / samples.length);
+          }
+        } finally { await g.page.close().catch(() => {}); }
+      });
+      check();
+      capture[0] = 1;
+      for (let i = 1; i < samples.length; i++) {
+        if (level[i] === 2) for (let f = samples[i - 1] + 1; f <= samples[i]; f++) { capture[f] = 1; if (f < samples[i]) dense++; }
+        else if (level[i] === 1) capture[samples[i]] = 1;
+      }
+    }
+    // The cost, before recording: captures spread over the browsers, plus the time already spent.
+    const captures = capture.reduce((x, y) => x + y, 0);
+    const estimateMs = Math.round((captures * cost) / workers);
+    if (Date.now() - t0 + estimateMs > maxMs) {
+      throw new JobError(`This graphic would take about ${Math.ceil(estimateMs / 60_000)} min to record (the limit is ${Math.round(maxMs / 60_000)} min): it moves on ${Math.round((100 * captures) / frames)}% of its ${frames} frames at ${w}x${h}. Make less of it move at once, draw it smaller, or split it into graphics placed where they are needed.`, "graphic-slow", false);
+    }
+    phase = "record";
+    deadline = Math.min(t0 + maxMs, Date.now() + 60_000 + Math.round(estimateMs * 2.5));
+
+    // Ranges with the same number of captures (each starts with a capture), at least 2 s long.
+    const nRanges = Math.max(1, Math.min(workers, Math.floor(frames / 60), captures));
+    const ranges: { a: number; b: number }[] = [];
+    let acc = 0, a = 0;
+    for (let f = 0; f < frames; f++) {
+      acc += capture[f];
+      if (ranges.length < nRanges - 1 && acc >= ((ranges.length + 1) * captures) / nRanges && f + 1 - a >= 60 && frames - (f + 1) >= 60) { ranges.push({ a, b: f + 1 }); a = f + 1; }
+    }
+    ranges.push({ a, b: frames });
+    for (const r of ranges) capture[r.a] = 1;
+    const total = capture.reduce((x, y) => x + y, 0);
+    let captured = 0;
+
+    await pool(workers, ranges.length, async (browser, ri) => {
+      const { a, b } = ranges[ri];
+      const rdir = join(root, `r${ri}`);
+      await mkdir(rdir, { recursive: true });
+      let chunk: { frame: number; file: string }[] = [], last: Buffer | null = null, lastFile = "", lastFrame = a, n = 0;
+      const flush = (end: number) => {
+        if (!chunk.length) return;
+        const list = chunk, mine = (pieces[ri] ??= []), piece = join(root, `p${ri}-${mine.length}.webm`);
+        mine.push({ file: piece, start: list[0].frame, end });
+        chunk = [];
+        encodes.push(encodePiece(list, end, piece, o.transparent, ri === ranges.length - 1 && end === frames, o.signal));
+      };
+      // The picture showing at a check frame is the last one kept at or before it.
+      const checks = async (upTo: number) => { for (const [i, c] of checkAt.entries()) if (c >= lastFrame && c < upTo && c >= a && c < b && lastFile) await copyFile(lastFile, checkFiles[i]); };
+      const keep = async (frame: number, png: Buffer) => {
+        if (last && last.equals(png)) return;
+        await checks(frame);
+        if (chunk.length >= CHUNK) flush(frame);
+        const file = join(rdir, `k${String(n++).padStart(6, "0")}.png`);
+        await writeFile(file, png);
+        chunk.push({ frame, file });
+        last = png; lastFile = file; lastFrame = frame;
+        pictures++;
+      };
+      const g = await openGraphicPage(browser, html, w, h, o.transparent, errors);
+      try {
+        await stepTo(g, 0, a - 1, false);
+        for (let f = a; f < b; ) {
+          check();
+          if (!capture[f]) { let e = f; while (e < b && !capture[e]) e++; await stepTo(g, f, e - 1, false); f = e; continue; }
+          await stepTo(g, f, f, true);
+          await keep(f, await shoot(g, w, h));
+          progress(0.1 + (0.9 * ++captured) / total);
+          f++;
+        }
+        await checks(b);
+        flush(b);
+      } finally { await g.page.close().catch(() => {}); }
+    });
     await Promise.all(encodes);
-    if (errors.length) throw codeError();
+    check();
   } catch (e) {
     await Promise.allSettled(encodes);
     if (stopped || o.signal?.aborted) throw new JobError("Stopped.");
-    if (timedOut) {
-      const at = done.reduce((x, y) => x + y, 0);
-      throw new JobError(`The graphic did not finish recording within ${Math.round(limit / 1000)} s (${Math.round((100 * at) / frames)}% done): it moved on ${dense} of the ${at} frames recorded so far. Recording costs about ${(frameCostMs(w, h) / workers / 1000 * FPS).toFixed(1)} s per second of motion at ${w}x${h}; make it move less of the time, draw it smaller, or split it into shorter graphics placed where they are needed.`, "graphic-slow", false);
-    }
+    if (timedOut === "scan") throw new JobError(`The graphic took too long to step through (${Math.round((lastP / 0.1) * 100)}% scanned in ${Math.round((Date.now() - t0) / 1000)} s): its code is slow to run on every frame. If renderFrame(t) draws the whole frame from t alone, set window.renderFramePure = true so frames that are not recorded skip it.`, "graphic-slow", false);
+    if (timedOut === "record") throw new JobError(`The graphic did not finish recording in time (${Math.round(lastP * 100)}% done after ${Math.round((Date.now() - t0) / 1000)} s; ${dense} frames move one by one). Make less of it move at once, draw it smaller, or split it into graphics placed where they are needed.`, "graphic-slow", false);
     if (e instanceof JobError) throw e;
     throw new JobError(`The graphic crashed while recording: ${(e as Error).message.slice(0, 200)}`, "graphic", true);
   } finally {
-    clearTimeout(kill);
+    clearInterval(watch);
     o.signal?.removeEventListener("abort", abort);
-    killAll();
+    for (const b of browsers) await b.close().catch(() => b.process()?.kill("SIGKILL"));
   }
   // The pieces, in time order, joined without re-encoding; each lasts exactly until the next one starts.
   const all = pieces.flat().sort((x, y) => x.start - y.start);

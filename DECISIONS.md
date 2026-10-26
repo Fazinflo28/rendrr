@@ -263,3 +263,13 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Graphic time | Everything a graphic can time itself by runs on its clock: performance.now, Date.now, requestAnimationFrame, setTimeout/setInterval (in order, each at its own due time), CSS animations and transitions, element.animate(). Each animation runs from when it first appears. Chromium's threaded animation is off so a capture never shows a frame or two old. |
 | Graphic fonts | 82 Google Fonts families downloaded at image build from a pinned google/fonts commit (`apps/worker/fonts.txt`), plus Inter, Noto and the caption fonts. `fonts.conf` maps Arial/Helvetica to Arimo, Times to Tinos, Georgia to Gelasio, Calibri to Carlito, Courier to Cousine, Impact to Anton. The family list the AI sees is `GRAPHIC_FONTS`, and a test checks each one draws as itself. |
 | Graphic progress | Kept in Redis (`graphic:<id>:progress`, percent and time left, 1 h), not the database, so no migration races the worker's deploy. |
+
+## Faster, steadier graphics (26 October)
+
+| Question | Decision |
+|---|---|
+| Recording a long graphic | Scan first, then record. Over 15 s, every 15th frame (and the last) is drawn at quarter size and compared with the one before; a stretch that changed is recorded frame by frame, a stretch that did not keeps one picture. The frames to record are split into ranges with about the same number of pictures, one browser each, joined into one file (no re-encode, alpha kept). The 393 s 1920x1080 canvas graphic that failed live records as one graphic in about 2 min on 3 browsers. |
+| Time budget | Grows with the graphic: the scan gets 60 s plus 10 ms a frame (split over the browsers); the recording gets 60 s plus 2.5x its own estimate; both stop at the 25 min cap. A watch timer ends a stuck phase even when a page hangs. |
+| Fail fast | After the scan the recording time is estimated (pictures x cost per picture at that size / browsers). Over the limit, it fails within seconds and says how long it would take, the share of frames that move, and what to change. |
+| `window.renderFramePure` | Opt-in. When a graphic sets it, frames that are not recorded skip `renderFrame` (the clock, timers and animations still move). Not the default: a `renderFrame` that starts animations or changes the page must run on every frame. |
+| `Math.random` | Seeded, the same in every browser, so a random layout looks the same in every range of a long graphic. |
