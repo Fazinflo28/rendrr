@@ -17,8 +17,10 @@ export type FileMeasure = FileLoudness & {
   audioSeconds: number | null;
   black: Range[];    // black picture, 0.15 s or longer
   silences: Range[]; // silence (below -45 dB), 0.15 s or longer
-  /** Each graphic overlaid: where it is on screen and how much of the frame its picture covers on average (0-100). */
-  graphics: { clipId: string; start: number; end: number; coverPct: number | null }[];
+  /** Each graphic overlaid: where it is on screen and how much of the frame its picture covers (0-100), measured at 8
+   *  moments across that time: coverPct is the average, coverMin and coverMax the least and most (older checks: only
+   *  coverPct, from one moment). */
+  graphics: { clipId: string; start: number; end: number; coverPct: number | null; coverMin?: number; coverMax?: number }[];
   /** Momentary loudness (LUFS, 400 ms windows) every 0.2 s: value i is the window ending at (i + 1) * 0.2 s. */
   momentary?: number[];
   error?: string;
@@ -252,13 +254,16 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     }
     for (const { g, on } of gShown) {
       if (!on) flags.push(`graphic "${g.label}" at ${fmtT(g.start)} is not in the file`);
-      else if (on.coverPct != null && on.coverPct < 0.2) flags.push(`graphic "${g.label}" at ${fmtT(on.start)} is invisible (fully transparent)`);
+      // Invisible only when it is blank at every moment measured (a graphic that fades in or flashes is not).
+      else if ((on.coverMax ?? on.coverPct) != null && (on.coverMax ?? on.coverPct)! < 0.2) flags.push(`graphic "${g.label}" at ${fmtT(on.start)} is invisible (fully transparent at every moment measured)`);
     }
     fileLines.push(`File: video ${v != null ? v.toFixed(2) + "s" : "missing"}, audio ${a != null ? a.toFixed(2) + "s" : "none"} | black from ${MEASURE_MIN}s: ${m.black.length ? list(m.black.map((b) => `${fmtT(b.start)} (${(b.end - b.start).toFixed(2)}s)`), 4) : "none"} | silent from ${MEASURE_MIN}s: ${m.silences.length ? `${m.silences.length}: ` + list(m.silences.map((x) => `${fmtT(x.start)} (${(x.end - x.start).toFixed(2)}s)`), 6) : "none"}`);
   } else {
     fileLines.push(`File: not measured${m?.error ? ` (${m.error})` : ""}; the lines below come from the edit only`);
   }
-  const gText = gShown.map(({ g, on }) => on ? `${fmtT(on.start)}-${fmtT(on.end)} ${g.label}${on.coverPct != null ? ` (${on.coverPct < 1 ? on.coverPct.toFixed(1) : Math.round(on.coverPct)}% of frame)` : ""}` : `${fmtT(g.start)} ${g.label}`);
+  const pc = (x: number) => (x < 1 ? x.toFixed(1) : String(Math.round(x)));
+  const cover = (on: FileMeasure["graphics"][number]) => on.coverPct == null ? "" : on.coverMin != null && on.coverMax != null ? ` (of frame: min ${pc(on.coverMin)}%, avg ${pc(on.coverPct)}%, max ${pc(on.coverMax)}%)` : ` (${pc(on.coverPct)}% of frame)`;
+  const gText = gShown.map(({ g, on }) => on ? `${fmtT(on.start)}-${fmtT(on.end)} ${g.label}${cover(on)}` : `${fmtT(g.start)} ${g.label}`);
   const look = lookText(tl);
   const head = `${snap.aspect}${look ? ` | ${look}` : ""} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`;
 

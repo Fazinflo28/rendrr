@@ -39,7 +39,7 @@ describe("the check agrees with the rendered file", () => {
     await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? join(dir, `${name}.txt`) : a)));
     const base = await measureFile(files.output, { timeoutMs: 60_000 });
     const graphics: FileMeasure["graphics"] = [];
-    for (const g of plan.graphics) graphics.push({ clipId: g.clipId, start: g.start, end: Math.min(g.end, g.start + 2), coverPct: await graphicCover(gfx, 1) });
+    for (const g of plan.graphics) { const c = await graphicCover(gfx, 0, 2); graphics.push({ clipId: g.clipId, start: g.start, end: Math.min(g.end, g.start + 2), coverPct: c?.avg ?? null, coverMin: c?.min, coverMax: c?.max }); }
     const measured: FileMeasure = { ...base, graphics };
     return { plan, measured, check: editCheck(snap, tr, { measured }) };
   }

@@ -240,7 +240,9 @@ export async function renderJob(ctx: Ctx) {
         const fileLen = file ? (await probe(file, { signal }).catch(() => null))?.seconds || shown : shown;
         // Phase 7: a file shorter than its clip holds its last frame to the clip's end (the plan pads it).
         const on = shown;
-        graphics.push({ clipId: gr.clipId, start: gr.start, end: Math.round((gr.start + on) * 1000) / 1000, coverPct: file ? await graphicCover(file, gr.sourceStart + Math.max(0, Math.min(on, fileLen - gr.sourceStart)) / 2, signal) : null });
+        // 8 moments across the part of the file on screen (a held last frame is that frame).
+        const c = file ? await graphicCover(file, gr.sourceStart, Math.max(1 / 30, Math.min(on, fileLen - gr.sourceStart)), signal) : null;
+        graphics.push({ clipId: gr.clipId, start: gr.start, end: Math.round((gr.start + on) * 1000) / 1000, coverPct: c?.avg ?? null, ...(c ? { coverMin: c.min, coverMax: c.max } : {}) });
       }
       measured = { ...base0, graphics };
     } catch (e) {

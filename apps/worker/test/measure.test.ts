@@ -37,10 +37,10 @@ describe("measuring a rendered file", () => {
     await ff(["-f", "lavfi", "-i", "color=black:s=320x240:r=30:d=1,format=rgba,geq=r=255:g=255:b=255:a='if(lt(X,80)*lt(Y,60),255,0)'", ...enc, box]);
     await ff(["-f", "lavfi", "-i", "color=black:s=320x240:r=30:d=1,format=rgba,geq=r=255:g=255:b=255:a=0", ...enc, empty]);
     await ff(["-f", "lavfi", "-i", "testsrc=s=320x240:r=30:d=1", "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", opaque]);
-    const c = await graphicCover(box, 0.5);
-    assert.ok(c != null && Math.abs(c - 6.25) < 1, `cover ${c}`); // 80x60 of 320x240
-    assert.ok(((await graphicCover(empty, 0.5)) ?? 99) < 0.2);
-    assert.equal(await graphicCover(opaque, 0.5), 100); // no alpha: covers its whole box
+    const c = await graphicCover(box, 0, 1);
+    assert.ok(c != null && Math.abs(c.avg - 6.25) < 1 && Math.abs(c.min - 6.25) < 1 && Math.abs(c.max - 6.25) < 1, `cover ${JSON.stringify(c)}`); // 80x60 of 320x240
+    assert.ok(((await graphicCover(empty, 0, 1))?.max ?? 99) < 0.2);
+    assert.deepEqual(await graphicCover(opaque, 0, 1), { min: 100, avg: 100, max: 100 }); // no alpha: covers its whole box
   });
 
   it("gives up after its time limit instead of running forever", async () => {

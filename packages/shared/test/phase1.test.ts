@@ -189,6 +189,20 @@ describe("the check measures the rendered file", () => {
     expect(out).toMatch(/graphic "Title card" .* is not in the file/);
     expect(out).not.toMatch(/Flags: none/);
   });
+  it("calls a graphic invisible only when it is blank at every moment measured, and gives min / avg / max", () => {
+    const g = applyOp(s, { op: "add_graphic", graphicId: "gt_title_card", start: 2, end: 4, params: {} }, ctx).snap;
+    const gid = g.timeline.tracks.v3.find((c) => c.kind === "graphic")!.id;
+    const at = (cover: Partial<FileMeasure["graphics"][number]>) => editCheck(g, clean, { measured: { ...ok, graphics: [{ clipId: gid, start: 2, end: 4, coverPct: null, ...cover }] } });
+    // Blank at some moments (a fade in, a flash): seen, with the spread.
+    const fades = at({ coverPct: 12.5, coverMin: 0, coverMax: 25 });
+    expect(fades).toMatch(/Title card \(of frame: min 0\.0%, avg 13%, max 25%\)/);
+    expect(fades).not.toMatch(/invisible/);
+    // Blank at every moment: flagged.
+    expect(at({ coverPct: 0, coverMin: 0, coverMax: 0.1 })).toMatch(/graphic "Title card" at 0:02\.0 is invisible \(fully transparent at every moment measured\)/);
+    // A check measured before (one moment, no spread) reads as it did.
+    expect(at({ coverPct: 0.1 })).toMatch(/is invisible/);
+    expect(at({ coverPct: 30 })).toMatch(/Title card \(30% of frame\)/);
+  });
   it("flags picture without its dialogue and lists pauses from 0.15 s", () => {
     const d = s.timeline.tracks.a1[0];
     const un = applyOp(s, { op: "set_audio_offset", clipId: d.id, muted: true }, ctx).snap;
