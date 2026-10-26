@@ -31,6 +31,17 @@ export async function readVariantError(progressId: string): Promise<string | nul
   return redis().get(errorKey(progressId)).catch(() => null);
 }
 
+/** What recording a variant noticed (a font that was not there), kept 30 days for get_project. */
+const warningsKey = (progressId: string) => `graphic:${progressId}:warnings`;
+export async function setVariantWarnings(progressId: string, warnings: string[]) {
+  if (warnings.length) await redis().set(warningsKey(progressId), JSON.stringify(warnings), "EX", 30 * 86400);
+  else await redis().del(warningsKey(progressId));
+}
+export async function readVariantWarnings(progressId: string): Promise<string[]> {
+  const s = await redis().get(warningsKey(progressId)).catch(() => null);
+  return s ? (JSON.parse(s) as string[]) : [];
+}
+
 const isCustomPlacement = (c: V3Clip) => c.kind === "graphic" && !!c.graphicId && !GRAPHIC_TEMPLATES.some((t) => t.id === c.graphicId);
 
 /**
@@ -56,11 +67,11 @@ export async function prewarmGraphics(userId: string, timeline: Timeline) {
 }
 
 /** What a placement of a custom graphic plays now: its file's storage key, or why there is none yet. */
-export async function placementMedia(g: GraphicRow & { status: string; renderedKey: string | null; error: string | null }, clipParams?: Record<string, unknown> | null): Promise<{ key: string } | { state: "recording" | "queued" | "failed"; percent?: number; error?: string }> {
+export async function placementMedia(g: GraphicRow & { status: string; renderedKey: string | null; error: string | null }, clipParams?: Record<string, unknown> | null): Promise<{ key: string; warnings?: string[] } | { state: "recording" | "queued" | "failed"; percent?: number; error?: string }> {
   if (g.status === "failed") return { state: "failed", error: g.error ?? undefined };
   const v = graphicVariant(g, clipParams);
   if (!v) return g.status === "ready" && g.renderedKey ? { key: g.renderedKey } : { state: g.status === "rendering" ? "recording" : "queued" };
-  if (await headObject(v.key)) return { key: v.key };
+  if (await headObject(v.key)) return { key: v.key, warnings: await readVariantWarnings(v.progressId) };
   const err = await readVariantError(v.progressId);
   if (err) return { state: "failed", error: err };
   const p = await redis().get(`graphic:${v.progressId}:progress`).catch(() => null);

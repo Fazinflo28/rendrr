@@ -813,6 +813,39 @@ function Heatmap({ days }) {
 }
 
 /* ---------- /settings ---------- */
+// Fonts added once and used by name in graphics. The weight and style are guessed from the file's name
+// ("BrandSans-BoldItalic.ttf": Brand Sans, 700, italic) and can be changed before saving.
+const WEIGHTS = [[100, "Thin"], [200, "Extra light"], [300, "Light"], [400, "Regular"], [500, "Medium"], [600, "Semibold"], [700, "Bold"], [800, "Extra bold"], [900, "Black"]];
+function guessFont(fileName) {
+  const base = fileName.replace(/\.(ttf|otf|woff2?)$/i, ""), [fam0, rest = ""] = base.split(/[-_](?=[^-_]*$)/);
+  const tag = (rest || "").toLowerCase().replace(/[^a-z]/g, "");
+  const weight = /thin|hairline/.test(tag) ? 100 : /extralight|ultralight/.test(tag) ? 200 : /light/.test(tag) ? 300 : /medium/.test(tag) ? 500 : /semibold|demibold/.test(tag) ? 600 : /extrabold|ultrabold/.test(tag) ? 800 : /black|heavy/.test(tag) ? 900 : /bold/.test(tag) ? 700 : 400;
+  const family = (rest && /thin|light|regular|medium|bold|black|heavy|italic|book|normal/.test(tag) ? fam0 : base).replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_]+/g, " ").replace(/[^A-Za-z0-9 _-]/g, "").trim().slice(0, 60);
+  return { family: family || "My font", weight, style: /italic|oblique/.test(tag) ? "italic" : "normal" };
+}
+function FontsCard() {
+  const toast = useToast(); const q = useAsync(() => api.listFonts(), []); const fileRef = useRef();
+  const [pending, setPending] = useState(null); const [busy, setBusy] = useState(false);
+  const pick = (f) => { if (!f) return; if (f.size > 2 * 1024 * 1024) { toast("Font files are 2 MB at most."); return; } const r = new FileReader(); r.onload = () => setPending({ ...guessFont(f.name), name: f.name, data: String(r.result) }); r.readAsDataURL(f); };
+  const save = async () => { setBusy(true); try { await api.uploadFont({ family: pending.family.trim(), weight: +pending.weight, style: pending.style, data: pending.data }); toast(`${pending.family} added`, { icon: "check", tone: "brand" }); setPending(null); q.setData(await api.listFonts()); } catch (e) { toast(e.message); } finally { setBusy(false); } };
+  const remove = async (f) => { try { await api.deleteFont(f.id); q.setData((q.data || []).filter((x) => x.id !== f.id)); toast(`${f.family} ${f.weight} removed`, { icon: "trash" }); } catch (e) { toast(e.message); } };
+  const label = (w) => WEIGHTS.find(([n]) => n === w)?.[1] || w;
+  return html`<div class="card col" style="gap:16px" id="st-fonts"><b class="t-heading">Fonts</b>
+    <p class="muted t-small">Add a font once; your AI uses it by name in graphics. TTF, OTF, WOFF or WOFF2, up to 2 MB, one file per weight. 80+ Google Fonts are already installed.</p>
+    <${Async} q=${q} skeleton=${html`<${Skeleton} card=${false} rows=${1} />`}>${(fs) => fs.length ? html`<div class="col" style="gap:8px">${fs.map((f) => html`<div key=${f.id} class="row between" data-font=${f.family}><div><b class="t-label">${f.family}</b><p class="t-small muted">${label(f.weight)}${f.style === "italic" ? " italic" : ""} · ${f.format.toUpperCase()} · ${Math.max(1, Math.round(f.size / 1024))} KB</p></div><${Btn} kind="ghost" size="sm" onClick=${() => remove(f)}>Remove<//></div>`)}</div>` : html`<p class="t-small muted">No fonts added yet.</p>`}<//>
+    <input type="file" accept=".ttf,.otf,.woff,.woff2,font/*" class="hide" ref=${fileRef} onChange=${(e) => { const f = e.target.files[0]; e.target.value = ""; pick(f); }} />
+    ${pending ? html`<div class="col" style="gap:12px" id="font-form">
+        <p class="t-small muted">${pending.name}</p>
+        <${Field} label="Family name (what graphics call it)" id="font-family"><input id="font-family" class="input" value=${pending.family} maxlength="60" onInput=${(e) => setPending({ ...pending, family: e.target.value })} /><//>
+        <div class="row" style="gap:12px">
+          <${Field} label="Weight" id="font-weight"><select id="font-weight" class="input" value=${pending.weight} onChange=${(e) => setPending({ ...pending, weight: +e.target.value })}>${WEIGHTS.map(([n, l]) => html`<option key=${n} value=${n}>${n} ${l}</option>`)}</select><//>
+          <${Field} label="Style" id="font-style"><select id="font-style" class="input" value=${pending.style} onChange=${(e) => setPending({ ...pending, style: e.target.value })}><option value="normal">Normal</option><option value="italic">Italic</option></select><//>
+        </div>
+        <div class="row" style="gap:8px;justify-content:flex-end"><${Btn} kind="ghost" size="sm" onClick=${() => setPending(null)}>Cancel<//><${Btn} size="sm" id="font-save" disabled=${busy || !/^[A-Za-z0-9][A-Za-z0-9 _-]*$/.test(pending.family.trim())} onClick=${save}>${busy ? "Adding…" : "Add font"}<//></div>
+      </div>` : html`<div class="row"><${Btn} kind="secondary" size="sm" icon="plus" id="add-font" onClick=${() => fileRef.current.click()}>Add a font<//></div>`}
+  </div>`;
+}
+
 function SettingsPage() {
   const toast = useToast(); const { go } = useNav(); const { user, setUser } = useApp();
   const q = useAsync(() => api.getSettings(), []);
@@ -837,6 +870,7 @@ function SettingsPage() {
       <div class="col" style="gap:24px">
         <div class="card col" style="gap:16px"><b class="t-heading">Brand</b><p class="muted t-small">Your logo shows at the top of client review pages.</p>
           <div class="row" style="gap:16px"><div class="logo-prev">${user?.logo ? html`<img src=${user.logo} alt="Your logo" />` : html`<span class="t-small muted">No logo</span>`}</div><input type="file" accept="image/*" class="hide" ref=${logoRef} onChange=${(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) readFile(f, setLogo); }} /><${Btn} kind="secondary" size="sm" id="upload-logo" onClick=${() => logoRef.current.click()}>Upload logo<//>${user?.logo && html`<${Btn} kind="ghost" size="sm" onClick=${() => setLogo(null)}>Remove<//>`}</div></div>
+        <${FontsCard} />
         <div class="card col" style="gap:16px" id="st-storage"><b class="t-heading">Storage</b>
           <${Async} q=${dq} skeleton=${html`<${Skeleton} card=${false} rows=${1} />`}>${(d) => html`<div class="row between"><div class="row" style="gap:12px"><div class="ico sm"><${Icon} name="drive" size="18" /></div><div><b class="t-label">Google Drive</b><p class="t-small muted">${d.connected ? "Connected as " + d.email : "Not connected"}</p></div></div><${Btn} kind="secondary" size="sm" id="drive-toggle" disabled=${dbusy} onClick=${toggleDrive}>${d.connected ? "Disconnect" : "Connect"}<//></div>`}<//>
           <div class="hr" />

@@ -264,6 +264,10 @@ export const api: any = {
   uploadLut: (name: string, text: string) => post("/luts", { name, text }),
   lutText: async (id: string) => (await get(`/luts/${enc(id)}/cube`))?.text || "",
   deleteLut: (id: string) => del(`/luts/${enc(id)}`),
+  // ---- fonts: added once, used by name in graphics ----
+  listFonts: async () => (await get("/fonts"))?.fonts || [],
+  uploadFont: (f: { family: string; weight: number; style: string; data: string }) => post("/fonts", f),
+  deleteFont: (id: string) => del(`/fonts/${enc(id)}`),
   colorSamples: async (projectId: string, clipIds: string[]) => (await post(`/projects/${enc(projectId)}/color-samples`, { clipIds }))?.measured || {},
   getStyleFilters: () => get("/styles/filters"),
   getStyle: (id: string) => get(`/styles/${enc(id)}`),

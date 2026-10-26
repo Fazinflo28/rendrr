@@ -4,11 +4,12 @@
 import { AppError, applyTimelineChange, enqueue, notFound, readGraphic, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
+  AddFontInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   MCP_TOOLS, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources } from "./services/sequence";
 import { createProject, getOwnedProject, graphicPlacements } from "./services/projects";
+import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { renderResult, renderStatus, startRender } from "./services/render";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
@@ -179,11 +180,16 @@ const footageOf = (v: { fps: number | null; width: number | null; height: number
 /** 40 s, 3 min, 1 h 05 min. */
 /** Custom graphic placements that have no file to play yet (renders leave them out until they do). */
 async function placementLine(userId: string, tl: Timeline): Promise<string[]> {
-  const waiting = (await graphicPlacements(userId, tl)).filter((x) => !("key" in x));
-  if (!waiting.length) return [];
+  const all = await graphicPlacements(userId, tl);
+  const warned = all.filter((x) => "key" in x && x.warnings?.length);
+  const out = warned.length ? [`Graphic placements with warnings: ${warned.map((x) => `${x.clipId}: ${("warnings" in x && x.warnings?.join(" ")) || ""}`).join("; ")}`] : [];
+  const waiting = all.filter((x) => !("key" in x));
+  if (!waiting.length) return out;
   const why = (x: (typeof waiting)[number]) => ("state" in x ? (x.state === "failed" ? `failed: ${x.error ?? "unknown error"}` : x.state === "recording" ? `recording${x.percent != null ? ` ${x.percent}%` : ""}` : "queued") : "");
-  return [`Graphic placements with no file yet: ${waiting.map((x) => `${x.clipId} ${why(x)}${x.own ? " (its params)" : ""}`).join(", ")}. A render records a placement's own params if it has to; a graphic still recording is left out until it is ready.`];
+  return [...out, `Graphic placements with no file yet: ${waiting.map((x) => `${x.clipId} ${why(x)}${x.own ? " (its params)" : ""}`).join(", ")}. A render records a placement's own params if it has to; a graphic still recording is left out until it is ready.`];
 }
+/** What a graphic's recording noticed (a font that was not there), as one sentence ("" when nothing). */
+const warningsText = (w: unknown) => (Array.isArray(w) && w.length ? ` Warning: ${w.join(" ")}` : "");
 /** A custom graphic's params and their default values, for list_graphics ("" when it has none). */
 const defaultsText = (schema: unknown) => { const d = graphicDefaults(schema); return Object.keys(d).length ? ` | ${JSON.stringify(d).slice(0, 300)}` : ""; };
 const fmtLeft = (s: number) => (s < 60 ? `${Math.max(1, Math.round(s / 5) * 5)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h ${String(Math.round((s % 3600) / 60)).padStart(2, "0")} min`);
@@ -306,6 +312,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
 
   async list_graphics(c) {
     const custom = await prisma.graphic.findMany({ where: { ownerId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 });
+    const fonts = await listFonts(c.userId);
     // Recording progress of the ones not ready yet: "42%, about 3 min left".
     const progress: Record<string, string> = {};
     for (const g of custom.filter((x) => x.status === "rendering" || x.status === "queued")) {
@@ -321,7 +328,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: [
       "Graphic templates (id | name | seconds | params):",
       ...GRAPHIC_TEMPLATES.map((t) => `${t.id} | ${t.name} | ${t.durationSec}s | ${params(t.paramsSchema)}`),
-      "Custom graphics (id | name | status | seconds | size | params = defaults): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${progress[g.id] ? ` ${progress[g.id]}` : ""}${g.error ? " (" + g.error + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}${defaultsText(g.paramsSchema)}`).join("\n") : "none (create_graphic)"),
+      "Custom graphics (id | name | status | seconds | size | params = defaults): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${progress[g.id] ? ` ${progress[g.id]}` : ""}${g.error ? " (" + g.error + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}${defaultsText(g.paramsSchema)}${warningsText(g.warnings)}`).join("\n") : "none (create_graphic)"),
+      "Your fonts (add_font; use by name): " + (fonts.length ? fontsText(fonts) : "none"),
       "Music (trackId | name | mood): " + MUSIC_TRACKS.map((m) => `${m.id} | ${m.name} | ${m.mood}`).join("; "),
       "Sound effects for a3 (set_clips clip with sfxId): " + SFX.map((x) => `${x.id} ${x.seconds}s`).join(", "),
     ].join("\n") };
@@ -409,7 +417,16 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     }
     if (done.status === "failed") return { text: `The graphic did not render: ${done.error}. Fix the code and call create_graphic again.` };
     const images = i.images === true ? await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
-    return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}).${images.length ? " 4 check frames attached." : ""} Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };
+    return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}).${images.length ? " 4 check frames attached." : ""}${warningsText(done.warnings)} Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };
+  },
+
+  async add_font(c, i) {
+    const f = AddFontInput.safeParse(i);
+    if (!f.success) throw new AppError(f.error.issues[0].message, 400, "bad-font");
+    const buf = f.data.data ? Buffer.from(f.data.data.replace(/^data:[^,]*,/, ""), "base64") : await fetchFont(f.data.url!);
+    const r = await addFont(c.userId, f.data, buf);
+    const css = `font-family: "${r.family}"${r.weight !== 400 ? `; font-weight: ${r.weight}` : ""}${r.style === "italic" ? "; font-style: italic" : ""}`;
+    return { text: `${r.replaced ? "Replaced" : "Added"} font "${r.family}" ${r.weight}${r.style === "italic" ? " italic" : ""} (${r.format}, ${Math.round(r.size / 1024)} KB).${r.installed ? ` ${r.family} is also installed: graphics that name it now draw with this file.` : ""} Use it in create_graphic code by name: ${css}, or ctx.font = "${r.style === "italic" ? "italic " : ""}${r.weight} 48px '${r.family}'".`, data: { fontId: r.id } };
   },
 
   async link_account(c, i) {

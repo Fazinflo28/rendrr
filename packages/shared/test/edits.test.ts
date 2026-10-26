@@ -93,7 +93,8 @@ describe("overview sheet", () => {
 
 describe("connector tool list", () => {
   it("stays small", () => {
-    expect(MCP_TOOLS.length).toBeLessThanOrEqual(22);
+    // 23: add_font (a font file once, used by name in graphics).
+    expect(MCP_TOOLS.length).toBeLessThanOrEqual(23);
     const names = MCP_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
     for (const gone of ["cut_silences", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);

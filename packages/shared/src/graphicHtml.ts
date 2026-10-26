@@ -147,14 +147,46 @@ export const wrapGraphicHtml = (code: string, w: number, h: number) =>
  * the graphic's own scripts run, so it can read them at load. JSON with "<" escaped, so a value cannot end the script.
  */
 export function withParams(code: string, params: Record<string, unknown>) {
-  const tag = `<script>window.params=Object.freeze(${JSON.stringify(params).replace(/</g, "\\u003c")});</script>`;
+  return withEarly(code, `<script>window.params=Object.freeze(${JSON.stringify(params).replace(/</g, "\\u003c")});</script>`);
+}
+/** A tag placed before a graphic's own content and scripts: first in <head>, else <body> or <html>, else in front. */
+export function withEarly(code: string, tag: string) {
   for (const re of [/<head[^>]*>/i, /<body[^>]*>/i, /<html[^>]*>/i]) if (re.test(code)) return code.replace(re, (m) => m + tag);
   return tag + code;
 }
 
+/**
+ * Notes every font a graphic asks for (canvas ctx.font, the CSS of elements with text, as they are added and at the
+ * end), so the recorder can say which ones were not there and drew with a fallback. __rendrrMissingFonts() returns
+ * the first family of each font asked for (generic names aside) that is neither installed nor loaded by @font-face:
+ * text set in "Family, serif" and "Family, monospace" is the same width only when Family itself draws it.
+ */
+export const GRAPHIC_FONT_WATCH = `(() => {
+  const used = new Set(), C = CanvasRenderingContext2D.prototype, d = Object.getOwnPropertyDescriptor(C, "font");
+  if (d && d.set) Object.defineProperty(C, "font", { configurable: true, get() { return d.get.call(this); }, set(v) { used.add(String(v)); d.set.call(this, v); } });
+  const hasText = (el) => { for (const n of el.childNodes) if (n.nodeType === 3 && n.textContent.trim()) return true; return false; };
+  const note = (el) => { if (el.nodeType === 1 && hasText(el)) { const f = getComputedStyle(el).fontFamily; if (f) used.add(f); } };
+  new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) { note(n); n.querySelectorAll("*").forEach(note); } }).observe(document, { childList: true, subtree: true });
+  window.__rendrrMissingFonts = async () => {
+    document.querySelectorAll("*").forEach(note);
+    await Promise.all([...document.fonts].map((f) => f.load().catch(() => null)));
+    const loaded = new Set([...document.fonts].filter((f) => f.status === "loaded").map((f) => f.family.replace(/^["']|["']$/g, "").toLowerCase()));
+    const generic = /^(serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-[a-z-]+|emoji|math|fangsong|inherit|initial|unset|revert|-apple-system|blinkmacsystemfont)$/i;
+    const probe = document.createElement("span"), c = document.createElement("canvas").getContext("2d"), fams = new Set();
+    for (const v of used) {
+      let list = v;
+      if (/\\d(px|pt|em|rem|%|vh|vw|vmin|vmax)/.test(v)) { probe.style.font = ""; probe.style.font = v; list = probe.style.fontFamily; }
+      const first = (list || "").split(",")[0].trim().replace(/^["']+|["']+$/g, "");
+      if (first && !generic.test(first) && !loaded.has(first.toLowerCase())) fams.add(first);
+    }
+    const width = (f) => { if (d && d.set) d.set.call(c, "40px " + f); else c.font = "40px " + f; return c.measureText("Hamburgefonstiv 0123 QWX").width; };
+    return [...fams].filter((f) => { const q = JSON.stringify(f); return Math.abs(width(q + ", serif") - width(q + ", monospace")) > 0.01; });
+  };
+})();`;
+
 /** The virtual clock must run before any of the page's own scripts, so it goes first in <head>. */
-export function withClock(html: string) {
-  const tag = `<script>${GRAPHIC_CLOCK}</script>`;
+export function withClock(html: string, extra = "") {
+  const tag = `<script>${GRAPHIC_CLOCK}${extra}</script>`;
   if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (m) => m + tag);
   if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (m) => m + "<head>" + tag + "</head>");
   return tag + html;

@@ -118,6 +118,14 @@ globalThis.__rendrrDemoFile = (v, f) => {
   probe.src = url;
 };
 
+// Fonts added in the preview live in this tab.
+const demoFonts = [];
+Object.assign(api, {
+  listFonts: async () => demoFonts.slice(),
+  uploadFont: async ({ family, weight, style, data }) => { const f = { id: "font_" + Math.random().toString(36).slice(2, 8), family, weight, style, format: "ttf", size: Math.round((data.length * 3) / 4) }; const i = demoFonts.findIndex((x) => x.family === family && x.weight === weight && x.style === style); if (i >= 0) demoFonts.splice(i, 1, f); else demoFonts.push(f); return f; },
+  deleteFont: async (id) => { const i = demoFonts.findIndex((f) => f.id === id); if (i >= 0) demoFonts.splice(i, 1); return { ok: true }; },
+});
+
 // Imported LUTs (Phase 6) live in this tab; shot matching needs the server's frames.
 const demoLuts = [];
 Object.assign(api, {

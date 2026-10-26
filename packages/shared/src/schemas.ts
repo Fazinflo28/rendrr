@@ -103,5 +103,14 @@ export const CreateGraphicInput = z.object({
     .refine((p) => JSON.stringify(p).length <= 8000, "Params are 8 KB of JSON at most."),
 }).refine((g) => Math.min(g.width, g.height) <= 1080, "Graphics can be 1080x1920 at most.");
 
+/** add_font: a font file by https url or base64 data, kept under a family name (one weight and style per file). */
+export const AddFontInput = z.object({
+  family: z.string().trim().min(1).max(60).regex(/^[A-Za-z0-9][A-Za-z0-9 _-]*$/, "A font family name is letters, digits, spaces, - and _."),
+  weight: z.number().int().min(100).max(900).refine((w) => w % 100 === 0, "Weights are 100, 200 … 900.").default(400),
+  style: z.enum(["normal", "italic"]).default("normal"),
+  url: z.string().url().max(2000).optional(),
+  data: z.string().max(3_000_000, "Font files are 2 MB at most.").optional(),
+}).refine((f) => !!f.url !== !!f.data, "Send the font as url (https) or as data (base64), one of the two.");
+
 export const LoginInput = z.object({ email: z.string().trim().min(1, "Enter your email to continue.").max(200), password: z.string().min(1, "Enter your password.").max(200) });
 export const SignupInput = z.object({ name: z.string().max(120).optional().nullable(), email: z.string().trim().min(1, "Enter your email to continue.").email("That email does not look right.").max(200), password: z.string().min(8, "Use at least 8 characters for your password.").max(200) });

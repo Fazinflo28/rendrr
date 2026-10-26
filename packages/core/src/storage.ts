@@ -59,6 +59,10 @@ export async function getText(key: string): Promise<string> {
   const r = await s3().send(new GetObjectCommand({ Bucket: Bucket(), Key: key }));
   return await (r.Body as { transformToString(): Promise<string> }).transformToString();
 }
+export async function getBytes(key: string): Promise<Buffer> {
+  const r = await s3().send(new GetObjectCommand({ Bucket: Bucket(), Key: key }));
+  return Buffer.from(await (r.Body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray());
+}
 export async function headObject(key: string): Promise<{ size: number; contentType?: string } | null> {
   try {
     const r = await s3().send(new HeadObjectCommand({ Bucket: Bucket(), Key: key }));

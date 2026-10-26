@@ -82,6 +82,7 @@ export const PREFIX = {
   assets: "assets/",
   samples: "samples/",
   luts: "luts/",
+  fonts: "fonts/",
 } as const;
 
 export const FILLER_WORDS = ["um", "uh", "like", "basically", "honestly"] as const;

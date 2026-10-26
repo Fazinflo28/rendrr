@@ -41,6 +41,7 @@ model User {
   notes       ProjectComment[]
   logins      UserLogin[]
   luts        Lut[]
+  fonts       Font[]
 }
 
 // More logins that open the same Rendrr account: for example the Google account someone used for the AI connector
@@ -263,6 +264,8 @@ model Graphic {
   transparent  Boolean  @default(true)
   status       String   @default("ready") // queued | rendering | ready | failed
   error        String?
+  /// Things the recording noticed that the AI should know (a font that was not there, drawn with a fallback).
+  warnings     Json     @default("[]")
   attempts     Int      @default(0)
   createdAt    DateTime @default(now())
 }
@@ -449,6 +452,22 @@ model ProjectComment {
 }
 
 // Colour LUTs the user imported (.cube, Phase 6). The file sits in storage; grades refer to it by id.
+/// A font file the user added once (add_font, Settings), used by its family name in graphics.
+model Font {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  family    String
+  weight    Int      @default(400)
+  style     String   @default("normal") // normal | italic
+  format    String   // ttf | otf | woff | woff2
+  key       String   // storage key of the file
+  size      Int
+  createdAt DateTime @default(now())
+
+  @@unique([userId, family, weight, style])
+}
+
 model Lut {
   id        String   @id @default(cuid())
   userId    String

@@ -1,6 +1,6 @@
-import { downloadFile, graphicVariant, headObject, queue, readGraphic, signGet, uploadFile, type GraphicVariant } from "@rendrr/core";
+import { downloadFile, getBytes, graphicVariant, headObject, queue, readGraphic, setVariantWarnings, signGet, uploadFile, type GraphicVariant } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { GRAPHIC_TEMPLATES, PREFIX, templateHtml, templateSize, withClock, withParams, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
+import { GRAPHIC_FONT_WATCH, GRAPHIC_TEMPLATES, PREFIX, templateHtml, templateSize, withClock, withEarly, withParams, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -63,15 +63,16 @@ function launchLocked() {
   });
 }
 
-/** The graphic loaded in a page at w x h with the virtual clock, fonts ready, transparent when asked. */
+/** The graphic loaded in a page at w x h with the virtual clock, fonts ready (every @font-face loaded before the first
+ *  frame, so nothing draws with a fallback while a font loads), the font watch, transparent when asked. */
 async function openGraphicPage(browser: Browser, html: string, w: number, h: number, transparent: boolean, errors: string[]) {
   const page = await browser.newPage();
   await page.setViewport({ width: w, height: h, deviceScaleFactor: 1 });
   await page.setRequestInterception(true);
   page.on("request", (req) => { const u = req.url(); if (u.startsWith("data:") || u === "about:blank") req.continue(); else req.abort("blockedbyclient"); });
   page.on("pageerror", (e) => errors.push(String((e as Error).message || e).slice(0, 300)));
-  await page.setContent(withClock(wrapGraphicHtml(html, w, h)), { waitUntil: "load", timeout: 15_000 });
-  await page.evaluate(() => (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready);
+  await page.setContent(withClock(wrapGraphicHtml(html, w, h), GRAPHIC_FONT_WATCH), { waitUntil: "load", timeout: 15_000 });
+  await page.evaluate("Promise.all([...document.fonts].map((f) => f.load().catch(() => null))).then(() => document.fonts.ready)");
   const cdp = await page.createCDPSession();
   if (transparent) await cdp.send("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
   // The graphic says renderFrame(t) draws the whole frame from t alone: frames not captured can skip it.
@@ -170,6 +171,7 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   // Which frames are captured: all of them up to 15 s; for longer graphics, what the scan finds.
   const capture = new Uint8Array(frames);
   let dense = 0, pictures = 0;
+  const missingFonts = new Set<string>(); // fonts asked for that drew with a fallback (each range's page says)
   const pieces: Piece[][] = [];
   const encodes: Promise<void>[] = [];
   try {
@@ -266,6 +268,7 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
         }
         await checks(b);
         flush(b);
+        for (const f of (await g.page.evaluate("window.__rendrrMissingFonts ? window.__rendrrMissingFonts() : []")) as string[]) missingFonts.add(f);
       } finally { await g.page.close().catch(() => {}); }
     });
     await Promise.all(encodes);
@@ -292,7 +295,7 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
     await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", out], { signal: o.signal });
   }
   o.onProgress?.(1);
-  return { path: out, checkFrames: checkFiles, seconds: frames / FPS, width: w, height: h, pictures, dense };
+  return { path: out, checkFrames: checkFiles, seconds: frames / FPS, width: w, height: h, pictures, dense, missingFonts: Array.from(missingFonts).sort() };
 }
 
 /**
@@ -355,7 +358,7 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
     await uploadFile(key, r.path, "video/webm");
     return { path: r.path, seconds: r.seconds };
   }
-  const g = await prisma.graphic.findUnique({ where: { id } });
+  const g = await prisma.graphic.findUnique({ where: { id }, select: GRAPHIC_FIELDS });
   if (!g || (g.ownerId && g.ownerId !== o.userId) || g.status !== "ready" || !g.renderedKey) return null;
   // A placement with its own params plays its own recording: from storage, from the job recording it now, or
   // recorded here (then kept, so the next render and the editor have it).
@@ -363,8 +366,9 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
   if (v && !(await headObject(v.key))) {
     await waitForVariant(v, recordLimitMs(g.durationSec, g.width, g.height), o.signal, o.onProgress);
     if (!(await headObject(v.key))) {
-      const r = await recordHtml(withParams(g.code!, v.params), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: o.dir, signal: o.signal, onProgress: o.onProgress, workers: 2 });
+      const r = await recordHtml(await customGraphicHtml(g.code!, v.params, g.ownerId), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: o.dir, signal: o.signal, onProgress: o.onProgress, workers: 2 });
       await uploadFile(v.key, r.path, "video/webm");
+      await setVariantWarnings(v.progressId, fontWarning(r.missingFonts)).catch(() => {});
       return { path: r.path, seconds: r.seconds };
     }
   }
@@ -372,6 +376,33 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
   // A custom graphic plays as recorded; a clip longer than that holds its last frame (as the player does).
   return { path: local, seconds: g.durationSec };
 }
+
+/**
+ * The graphic's columns the worker reads, named: a deploy can run the new worker before the API has added a column,
+ * and reading every column would fail until it has.
+ */
+export const GRAPHIC_FIELDS = { id: true, ownerId: true, kind: true, code: true, paramsSchema: true, width: true, height: true, durationSec: true, transparent: true, status: true, renderedKey: true } as const;
+
+/** A custom graphic's page: its code with window.params set first and the user's fonts it names. */
+export async function customGraphicHtml(code: string, params: Record<string, unknown>, ownerId: string | null) {
+  return withEarly(withParams(code, params), await userFontsTag(ownerId, code + JSON.stringify(params)));
+}
+
+/** The user's fonts (add_font) that a graphic's code or params name, as @font-face rules with the file inside. */
+export async function userFontsTag(userId: string | null, text: string): Promise<string> {
+  if (!userId) return "";
+  // No table yet while a deploy is running the migration: no user fonts for that moment.
+  const fs = await prisma.font.findMany({ where: { userId }, select: { family: true, weight: true, style: true, format: true, key: true } }).catch(() => []);
+  const low = text.toLowerCase();
+  const named = fs.filter((f) => low.includes(f.family.toLowerCase()));
+  if (!named.length) return "";
+  const fmt: Record<string, string> = { ttf: "truetype", otf: "opentype", woff: "woff", woff2: "woff2" };
+  const faces = await Promise.all(named.map(async (f) => `@font-face{font-family:${JSON.stringify(f.family)};src:url(data:font/${f.format};base64,${(await getBytes(f.key)).toString("base64")}) format("${fmt[f.format] ?? f.format}");font-weight:${f.weight};font-style:${f.style};font-display:block}`));
+  return `<style>${faces.join("")}</style>`;
+}
+
+/** What the AI is told when fonts drew with a fallback. */
+export const fontWarning = (missing: string[]) => (missing.length ? [`Fonts not installed, drawn with a fallback: ${missing.join(", ")}. Use an installed font (create_graphic lists them) or add the file with add_font.`] : []);
 
 /** While the graphic queue is recording this variant (prewarmed by the edit), wait for it rather than record it twice. */
 async function waitForVariant(v: GraphicVariant, limitMs: number, signal?: AbortSignal, onProgress?: (frac: number) => void) {

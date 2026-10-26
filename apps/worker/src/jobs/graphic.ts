@@ -1,7 +1,7 @@
-import { graphicVariant, publishGraphic, setVariantError, uploadFile, type GraphicJob } from "@rendrr/core";
+import { graphicVariant, publishGraphic, setVariantError, setVariantWarnings, uploadFile, type GraphicJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { graphicDefaults, PREFIX, withParams } from "@rendrr/shared";
-import { recordHtml } from "../lib/graphics";
+import { graphicDefaults, PREFIX } from "@rendrr/shared";
+import { customGraphicHtml, fontWarning, GRAPHIC_FIELDS, recordHtml } from "../lib/graphics";
 import type { Ctx } from "../lib/job";
 
 // Progress (and a time left from the pace so far) for list_graphics, at most every 2 s.
@@ -20,19 +20,22 @@ function progressTo(id: string) {
 // variant for a placement: the same code with other window.params, recorded once and kept by its values.
 export async function graphicJob(ctx: Ctx) {
   const { graphicId, params } = ctx.job.data as GraphicJob;
-  const g = await prisma.graphic.findUnique({ where: { id: graphicId } });
+  const g = await prisma.graphic.findUnique({ where: { id: graphicId }, select: GRAPHIC_FIELDS });
   if (!g || g.kind !== "custom" || !g.code) return;
   if (params) return variantJob(ctx, g as typeof g & { code: string }, params);
-  await prisma.graphic.update({ where: { id: g.id }, data: { status: "rendering", attempts: { increment: 1 }, error: null } });
+  await prisma.graphic.update({ where: { id: g.id }, data: { status: "rendering", attempts: { increment: 1 }, error: null }, select: { id: true } });
   const t0 = Date.now();
   await publishGraphic(g.id, { percent: 0, etaSec: null }).catch(() => {});
-  const r = await recordHtml(withParams(g.code, graphicDefaults(g.paramsSchema)), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: ctx.dir, signal: ctx.signal, onProgress: progressTo(g.id) });
+  const r = await recordHtml(await customGraphicHtml(g.code, graphicDefaults(g.paramsSchema), g.ownerId), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: ctx.dir, signal: ctx.signal, onProgress: progressTo(g.id) });
   console.log(`[graphic] ${g.id}: ${g.durationSec}s at ${g.width}x${g.height} recorded in ${((Date.now() - t0) / 1000).toFixed(1)}s (${r.pictures} pictures, ${r.dense} frames one by one)`);
   const base = `${PREFIX.graphics}${g.ownerId}/${g.id}`;
   await uploadFile(`${base}.webm`, r.path, "video/webm");
   const checks: string[] = [];
   for (const [i, f] of r.checkFrames.entries()) { await uploadFile(`${base}-check${i}.png`, f, "image/png"); checks.push(`${base}-check${i}.png`); }
-  await prisma.graphic.update({ where: { id: g.id }, data: { status: "ready", renderedKey: `${base}.webm`, checkFrames: checks, durationSec: r.seconds, error: null } });
+  await prisma.graphic.update({ where: { id: g.id }, data: { status: "ready", renderedKey: `${base}.webm`, checkFrames: checks, durationSec: r.seconds, error: null }, select: { id: true } });
+  if (r.missingFonts.length) console.log(`[graphic] ${g.id}: fonts drawn with a fallback: ${r.missingFonts.join(", ")}`);
+  // Apart, so a database the deploy has not migrated yet costs the warning only, never the graphic.
+  await prisma.graphic.update({ where: { id: g.id }, data: { warnings: fontWarning(r.missingFonts) }, select: { id: true } }).catch((e) => console.error(`[graphic] ${g.id}: warnings not saved: ${(e as Error).message.slice(0, 200)}`));
 }
 
 async function variantJob(ctx: Ctx, g: { id: string; ownerId: string | null; code: string; paramsSchema: unknown; width: number; height: number; durationSec: number; transparent: boolean }, params: Record<string, unknown>) {
@@ -40,8 +43,9 @@ async function variantJob(ctx: Ctx, g: { id: string; ownerId: string | null; cod
   if (!v) return;
   const t0 = Date.now();
   await publishGraphic(v.progressId, { percent: 0, etaSec: null }).catch(() => {});
-  const r = await recordHtml(withParams(g.code, v.params), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: ctx.dir, signal: ctx.signal, onProgress: progressTo(v.progressId) });
+  const r = await recordHtml(await customGraphicHtml(g.code, v.params, g.ownerId), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: ctx.dir, signal: ctx.signal, onProgress: progressTo(v.progressId) });
   await uploadFile(v.key, r.path, "video/webm");
+  await setVariantWarnings(v.progressId, fontWarning(r.missingFonts)).catch(() => {});
   console.log(`[graphic] ${g.id} variant ${v.hash}: recorded in ${((Date.now() - t0) / 1000).toFixed(1)}s (${r.pictures} pictures)`);
 }
 
