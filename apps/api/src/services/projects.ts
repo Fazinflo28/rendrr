@@ -143,7 +143,9 @@ export async function projectFull(userId: string, id: string) {
  * Templates are drawn live from their HTML.
  */
 async function playerMedia(userId: string, tl: Snapshot["timeline"]) {
-  const brollIds = Array.from(new Set(tl.tracks.v2.map((c) => (c as { videoId?: string }).videoId).filter(Boolean) as string[]));
+  // b-roll, and the library video behind V1 (set_background videoId).
+  const bgVideo = (tl as { background?: { videoId?: string } }).background?.videoId;
+  const brollIds = Array.from(new Set([...tl.tracks.v2.map((c) => (c as { videoId?: string }).videoId), bgVideo].filter(Boolean) as string[]));
   const vids = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId, proxyKey: { not: null } } }) : [];
   return {
     brollMedia: Object.fromEntries(await Promise.all(vids.map(async (v) => [v.id, { url: await signGet(v.proxyKey!, 6 * 3600), seconds: v.seconds }] as const))),

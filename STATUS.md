@@ -23,11 +23,12 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 ## Reference edits: blockers fixed (27 October)
 
-From the C1744 edit, where Claude said Rendrr could not rotate and the op list was old.
+From the C1744 edit, where Claude said Rendrr could not rotate, could not lay the talking head out as a card on a background, and the op list was old.
 
 | What | Where | Tests |
 |---|---|---|
 | apply_edits' op is free text: an app's old copy of the tool cannot hide newer ops. The guide lists every op; an unknown op is named with the full list. | `shared/src/mcpTools.ts`, `api/src/tools.ts` | shared `edits.test.ts`, API `marks.test.ts` |
+| A video as a card on a background: set_card (crop, rounded corners, drop shadow, border) and set_background (a colour, a gradient, a library video looped, or the footage blurred), with set_framing to shrink and place it. Drawn the same in the render and the editor's player; named in get_project. | `shared/src/cardLook.ts`, `shared/src/ops.ts`, `shared/src/renderPlan.ts`, `worker/src/jobs/render.ts`, `web/src/rendrr/editor.js` | shared `card-look.test.ts`, worker `card-render.test.ts` (compared with the shared maths: 0.28 levels apart), `web/demo/card-match.mjs` (player vs render: 0.5-0.7 levels) |
 | Footage filmed sideways is found (faces clear only when turned), measured upright, and named in get_footage, get_vision and create_project with the set_rotation to send. The editor offers "Turn it upright"; nothing turns by itself. | `worker/python/vision.py`, `shared/src/deep.ts`, `api/src/services/projects.ts`, `web/src/rendrr/editor.js` | worker `deep.test.ts`, `web/demo/sideways.mjs` |
 
 ## Engine Part 2: footage measured more deeply (27 October)

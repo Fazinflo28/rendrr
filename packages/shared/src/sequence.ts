@@ -351,7 +351,7 @@ const sameFraming = (a?: Framing | null, b?: Framing | null) => (!a && !b) || (!
 export const plainFraming = (f?: Framing | null): Framing | null => (!f || (f.scale === 1 && f.x === 0 && f.y === 0) ? null : f);
 // Keyframed clips play as parts of their own (their motion is the clip's).
 /** Colour and compositing (Phase 6): clips with different looks are drawn apart. */
-const colorOf = (c: SeqClip) => (c.grade || c.key || c.masks || c.effects ? JSON.stringify([c.grade, c.key, c.masks, c.effects]) : "");
+const colorOf = (c: SeqClip) => { const card = (c as { cardLook?: unknown }).cardLook; return c.grade || c.key || c.masks || c.effects || card ? JSON.stringify([c.grade, c.key, c.masks, c.effects, card]) : ""; };
 const sameLook = (a: SeqClip, b: SeqClip) => (a.rotate ?? 0) === (b.rotate ?? 0) && sameFraming(plainFraming(a.framing), plainFraming(b.framing)) && (a === b || (!a.keys?.length && !b.keys?.length)) && (a === b || colorOf(a) === colorOf(b));
 
 /** Cuts ranges out of ranges, keeping every leftover however short (the caller decides what is too short). */

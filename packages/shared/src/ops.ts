@@ -14,6 +14,7 @@ import { MARK_KINDS, type Mark, type MarkEdit } from "./timeline";
 import { editToFootage, RENDRR_MARK } from "./marks";
 import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
+import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
 import { ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutRefSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, type ChromaKey, type ClipLook, type Grade, type Lut } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
@@ -72,6 +73,16 @@ const EDIT_OPS = [
     faces: z.record(z.object({ u: z.number(), v: z.number(), r: z.number().positive(), found: z.number().optional(), of: z.number().optional() }).nullable()).optional() }),
   // Turn the footage clockwise (footage filmed sideways); 0 puts it back.
   z.object({ op: z.literal("set_rotation"), degrees: RotationSchema, clipIds: z.array(clipId).max(2000).optional() }),
+  // V1 clips drawn as a card (default every clip of the footage): crop, corners, shadow, border; null removes one,
+  // reset starts from none. With set_framing to shrink and place it, and set_background for what is behind.
+  z.object({ op: z.literal("set_card"), clipIds: z.array(clipId).max(2000).optional(), reset: z.boolean().optional(),
+    crop: CardLookSchema.shape.crop.unwrap().nullable().optional(), radius: CardLookSchema.shape.radius.unwrap().nullable().optional(),
+    shadow: CardLookSchema.shape.shadow.unwrap().nullable().optional(), border: CardLookSchema.shape.border.unwrap().nullable().optional() }),
+  // What is behind V1 for the whole edit: one of color, gradient, videoId (a library video, looped) or blur (the
+  // clip's own picture, 1-100); none: black again.
+  z.object({ op: z.literal("set_background"), color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "a colour like #FF66AA").optional(),
+    gradient: z.object({ from: z.string().regex(/^#[0-9a-fA-F]{6}$/), to: z.string().regex(/^#[0-9a-fA-F]{6}$/), angle: z.number().min(0).max(360).optional() }).optional(),
+    videoId: z.string().min(1).max(80).optional(), blur: z.number().min(1).max(100).optional(), none: z.boolean().optional() }),
   z.object({ op: z.literal("rename"), name: z.string().min(1).max(200) }),
   z.object({ op: z.literal("apply_style"), styleId: z.string().max(80), overrides: StyleRulesPatchSchema.optional() }),
   // ---- the sequence ----
@@ -633,6 +644,40 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const f = shown as Framing | null;
       const what = op.clipIds ? `${ids.size} ${ids.size === 1 ? "clip" : "clips"}` : "the footage";
       return { snap: { ...snap, timeline: next }, summary: !f || !plainFraming(f) ? `${what} back to filling the frame` : `framed ${what}: ${framingText(f)}` };
+    }
+    case "set_card": {
+      const ids = targets(tl, op.clipIds);
+      if (!op.reset && op.crop === undefined && op.radius === undefined && op.shadow === undefined && op.border === undefined) throw new EditError("set_card needs crop, radius, shadow, border or reset.");
+      let shown: CardLook | null = null;
+      const next = setSeq(tl, seqClips(tl).map((c) => {
+        if (!ids.has(c.id)) return c;
+        const cur: Record<string, unknown> = op.reset ? {} : { ...((c as { cardLook?: CardLook }).cardLook ?? {}) };
+        for (const k of ["crop", "radius", "shadow", "border"] as const) {
+          const v = op[k];
+          if (v === null || (k === "radius" && v === 0)) delete cur[k];
+          else if (v !== undefined) cur[k] = v;
+        }
+        const card = CardLookSchema.parse(cur);
+        shown = card;
+        const { cardLook: _c, ...rest } = c as SeqClip & { cardLook?: CardLook };
+        return (hasCard(card) ? { ...rest, cardLook: card } : rest) as SeqClip;
+      }));
+      const what = op.clipIds ? `${ids.size} ${ids.size === 1 ? "clip" : "clips"}` : "the footage";
+      const card = shown as CardLook | null;
+      const framed = seqClips(tl).some((c) => ids.has(c.id) && c.framing && c.framing.scale < 1);
+      return { snap: { ...snap, timeline: next }, summary: card && hasCard(card) ? `${what} drawn as a card: ${cardLookText(card)}${framed ? "" : " (set_framing scale under 1 shows it as a card on the background)"}` : `${what}: no card look` };
+    }
+    case "set_background": {
+      const n = [op.color, op.gradient, op.videoId, op.blur].filter((x) => x != null).length;
+      if (op.none) { if (n) throw new EditError("set_background: none true, or one of color, gradient, videoId, blur."); const { background: _b, ...rest } = tl; return { snap: { ...snap, timeline: rest as Timeline }, summary: "background back to black" }; }
+      if (n !== 1) throw new EditError("set_background takes one of color, gradient, videoId (a library video) or blur (1-100), or none true.");
+      if (op.videoId) {
+        const v = ctx.getVideo?.(op.videoId);
+        if (!v) throw new EditError("That background video is not in your library.");
+        if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
+      }
+      const bg = BackgroundSchema.parse({ ...(op.color ? { color: op.color.toUpperCase() } : {}), ...(op.gradient ? { gradient: op.gradient } : {}), ...(op.videoId ? { videoId: op.videoId } : {}), ...(op.blur ? { blur: op.blur } : {}) });
+      return { snap: { ...snap, timeline: { ...tl, background: bg } }, summary: `background: ${backgroundText(bg, (id) => ctx.getVideo?.(id)?.name)} (it shows where V1 is framed smaller, cropped, rounded, keyed or masked)` };
     }
     case "set_rotation": {
       const ids = targets(tl, op.clipIds);
@@ -1268,7 +1313,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
 
 /** A clip's Phase 6 look in a few words: "grade, key, 2 masks, blur". */
 function lookTags(c: Clip & ClipLook): string {
-  const t = [c.grade ? "grade" : "", c.key ? "key" : "", c.masks?.length ? `${c.masks.length} ${c.masks.length === 1 ? "mask" : "masks"}` : "", ...(c.effects ?? []).map((e) => e.type)].filter(Boolean);
+  const t = [c.grade ? "grade" : "", c.key ? "key" : "", c.masks?.length ? `${c.masks.length} ${c.masks.length === 1 ? "mask" : "masks"}` : "", ...(c.effects ?? []).map((e) => e.type), hasCard((c as { cardLook?: CardLook }).cardLook) ? "card" : ""].filter(Boolean);
   return t.length ? `look: ${t.join(", ")}` : "";
 }
 /** The looks in full, clips with the same one together (get_project). */
@@ -1284,7 +1329,9 @@ export function colorSummary(tl: Timeline, lutName?: (id: string) => string | un
     ...group((c) => (c.key ? `key ${chromaKeyText(c.key)}` : "")),
     ...group((c) => (c.masks?.length ? `masks ${masksText(c.masks)}` : "")),
     ...group((c) => (c.effects?.length ? effectsText(c.effects) : "")),
+    ...group((c) => { const cl = (c as { cardLook?: CardLook }).cardLook; return hasCard(cl) ? `card ${cardLookText(cl)}` : ""; }),
   ];
+  if (tl.background) out.push(`behind V1: ${backgroundText(tl.background)}`);
   if (tl.export?.hdr === "sdr") out.push("export: HDR footage converted to SDR");
   return out.length ? [`Looks: ${out.join("; ")}`] : [];
 }

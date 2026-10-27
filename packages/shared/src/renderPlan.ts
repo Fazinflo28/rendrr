@@ -12,6 +12,7 @@ import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
 import { audioSettings, type AudioMixSettings } from "./timeline";
 import { buildStyledAss, captionStyleOf, layoutCaptions, styleText, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
+import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, ppm, SHADOW_DEFAULTS, type CardLook } from "./cardLook";
 import { areaPicture, blurSigma, buildLut, chromaKeyText, cubeText, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, pixelBlock, sdrToHdr, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
@@ -67,8 +68,15 @@ export type CaptionEvent = { start: number; end: number; text: string };
  * block size in pixels at the plan's size. alpha: parts of the clip are transparent (key or masks).
  */
 export type LookOp = { grade?: Grade; lut?: string; lutHdr?: string; key?: ChromaKey; masks?: Mask[]; mask?: string; effects?: (Effect & { px: number; file?: string })[]; alpha: boolean };
-/** What a look file holds; lookFileData() writes it. */
-export type LookFile = { kind: "lut"; grade: Grade; hdr?: HdrTransfer } | { kind: "hdr"; hdr: HdrTransfer } | { kind: "mask"; masks: Mask[] } | { kind: "area"; area: Area };
+/** What a look file holds; lookFileData() writes it. shadow and border: a card's, in its framed place; gradient: what
+ *  is behind V1 (a colour is a gradient from it to itself). */
+export type LookFile = { kind: "lut"; grade: Grade; hdr?: HdrTransfer } | { kind: "hdr"; hdr: HdrTransfer } | { kind: "mask"; masks: Mask[] } | { kind: "area"; area: Area }
+  | { kind: "shadow"; card: CardLook; framing: Framing | null } | { kind: "border"; card: CardLook; framing: Framing | null } | { kind: "gradient"; gradient: { from: string; to: string; angle?: number } };
+/** A V1 clip drawn as a card: its shadow under it and its border over it (crop and corners are in its mask). */
+export type CardOp = { shadow?: { file: string; color: string }; border?: { file: string; color: string } };
+/** What is behind V1: a picture file (colour or gradient), a library video (looped from the edit's start), or the
+ *  clip's own picture blurred (sigma in pixels). */
+export type BackgroundOp = { file?: string; videoId?: string; seconds?: number; blur?: number; scale?: number; text: string };
 
 export type RenderPlan = {
   /** "B" = planned from a sequence; "A" = from a timeline stored in model A (renderPlanA.ts). */
@@ -110,6 +118,9 @@ export type RenderPlan = {
   lookFiles?: Record<string, LookFile>;
   under?: OverlayOp[];
   hdr?: { transfer: HdrTransfer; lut: string } | null;
+  /** V1 clips drawn as cards (by clip id) and what is behind V1 (null: black). */
+  cards?: Record<string, CardOp>;
+  background?: BackgroundOp | null;
   /** Sequences: the caption style, the captions with their lines and word times, the text layers (Phase 4). */
   captionStyle?: CaptionStyle;
   styledCaptions?: StyledCaption[];
@@ -466,26 +477,45 @@ export function planRender(input: PlanInput): RenderPlan {
   const hdrVideos = new Set(parts.map((p) => p.videoId).filter((v) => infoOf(v)?.hdr || input.hdrFootage?.[v]));
   const hdrT: HdrTransfer | null = kind === "final" && (tl.export?.hdr ?? "keep") === "keep" && hdrSrc ? hdrSrc.transfer ?? "pq" : null;
   const lookFiles: Record<string, LookFile> = {};
-  const file = (spec: LookFile) => { const name = `${spec.kind}_${hashOf(spec)}.${spec.kind === "mask" || spec.kind === "area" ? "pgm" : "cube"}`; lookFiles[name] = spec; return name; };
+  const file = (spec: LookFile) => { const name = `${spec.kind}_${hashOf(spec)}.${spec.kind === "mask" || spec.kind === "area" || spec.kind === "shadow" || spec.kind === "border" ? "pgm" : spec.kind === "gradient" ? "ppm" : "cube"}`; lookFiles[name] = spec; return name; };
   const hdr = hdrT ? { transfer: hdrT, lut: file({ kind: "hdr", hdr: hdrT }) } : null;
   // Phase 7: a final's codec (HDR kept is always HEVC 10-bit); previews are H.264.
   const codec: Codec = kind === "final" && (hdr || tl.export?.codec === "hevc") ? "hevc" : "h264";
   const looks: Record<string, LookOp> = {};
   const missingLuts = new Set<string>();
-  const lookFor = (c: ClipLook & { id: string }) => {
+  const lookFor = (c: ClipLook & { id: string; cardLook?: CardLook }) => {
     const grade = c.grade && gradeIsActive(c.grade) ? { ...c.grade } : undefined;
     if (grade?.lut && !input.luts?.[grade.lut.id]) { missingLuts.add(grade.lut.id); delete grade.lut; }
     const g = grade && gradeIsActive(grade) ? grade : undefined;
-    if (!g && !c.key && !c.masks?.length && !c.effects?.length) return;
+    // A card's crop and corners are one more mask (drawn as masks are, in the render and the player).
+    const masks = masksWithCard(c.masks, c.cardLook);
+    if (!g && !c.key && !masks?.length && !c.effects?.length) return;
     looks[c.id] = {
       ...(g ? { grade: g, lut: file({ kind: "lut", grade: g }), ...(hdr ? { lutHdr: file({ kind: "lut", grade: g, hdr: hdr.transfer }) } : {}) } : {}),
       ...(c.key ? { key: c.key } : {}),
-      ...(c.masks?.length ? { masks: c.masks, mask: file({ kind: "mask", masks: c.masks }) } : {}),
+      ...(masks?.length ? { masks, mask: file({ kind: "mask", masks }) } : {}),
       ...(c.effects?.length ? { effects: c.effects.map((e) => ({ ...e, px: e.type === "blur" ? blurSigma(e.amount, width, height) : pixelBlock(e.amount, width, height), ...(e.area ? { file: file({ kind: "area", area: e.area }) } : {}) })) } : {}),
-      alpha: !!c.key || !!c.masks?.length,
+      alpha: !!c.key || !!masks?.length,
     };
   };
   for (const c of v1) lookFor(c);
+  // Cards: the shadow and border pictures at the output size, where the framing puts the clip.
+  const cards: Record<string, CardOp> = {};
+  for (const c of v1 as (SeqClip & { cardLook?: CardLook })[]) {
+    const cl = c.cardLook;
+    if (!hasCard(cl) || (!cl.shadow && !cl.border)) continue;
+    const fr = c.framing && (c.framing.scale !== 1 || c.framing.x || c.framing.y) ? c.framing : null;
+    cards[c.id] = {
+      ...(cl.shadow ? { shadow: { file: file({ kind: "shadow", card: cl, framing: fr }), color: cl.shadow.color ?? SHADOW_DEFAULTS.color } } : {}),
+      ...(cl.border ? { border: { file: file({ kind: "border", card: cl, framing: fr }), color: cl.border.color } } : {}),
+    };
+  }
+  // What is behind V1: a colour is a gradient from it to itself; a library video needs its length.
+  const bgIn = tl.background;
+  const background: BackgroundOp | null = !bgIn ? null
+    : bgIn.color || bgIn.gradient ? { file: file({ kind: "gradient", gradient: bgIn.gradient ?? { from: bgIn.color!, to: bgIn.color! } }), text: backgroundText(bgIn) }
+    : bgIn.videoId ? (input.brollSeconds?.[bgIn.videoId] ? { videoId: bgIn.videoId, seconds: input.brollSeconds[bgIn.videoId], text: backgroundText(bgIn) } : null)
+    : (() => { const sg = backgroundSigma(bgIn.blur!, width, height); return { blur: sg, scale: backgroundScale(sg, width, height), text: backgroundText(bgIn) }; })();
   for (const b of [...broll, ...under]) lookFor((tl.tracks.v2 as (V2Clip & ClipLook)[]).find((x) => x.id === b.clipId)!);
   const sound = view.sound.map((x) => ({ ...x, start: r3(x.start), end: r3(x.end) }));
   const sources = Array.from(new Set([main, ...parts.map((p) => p.videoId), ...sound.map((x) => x.videoId)])).filter((v) => parts.some((p) => p.videoId === v) || sound.some((x) => x.videoId === v));
@@ -507,6 +537,8 @@ export function planRender(input: PlanInput): RenderPlan {
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
     ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr"),
+    ...(Object.keys(cards).length || v1.some((c) => hasCard((c as { cardLook?: CardLook }).cardLook)) ? [`Cards: ${(v1 as (SeqClip & { cardLook?: CardLook })[]).filter((c) => hasCard(c.cardLook)).slice(0, 4).map((c) => `${c.id} ${cardLookText(c.cardLook!)}`).join("; ")}`] : []),
+    ...(background ? [`Behind V1: ${background.text}`] : bgIn?.videoId ? ["Behind V1: the background video is not in the library or not ready: black instead"] : []),
     `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${cleanupText(settings) !== "none" ? `, cleanup ${cleanupText(settings)}` : ""}${settings.declick ? `, ${Math.round(settings.declick * 1000)} ms fade at every cut` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
     settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : hdr ? `Encode final: HEVC 10-bit HDR (${hdr.transfer === "pq" ? "PQ" : "HLG"}, BT.2020), ${width}x${height}, ${rateText(out.fps)} fps` : `Encode final: ${codec === "hevc" ? "HEVC" : "H.264"}, ${width}x${height}, ${rateText(out.fps)} fps`,
@@ -518,6 +550,7 @@ export function planRender(input: PlanInput): RenderPlan {
     outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, captionStyle, styledCaptions, texts, ass, operations, audioMix,
     transitions, clipMotion,
     looks, lookFiles, under, hdr, ...(hdr && ass ? { ass: hdrAss(ass, hdr.transfer) } : {}),
+    ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}),
   };
 }
 
@@ -584,6 +617,9 @@ export function lookFileData(spec: LookFile, plan: { width: number; height: numb
   const W = plan.width, H = plan.height;
   if (spec.kind === "mask") return pgm(maskPicture(spec.masks, W, H), W, H);
   if (spec.kind === "area") return pgm(areaPicture(spec.area, W, H)!, W, H);
+  if (spec.kind === "shadow") return pgm(cardShadowPicture(spec.card, spec.framing, W, H), W, H);
+  if (spec.kind === "border") return pgm(cardBorderPicture(spec.card, spec.framing, W, H), W, H);
+  if (spec.kind === "gradient") return ppm(gradientPicture(spec.gradient, W, H), W, H);
   if (spec.kind === "hdr") return cubeText(hdrLut(spec.hdr), undefined, "SDR into HDR");
   const lut = spec.grade.lut ? luts[spec.grade.lut.id] : null;
   return cubeText(spec.hdr ? hdrLut(spec.hdr, gradeFn(spec.grade, lut)) : buildLut(spec.grade, lut));
@@ -675,6 +711,8 @@ export type PlanFiles = {
   /** Phase 7: how long each graphic's file plays (seconds, by clip id). A clip longer than its file holds the last
    *  frame, as the player does with a custom graphic's recording. */
   graphicSeconds?: Record<string, number>;
+  /** The library video behind V1 (plan.background.videoId). */
+  background?: string;
 };
 
 const q = (s: string) => `'${s.replace(/\\/g, "\\\\").replace(/'/g, "'\\''").replace(/:/g, "\\:")}'`;
@@ -780,12 +818,48 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     }
     return { out: `lo${tag}`, alpha: true };
   };
-  /** b-roll laid behind V1 over [start, start + frames): black with the `under` clips on it (as overlays are drawn). */
+  /**
+   * What is behind V1 over [start, start + frames): black, or the edit's background (a picture decoded once and
+   * repeated, a library video looped from the edit's start, or `blurSrc` (the clip's own fitted picture) blurred and
+   * scaled up by three blur widths a side, so its softened edges stay outside the frame), in the output's format.
+   */
+  const bg = plan.background ?? null;
+  const backOf = (start: number, frames: number, tag: string, blurSrc?: string, dom: "sdr" | "hdr" = "sdr"): string => {
+    const out = `bs${tag}`;
+    const sdrIn = (lab: string, d: "sdr" | "hdr" = "sdr") => { const c = colorChain(lab, undefined, d, frames, `bg${tag}`); g.push(`[${c.out}]format=${PF}[${out}]`); return out; };
+    if (bg?.file && files.looks?.[bg.file]) {
+      inputs.push("-i", files.looks[bg.file]);
+      g.push(`[${idx++}:v]scale=out_color_matrix=bt709:out_range=tv:flags=accurate_rnd,format=yuv420p,loop=loop=-1:size=1:start=0,settb=${TB},setpts=N,trim=end_frame=${frames}[bp${tag}]`);
+      return sdrIn(`bp${tag}`);
+    }
+    if (bg?.videoId && files.background && bg.seconds) {
+      inputs.push("-stream_loop", "-1", "-ss", n3(start % bg.seconds), "-i", files.background);
+      g.push(`[${idx++}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,trim=end_frame=${frames},settb=${TB},setpts=N[bp${tag}]`);
+      return sdrIn(`bp${tag}`);
+    }
+    if (bg?.blur && blurSrc) {
+      const k = bg.scale ?? 1.1;
+      g.push(`[${blurSrc}]gblur=sigma=${bg.blur},scale=${even(W * k)}:${even(H * k)},crop=${W}:${H},setsar=1[bp${tag}]`);
+      return sdrIn(`bp${tag}`, dom);
+    }
+    g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(frames / FPS + 1)},format=${PF},trim=end_frame=${frames}[${out}]`);
+    return out;
+  };
+  /** A card's shadow or border: its colour where its picture says, over `base` (format: PF, or PFA on a clear frame). */
+  const fillOver = (base: string, f: { file: string; color: string }, frames: number, to: string, fmt: string) => {
+    const path = files.looks?.[f.file];
+    if (!path) { g.push(`[${base}]null[${to}]`); return; }
+    inputs.push("-i", path);
+    g.push(`[${idx++}:v]format=gray,loop=loop=-1:size=1:start=0,settb=${TB},setpts=N,trim=end_frame=${frames}[fa${to}]`);
+    g.push(`color=c=0x${f.color.slice(1).toUpperCase()}:s=${W}x${H}:r=${R},format=gbrp,scale=out_color_matrix=bt709:out_range=tv:flags=accurate_rnd,format=yuv420p,trim=end_frame=${frames},settb=${TB},setpts=N[fc${to}]`);
+    g.push(`[fc${to}][fa${to}]alphamerge${hdr ? ",format=yuva420p10le" : ""}[ff${to}]`);
+    g.push(`[${base}][ff${to}]overlay=format=auto,format=${fmt}[${to}]`);
+  };
+  /** b-roll laid behind V1 over [start, start + frames): the background with the `under` clips on it (as overlays are drawn). */
   const underClips = plan.under ?? [];
-  const baseOf = (start: number, frames: number, tag: string) => {
+  const baseOf = (start: number, frames: number, tag: string, blurSrc?: string, dom: "sdr" | "hdr" = "sdr") => {
     const end = start + frames / FPS;
-    g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(frames / FPS + 1)},format=${PF},trim=end_frame=${frames}[bs${tag}]`);
-    let cur = `bs${tag}`;
+    let cur = backOf(start, frames, tag, blurSrc, dom);
     underClips.filter((u) => u.start < end - 1e-6 && u.end > start + 1e-6).forEach((u, j) => {
       const path = files.under?.[u.clipId];
       if (!path) return;
@@ -827,15 +901,20 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     /** Where a clip's picture lives: HDR (10-bit, the output's transfer) or SDR (graded, keyed, other transfer, or SDR). */
     const domOf = (vid: string, look: LookOp | undefined): "sdr" | "hdr" => (hdr && info(vid).hdr && (info(vid).transfer ?? "pq") === hdr.transfer && !look?.grade && !look?.key ? "hdr" : "sdr");
     const fit = `fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1`;
-    const frame = (from: string, f: Framing, to: string, tag: string, canvas: "black" | "clear" | { base: string } = "black") => {
+    const frame = (from: string, f: Framing, to: string, tag: string, canvas: "black" | "clear" | { base: string } = "black", card?: CardOp, frames?: number) => {
       // The fitted picture is scaled about its centre and moved over a black frame (Phase 6: over what is behind V1, or
-      // a clear frame when keyframes move it next).
+      // a clear frame when keyframes move it next). A card: its shadow under it, its border over it.
       const sw = even(W * f.scale), sh = even(H * f.scale);
       const ox = Math.round((W - sw) / 2 + f.x * W), oy = Math.round((H - sh) / 2 + f.y * H);
       if (canvas === "black") g.push(`color=c=black:s=${W}x${H}:r=${R}${hdr ? `,format=${PF}` : ""}[fcanvas${tag}]`);
       else if (canvas === "clear") g.push(`color=c=black@0:s=${W}x${H}:r=${R},format=${PFA}[fcanvas${tag}]`);
+      let under = typeof canvas === "object" ? canvas.base : `fcanvas${tag}`;
+      const fmt = canvas === "clear" ? PFA : PF;
+      if (card?.shadow && frames) { fillOver(under, card.shadow, frames, `fsh${tag}`, fmt); under = `fsh${tag}`; }
       g.push(`[${from}]scale=${sw}:${sh},setsar=1[fscaled${tag}]`);
-      g.push(`[${typeof canvas === "object" ? canvas.base : `fcanvas${tag}`}][fscaled${tag}]overlay=x=${ox}:y=${oy}:shortest=1${canvas === "clear" ? `:format=auto,format=${PFA}` : `,format=${PF}`}[${to}]`);
+      const top = card?.border && frames ? `fpre${tag}` : to;
+      g.push(`[${under}][fscaled${tag}]overlay=x=${ox}:y=${oy}:shortest=1${canvas === "clear" ? `:format=auto,format=${PFA}` : `,format=${PF}`}[${top}]`);
+      if (card?.border && frames) fillOver(top, card.border, frames, to, fmt);
     };
     const motion = plan.clipMotion ?? {};
     // Branches of each video's decoder, handed out as segments ask for them (split once all are known).
@@ -874,19 +953,24 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       else chain = `[${branch(x.videoId)}]${vt(x)}${exact ? pad : ""},${look}`;
       const clipId = x.clipId ?? (x.clipIds?.length === 1 ? x.clipIds[0] : undefined);
       const m = clipId ? motion[clipId] : undefined;
-      if (!lk && !hdr && !x.framing && !m) { g.push(`${chain},format=yuv420p[${out}]`); return; }
-      if (!lk && !hdr) g.push(`${chain},format=yuv420p[pf${tag}]`);
-      else g.push(`${chain}[pc${tag}]`);
+      // A card is drawn through frame() (its shadow and border), framed or not.
+      const card = plan.cards?.[x.clipId ?? x.clipIds?.[0] ?? ""];
+      const frm = x.framing ?? (card ? { scale: 1, x: 0, y: 0 } : null);
+      // The clip's own picture, blurred, as the background: taken before its look (where something shows behind it).
+      const blurBg = !!bg?.blur && (!!frm || !!lk?.alpha || !!m);
+      if (!lk && !hdr && !frm && !m) { g.push(`${chain},format=yuv420p[${out}]`); return; }
+      if (!lk && !hdr) g.push(`${chain},format=yuv420p${blurBg ? `,split[pf${tag}][pbs${tag}]` : `[pf${tag}]`}`);
+      else g.push(`${chain}${blurBg ? `,split[pc${tag}][pbs${tag}]` : `[pc${tag}]`}`);
       const c = !lk && !hdr ? { out: `pf${tag}`, alpha: false } : colorChain(`pc${tag}`, lk, dom, N, tag);
       let cur = c.out;
-      // Phase 6: what shows around or through the clip is what is behind V1 (black, or b-roll laid under it).
-      const behind = () => (underClips.length ? baseOf(x.start, N, tag) : null);
-      if (!x.framing && !m) {
+      // Phase 6: what shows around or through the clip is what is behind V1 (black, the background, or b-roll laid under it).
+      const behind = () => (underClips.length || bg ? baseOf(x.start, N, tag, blurBg ? `pbs${tag}` : undefined, dom) : null);
+      if (!frm && !m) {
         if (c.alpha) { const b = behind(); if (b) g.push(`[${b}][${cur}]overlay=format=auto,format=${PF}[${out}]`); else { g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(N / FPS + 1)},format=${PF},trim=end_frame=${N}[pb${tag}]`); g.push(`[pb${tag}][${cur}]overlay=format=auto,format=${PF}[${out}]`); } }
         else g.push(`[${cur}]format=${PF}[${out}]`);
         return;
       }
-      if (x.framing) { const b = m ? null : behind(); frame(cur, x.framing, `pg${tag}`, tag, m ? "clear" : b ? { base: b } : "black"); cur = `pg${tag}`; }
+      if (frm) { const b = m ? null : behind(); frame(cur, frm, `pg${tag}`, tag, m ? "clear" : b ? { base: b } : "black", card, N); cur = `pg${tag}`; }
       if (m) { motionChain(g, cur, out, m.keys, x.start - m.start, N, W, H, true, tag, { base: behind() ?? undefined, hdr: !!hdr, fr }); return; }
       g.push(`[${cur}]format=${PF}[${out}]`);
     };
@@ -895,7 +979,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     // One video, one look, all at normal speed and still: cut, join, then fit once (the same graph model A used).
     // Otherwise each part is drawn on its own first.
     const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
-    const uniform = plan.sources.length === 1 && !underClips.length && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0]));
+    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0]));
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
     // concat's output counts in microseconds, a hair before each frame's exact time; back on the 1/30 s grid so every
     // overlay below lines up with its own frame (else each one shows a frame late).
@@ -903,14 +987,22 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     v = "vcat";
     if (uniform) {
       const p0 = plan.parts[0], lk = looks[p0.clipIds[0]], dom = domOf(p0.videoId, lk);
-      g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId, dom)}${fit}[vfit]`);
+      const card = plan.cards?.[p0.clipIds[0]];
+      const frm = p0.framing ?? (card ? { scale: 1, x: 0, y: 0 } : null);
+      const blurBg = !!bg?.blur && (!!frm || !!lk?.alpha);
+      g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId, dom)}${fit}${blurBg ? ",split[vfit][vbs]" : "[vfit]"}`);
       v = "vfit";
-      // Phase 6: one look for the whole edit, drawn once (keyed or masked parts show black behind them).
+      // Phase 6: one look for the whole edit, drawn once (keyed or masked parts show what is behind V1).
       const all = Math.max(1, Math.round(plan.outputSeconds * FPS));
       const c = colorChain(v, lk, dom, all, "u");
       v = c.out;
-      if (c.alpha && !p0.framing) { g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(all / FPS + 1)},format=${PF},trim=end_frame=${all}[ubk]`); g.push(`[ubk][${v}]overlay=format=auto,format=${PF}[vlook]`); v = "vlook"; }
-      if (p0.framing) { frame(v, p0.framing, "vframed", ""); v = "vframed"; }
+      const back = () => (bg ? backOf(0, all, "U", blurBg ? "vbs" : undefined, dom) : null);
+      if (c.alpha && !frm) {
+        const b = back();
+        if (!b) g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(all / FPS + 1)},format=${PF},trim=end_frame=${all}[ubk]`);
+        g.push(`[${b ?? "ubk"}][${v}]overlay=format=auto,format=${PF}[vlook]`); v = "vlook";
+      }
+      if (frm) { const b = back(); frame(v, frm, "vframed", "", b ? { base: b } : "black", card, all); v = "vframed"; }
     }
 
     // Transitions (Phase 5), laid over the joined picture: dips are a colour fading in to the cut and out after it;

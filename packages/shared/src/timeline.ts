@@ -4,6 +4,7 @@ import { CaptionStyleSchema, CardSchema, TEXT_ANIMS, TextStyleSchema } from "./c
 import { ASPECTS, CAPTION_LOOKS } from "./constants";
 import { KeysSchema, RampPointSchema, TransitionSchema } from "./motion";
 import { ChromaKeySchema, EffectSchema, GradeSchema, MaskSchema } from "./look";
+import { BackgroundSchema, CardLookSchema } from "./cardLook";
 
 // The shared timeline. Same shape as timelineFor() in ui/rendrr-ui.html.
 // Two models (see docs/timeline-model.md and sequence.ts):
@@ -32,6 +33,8 @@ export const V1ClipSchema = ClipSchema.extend({
   transition: TransitionSchema.optional(),
   keys,
   ...look,
+  /** Drawn as a card: crop, rounded corners, drop shadow, border (with framing to shrink and place it). */
+  cardLook: CardLookSchema.optional(),
 });
 
 export const V2ClipSchema = ClipSchema.extend({
@@ -177,6 +180,8 @@ export const TimelineSchema = z.object({
   framing: FramingSchema.optional(),
   audio: AudioSettingsSchema.optional(),
   export: ExportSchema.optional(),
+  /** What is behind V1 (shows where it is framed smaller, cropped, rounded, keyed or masked). Missing: black. */
+  background: BackgroundSchema.optional(),
   /** The AI's marks on the footage (Rendrr's own come from the analysis, never stored here). */
   marks: z.array(MarkSchema).max(5000).optional(),
   /** The AI's notes on Rendrr's marks in this edit, or that one is hidden here, by mark id. */

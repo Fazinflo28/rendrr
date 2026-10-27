@@ -58,6 +58,8 @@ export const AreaSchema = z.object({
   points: z.array(z.tuple([coord, coord])).min(3).max(64).optional(),
   feather: z.number().min(0).max(0.5).optional(),
   invert: z.boolean().optional(),
+  /** rect: rounded corners, as a share of the box's shorter side (0.5 = round ends). */
+  radius: z.number().min(0).max(0.5).optional(),
 }).superRefine((a, ctx) => {
   if (a.shape === "path" && !a.points) ctx.addIssue({ code: "custom", message: "a path needs points (at least 3)" });
   if (a.shape !== "path" && (a.x == null || a.y == null || a.w == null || a.h == null)) ctx.addIssue({ code: "custom", message: `a ${a.shape} needs x, y, w and h` });
@@ -249,10 +251,13 @@ function distanceFn(a: Area, W: number, H: number): (px: number, py: number) => 
     };
   }
   const cx = (a.x! + a.w! / 2) * W, cy = (a.y! + a.h! / 2) * H, hx = (a.w! * W) / 2, hy = (a.h! * H) / 2;
-  if (a.shape === "rect") return (px, py) => {
-    const qx = Math.abs(px - cx) - hx, qy = Math.abs(py - cy) - hy;
-    return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0);
-  };
+  if (a.shape === "rect") {
+    const r = Math.min(hx, hy) * 2 * Math.min(0.5, a.radius ?? 0);
+    return (px, py) => {
+      const qx = Math.abs(px - cx) - hx + r, qy = Math.abs(py - cy) - hy + r;
+      return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+    };
+  }
   // Ellipse: k0 (k0 - 1) / k1, a close distance estimate near the edge (where the feather is).
   return (px, py) => {
     const x = px - cx, y = py - cy;
@@ -405,7 +410,7 @@ export function gradeText(g: Grade, lutName?: (id: string) => string | undefined
   return out.join(", ") || "none";
 }
 const pct = (n: number) => `${Math.round(n * 100)}%`;
-export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.feather ? ` feather ${pct(a.feather)}` : ""}`;
+export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}`;
 export const chromaKeyText = (k: ChromaKey) => `${k.color} similarity ${k.similarity} blend ${k.blend}${k.spill ? ` spill ${k.spill}` : ""}`;
 export const masksText = (ms: Mask[]) => ms.map((m, i) => `${i && m.mode && m.mode !== "add" ? m.mode + " " : ""}${areaText(m)}`).join(", ");
 export const effectsText = (es: Effect[]) => es.map((e) => `${e.type} ${e.amount}${e.area ? ` in ${areaText(e.area)}` : ""}`).join(", ");

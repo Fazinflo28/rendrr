@@ -98,7 +98,9 @@ export async function renderJob(ctx: Ctx) {
     await send(i, 0.2);
     const style = snapshot.styleId ? await prisma.style.findUnique({ where: { id: snapshot.styleId } }) : null;
     const rules = style ? StyleRulesSchema.safeParse(style.rules) : null;
-    const brollIds = Array.from(new Set(snapshot.timeline.tracks.v2.map((c) => (c as { videoId?: string }).videoId).filter(Boolean) as string[]));
+    // b-roll videos, and the library video behind V1 (set_background videoId): both need their preview copy.
+    const bgVideoId = (snapshot.timeline as { background?: { videoId?: string } }).background?.videoId;
+    const brollIds = Array.from(new Set([...snapshot.timeline.tracks.v2.map((c) => (c as { videoId?: string }).videoId), bgVideoId].filter(Boolean) as string[]));
     const brollVideos = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId: video.userId, proxyKey: { not: null } } }) : [];
     const graphicClips = (snapshot.timeline.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId);
     const files: PlanFiles = { source: src, output: join(ctx.dir, "out.mp4"), assPath: join(ctx.dir, "captions.ass"), fontsDir: FONTS_DIR, broll: {}, graphics: {}, graphicSeconds: {}, audio: {}, videos: {}, under: {}, looks: {} };
@@ -166,7 +168,12 @@ export async function renderJob(ctx: Ctx) {
       const bv = brollVideos.find((x) => x.id === b.videoId);
       if (bv?.proxyKey) { const p = join(ctx.dir, `broll-${b.clipId}.mp4`); await downloadFile(bv.proxyKey, p); (plan.under?.includes(b) ? files.under! : files.broll!)[b.clipId] = p; }
     }
-    // Phase 6: the grades as .cube files and the masks as pictures, at the render's size.
+    if (plan.background?.videoId) {
+      const bv = brollVideos.find((x) => x.id === plan.background!.videoId);
+      if (bv?.proxyKey) { const p = join(ctx.dir, "background.mp4"); await downloadFile(bv.proxyKey, p); files.background = p; }
+    }
+    // Phase 6: the grades as .cube files and the masks as pictures, at the render's size (and a card's shadow and
+    // border, and the background's colour or gradient).
     for (const [name, spec] of Object.entries(plan.lookFiles ?? {})) {
       const p = join(ctx.dir, `look-${name}`);
       await writeFile(p, lookFileData(spec, plan, luts));

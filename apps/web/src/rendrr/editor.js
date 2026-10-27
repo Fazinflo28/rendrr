@@ -10,7 +10,7 @@ import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./colo
 import { ExportModal, timeLeft } from "./export";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
-import { applyOp, asSequence, audioAt, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, TEXT_ANIMS, TEXT_PRESETS, textPreset, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { applyOp, asSequence, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, TEXT_ANIMS, TEXT_PRESETS, textPreset, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -49,7 +49,34 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 // A video laid over the player (b-roll, a custom graphic), kept on the time it should show. Phase 6: a b-roll clip
 // with a look is drawn through it (the video stays as the clock); CORS lets WebGL read its frames.
-function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = null, luts }) {
+// A card's shadow or border: the shared picture (the one the render reads as a file) at the plan's size, in its
+// colour, stretched over the frame.
+function CardLayer({ spec, color, W, H }) {
+  const ref = useRef(null);
+  const key = useMemo(() => JSON.stringify([spec, color, W, H]), [spec, color, W, H]);
+  useEffect(() => {
+    const cv = ref.current; if (!cv || !spec) return;
+    const px = spec.kind === "border" ? cardBorderPicture(spec.card, spec.framing, W, H) : cardShadowPicture(spec.card, spec.framing, W, H);
+    const im = new ImageData(W, H), r = parseInt(color.slice(1, 3), 16), g = parseInt(color.slice(3, 5), 16), b = parseInt(color.slice(5, 7), 16);
+    for (let i = 0; i < px.length; i++) { im.data[i * 4] = r; im.data[i * 4 + 1] = g; im.data[i * 4 + 2] = b; im.data[i * 4 + 3] = px[i]; }
+    cv.getContext("2d").putImageData(im, 0, 0);
+  }, [key]);
+  return html`<canvas ref=${ref} width=${W} height=${H} data-card=${spec?.kind} style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" />`;
+}
+// What is behind V1 (plan.background): the gradient by the CSS rule the render's picture follows, a library video looped,
+// or the clip's own picture blurred (sigma at the stage's scale) and scaled up as the render does.
+function BackLayer({ plan, time, playing, broll, part, partUrl, aspect, k }) {
+  const bg = plan.background; if (!bg) return null;
+  const spec = bg.file ? plan.lookFiles?.[bg.file] : null;
+  if (spec?.kind === "gradient") return html`<div data-back="gradient" style=${{ position: "absolute", inset: 0, background: `linear-gradient(${spec.gradient.angle ?? 180}deg, ${spec.gradient.from}, ${spec.gradient.to})` }} />`;
+  if (bg.videoId && broll[bg.videoId]) return html`<div data-back="video" style="position:absolute;inset:0"><${SyncedVideo} src=${broll[bg.videoId].url} time=${bg.seconds ? time % bg.seconds : time} playing=${playing} /></div>`;
+  if (bg.blur && part && partUrl) {
+    const turn = turnedVideoStyle(part.rotate || 0, aspect);
+    return html`<div data-back="blur" style="position:absolute;inset:0;overflow:hidden"><div style=${{ position: "absolute", inset: 0, filter: `blur(${bg.blur * k}px)`, transform: `scale(${bg.scale ?? 1.1})` }}><${SyncedVideo} src=${partUrl} time=${part.srcIn + (time - part.start) * (part.rate ?? 1)} playing=${playing} style=${turn || { objectPosition: "50% 40%" }} /></div></div>`;
+  }
+  return null;
+}
+function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = null, luts, style = null }) {
   const ref = useRef(null); const [noGl, setNoGl] = useState(false);
   useEffect(() => {
     const el = ref.current; if (!el) return;
@@ -57,7 +84,7 @@ function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = nu
     else { el.pause(); if (Math.abs(el.currentTime - time) > 0.04) { try { el.currentTime = time; } catch {} } }
   }, [time, playing]);
   const gl = !!look && !!plan && !noGl;
-  return html`<video ref=${ref} src=${src} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: fit, pointerEvents: "none", ...(gl ? { opacity: 0 } : {}) }} />
+  return html`<video ref=${ref} src=${src} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: fit, pointerEvents: "none", ...(style || {}), ...(gl ? { opacity: 0 } : {}) }} />
     ${gl && html`<${LookCanvas} videoRef=${ref} look=${look} W=${plan.width} H=${plan.height} fitY=${0.5} luts=${luts} onFail=${() => setNoGl(true)} />`}`;
 }
 
@@ -213,14 +240,16 @@ const repaint = (el) => { if (el.paused) { try { el.currentTime = el.currentTime
 // One footage stretch as the render fits it: turned, fitted (cover, 40% down), framed, moved by its keyframes.
 // Phase 6: with `gl` (the clip, or another part of this video, has a look) the picture is drawn through the look canvas
 // with the render's numbers; the <video> stays as the clock, hidden. `look` null there draws it plain.
-function Footage({ id, url, rotate, framing, motion, aspect, refFn, on = true, gl = false, look = null, plan = null, luts }) {
+function Footage({ id, url, rotate, framing, motion, aspect, refFn, on = true, gl = false, look = null, plan = null, luts, card = null }) {
   const turn = turnedVideoStyle(rotate || 0, aspect);
   const vEl = useRef(null); const [noGl, setNoGl] = useState(false);
   const drawn = gl && !!plan && !noGl;
-  return html`<div style=${{ position: "absolute", inset: 0, ...motionCss(motion) }}><div style=${{ position: "absolute", inset: 0, transform: framing ? `translate(${framing.x * 100}%, ${framing.y * 100}%) scale(${framing.scale})` : "none" }}>
+  // A card: its shadow under it, its border over it (crop and corners are in its look's mask).
+  const layer = (x) => x && plan?.lookFiles?.[x.file] && html`<${CardLayer} spec=${plan.lookFiles[x.file]} color=${x.color} W=${plan.width} H=${plan.height} />`;
+  return html`<div style=${{ position: "absolute", inset: 0, ...motionCss(motion) }}>${layer(card?.shadow)}<div style=${{ position: "absolute", inset: 0, transform: framing ? `translate(${framing.x * 100}%, ${framing.y * 100}%) scale(${framing.scale})` : "none" }}>
     <video ref=${(el) => { vEl.current = el; refFn?.(el); }} data-on=${on ? "1" : "0"} data-video=${id} src=${url} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ objectFit: "cover", background: drawn ? "transparent" : "#000", ...(turn || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: "50% 40%" }), ...(drawn ? { opacity: 0 } : {}) }} />
     ${drawn && html`<${LookCanvas} videoRef=${vEl} look=${look} W=${plan.width} H=${plan.height} rotate=${rotate || 0} fitY=${0.4} luts=${luts} onFail=${() => setNoGl(true)} />`}
-  </div></div>`;
+  </div>${layer(card?.border)}</div>`;
 }
 function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, broll = {}, luts }) {
   const pic = clock.picture(time), snd = clock.soundAt(time);
@@ -281,11 +310,12 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
   const looks = plan.looks || {};
   const glVideo = useMemo(() => new Set(plan.parts.filter((p) => looks[p.clipIds[0]]).map((p) => p.videoId)), [plan]);
   const under = (fr.under || []).filter((u) => broll[u.videoId]);
-  return html`<div ref=${box} style="position:absolute;inset:0">${under.map((u) => html`<div key=${"u" + u.clipId} data-under=${u.clipId} style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(u.motion) }}><${SyncedVideo} src=${broll[u.videoId].url} time=${u.src} playing=${playing} look=${looks[u.clipId]} plan=${plan} luts=${luts} /></div>`)}
+  const cards = plan.cards || {};
+  return html`<div ref=${box} style="position:absolute;inset:0"><${BackLayer} plan=${plan} time=${time} playing=${playing} broll=${broll} part=${part} partUrl=${part ? urls[part.videoId] : null} aspect=${aspect} k=${k} />${under.map((u) => html`<div key=${"u" + u.clipId} data-under=${u.clipId} style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(u.motion) }}><${SyncedVideo} src=${broll[u.videoId].url} time=${u.src} playing=${playing} look=${looks[u.clipId]} plan=${plan} luts=${luts} /></div>`)}
     ${plan.sources.map((id) => {
     const on = part?.videoId === id; const p = on ? part : plan.parts.find((x) => x.videoId === id);
     return html`<div key=${id} style=${{ position: "absolute", inset: 0, visibility: on ? "visible" : "hidden" }}>
-      ${urls[id] ? html`<${Footage} id=${id} url=${urls[id]} rotate=${p?.rotate} framing=${p?.framing} motion=${on ? fr.motion : null} aspect=${aspect} on=${on} gl=${glVideo.has(id)} look=${on && fr.lookId ? looks[fr.lookId] : null} plan=${plan} luts=${luts} refFn=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} />`
+      ${urls[id] ? html`<${Footage} id=${id} url=${urls[id]} rotate=${p?.rotate} framing=${p?.framing} motion=${on ? fr.motion : null} aspect=${aspect} on=${on} gl=${glVideo.has(id)} look=${on && fr.lookId ? looks[fr.lookId] : null} plan=${plan} luts=${luts} card=${p ? cards[p.clipIds[0]] : null} refFn=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} />`
         : on && html`<div style="position:absolute;inset:0;display:grid;place-items:center;background:#000;color:#999"><span class="t-small">No preview copy of this video</span></div>`}
       ${urls[id] && html`<audio ref=${(el) => { if (el) aref.current[id] = el; else delete aref.current[id]; }} data-sound=${id} src=${urls[id]} preload=${jl ? "auto" : "none"} />`}
     </div>`;
@@ -293,8 +323,8 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
     ${near.map((x) => { const active = tr?.op === x;
       const side = (s) => { const now = active ? tr[s] : null; const seg = x[s][0]; const l = active ? look[s] : { x: 0, y: 0, opacity: 0 };
         return html`<div key=${s} data-side=${s} style=${{ position: "absolute", inset: 0, transform: `translate(${(l.x / plan.width) * 100}%, ${(l.y / plan.height) * 100}%)`, opacity: l.opacity }}>
-          ${urls[seg.videoId] && html`<${Footage} id=${seg.videoId} url=${urls[seg.videoId]} rotate=${(now || seg).rotate} framing=${(now || seg).framing} motion=${now?.motion} aspect=${aspect} gl=${!!looks[(now || seg).clipId]} look=${looks[(now || seg).clipId] || null} plan=${plan} luts=${luts} refFn=${(el) => { if (el) tref.current[x.clipId + s] = el; else delete tref.current[x.clipId + s]; }} />`}</div>`; };
-      return html`<div key=${"tr" + x.clipId} class="tlayer" data-transition=${x.type} style=${{ position: "absolute", inset: 0, overflow: "hidden", background: under.length ? "transparent" : "#000", visibility: active ? "visible" : "hidden", filter: active && (look.blur.x || look.blur.y) ? `url(#${blurId})` : "none" }}>${side("a")}${side("b")}</div>`; })}
+          ${urls[seg.videoId] && html`<${Footage} id=${seg.videoId} url=${urls[seg.videoId]} rotate=${(now || seg).rotate} framing=${(now || seg).framing} motion=${now?.motion} aspect=${aspect} gl=${!!looks[(now || seg).clipId]} look=${looks[(now || seg).clipId] || null} plan=${plan} luts=${luts} card=${cards[(now || seg).clipId] || null} refFn=${(el) => { if (el) tref.current[x.clipId + s] = el; else delete tref.current[x.clipId + s]; }} />`}</div>`; };
+      return html`<div key=${"tr" + x.clipId} class="tlayer" data-transition=${x.type} style=${{ position: "absolute", inset: 0, overflow: "hidden", background: under.length || plan.background ? "transparent" : "#000", visibility: active ? "visible" : "hidden", filter: active && (look.blur.x || look.blur.y) ? `url(#${blurId})` : "none" }}>${plan.background && !under.length && active ? html`<${BackLayer} plan=${plan} time=${time} playing=${playing} broll=${broll} part=${part} partUrl=${part ? urls[part.videoId] : null} aspect=${aspect} k=${k} />` : null}${side("a")}${side("b")}</div>`; })}
     ${look?.color && html`<div class="tdip" style=${{ position: "absolute", inset: 0, background: look.color.hex, opacity: look.color.opacity }} />`}
     ${look && (look.blur.x || look.blur.y) ? html`<svg width="0" height="0" style="position:absolute"><filter id=${blurId} x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation=${`${look.blur.x * k} ${look.blur.y * k}`} /></filter></svg>` : null}
   </div>${plan.audio.map((a) => sounds[a.assetKey] && html`<audio key=${a.clipId} ref=${(el) => { if (el) mref.current[a.clipId] = el; else delete mref.current[a.clipId]; }} data-music=${a.clipId} data-kind=${a.kind} src=${sounds[a.assetKey]} loop=${a.kind === "music"} preload="auto" />`)}`;
