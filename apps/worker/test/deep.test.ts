@@ -53,6 +53,18 @@ print(align.snap([['c','z',2.52,3.6]],[(2.52,3.6)],db,-60.0))`);
     // c: the model ended it 0.6 s into the pause after; it ends where the sound does (3.0).
     assert.equal(out, "[['a', 1.0, 1.4], ['b', 2.5, 3.0]]\n[['c', 2.5, 3.0]]");
   });
+  it("an edge outside speech (a breath, room noise) moves onto the speech inside the word", () => {
+    const out = py(`
+import numpy as np, align
+db=np.full(400,-60.0); db[50:100]=-45; db[100:140]=-20; db[140:180]=-48
+vad=np.zeros(400); vad[103:140]=0.9
+print(align.snap([['a','x',0.6,1.7]],[(0.6,1.7)],db,-60.0,vad))
+print(align.snap([['a','x',0.6,1.7]],[(0.6,1.7)],db,-60.0))`);
+    // The pause before the word is at -45 dB (over the room) but not speech: the start goes to where speech is
+    // detected (1.03), stepping back while the sound is already up (1.0); the end to where speech stops (1.4).
+    // Without the speech chances, the noise counts as sound and the edges go onto it (0.5-1.8).
+    assert.equal(out, "[['a', 1.0, 1.4]]\n[['a', 0.5, 1.8]]");
+  });
 });
 
 describe("the deeper measurements job", { skip: (!pyOk || !espeak) && "needs espeak-ng and Python with OpenCV, onnxruntime and mediapipe" }, () => {

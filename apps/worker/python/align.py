@@ -111,11 +111,12 @@ def align_window(sess, inp, out, audio, t0, words, vocab):
     return res
 
 
-def snap(words, times, db, room):
+def snap(words, times, db, room, vad=None):
     """Moves each word's edges onto the sound: its start to the nearest rise out of the room (within 100 ms before or
     50 ms after), its end to the nearest fall back into it (within 120 ms either side). Where two words touch (less
     than 150 ms apart), the boundary goes into the quietest stretch between them, when there is a real dip. An edge still
-    in the quiet moves onto the first or last sound inside the word."""
+    in the quiet, or outside speech (vad: the chance of speech every 10 ms), moves onto the first or last sound or
+    speech inside the word."""
     n = len(db)
     rise, fall = room + 10.0, room + 6.0
     fr = lambda t: int(round(t / 0.01))
@@ -148,6 +149,23 @@ def snap(words, times, db, room):
             h = next((h for h in range(fe - 1, fs, -1) if db[h] > fall and db[max(fs, h - 14):h + 1].max() >= rise), None)
             if h is not None:
                 e2 = (h + 1) * 0.01
+        # Outside speech (a breath or room noise is louder than the room but is not speech): onto the speech inside the
+        # word, a frame or two before it where the sound already rises (a consonant can start before the detector).
+        if vad is not None:
+            sp = vad >= 0.5
+            fs, fe = min(n - 1, max(0, fr(s2))), min(n, max(1, fr(e2)))
+            if fe - fs >= 3 and not sp[fs]:
+                g = next((g for g in range(fs, fe) if sp[g]), None)
+                if g is not None:
+                    lim = max(fs, g - 5)  # at most 50 ms back, while the sound is part of the same onset
+                    while g > lim and db[g - 1] > fall and db[g - 1] > db[g] - 12:
+                        g -= 1
+                    s2 = g * 0.01
+            fs = min(n - 1, max(0, fr(s2)))
+            if fe - fs >= 3 and not sp[fe - 1]:
+                h = next((h for h in range(fe - 1, fs, -1) if sp[h]), None)
+                if h is not None:
+                    e2 = (h + 1) * 0.01
         out.append([w[0], s2, max(e2, s2 + 0.02)])
     for k in range(1, len(out)):
         a, b = out[k - 1], out[k]
@@ -225,7 +243,8 @@ def main():
             conf = [None] * len(words)
             model_name = None
 
-    snapped = snap(words, times, db, o.floor)
+    vad = rec[:, 3].view(np.uint8).astype(np.float32) / 255.0
+    snapped = snap(words, times, db, o.floor, vad)
     progress(100)
     print(json.dumps({
         "v": 1, "model": model_name, "error": error, "seconds": round(time.time() - t_start, 1),

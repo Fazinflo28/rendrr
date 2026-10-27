@@ -5,7 +5,7 @@
 import type { Word } from "./transcript";
 
 /** Bumped when the measurements change: older videos are measured again on first use (and by the backfill). */
-export const DEEP_VERSION = 2; // 2: word edges left in a pause moved onto the sound; LUFS on long videos
+export const DEEP_VERSION = 3; // 2: word edges left in a pause moved onto the sound; LUFS on long videos. 3: and out of non-speech
 
 export type DeepAudio = {
   v: number; frameMs: number; frames: number; seconds: number; layout: string;
