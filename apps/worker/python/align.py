@@ -116,7 +116,7 @@ def snap(words, times, db, room, vad=None):
     50 ms after), its end to the nearest fall back into it (within 120 ms either side). Where two words touch (less
     than 150 ms apart), the boundary goes into the quietest stretch between them, when there is a real dip. An edge still
     in the quiet, or outside speech (vad: the chance of speech every 10 ms), moves onto the first or last sound or
-    speech inside the word."""
+    speech inside the word; a word never holds a pause of 250 ms or more."""
     n = len(db)
     rise, fall = room + 10.0, room + 6.0
     fr = lambda t: int(round(t / 0.01))
@@ -166,6 +166,32 @@ def snap(words, times, db, room, vad=None):
                 h = next((h for h in range(fe - 1, fs, -1) if sp[h]), None)
                 if h is not None:
                     e2 = (h + 1) * 0.01
+        # No word holds a pause of 250 ms or more (no speech, or at the room): the model sometimes puts a word's first
+        # letter right after the word before it and the rest after the pause. The word is the part, between such
+        # pauses, that overlaps the transcriber's times most (else the longest part).
+        fs, fe = min(n - 1, max(0, fr(s2))), min(n, max(1, fr(e2)))
+        if fe - fs >= 30:
+            quiet = db[fs:fe] <= fall
+            if vad is not None:
+                quiet = quiet | (vad[fs:fe] < 0.5)
+            parts, i = [], 0
+            while i < fe - fs:
+                if quiet[i]:
+                    i += 1
+                    continue
+                j = i
+                while j < fe - fs and not quiet[j]:
+                    j += 1
+                if parts and i - parts[-1][1] < 25:
+                    parts[-1][1] = j
+                else:
+                    parts.append([i, j])
+                i = j
+            if len(parts) > 1:
+                t0, t1 = w[2], w[3]
+                span = lambda p: ((fs + p[0]) * 0.01, (fs + p[1]) * 0.01)
+                best = max(parts, key=lambda p: (max(0.0, min(span(p)[1], t1) - max(span(p)[0], t0)), p[1] - p[0]))
+                s2, e2 = span(best)
         out.append([w[0], s2, max(e2, s2 + 0.02)])
     for k in range(1, len(out)):
         a, b = out[k - 1], out[k]

@@ -65,6 +65,16 @@ print(align.snap([['a','x',0.6,1.7]],[(0.6,1.7)],db,-60.0))`);
     // Without the speech chances, the noise counts as sound and the edges go onto it (0.5-1.8).
     assert.equal(out, "[['a', 1.0, 1.4]]\n[['a', 0.5, 1.8]]");
   });
+  it("a word never holds a long pause: it is the part that matches the transcriber's times", () => {
+    const out = py(`
+import numpy as np, align
+db=np.full(400,-60.0); db[80:115]=-20; db[115:225]=-46; db[225:260]=-21
+vad=np.zeros(400); vad[80:120]=0.9; vad[225:260]=0.9
+print(align.snap([['prev','forever',0.8,1.15],['w','because',2.25,2.65]],[(0.8,1.15),(1.18,2.6)],db,-60.0,vad))`);
+    // The model started "because" right after "forever" (1.18, still in the speech detector's tail) and ended it at
+    // 2.6; the 1.05 s pause in between is not speech, so the word is the part after it (2.25-2.6).
+    assert.equal(out, "[['prev', 0.8, 1.15], ['w', 2.25, 2.6]]");
+  });
 });
 
 describe("the deeper measurements job", { skip: (!pyOk || !espeak) && "needs espeak-ng and Python with OpenCV, onnxruntime and mediapipe" }, () => {
