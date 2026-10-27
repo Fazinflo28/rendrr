@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { after, before, describe, it } from "node:test";
 import type { Job } from "bullmq";
-import { audioFrames, footageMarks, footageInputOf, levelDb, type Alignment, type DeepAudio, type Transcript, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { audioFrames, DEEP_VERSION, footageMarks, footageInputOf, levelDb, type Alignment, type DeepAudio, type Transcript, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PY = process.env.PYTHON_BIN || "python3";
@@ -42,6 +42,16 @@ print(align.snap([['a','x',1.06,1.40],['b','y',1.45,2.10]],[(1.06,1.40),(1.45,2.
     // a starts where the sound does (1.00); a and b touch, so their boundary goes into the dip between them
     // (1.48-1.52); b ends where the sound falls back (2.00, the transcriber said 2.10).
     assert.equal(out, "[['a', 1.0, 1.48], ['b', 1.52, 2.0]]");
+  });
+  it("an edge the model left in a pause moves onto the sound inside the word", () => {
+    const out = py(`
+import numpy as np, align
+db=np.full(400,-60.0); db[100:140]=-20; db[250:300]=-24
+print(align.snap([['a','x',0.3,1.3],['b','y',2.5,2.9]],[(0.3,1.3),(2.5,2.9)],db,-60.0))
+print(align.snap([['c','z',2.52,3.6]],[(2.52,3.6)],db,-60.0))`);
+    // a: the model started it 0.7 s early in the pause; it starts where the sound does (1.0) and ends where it falls (1.4).
+    // c: the model ended it 0.6 s into the pause after; it ends where the sound does (3.0).
+    assert.equal(out, "[['a', 1.0, 1.4], ['b', 2.5, 3.0]]\n[['c', 2.5, 3.0]]");
   });
 });
 
@@ -106,7 +116,7 @@ print(json.dumps(at))`, dir]).toString();
       assert.ok(seen.length >= 2, `progress was reported (${seen.join(", ")})`);
 
       const an = await prisma.footageAnalysis.findUniqueOrThrow({ where: { videoId } });
-      assert.equal(an.deepVersion, 1);
+      assert.equal(an.deepVersion, DEEP_VERSION);
       assert.equal(an.deepError, null);
       const audio = an.audio as unknown as DeepAudio, al = an.alignment as unknown as Alignment, vision = an.vision as unknown as VisionSummary;
       console.log(JSON.stringify({ speech: audio.speech, breaths: audio.breaths, clicks: audio.clicks, clipping: audio.clipping, lufs: audio.lufs, tp: audio.truePeakDb, room: audio.roomDb }));

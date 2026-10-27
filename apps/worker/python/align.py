@@ -114,7 +114,8 @@ def align_window(sess, inp, out, audio, t0, words, vocab):
 def snap(words, times, db, room):
     """Moves each word's edges onto the sound: its start to the nearest rise out of the room (within 100 ms before or
     50 ms after), its end to the nearest fall back into it (within 120 ms either side). Where two words touch (less
-    than 150 ms apart), the boundary goes into the quietest stretch between them, when there is a real dip."""
+    than 150 ms apart), the boundary goes into the quietest stretch between them, when there is a real dip. An edge still
+    in the quiet moves onto the first or last sound inside the word."""
     n = len(db)
     rise, fall = room + 10.0, room + 6.0
     fr = lambda t: int(round(t / 0.01))
@@ -135,6 +136,18 @@ def snap(words, times, db, room):
             if db[f] > fall >= db[f + 1] and (best is None or abs(f + 1 - f1) < abs(best - f1)):
                 best = f + 1
         e2 = best * 0.01 if best is not None else e
+        # An edge left in the quiet (the model can start a word in the pause before it, or end it in the pause after):
+        # onto the first and last sound inside the word, a frame over the room that leads to the voice within 150 ms.
+        fs, fe = min(n - 1, max(0, fr(s2))), min(n, max(1, fr(e2)))
+        if fe > fs and db[fs] <= fall:
+            g = next((g for g in range(fs, fe) if db[g] > fall and db[g:min(fe, g + 15)].max() >= rise), None)
+            if g is not None:
+                s2 = g * 0.01
+        fs = min(n - 1, max(0, fr(s2)))
+        if fe > fs and db[fe - 1] <= fall:
+            h = next((h for h in range(fe - 1, fs, -1) if db[h] > fall and db[max(fs, h - 14):h + 1].max() >= rise), None)
+            if h is not None:
+                e2 = (h + 1) * 0.01
         out.append([w[0], s2, max(e2, s2 + 0.02)])
     for k in range(1, len(out)):
         a, b = out[k - 1], out[k]

@@ -26,9 +26,10 @@ const STEP_NAME: Record<Step, string> = { sound: "Measuring the sound", words: "
 
 const lastJson = (stdout: string) => JSON.parse(stdout.trim().split("\n").pop() || "{}");
 
-/** Loudness (LUFS) and true peak (dBTP) of the preview copy's sound. */
+/** Loudness (LUFS) and true peak (dBTP) of the preview copy's sound. framelog=verbose: only the summary is written
+ *  (a line every 100 ms would fill the kept output on a long video and push the summary out). */
 async function loudness(proxy: string, signal: AbortSignal): Promise<{ lufs: number | null; truePeakDb: number | null }> {
-  const { stderr } = await run("ffmpeg", ["-hide_banner", "-nostats", "-nostdin", "-i", proxy, "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], { signal });
+  const { stderr } = await run("ffmpeg", ["-hide_banner", "-nostats", "-nostdin", "-i", proxy, "-vn", "-af", "ebur128=peak=true:framelog=verbose", "-f", "null", "-"], { signal });
   const tail = stderr.slice(stderr.lastIndexOf("Summary:"));
   const lufs = /I:\s+(-?[\d.]+) LUFS/.exec(tail), tp = /Peak:\s+(-?[\d.]+) dBFS/.exec(tail);
   return { lufs: lufs ? Number(lufs[1]) : null, truePeakDb: tp ? Number(tp[1]) : null };
@@ -107,6 +108,7 @@ export async function deepJob(ctx: Ctx) {
       data: { audio: (audio ?? Prisma.DbNull) as Prisma.InputJsonValue, alignment: (alignment ?? Prisma.DbNull) as Prisma.InputJsonValue, vision: vision as unknown as Prisma.InputJsonValue, deepVersion: DEEP_VERSION, deepError: null, deepAt: new Date() },
       select: { videoId: true },
     });
+    console.log(`[deep] ${v.id}: ${Math.round(info.seconds || v.seconds)}s of footage measured in ${Math.round((Date.now() - started) / 1000)}s; ${alignment ? `${alignment.words.length} words aligned${alignment.model ? "" : " (sound only)"}` : "no words"}`);
   } finally {
     await writeDeepProgress(v.id, null);
   }
