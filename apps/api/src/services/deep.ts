@@ -23,8 +23,10 @@ export async function deepOf(userId: string, videoId: string): Promise<DeepVideo
   // Not measured (or measured by an older version), or it failed: (re)start it, at most once an hour.
   const hour = new Date().toISOString().slice(0, 13);
   await enqueue<DeepJob>("deep", { videoId: v.id }, { jobId: `deep-${v.id}-v${DEEP_VERSION}-${hour}`, priority: 1 }).catch(() => {});
-  const takes = fmtLeft(Math.min(deepTimeoutMs(v.seconds) / 1000, 60 + v.seconds * 0.4));
-  const why = a?.deepError && a.deepVersion == null ? `The last try failed (${a.deepError}); trying again now.` : a?.deepVersion != null ? "It was measured by an older version; measuring it again now." : "Measuring it now (it is done once, then kept).";
+  // Measured on the live worker: about 0.1 s per second of footage (20 min in 2 min), plus the wait for its turn.
+  const takes = fmtLeft(Math.min(deepTimeoutMs(v.seconds) / 1000, 30 + v.seconds * 0.2));
+  if (a?.deepVersion != null) return { ...base, ready: false, note: `"${v.name}" was measured by an older version of Rendrr; measuring it again now. About ${takes}; ask again then.` };
+  const why = a?.deepError ? `The last try failed (${a.deepError}); trying again now.` : "Measuring it now (it is done once, then kept).";
   return { ...base, ready: false, note: `"${v.name}" has no sound-every-10-ms, word-alignment or face measurements yet. ${why} About ${takes}; ask again then.` };
 }
 

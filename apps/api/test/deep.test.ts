@@ -82,7 +82,7 @@ describe("deeper measurements through the connector", { skip: !ready && "needs D
 
   it("an older video is measured on first use: the tool says so, how long, and queues it once", async () => {
     const r = await TOOL_HANDLERS.get_audio(c(), { videoId: fresh });
-    assert.match(r.text, new RegExp(`^"Old ${run}" has no sound-every-10-ms, word-alignment or face measurements yet\\. Measuring it now \\(it is done once, then kept\\)\\. About 1 min; ask again then\\.$`));
+    assert.match(r.text, new RegExp(`^"Old ${run}" has no sound-every-10-ms, word-alignment or face measurements yet\\. Measuring it now \\(it is done once, then kept\\)\\. About 30 s; ask again then\\.$`));
     const again = await TOOL_HANDLERS.get_vision(c(), { videoId: fresh });
     assert.match(again.text, /Measuring it now/);
     const jobs = (await queue("deep").getJobs(["waiting", "prioritized", "delayed"])).filter((j) => j?.data?.videoId === fresh);
@@ -100,6 +100,10 @@ describe("deeper measurements through the connector", { skip: !ready && "needs D
     await prisma.footageAnalysis.update({ where: { videoId: fresh }, data: { deepError: "The sound could not be read from the preview copy." } });
     const failed = await TOOL_HANDLERS.get_audio(c(), { videoId: fresh });
     assert.match(failed.text, /The last try failed \(The sound could not be read from the preview copy\.\); trying again now\./);
+    // Measured by an older version: measured again.
+    await prisma.footageAnalysis.update({ where: { videoId: fresh }, data: { deepError: null, deepVersion: DEEP_VERSION - 1 } });
+    const older = await TOOL_HANDLERS.get_audio(c(), { videoId: fresh });
+    assert.equal(older.text, `"Old ${run}" was measured by an older version of Rendrr; measuring it again now. About 30 s; ask again then.`);
   });
 
   it("get_audio: the whole video, the range, and the series every step", async () => {
@@ -147,6 +151,9 @@ describe("deeper measurements through the connector", { skip: !ready && "needs D
     assert.match(r.text, /\nPICTURE \(get_vision\): face on screen 80%, lost 1x, looking away 0x, soft 0x, shaky 1x, dark 0x, blown out 0x\./);
     const wd = await TOOL_HANDLERS.get_footage(c(), { videoId, detail: "words" });
     assert.match(wd.text, /\nWORDS IN THE SOUND \(id text start-end, transcriber's a-b\): w3 friend\. 2\.320-2\.500 \(2\.200-2\.500\), w8 line\. 6\.600-6\.820 \(6\.600-6\.900\)(\n|$)/);
+    // With from/to: only the words in that range.
+    const part = await TOOL_HANDLERS.get_footage(c(), { videoId, detail: "words", from: 5, to: 8 });
+    assert.match(part.text, /\nWORDS IN THE SOUND in 5-8s \(id text start-end, transcriber's a-b\): w8 line\. 6\.600-6\.820 \(6\.600-6\.900\)(\n|$)/);
   });
 
   it("map_time: edit seconds to footage and back; a cut moment says it is cut and where the edit goes on", async () => {

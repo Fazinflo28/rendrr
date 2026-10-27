@@ -40,7 +40,7 @@ type OwnedVideo = Awaited<ReturnType<typeof ownedVideo>>;
 /** Which Rendrr account this connection uses, so a user with two logins can tell. */
 /** get_footage: the deeper measurements in a few lines (get_audio and get_vision have the rest), or when they are
  *  not there yet, that they are being made and how long it takes. words: each word whose edges in the sound differ. */
-async function deepLines(userId: string, videoId: string, words: ReturnType<typeof allWords>, wordsDetail: boolean): Promise<string[]> {
+async function deepLines(userId: string, videoId: string, words: ReturnType<typeof allWords>, wordsDetail: boolean, range: { from?: number; to?: number } = {}): Promise<string[]> {
   const d = await deepOf(userId, videoId).catch(() => null);
   if (!d) return [];
   if (!d.ready) return [`DEEPER MEASUREMENTS: ${d.note}`];
@@ -50,7 +50,9 @@ async function deepLines(userId: string, videoId: string, words: ReturnType<type
   if (al) {
     const diffs = alignmentDiffs(al, words);
     out.push(`ALIGNMENT (${al.model ? "wav2vec2, then moved onto the sound" : "edges moved onto the sound"}${al.error ? `; ${al.error}` : ""}): ${al.words.length} of ${words.length} words placed in the sound; ${diffs.length} differ from the transcriber's times by more than 60 ms.${diffs.length && !wordsDetail ? ' detail "words" lists them.' : ""} Cut on the sound's times.`);
-    if (wordsDetail && diffs.length) out.push(`WORDS IN THE SOUND (id text start-end, transcriber's a-b): ${diffs.slice(0, 400).map((w) => `${w.id} ${w.text} ${w.s.toFixed(3)}-${w.e.toFixed(3)} (${w.t.toFixed(3)}-${w.end.toFixed(3)})`).join(", ")}${diffs.length > 400 ? `, …${diffs.length - 400} more` : ""}`);
+    const a0 = range.from ?? 0, b0 = range.to ?? Infinity;
+    const shown = diffs.filter((w) => w.e >= a0 && w.s <= b0);
+    if (wordsDetail && shown.length) out.push(`WORDS IN THE SOUND${range.from != null || range.to != null ? ` in ${a0}-${range.to ?? "end"}s` : ""} (id text start-end, transcriber's a-b): ${shown.slice(0, 400).map((w) => `${w.id} ${w.text} ${w.s.toFixed(3)}-${w.e.toFixed(3)} (${w.t.toFixed(3)}-${w.end.toFixed(3)})`).join(", ")}${shown.length > 400 ? `, …${shown.length - 400} more: narrow from/to` : ""}`);
   }
   if (v) out.push(`PICTURE (get_vision): face on screen ${Math.round(v.faces.present * 100)}%, lost ${v.faces.lost.length}x, looking away ${v.faces.offCamera.length}x, soft ${v.sharpness.soft.length}x, shaky ${v.shake.shaky.length}x, dark ${v.light.dark.length}x, blown out ${v.light.blown.length}x.`);
   return out;
@@ -283,7 +285,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       `SILENCES 0.4s+ (${sil.length}): ${sil.slice(0, 80).map((s) => `${s.start.toFixed(1)}-${s.end.toFixed(1)}`).join(", ") || "none"}${sil.length > 80 ? ", …" : ""}`,
       `FILLERS ${fillers.length}${fillers.length ? " (" + Object.entries(counts).map(([k, n]) => `${k} x${n}`).join(", ") + ")" : ""}${i.detail === "words" && fillers.length ? ". Ids: " + fillers.slice(0, 200).map((f) => f.id).join(" ") : ""}`,
       `SCENE CUTS (${cuts.length}): ${cuts.slice(0, 100).map((t) => t.toFixed(1)).join(", ") || "none"}`,
-      ...(await deepLines(c.userId, v.id, words, i.detail === "words")),
+      ...(await deepLines(c.userId, v.id, words, i.detail === "words", { from: i.from, to: i.to })),
     ];
     return { text: clip(lines.join("\n")), images: code.images };
   },
