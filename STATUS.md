@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Reference edits: blockers fixed (27 October)
+
+From the C1744 edit, where Claude said Rendrr could not rotate and the op list was old.
+
+| What | Where | Tests |
+|---|---|---|
+| apply_edits' op is free text: an app's old copy of the tool cannot hide newer ops. The guide lists every op; an unknown op is named with the full list. | `shared/src/mcpTools.ts`, `api/src/tools.ts` | shared `edits.test.ts`, API `marks.test.ts` |
+| Footage filmed sideways is found (faces clear only when turned), measured upright, and named in get_footage, get_vision and create_project with the set_rotation to send. The editor offers "Turn it upright"; nothing turns by itself. | `worker/python/vision.py`, `shared/src/deep.ts`, `api/src/services/projects.ts`, `web/src/rendrr/editor.js` | worker `deep.test.ts`, `web/demo/sideways.mjs` |
+
 ## Engine Part 2: footage measured more deeply (27 October)
 
 Rendrr still decides nothing: these are measurements for the AI to cut on.

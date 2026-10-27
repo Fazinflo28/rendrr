@@ -56,6 +56,42 @@ def ranges(flags, times, min_len, gap=0.6, step=1 / FPS, end=None):
     return [r for r in res if r[1] - r[0] >= min_len - 1e-9]
 
 
+TURN_FILTER = {0: "", 90: ",transpose=1", 180: ",hflip,vflip", 270: ",transpose=2"}
+TURN_CV = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+
+
+def upright_turn(imgs, det):
+    """Which way up the footage is: the clockwise turn (0, 90, 180, 270) at which faces are found in the sample frames.
+    Filmed sideways (a phone on its side with no rotation flag), faces are found clearly only when the frame is turned.
+    Returns the turn (0 unless another one finds faces in at least half the frames and twice as often as 0) and the
+    count of frames with a clear face at each turn."""
+    found = {}
+    for turn in (0, 90, 180, 270):
+        n = 0
+        for img in imgs:
+            im = img if turn == 0 else cv2.rotate(img, TURN_CV[turn])
+            h, w = im.shape[:2]
+            det.setInputSize((w, h))
+            _, f = det.detect(im)
+            if f is not None and any(float(q[14]) >= 0.8 and q[3] >= 0.05 * h for q in f):
+                n += 1
+        found[turn] = n
+    best = max((90, 180, 270), key=lambda k: found[k])
+    turn = best if found[best] >= max(2, len(imgs) / 2) and found[best] >= 2 * found[0] + 1 else 0
+    return turn, found
+
+
+def sample_frames(video, seconds, W, H, n=8):
+    out = []
+    for k in range(n):
+        t = seconds * (k + 0.5) / n
+        r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{t:.3f}", "-i", video, "-an", "-frames:v", "1",
+                            "-vf", f"scale={W}:{H}", "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"], capture_output=True)
+        if len(r.stdout) >= W * H * 3:
+            out.append(np.frombuffer(r.stdout[:W * H * 3], np.uint8).reshape(H, W, 3))
+    return out
+
+
 def main():
     a = argparse.ArgumentParser()
     a.add_argument("--video", required=True)
@@ -69,6 +105,13 @@ def main():
     W, H = o.w, o.h
 
     det = cv2.FaceDetectorYN.create(o.yunet, "", (W, H), 0.6, 0.3, 5000)
+    # Which way up: footage filmed sideways is measured turned upright, and the summary says so (Rendrr never turns
+    # an edit by itself; set_rotation is the AI's or the user's call).
+    samples = sample_frames(o.video, o.seconds, W, H)
+    turn, at_turn = upright_turn(samples, det) if samples else (0, {0: 0, 90: 0, 180: 0, 270: 0})
+    if turn in (90, 270):
+        W, H = H, W
+    det.setInputSize((W, H))
     lm = None
     try:
         import mediapipe as mp
@@ -80,7 +123,7 @@ def main():
         print(f"landmarker unavailable: {ex}", file=sys.stderr)
 
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", o.video, "-an",
-           "-vf", f"fps={FPS},scale={W}:{H}", "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
+           "-vf", f"fps={FPS},scale={o.w}:{o.h}{TURN_FILTER[turn]}", "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     size = W * H * 3
     total = max(1, int(o.seconds * FPS))
@@ -221,6 +264,8 @@ def main():
                   "skinMedian": round(float(np.median(skins)), 3) if skins else None},
         "motion": {"median": round(float(np.median([m[3] for m in metrics])), 4) if metrics else 0},
         "safeArea": safe,
+        # Measured turned this many degrees clockwise (0: as filmed); upright: frames with a clear face at each turn.
+        "turned": turn, "upright": {"found": {str(k): v for k, v in at_turn.items()}, "of": len(samples)},
     }
     with open(o.out, "w") as fh:
         json.dump({"v": 1, "fps": FPS, "size": [W, H],

@@ -1,7 +1,7 @@
 import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
 import { allWords, asSequence, aspectFor, buildRawSequence, catalogMusic, catalogSfx, GRAPHIC_TEMPLATES, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
-import { playerVideos } from "./sequence";
+import { otherVideoIds, playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
 export async function defaultFolderId(userId: string, name?: string): Promise<string> {
@@ -89,6 +89,12 @@ export async function latestRender(projectId: string, kind: "preview" | "final",
   return prisma.render.findFirst({ where: { projectId, kind, status: "done", outputKey: { not: null }, ...(version ? { version } : {}) }, orderBy: { createdAt: "desc" } });
 }
 
+/** The videos measured as filmed sideways, with the clockwise turn that makes them upright (the editor offers it). */
+async function sidewaysOf(ids: string[]): Promise<Record<string, number>> {
+  const rows = await prisma.footageAnalysis.findMany({ where: { videoId: { in: ids } }, select: { videoId: true, vision: true } });
+  return Object.fromEntries(rows.map((r) => [r.videoId, (r.vision as { turned?: number } | null)?.turned ?? 0]).filter(([, t]) => t));
+}
+
 export async function projectFull(userId: string, id: string) {
   const p = await getOwnedProject(userId, id);
   const [video, style, versions, reviews, activity, notes, owner] = await Promise.all([
@@ -114,6 +120,7 @@ export async function projectFull(userId: string, id: string) {
   return {
     ...(await playerMedia(userId, timeline)),
     videos: await playerVideos(userId, timeline, p.videoId), // the other videos on V1
+    sideways: await sidewaysOf([p.videoId, ...otherVideoIds(timeline, p.videoId)]), // footage measured as filmed sideways
     ...projectOut(p),
     style: style ? styleOut(style) : undefined,
     video: { ...(await videoOut(video)), proxyUrl: video.proxyKey && video.status !== "expired" ? await signGet(video.proxyKey, 6 * 3600) : null },

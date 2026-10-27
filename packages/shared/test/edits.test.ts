@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  allWords, applyOp, buildBreakdown, buildInitialTimeline, EDIT_OP_NAMES, editCheck, EditError, markFillers, MCP_TOOLS, mergeRules, refreshFillers, STYLES, stubTranscript,
+  allWords, applyOp, buildBreakdown, buildInitialTimeline, EDIT_OP_NAMES, editCheck, EditError, HOW_TO_EDIT, markFillers, MCP_TOOLS, mergeRules, refreshFillers, STYLES, stubTranscript,
   type EditContext, type Measured, type Snapshot, type Transcript,
 } from "../src/index";
 
@@ -113,5 +113,13 @@ describe("connector tool list", () => {
     expect(new Set(names).size).toBe(names.length);
     for (const gone of ["cut_silences", "remove_fillers", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);
     expect(names).toEqual(expect.arrayContaining(["apply_edits", "save_style", "link_account"]));
+  });
+  it("an app's old copy of apply_edits cannot hide newer ops: op is free text and the guide lists every op", () => {
+    const ae = MCP_TOOLS.find((t) => t.name === "apply_edits")!;
+    expect(ae.input.safeParse({ projectId: "p", edits: [{ op: "a_future_op", x: 1 }] }).success).toBe(true);
+    for (const op of EDIT_OP_NAMES) expect(HOW_TO_EDIT).toContain(op);
+    expect(HOW_TO_EDIT).toContain("set_rotation{degrees");
+    expect(HOW_TO_EDIT).toContain("add_marks{marks");
+    expect(HOW_TO_EDIT).not.toContain("cut_silences{");
   });
 });

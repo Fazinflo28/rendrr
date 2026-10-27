@@ -328,3 +328,10 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Tool output | Text, short, ranges always; numbers series sized to about 300 values unless a step is given. The waveform is a PNG drawn on the server (no image library). get_project pages V1 at 100 clips (each clip now carries a note). |
 | Burned-in times | get_frames writes the time (ms) and the frame number on each frame (no colons: FFmpeg's text filter reads them as syntax). |
 
+## Reference edits: what blocked the C1744 edit (27 October)
+
+| Question | Decision |
+|---|---|
+| An app's old copy of the tools | Apps keep a copy of a connector's tools, sometimes for days (the user's Claude had an apply_edits list from before rotation, add_clip and set_audio, so it said Rendrr cannot rotate). apply_edits' op is now free text in the tool (described, not an enum), so an old copy cannot hide newer ops; the API checks each op and names the ones it has. The guide (rendrr://how-to-edit, read fresh) now lists every op with its fields and says to send them even when the tool's own list looks shorter, or start a new chat. |
+| Footage filmed sideways | The picture measurement samples 8 frames and looks for clear faces at each quarter turn. When faces are clear only when turned (in at least half the frames and twice as often as filmed), the footage is measured turned that way and get_footage, get_vision and create_project say "filmed sideways ... set_rotation {degrees: 90}". The editor offers "Turn it upright" (or "Keep as is"). Rendrr never turns it by itself. |
+

@@ -574,6 +574,10 @@ function EditorInner({ project, reload, ai, keep }) {
   const toggleMute = () => selV1 && doOp({ op: "set_audio_offset", clipId: selV1.id, muted: !selV1.audioMuted });
   // Turn and framing: the selected V1 clip, else every clip of the footage (as the connector's ops do).
   const lookIds = selV1 ? [selV1.id] : undefined;
+  // Footage Rendrr measured as filmed sideways (faces upright when turned) and not turned yet in this edit: offered,
+  // never done by itself.
+  const [sideDismissed, setSideDismissed] = useState(false);
+  const sideways = Object.entries(project.sideways || {}).map(([vid, turn]) => ({ vid, turn, clips: S.tracks.v1.filter((c) => (c.sourceVideoId || main) === vid && (c.rotate || 0) !== turn) })).filter((x) => x.clips.length);
   const lookClip = selV1 || lay.tracks.v1.find((c) => c.sourceVideoId === main) || null;
   const rotNow = lookClip?.rotate || 0; const frNow = lookClip?.framing || { scale: 1, x: 0, y: 0 };
   const onDelete = () => { const ids = selWords(); if (ids.length) { cutWords(ids); setWsel(null); } else if (sel) removeSel(); };
@@ -788,6 +792,7 @@ function EditorInner({ project, reload, ai, keep }) {
       <div class="ed-left">
       <div class="center">
         ${viewVer && viewVer !== project.versions.length && html`<div class="ver-banner"><span>Viewing V${viewVer} of ${S.name} (read only)</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" onClick=${async () => { try { await api.restoreVersion(project.id, viewVer); toast("V" + viewVer + " restored as a new version"); setViewVer(null); reload(); } catch (e) { toast(e.message); } }}>Restore this version<//><${Btn} kind="ghost" size="xs" id="back-latest" onClick=${() => setViewVer(null)}>Back to latest<//></div></div>`}
+        ${!viewVer && !watch && !sideDismissed && sideways.length > 0 && html`<div class="ver-banner" id="sideways"><span>${sideways.length === 1 && sideways[0].vid === main ? "This footage looks" : "Some footage looks"} filmed sideways: faces are upright when it is turned ${sideways[0].turn}° clockwise.</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="turn-upright" onClick=${() => { const ok = sideways.every((x) => doOp({ op: "set_rotation", degrees: x.turn, clipIds: x.clips.map((c) => c.id) }, false)); if (ok) toast("Turned upright", { icon: "refresh" }); }}>Turn it upright<//><${Btn} kind="ghost" size="xs" onClick=${() => setSideDismissed(true)}>Keep as is<//></div></div>`}
         ${watch && html`<div class="ver-banner"><span>Watching the rendered preview (V${watch.version || project.version})</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="back-editing" onClick=${() => { wpb.setPlaying(false); setWatch(null); }}>Back to editing<//></div></div>`}
         <div style="flex:1;min-height:0;display:flex;justify-content:center">${watch
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`

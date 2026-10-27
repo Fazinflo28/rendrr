@@ -129,6 +129,8 @@ describe("marks through the connector", { skip: !ready && "needs DATABASE_URL an
   it("cut_silences and remove_fillers are refused with what to do instead, and nothing is saved", async () => {
     const v0 = (await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).currentVersion;
     await assert.rejects(TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "cut_silences", overSeconds: 0.4 }] }), /cut_silences is retired.*mark_silences/);
+    // An op Rendrr does not have: named, with the list of the ones it does (the tool's op is free text).
+    await assert.rejects(TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "add_zoom", start: 1, end: 2, scale: 1.1 }, { op: "set_transform", scale: 0.5 }] }), /Edit 2: no op "set_transform"\. The ops are: cut_words, .*set_rotation.*add_marks.*Nothing was changed\./);
     await assert.rejects(TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "remove_fillers" }] }), /remove_fillers is retired.*mark_fillers/);
     assert.equal((await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).currentVersion, v0);
   });

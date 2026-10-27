@@ -65,6 +65,22 @@ print(align.snap([['a','x',0.6,1.7]],[(0.6,1.7)],db,-60.0))`);
     // Without the speech chances, the noise counts as sound and the edges go onto it (0.5-1.8).
     assert.equal(out, "[['a', 1.0, 1.4]]\n[['a', 0.5, 1.8]]");
   });
+  it("footage filmed sideways: faces are upright only when turned, and that turn is found", () => {
+    const out = py(`
+import numpy as np, cv2, vision
+face = cv2.resize(cv2.imread(${JSON.stringify(join(here, "fixtures/astronaut.jpg"))}), (200, 200))
+img = np.full((360, 640, 3), (112, 96, 80), np.uint8); img[80:280, 220:420] = face
+det = cv2.FaceDetectorYN.create(${JSON.stringify(join(here, "../models/yunet/face_detection_yunet_2023mar.onnx"))}, "", (640, 360), 0.6, 0.3, 5000)
+for name, im in [("upright", img), ("phone turned left", cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)), ("upside down", cv2.rotate(img, cv2.ROTATE_180)), ("no face", np.full((360, 640, 3), 90, np.uint8))]:
+    print(name, *vision.upright_turn([im] * 4, det))`);
+    // The turn is the clockwise one that makes the faces upright (what set_rotation takes); no face: no turn.
+    assert.equal(out, [
+      "upright 0 {0: 4, 90: 0, 180: 0, 270: 0}",
+      "phone turned left 90 {0: 0, 90: 4, 180: 0, 270: 0}",
+      "upside down 180 {0: 0, 90: 0, 180: 4, 270: 0}",
+      "no face 0 {0: 0, 90: 0, 180: 0, 270: 0}",
+    ].join("\n"));
+  });
   it("a word never holds a long pause: it is the part that matches the transcriber's times", () => {
     const out = py(`
 import numpy as np, align

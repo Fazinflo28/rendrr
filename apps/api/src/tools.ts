@@ -5,7 +5,7 @@ import { AppError, applyTimelineChange, enqueue, notFound, putObject, readGraphi
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   AddFontInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
-  MARK_KINDS, MCP_TOOLS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
+  MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { createProject, getOwnedProject, graphicPlacements } from "./services/projects";
@@ -54,6 +54,7 @@ async function deepLines(userId: string, videoId: string, words: ReturnType<type
     const shown = diffs.filter((w) => w.e >= a0 && w.s <= b0);
     if (wordsDetail && shown.length) out.push(`WORDS IN THE SOUND${range.from != null || range.to != null ? ` in ${a0}-${range.to ?? "end"}s` : ""} (id text start-end, transcriber's a-b): ${shown.slice(0, 400).map((w) => `${w.id} ${w.text} ${w.s.toFixed(3)}-${w.e.toFixed(3)} (${w.t.toFixed(3)}-${w.end.toFixed(3)})`).join(", ")}${shown.length > 400 ? `, …${shown.length - 400} more: narrow from/to` : ""}`);
   }
+  if (v?.turned) out.push(`SIDEWAYS: ${sidewaysText(v)}`);
   if (v) out.push(`PICTURE (get_vision): face on screen ${Math.round(v.faces.present * 100)}%, lost ${v.faces.lost.length}x, looking away ${v.faces.offCamera.length}x, soft ${v.sharpness.soft.length}x, shaky ${v.shake.shaky.length}x, dark ${v.light.dark.length}x, blown out ${v.light.blown.length}x.`);
   return out;
 }
@@ -140,6 +141,10 @@ const PLAIN_RULES: StyleRules = StyleRulesSchema.parse({ cutSilencesOver: null, 
 /** The edit list checked one by one, with the first problem said plainly ("Edit 3 (add_zoom): end is required"). */
 function parseEdits(raw: unknown[]): EditOp[] {
   return raw.map((e, n) => {
+    // The op is free text in the tool (an app's old copy of the tool must not hide newer ops): checked here.
+    const op0 = (e as { op?: unknown })?.op;
+    if (typeof op0 !== "string" || !(EDIT_OP_NAMES as readonly string[]).includes(op0) && !(RETIRED_OPS as readonly string[]).includes(op0))
+      throw new AppError(`Edit ${n + 1}: no op "${String(op0)}". The ops are: ${EDIT_OP_NAMES.join(", ")} (their fields: the apply_edits description or rendrr://how-to-edit). Nothing was changed.`, 400, "invalid-edit");
     const extra = unknownEditFields(e);
     if (extra.unknown.length) throw new AppError(`Edit ${n + 1} (${(e as { op: string }).op}): unknown field${extra.unknown.length > 1 ? "s" : ""} ${extra.unknown.join(", ")}; it takes ${extra.known.join(", ")}. Nothing was changed.`, 400, "invalid-edit");
     const r = EditOpSchema.safeParse(e);
@@ -542,9 +547,14 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const parts = i.videoIds?.length > 1 ? (p.timeline as unknown as Timeline).tracks.v1 as { id: string; sourceVideoId?: string; sourceIn?: number; sourceOut?: number }[] : [];
     const more = parts.filter((x) => x.sourceVideoId !== p.videoId);
     const what = more.length ? `${more.length + 1} videos as recorded, back to back: the first is the edit's footage, then ${more.map((x) => `clip ${x.id} = video ${x.sourceVideoId} 0-${x.sourceOut}s`).join(", ")}` : "the footage as recorded";
-    return { text: `Created edit "${p.name}" (${p.id}), v1 = ${what} (nothing cut, captions off, no style), ${p.aspect}.${ref ? " " + ref : ""} Next: apply_edits.`, data: { projectId: p.id } };
+    // Footage filmed sideways: said here, never turned by Rendrr.
+    const ids = Array.from(new Set([p.videoId, ...more.map((x) => x.sourceVideoId!)]));
+    const side = (await prisma.footageAnalysis.findMany({ where: { videoId: { in: ids } }, select: { videoId: true, vision: true } }))
+      .map((a) => ({ id: a.videoId, turn: (a.vision as { turned?: number } | null)?.turned ?? 0 })).filter((x) => x.turn);
+    const sideways = side.length ? ` Filmed sideways (faces upright when turned): ${side.map((x) => `${x.id === p.videoId ? "the footage" : `video ${x.id}`} ${x.turn}° clockwise`).join(", ")}; Rendrr did not turn ${side.length === 1 ? "it" : "them"}: apply_edits set_rotation {degrees${side.length > 1 || more.length ? ", clipIds" : ""}} does.` : "";
+    return { text: `Created edit "${p.name}" (${p.id}), v1 = ${what} (nothing cut, captions off, no style), ${p.aspect}.${ref ? " " + ref : ""}${sideways} Next: apply_edits.`, data: { projectId: p.id } };
   },
-  apply_edits: (c, i) => applyEdits(c, i.projectId, parseEdits(i.edits || []), i.note, i),
+  apply_edits: async (c, i) => applyEdits(c, i.projectId, parseEdits(i.edits || []), i.note, i),
 
   async save_style(c, i) {
     let base = PLAIN_RULES;

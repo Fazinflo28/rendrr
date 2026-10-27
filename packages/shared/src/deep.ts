@@ -5,7 +5,7 @@
 import type { Word } from "./transcript";
 
 /** Bumped when the measurements change: older videos are measured again on first use (and by the backfill). */
-export const DEEP_VERSION = 4; // 2: word edges left in a pause moved onto the sound; LUFS on long videos. 3: and out of non-speech. 4: no word holds a long pause
+export const DEEP_VERSION = 5; // 2: word edges left in a pause moved onto the sound; LUFS on long videos. 3: and out of non-speech. 4: no word holds a long pause. 5: sideways footage found and measured upright
 
 export type DeepAudio = {
   v: number; frameMs: number; frames: number; seconds: number; layout: string;
@@ -42,6 +42,10 @@ export type VisionSummary = {
   light: { median: number | null; dark: [number, number][]; blown: [number, number][]; skinMedian: number | null };
   motion: { median: number };
   safeArea: { face: [number, number, number, number]; free: Record<"top" | "bottom" | "left" | "right", [number, number, number, number]> } | null;
+  /** Filmed sideways: the clockwise turn at which faces are upright (the picture was measured turned that way; 0 or
+   *  missing: as filmed), and how many of the sample frames showed a clear face at each turn. */
+  turned?: 0 | 90 | 180 | 270;
+  upright?: { found: Record<string, number>; of: number };
   /** Storage key of the details (vision.json.gz). */
   key?: string;
 };
@@ -164,6 +168,13 @@ export function deepAudioText(a: DeepAudio, o: { name: string; from: number; to:
   return lines.join("\n");
 }
 
+/** Footage filmed sideways: the turn that makes it upright and the line that says so (null when it is upright). */
+export function sidewaysText(v: Pick<VisionSummary, "turned" | "upright"> | null | undefined): string | null {
+  if (!v?.turned) return null;
+  const f = v.upright?.found ?? {};
+  return `filmed sideways: faces are upright when it is turned ${v.turned}° clockwise (a clear face in ${f[String(v.turned)] ?? "?"} of ${v.upright?.of ?? "?"} sample frames, ${f["0"] ?? "?"} as filmed). Rendrr did not turn it: apply_edits set_rotation {degrees: ${v.turned}} turns it in an edit. Face boxes here are in the turned picture.`;
+}
+
 /** get_vision as text: the summary, then 0.5 s rows (and faces at 10 fps with detail "faces") in from..to. */
 export function visionText(v: VisionSummary, o: { name: string; from: number; to: number; details?: VisionDetails | null; faces?: boolean; maxRows?: number }): string {
   const { from, to } = o;
@@ -171,6 +182,7 @@ export function visionText(v: VisionSummary, o: { name: string; from: number; to
   const rng = (xs: [number, number][]) => list(xs.filter(([s, e]) => inRange(s, e, from, to)), ([s, e]) => `${s}-${e}`);
   const lines = [
     `VISION "${o.name}" ${r2(from)}-${r2(to)}s (footage seconds). Faces at ${v.fps} fps${v.landmarks ? " with mouth and head pose (MediaPipe)" : ""}; picture every ${v.metricsEvery}s. Frame ${v.size[0]}x${v.size[1]}.`,
+    ...(sidewaysText(v) ? [`SIDEWAYS: ${sidewaysText(v)}`] : []),
     `FACES on screen ${Math.round(f.present * 100)}% of the time, ${f.tracks} ${f.tracks === 1 ? "track" : "tracks"}, main face ${f.medianShare != null ? Math.round(f.medianShare * 100) + "% of the frame height" : "-"}, mouth open ${f.mouthOpenShare != null ? Math.round(f.mouthOpenShare * 100) + "% of the time" : "-"}.`,
     `FACE LOST (no face 0.5s+): ${rng(f.lost)}`,
     `LOOKING AWAY (head turned over 30 degrees 0.5s+, max yaw): ${list(f.offCamera.filter(([s, e]) => inRange(s, e, from, to)), ([s, e, y]) => `${s}-${e} ${y ?? "?"}deg`)}`,
