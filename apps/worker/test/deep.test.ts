@@ -156,6 +156,11 @@ print(json.dumps(at))`, dir]).toString();
       const gap = marks.find((m) => m.kind === "silence" && m.label === "between words" && m.end - m.start > 1)!;
       assert.ok(gap.level_db != null && gap.level_db < -40, JSON.stringify(gap));
 
+      // Queued again (the backfill and a tool's first use): not measured twice; force (after a new analysis) measures again.
+      const at1 = an.deepAt!.getTime();
+      await deepJob({ signal: new AbortController().signal, dir, isLastAttempt: true, job: { data: { videoId } } } as unknown as Job);
+      assert.equal((await prisma.footageAnalysis.findUniqueOrThrow({ where: { videoId } })).deepAt!.getTime(), at1, "already measured: skipped");
+
       // A failure is kept on the analysis for the tools to say.
       await deepFailed(videoId, "Measuring the footage took too long. Try again.");
       assert.equal((await prisma.footageAnalysis.findUniqueOrThrow({ where: { videoId } })).deepError, "Measuring the footage took too long. Try again.");

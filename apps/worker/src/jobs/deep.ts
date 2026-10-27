@@ -41,9 +41,11 @@ async function loudness(proxy: string, signal: AbortSignal): Promise<{ lufs: num
  * fails the job loudly (deepError on the video's analysis).
  */
 export async function deepJob(ctx: Ctx) {
-  const { videoId } = ctx.job.data as DeepJob;
-  const v = await prisma.video.findUnique({ where: { id: videoId }, select: { id: true, userId: true, seconds: true, status: true, proxyKey: true, hasAudio: true, analysis: { select: { transcript: true } } } });
+  const { videoId, force } = ctx.job.data as DeepJob;
+  const v = await prisma.video.findUnique({ where: { id: videoId }, select: { id: true, userId: true, seconds: true, status: true, proxyKey: true, hasAudio: true, analysis: { select: { transcript: true, deepVersion: true } } } });
   if (!v?.analysis || !v.proxyKey || v.status !== "ready") return;
+  // Queued twice (the backfill and a tool's first use): measured once.
+  if (!force && v.analysis.deepVersion != null && v.analysis.deepVersion >= DEEP_VERSION) return;
   const started = Date.now();
   let done = 0; // weight of the finished steps
   const report = async (step: Step, pct: number) => {

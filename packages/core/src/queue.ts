@@ -40,7 +40,8 @@ export type FaceJob = ColorSampleJob;
 export type FaceSamples = Record<string, { u: number; v: number; r: number; found: number; of: number } | null>;
 export type BreakdownJob = { videoId: string };
 /** The deeper measurements of a video (sound every 10 ms, word alignment, faces and picture). */
-export type DeepJob = { videoId: string };
+/** force: measure again even when the video already has this version's measurements (its analysis just ran). */
+export type DeepJob = { videoId: string; force?: boolean };
 /** Where a video's deeper measurements are: the step, its percent and the time left (Redis, an hour). */
 export type DeepProgress = { step: string; percent: number; etaSec: number | null };
 const deepKey = (videoId: string) => `deep:${videoId}:progress`;
