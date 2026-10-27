@@ -40,7 +40,8 @@ describe("measuring a rendered file", () => {
     const c = await graphicCover(box, 0, 1);
     assert.ok(c != null && Math.abs(c.avg - 6.25) < 1 && Math.abs(c.min - 6.25) < 1 && Math.abs(c.max - 6.25) < 1, `cover ${JSON.stringify(c)}`); // 80x60 of 320x240
     assert.ok(((await graphicCover(empty, 0, 1))?.max ?? 99) < 0.2);
-    assert.deepEqual(await graphicCover(opaque, 0, 1), { min: 100, avg: 100, max: 100 }); // no alpha: covers its whole box
+    const o = (await graphicCover(opaque, 0, 1))!; // no alpha: covers its whole box at every moment
+    assert.deepEqual({ min: o.min, avg: o.avg, max: o.max, samples: o.samples, visible: o.visible, maps: o.maps }, { min: 100, avg: 100, max: 100, samples: 8, visible: 8, maps: null });
   });
 
   it("gives up after its time limit instead of running forever", async () => {

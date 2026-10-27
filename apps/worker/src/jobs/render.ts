@@ -1,18 +1,20 @@
-import { deleteObject, downloadFile, drive, getText, publishRender, signGet, uploadFile, usage, type RenderJob } from "@rendrr/core";
+import { deleteObject, downloadFile, drive, enqueue, getBytes, getText, publishRender, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { isSequence, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, StyleRulesSchema, type ClipLook, type FileMeasure, type HdrTransfer, type Lut, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
-import { ffmpegArgs, lookFileData, planRender, RenderPlanError, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
+import { allWords, asSequence, boxCover, faceOnScreenAt, isSequence, layoutTimeline, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { ffmpegArgs, lookFileData, planRender, RenderPlanError, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run } from "../lib/ffmpeg";
+import { COVER_SIZE, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run } from "../lib/ffmpeg";
 import { cachedAsset } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
+import { measureSound } from "../lib/sound";
 
 // The caption and text fonts (Phase 4): the same files the web app serves, so libass and the editor draw alike.
 // The worker image copies them to the same place in the repo layout; system fonts are the fallback (fontconfig).
@@ -239,6 +241,16 @@ export async function renderJob(ctx: Ctx) {
     try {
       // Previews get the full check; a final (no check is shown for it) only its stream lengths and loudness, as before.
       const base0 = await measureFile(files.output, { signal, timeoutMs: Math.max(60_000, plan.outputSeconds * 1000), picture: kind === "preview" });
+      // Engine Part 3: the preview's own sound measured as the footage's is: speech (gaps in it are placed at the
+      // edit's joins by the check), breaths and clicks at the joins.
+      let sound: FileSound | undefined;
+      if (kind === "preview" && base0.audioSeconds) {
+        await send(i, 0.1);
+        sound = await measureSound(files.output, soundJoins(plan.sound).map((j) => j.at), { dir: ctx.dir, seconds: plan.outputSeconds, signal, onProgress: (f) => sendThrottled(i, 0.1 + 0.3 * f) });
+        if (sound.error) console.error("[render] preview sound not measured:", sound.error);
+      }
+      // Where the footage's face is on screen, to say how much of it each graphic covers (previews with graphics).
+      const faceAt = kind === "preview" && plan.graphics.length ? await facesOnScreen(snapshot, transcript, video.id, video.userId, plan).catch((e) => { console.error("[render] faces not read:", (e as Error).message.slice(0, 200)); return null; }) : null;
       const graphics: FileMeasure["graphics"] = [];
       for (const gr of plan.graphics) {
         const shown = Math.min(gr.end, base0.videoSeconds ?? gr.end) - gr.start;
@@ -247,11 +259,30 @@ export async function renderJob(ctx: Ctx) {
         const fileLen = file ? (await probe(file, { signal }).catch(() => null))?.seconds || shown : shown;
         // Phase 7: a file shorter than its clip holds its last frame to the clip's end (the plan pads it).
         const on = shown;
-        // 8 moments across the part of the file on screen (a held last frame is that frame).
-        const c = file ? await graphicCover(file, gr.sourceStart, Math.max(1 / 30, Math.min(on, fileLen - gr.sourceStart)), signal) : null;
-        graphics.push({ clipId: gr.clipId, start: gr.start, end: Math.round((gr.start + on) * 1000) / 1000, coverPct: c?.avg ?? null, ...(c ? { coverMin: c.min, coverMax: c.max } : {}) });
+        // Moments across the part of the file on screen (a held last frame is that frame): 2 a second, 8 to 24.
+        const span = Math.max(1 / 30, Math.min(on, fileLen - gr.sourceStart));
+        const c = file ? await graphicCover(file, gr.sourceStart, span, signal, Math.min(24, Math.max(8, Math.round(span * 2)))) : null;
+        // Each moment: how much of the face's box (where the render draws it then) the graphic's picture covers. A
+        // keyframed graphic moves, so its file is not where it shows: not measured.
+        let face: FileMeasure["graphics"][number]["face"];
+        if (faceAt && c && !gr.keys?.length) {
+          let max = 0, maxAt = gr.start, of = 0, known = false;
+          c.at.forEach((ft, k) => {
+            const t = gr.start + (ft - gr.sourceStart);
+            if (t >= gr.end) return;
+            const box = faceAt(t);
+            if (box === undefined) return;
+            known = true;
+            if (!box) return;
+            of++;
+            const cov = c.maps ? boxCover(c.maps[k], COVER_SIZE, box) : 100;
+            if (cov > max || of === 1) { max = cov; maxAt = Math.round(t * 100) / 100; }
+          });
+          if (known) face = of ? { max, at: maxAt, of } : null;
+        }
+        graphics.push({ clipId: gr.clipId, start: gr.start, end: Math.round((gr.start + on) * 1000) / 1000, coverPct: c?.avg ?? null, ...(c ? { coverMin: c.min, coverMax: c.max, samples: c.samples, visible: c.visible } : {}), ...(face !== undefined ? { face } : {}) });
       }
-      measured = { ...base0, graphics };
+      measured = { ...base0, graphics, ...(sound ? { sound } : {}) };
     } catch (e) {
       if (signal.aborted) throw e;
       measured = { videoSeconds: null, audioSeconds: null, black: [], silences: [], lufs: null, peakDb: null, graphics: [], error: (e as Error).message.slice(0, 200) };
@@ -265,6 +296,7 @@ export async function renderJob(ctx: Ctx) {
       await frameAt(files.output, outInfo.seconds * f, fp, kind === "final" ? 960 : 540, signal, !!plan.hdr).catch(() => {});
       if (await stat(fp).then(() => true).catch(() => false)) { await uploadFile(`${base}-f${k}.jpg`, fp, "image/jpeg"); framesKeys.push(`${base}-f${k}.jpg`); }
     }
+    const heard: HeardTranscript | null = kind === "preview" && outInfo.hasAudio ? { status: transcriber() ? "queued" : "off", seconds: outInfo.seconds } : null;
     // Final: the original is deleted straight away (the daily cleanup is only the safety net).
     if (kind === "final" && tempOriginalIds.length) {
       const origs = await prisma.tempOriginal.findMany({ where: { id: { in: tempOriginalIds } } });
@@ -273,8 +305,10 @@ export async function renderJob(ctx: Ctx) {
     }
     await prisma.render.update({ where: { id: r.id }, data: {
       status: "done", outputKey: `${base}.mp4`, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}) } as unknown as Prisma.InputJsonValue,
     } });
+    // Engine Part 3: the preview's sound is transcribed again after it is ready (it never holds the render up).
+    if (heard?.status === "queued") await enqueue<HeardJob>("heard", { renderId: r.id }, { jobId: `heard-${r.id}` }).catch((e) => console.error("[render] heard not queued:", (e as Error).message));
     const fresh = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });
     await prisma.project.update({ where: { id: project.id }, data: {
       status: kind === "final" ? "Final ready" : ["Approved", "In review", "Changes requested", "Final ready"].includes(fresh.status) ? fresh.status : "Preview ready",
@@ -290,6 +324,33 @@ export async function renderJob(ctx: Ctx) {
   } finally {
     if (pt) clearTimeout(pt);
   }
+}
+
+/**
+ * Engine Part 3: where the footage's main face is on screen at an edit moment, from the faces measured at 10 fps
+ * (Engine Part 2) and how the render draws the clip then (turn, fit, framing, keyframes, zoom). null: no face there or
+ * b-roll covers it; undefined: that video has no face measurements yet. Null as a whole when no video on V1 has any.
+ */
+async function facesOnScreen(snapshot: Snapshot, transcript: Transcript, mainId: string, userId: string, plan: RenderPlan): Promise<((t: number) => [number, number, number, number] | null | undefined) | null> {
+  const words = allWords(transcript);
+  const tl = layoutTimeline(asSequence(snapshot.timeline, words, mainId), words);
+  const view = sequenceView(tl, words);
+  const clips = new Map((tl.tracks.v1 as SeqClip[]).map((c) => [c.id, c]));
+  const ids = Array.from(new Set(view.pieces.map((p) => p.videoId)));
+  const rows = await prisma.footageAnalysis.findMany({ where: { videoId: { in: ids }, video: { userId } }, select: { videoId: true, vision: true } });
+  const vis = new Map<string, { details: VisionDetails; turned: number }>();
+  for (const row of rows) {
+    const v = row.vision as unknown as VisionSummary | null;
+    const buf = v?.key ? await getBytes(v.key).catch(() => null) : null;
+    if (buf) vis.set(row.videoId, { details: JSON.parse(gunzipSync(buf).toString()) as VisionDetails, turned: v!.turned ?? 0 });
+  }
+  if (!vis.size) return null;
+  const covered = (t: number) => plan.broll.some((b) => !b.keys?.length && t >= b.start && t < b.end);
+  return (t) => {
+    const p = view.pieceAt(t);
+    if (!p || !vis.has(p.videoId)) return undefined;
+    return faceOnScreenAt(t, { view, clips, W: plan.width, H: plan.height, vision: (id) => vis.get(id) ?? null, zooms: plan.zooms, zoomAt, clipMotion: plan.clipMotion, covered });
+  };
 }
 
 /** Called when a render fails for good: the UI shows `error` in plain English. */

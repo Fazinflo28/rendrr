@@ -33,6 +33,8 @@ export const QUEUES = {
   frames: { name: "frames", timeoutMs: 60_000, attempts: 1 },
   breakdown: { name: "breakdown", timeoutMs: 10 * 60_000, attempts: 1 },
   deep: { name: "deep", timeoutMs: 10 * 60_000, attempts: 2 },
+  // The transcriber gives up after 8 minutes; this is the job's limit around it.
+  heard: { name: "heard", timeoutMs: 10 * 60_000, attempts: 2 },
 } as const;
 /** The deeper measurements' limit grows with the footage: 0.6x its length (faces at 10 fps are most of it) plus a
  *  fixed 5 minutes; a 22-minute video gets 18 minutes. */

@@ -2,6 +2,9 @@
 speech regions, onsets, breaths, clicks and clipping. Measurements only: nothing is decided here.
 
 Usage: deep_audio.py --pcm48 <s16le mono 48 kHz> --pcm16 <f32le mono 16 kHz> --vad <silero_vad.onnx> --out <dir>
+       [--joins <json list of seconds> --min-speech <s> --edges]
+The options are for a rendered preview (Engine Part 3): clicks within 20 ms of a join are listed (joinClicks), speech
+from min-speech seconds (default 0.25) counts, and with --edges each stretch of speech ends where its level falls.
 Writes <dir>/audio.bin (4 bytes per 10 ms frame: min peak, max peak as int8 of full scale, loudness in dBFS as int8,
 speech probability as uint8 0-255) and prints the summary as JSON on the last line of stdout. Progress goes to stderr
 as "PROGRESS <0-100>".
@@ -81,7 +84,11 @@ def main():
     a.add_argument("--pcm16", required=True)
     a.add_argument("--vad", required=True)
     a.add_argument("--out", required=True)
+    a.add_argument("--joins")
+    a.add_argument("--min-speech", type=float, default=0.25)
+    a.add_argument("--edges", action="store_true")
     o = a.parse_args()
+    joins = np.array(sorted(json.load(open(o.joins))), np.float64) if o.joins else None
 
     x48 = np.fromfile(o.pcm48, dtype="<i2")
     pcm16 = np.fromfile(o.pcm16, dtype="<f4")
@@ -150,7 +157,7 @@ def main():
     for i, p in enumerate(vad):
         s = p > 0.5 if not s else p > 0.35
         on[i] = s
-    speech = regions(on, 25, 15)  # at least 0.25 s, gaps under 0.15 s joined
+    speech = regions(on, max(1, int(round(o.min_speech / FRAME))), 15)  # at least 0.25 s, gaps under 0.15 s joined
     # From here "speech" is those regions: a blip the VAD took for a voice (a breath often is one) is not speech.
     on = np.zeros(nfr, bool)
     for r0, r1 in speech:
@@ -162,11 +169,54 @@ def main():
     clicks.sort(key=lambda c: -c[1])
     clicks = sorted(clicks[:500])
 
+    # At the joins of a rendered edit (--joins): the clicks above within 20 ms of a join (a lip smack or bump kept at a
+    # clip's edge), and the cut itself: the biggest sample-to-sample jump within 1 ms of the join, 20 dB or more over
+    # the usual jump around it (25 ms each side), is a cut that jumps the waveform. A word starting at the join is not
+    # (its voice is the same in the 25 ms after it).
+    join_clicks = {}
+    if joins is not None:
+        for c in clicks:
+            k = int(np.argmin(np.abs(joins - c[0]))) if len(joins) else -1
+            if k >= 0 and abs(joins[k] - c[0]) <= 0.02 and (k not in join_clicks or c[1] > join_clicks[k][1]):
+                join_clicks[k] = list(c)
+        for k, jt in enumerate(joins):
+            i = int(round(jt * 48000))
+            if i < 1250 or i > len(x48) - 1250:
+                continue
+            d = np.abs(np.diff(x48[i - 1200:i + 1200].astype(np.float32))) / 32768.0
+            near = d[1200 - 48:1200 + 48].max()
+            around = np.median(np.concatenate([d[:1200 - 96], d[1200 + 96:]]))
+            ratio = float(20 * np.log10((near + 1e-6) / (around + 1e-4)))
+            if near > 0.02 and ratio >= 20 and (k not in join_clicks or ratio > join_clicks[k][1]):
+                join_clicks[k] = [round(jt, 3), round(ratio, 1)]
+
     speech_db = db[on] if on.any() else db
     level = float(np.median(speech_db)) if len(speech_db) else -100.0
     quiet = db[~on] if (~on).any() else db
     floor = float(np.percentile(quiet, 10)) if len(quiet) else -100.0
     room = float(np.median(quiet)) if len(quiet) else -100.0  # the usual level when nobody speaks
+
+    if o.edges and speech:
+        # The detector's windows (32 ms) and its slow fall leave each stretch ending up to ~150 ms late: the end moves
+        # back while the level is under the voice (30 dB under its median, at least 6 dB over the room), the start to
+        # where the level is up (at most 50 ms either way).
+        thr = max(room + 6, level - 30)
+        moved = []
+        for r0, r1 in speech:
+            e, n = r1, 0
+            while e > r0 + 1 and db[e - 1] < thr and n < 15:
+                e -= 1; n += 1
+            st, n = r0, 0
+            while st > 0 and db[st - 1] >= thr and n < 5:
+                st -= 1; n += 1
+            n = 0
+            while st < e - 1 and db[st] < thr and n < 5:
+                st += 1; n += 1
+            moved.append([st, e])
+        speech = moved
+        on = np.zeros(nfr, bool)
+        for r0, r1 in speech:
+            on[r0:r1] = True
 
     # 5. Onsets: the sound jumps 10 dB within 30 ms from well under the speech level (a word, a plosive, a bang).
     onsets = []
@@ -221,6 +271,8 @@ def main():
         "onsets": onsets, "breaths": breaths, "clicks": clicks, "clipping": clip_events,
         "rms100": base64.b64encode(rms100.tobytes()).decode(),
     }
+    if joins is not None:
+        out["joinClicks"] = [join_clicks[k] for k in sorted(join_clicks)]
     progress(100)
     print(json.dumps(out))
 

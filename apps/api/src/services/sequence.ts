@@ -1,6 +1,6 @@
 import { signGet } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { allWords, isSequence, outputDuration, type Silence, type Snapshot, type Timeline, type Transcript } from "@rendrr/shared";
+import { allWords, isSequence, outputDuration, type Alignment, type Silence, type Snapshot, type Timeline, type Transcript } from "@rendrr/shared";
 import { convertChecked } from "@rendrr/shared/migrate";
 
 /** Video ids a sequence plays on V1, other than its main footage. */
@@ -10,11 +10,11 @@ export function otherVideoIds(tl: Timeline, mainId: string): string[] {
 }
 
 /** The other videos on V1 with what the ops and the check need: transcripts and silences (the user's own videos only). */
-export async function otherSources(userId: string, tl: Timeline, mainId: string): Promise<Record<string, { transcript: Transcript; silences: Silence[] }>> {
+export async function otherSources(userId: string, tl: Timeline, mainId: string): Promise<Record<string, { transcript: Transcript; silences: Silence[]; alignment: Alignment | null }>> {
   const ids = otherVideoIds(tl, mainId);
   if (!ids.length) return {};
   const vs = await prisma.video.findMany({ where: { id: { in: ids }, userId }, include: { analysis: true } });
-  return Object.fromEntries(vs.map((v) => [v.id, { transcript: (v.analysis?.transcript as unknown as Transcript) || [], silences: (v.analysis?.silences as unknown as Silence[]) || [] }]));
+  return Object.fromEntries(vs.map((v) => [v.id, { transcript: (v.analysis?.transcript as unknown as Transcript) || [], silences: (v.analysis?.silences as unknown as Silence[]) || [], alignment: (v.analysis?.alignment as unknown as Alignment | null) ?? null }]));
 }
 
 /** What the editor's player needs for the other videos on V1: their preview copy, length, name and words. */

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 27 October 2026 (UTC). New: Rendrr is the engine, Part 2: every video measured more deeply (the sound every 10 ms, where each word starts and ends in the sound, faces and the picture), with four new tools (see "Engine Part 2" below). Before that: one edit from several videos (see "Several videos in one edit" below). Before that: Rendrr is the engine, the AI is the editor. Part 1: marks instead of automatic edits (see "Rendrr is the engine" below). Before that: long graphics, reusable graphics, fonts, quick tool calls, the graphic check and face framing (see "Faster graphics and framing" below). Before that: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
+Last updated: 27 October 2026 (UTC). New: Rendrr is the engine, Part 3: the preview check reads the preview file's own sound (gaps placed at the joins, clicks at the joins), names the words a cut goes through in ms, says how much of the face each graphic covers, and the preview is transcribed again so "Transcript as it plays" is what a viewer hears (see "Engine Part 3" below). Before that: reference-edit blockers fixed (cards, backgrounds, sideways footage, the op list). Before that: Rendrr is the engine, Part 2: every video measured more deeply (the sound every 10 ms, where each word starts and ends in the sound, faces and the picture), with four new tools (see "Engine Part 2" below). Before that: one edit from several videos (see "Several videos in one edit" below). Before that: Rendrr is the engine, the AI is the editor. Part 1: marks instead of automatic edits (see "Rendrr is the engine" below). Before that: long graphics, reusable graphics, fonts, quick tool calls, the graphic check and face framing (see "Faster graphics and framing" below). Before that: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
 
 ## 1. Links
 
@@ -20,6 +20,24 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
+
+## Engine Part 3: preview checks (27 October)
+
+render_preview's check now reads the preview FILE, not only the edit. Still measurements only: the AI decides.
+
+| What | Where | Tests |
+|---|---|---|
+| Gaps in speech measured in the preview's own sound (Silero VAD, edges moved onto the level, from 0.15 s). Each gap has its edit time, length, footage time and clip, and at a join which side the silence is on ("end of k0 0.25s + start of k1 0.12s"). It replaces the old pause line from word times. Silent gaps and breaths are said. | `worker/python/deep_audio.py` (`--joins --min-speech --edges`), `worker/src/lib/sound.ts`, `shared/src/previewCheck.ts`, `shared/src/qa.ts` | shared `preview-check.test.ts`; worker `preview-check.test.ts` (real render: sides measured 0.25 s and 0.12 s for 0.25 s and 0.12 s kept) |
+| Clipped words: every word whose sound (the Part 2 word edges) a cut goes through, with the ms cut off and the ms that play; a cut word still partly heard too. Flagged. | `shared/src/previewCheck.ts`, `api/src/tools.ts` (alignments of every video on V1) | shared and API `preview-check.test.ts`; worker: "pick" 80 ms cut off, as cut |
+| Clicks at joins: a click within 20 ms of a join (the footage's click rule), or the cut itself jumping the waveform (20 dB over the jumps around it). Flagged. A word starting at the join is not a click. | `worker/python/deep_audio.py` | worker: a hard cut in a tone clicks (over 20 dB); renders with the 20 ms fades do not |
+| "Transcript as it plays" is the preview's sound transcribed again (same transcriber as the footage), done by a new `heard` job after each preview (newest preview only), with where it differs from the edit's words ("0:01.00 heard "by" for "my""). An older preview is transcribed on first ask. While it runs the tool says so and how long; a failure is said. | `worker/src/jobs/heard.ts`, `api/src/tools.ts` (get_preview_frames, get_render) | worker (job with a stand-in transcriber, skipped when a newer preview exists); API `preview-check.test.ts` |
+| Graphics: sampled across their whole time (2 a second, 8 to 24 moments); invisible only when no moment shows any pixel. How much of the main face's box each graphic covers at most (face boxes from Part 2, placed as the render draws the clip: turn, fit, framing, keyframes, zoom; b-roll over V1 hides it). Over 25% is flagged. | `worker/src/lib/ffmpeg.ts` (graphicCover), `worker/src/jobs/render.ts`, `shared/src/previewCheck.ts` | worker: a box over the face covers 98% of it, one in a corner under 5% |
+
+Spec test (AI-style script, real render): clips cut at start_audio and end_audio of chosen words. Check: "Clipped words: none", "Clicks at joins: none", and the only gap over 0.15 s is the 0.89 s pause the script kept inside its clip. Flags: none.
+
+Found while testing: cut_words still cuts by the transcriber's times (a word to the next word's start). On the test video that left 20 ms of a cut word and took 20 ms off the next one. The check now names both, so the AI can cut on the word edges instead (set_clips or cut_words from/to).
+
+Cost: each preview's sound goes to AssemblyAI once (the newest preview of an edit only), the same rate as transcribing footage.
 
 ## Reference edits: blockers fixed (27 October)
 

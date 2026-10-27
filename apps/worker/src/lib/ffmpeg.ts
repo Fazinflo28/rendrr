@@ -130,12 +130,16 @@ export async function measureFile(input: string, o: { signal?: AbortSignal; time
   }
 }
 
-/** How much of the frame a graphic covers (average alpha, 0-100) at 8 moments across the part on screen: from `from`
- *  for `shown` seconds of the file. The file is put on the 30 fps grid first (a still stretch is one picture, which a
- *  seek would skip). Opaque files count as 100; null when the file cannot be read. */
-export async function graphicCover(input: string, from: number, shown: number, signal?: AbortSignal): Promise<{ min: number; avg: number; max: number } | null> {
-  const N = 8, S = 64; // moments; each is shrunk to S x S (an area average keeps the mean)
+/** How much of the frame a graphic covers (average alpha, 0-100) at `samples` moments (default 8) across the part on
+ *  screen: from `from` for `shown` seconds of the file. The file is put on the 30 fps grid first (a still stretch is
+ *  one picture, which a seek would skip). visible: the moments that show any of it (a pixel over 1% opaque); at: each
+ *  moment (file seconds); maps: each moment's alpha at COVER_SIZE x COVER_SIZE (null: opaque, it covers its whole
+ *  box). Opaque files count as 100; null when the file cannot be read. */
+export const COVER_SIZE = 64;
+export async function graphicCover(input: string, from: number, shown: number, signal?: AbortSignal, samples = 8): Promise<{ min: number; avg: number; max: number; samples: number; visible: number; at: number[]; maps: Uint8Array[] | null } | null> {
+  const N = Math.max(1, samples), S = COVER_SIZE; // moments; each is shrunk to S x S (an area average keeps the mean)
   const frames = Array.from(new Set(Array.from({ length: N }, (_, k) => Math.round((Math.max(0, from) + ((k + 0.5) * Math.max(0, shown)) / N) * 30))));
+  const at = frames.map((n) => n / 30);
   // Decoding goes as far as the last moment: a limit that grows with it (a stuck read gives no measurement).
   const limit = AbortSignal.timeout(30_000 + Math.round((from + shown) * 100));
   try {
@@ -144,13 +148,14 @@ export async function graphicCover(input: string, from: number, shown: number, s
       "-vf", `fps=30,tpad=stop_mode=clone:stop=-1,select='${frames.map((n) => `eq(n,${n})`).join("+")}',alphaextract,scale=${S}:${S}:flags=area,format=gray`, "-frames:v", String(frames.length), "-fps_mode", "passthrough", "-f", "rawvideo", "pipe:1"], signal ? AbortSignal.any([signal, limit]) : limit);
     const got = Math.floor(raw.length / (S * S));
     if (!got) return null;
-    const pct = Array.from({ length: got }, (_, i) => { let t = 0; for (let j = i * S * S; j < (i + 1) * S * S; j++) t += raw[j]; return (t / (S * S) / 255) * 100; });
+    const maps = Array.from({ length: got }, (_, i) => new Uint8Array(raw.subarray(i * S * S, (i + 1) * S * S)));
+    const pct = maps.map((m) => { let t = 0; for (const v of m) t += v; return (t / (S * S) / 255) * 100; });
     const r = (x: number) => Math.round(x * 10) / 10;
-    return { min: r(Math.min(...pct)), avg: r(pct.reduce((a, b) => a + b, 0) / got), max: r(Math.max(...pct)) };
+    return { min: r(Math.min(...pct)), avg: r(pct.reduce((a, b) => a + b, 0) / got), max: r(Math.max(...pct)), samples: got, visible: maps.filter((m) => m.some((v) => v >= 3)).length, at: at.slice(0, got), maps };
   } catch (e) {
     if (signal?.aborted) throw e;
     // No alpha plane: the graphic is opaque and covers its whole box.
-    return /Requested planes not available/i.test((e as Error & { stderr?: string }).stderr ?? "") ? { min: 100, avg: 100, max: 100 } : null;
+    return /Requested planes not available/i.test((e as Error & { stderr?: string }).stderr ?? "") ? { min: 100, avg: 100, max: 100, samples: frames.length, visible: frames.length, at, maps: null } : null;
   }
 }
 

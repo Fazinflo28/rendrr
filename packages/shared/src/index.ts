@@ -19,3 +19,4 @@ export * from "./look";
 export * from "./marks";
 export * from "./deep";
 export * from "./cardLook";
+export * from "./previewCheck";

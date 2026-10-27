@@ -9,6 +9,8 @@ import { asSequence, editOf, isSequence, layoutTimeline, mergeRanges, normalSpee
 import { audioSettings, type Clip, type Snapshot, type Timeline } from "./timeline";
 import { captionStyleOf, drawnOf, styleText, textPreset, textRect, type CaptionStyle, type Card, type TextAnim, type TextStyle } from "./captions";
 import { allWords, type Transcript, type Word } from "./transcript";
+import type { Aligned } from "./deep";
+import { clippedLine, clippedWords, gapsLine, heardDiff, heardDiffLine, joinClicks, speechGaps, wordsAsPlayed, type FileSound, type HeardTranscript } from "./previewCheck";
 
 export type FileLoudness = { lufs: number | null; peakDb: number | null };
 /** What the worker measured in a rendered file (edit seconds). */
@@ -20,9 +22,16 @@ export type FileMeasure = FileLoudness & {
   /** Each graphic overlaid: where it is on screen and how much of the frame its picture covers (0-100), measured at 8
    *  moments across that time: coverPct is the average, coverMin and coverMax the least and most (older checks: only
    *  coverPct, from one moment). */
-  graphics: { clipId: string; start: number; end: number; coverPct: number | null; coverMin?: number; coverMax?: number }[];
+  graphics: { clipId: string; start: number; end: number; coverPct: number | null; coverMin?: number; coverMax?: number;
+    /** Engine Part 3: moments sampled across its whole time, and how many of them show any of it (invisible: none). */
+    samples?: number; visible?: number;
+    /** How much of the main face's box it covers at most (0-100), at which edit moment, over how many moments with a
+     *  face on screen (null: no face measured under it). */
+    face?: { max: number; at: number; of: number } | null }[];
   /** Momentary loudness (LUFS, 400 ms windows) every 0.2 s: value i is the window ending at (i + 1) * 0.2 s. */
   momentary?: number[];
+  /** Engine Part 3: the file's sound every 10 ms (speech, breaths, clicks at joins). Previews only. */
+  sound?: FileSound;
   error?: string;
 };
 export const MEASURE_MIN = 0.15;
@@ -116,7 +125,9 @@ function noiseLine(n: { lufs: number; windows: number } | null, music: boolean):
  * transcripts: other videos on V1 (their words count as spoken). videoId: the project's footage (an old timeline).
  * planned: the length the render planned (every part on a frame); the file is measured against it.
  */
-export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: number | null; loudness?: FileLoudness | null; measured?: FileMeasure | null; transcripts?: Record<string, Transcript>; videoId?: string; planned?: number | null; renderNotes?: string[]; lutName?: (id: string) => string | undefined; footage?: FootageInfo } = {}): string {
+export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: number | null; loudness?: FileLoudness | null; measured?: FileMeasure | null; transcripts?: Record<string, Transcript>; videoId?: string; planned?: number | null; renderNotes?: string[]; lutName?: (id: string) => string | undefined; footage?: FootageInfo;
+  /** Engine Part 3: each video's word edges in the sound (alignment), for the clipped words; the preview heard again. */
+  aligned?: Record<string, Map<string, Aligned>>; heard?: HeardTranscript | null } = {}): string {
   const words = allWords(tr);
   const tl = layoutTimeline(asSequence(snap.timeline, words, opts.videoId), words);
   const view = sequenceView(tl, words);
@@ -254,16 +265,34 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     }
     for (const { g, on } of gShown) {
       if (!on) flags.push(`graphic "${g.label}" at ${fmtT(g.start)} is not in the file`);
-      // Invisible only when it is blank at every moment measured (a graphic that fades in or flashes is not).
-      else if ((on.coverMax ?? on.coverPct) != null && (on.coverMax ?? on.coverPct)! < 0.2) flags.push(`graphic "${g.label}" at ${fmtT(on.start)} is invisible (fully transparent at every moment measured)`);
+      // Invisible only when it is blank at every moment measured (a graphic that fades in or flashes is not). Older
+      // checks have no count of the moments that show it: their most covered moment decides.
+      else if (on.visible != null ? on.visible === 0 : (on.coverMax ?? on.coverPct) != null && (on.coverMax ?? on.coverPct)! < 0.2) flags.push(`graphic "${g.label}" at ${fmtT(on.start)} is invisible (fully transparent at ${on.samples ? `all ${on.samples} moments` : "every moment"} measured)`);
+      else if (on.face && on.face.max >= 25) flags.push(`graphic "${g.label}" at ${fmtT(on.start)} covers the face (up to ${Math.round(on.face.max)}% of it, at ${fmtT(on.face.at)})`);
     }
     fileLines.push(`File: video ${v != null ? v.toFixed(2) + "s" : "missing"}, audio ${a != null ? a.toFixed(2) + "s" : "none"} | black from ${MEASURE_MIN}s: ${m.black.length ? list(m.black.map((b) => `${fmtT(b.start)} (${(b.end - b.start).toFixed(2)}s)`), 4) : "none"} | silent from ${MEASURE_MIN}s: ${m.silences.length ? `${m.silences.length}: ` + list(m.silences.map((x) => `${fmtT(x.start)} (${(x.end - x.start).toFixed(2)}s)`), 6) : "none"}`);
   } else {
     fileLines.push(`File: not measured${m?.error ? ` (${m.error})` : ""}; the lines below come from the edit only`);
   }
   const pc = (x: number) => (x < 1 ? x.toFixed(1) : String(Math.round(x)));
-  const cover = (on: FileMeasure["graphics"][number]) => on.coverPct == null ? "" : on.coverMin != null && on.coverMax != null ? ` (of frame: min ${pc(on.coverMin)}%, avg ${pc(on.coverPct)}%, max ${pc(on.coverMax)}%)` : ` (${pc(on.coverPct)}% of frame)`;
+  const faceText = (on: FileMeasure["graphics"][number]) => on.face === undefined ? "" : on.face === null ? "; no face under it" : `; over the face up to ${pc(on.face.max)}% (${fmtT(on.face.at)})`;
+  const cover = (on: FileMeasure["graphics"][number]) => on.coverPct == null ? "" : on.coverMin != null && on.coverMax != null ? ` (of frame: min ${pc(on.coverMin)}%, avg ${pc(on.coverPct)}%, max ${pc(on.coverMax)}%${on.samples ? `, shows in ${on.visible ?? "?"} of ${on.samples} moments` : ""}${faceText(on)})` : ` (${pc(on.coverPct)}% of frame)`;
   const gText = gShown.map(({ g, on }) => on ? `${fmtT(on.start)}-${fmtT(on.end)} ${g.label}${cover(on)}` : `${fmtT(g.start)} ${g.label}`);
+  // Engine Part 3: the file's own sound (gaps in speech placed at the joins, clicks at the joins), the words a cut
+  // goes through, and what is heard when the preview is transcribed again.
+  const isCut = (vid: string, id: string) => vid === main && cut.has(id);
+  const fileSound = m && !m.error && m.sound && !m.sound.error ? m.sound : null;
+  const pauseLine = fileSound ? gapsLine(view, speechGaps(view, fileSound, m!.silences, total, over), over)
+    : `Pauses over ${over}s: ${pauses.length ? list(pauses.map((p) => `${fmtT(p.at)} (${p.len.toFixed(1)}s)`)) : "none"}${m?.sound?.error ? ` (from the words' times: the file's sound was not measured: ${m.sound.error})` : ""}`;
+  const clicks = fileSound ? joinClicks(view, fileSound) : [];
+  if (clicks.length) flags.push(`${clicks.length} ${clicks.length === 1 ? "click" : "clicks"} at joins`);
+  const clipped = opts.aligned ? clippedWords(view, { wordsOf, alignedOf: (v) => opts.aligned![v], isCut }) : null;
+  if (clipped?.words.length) flags.push(`${clipped.words.length} ${clipped.words.length === 1 ? "word" : "words"} cut through (see Clipped words)`);
+  const h = opts.heard;
+  let heardLine: string | null = null;
+  if (h?.status === "done" && h.words) { const ex = wordsAsPlayed(view, wordsOf, isCut); heardLine = heardDiffLine(heardDiff(ex, h.words), h.words.length, ex.length); }
+  else if (h?.status === "queued" || h?.status === "transcribing") heardLine = "Heard vs the edit's words: the preview's sound is being transcribed again (get_preview_frames shows what is heard once it is done)";
+  else if (h?.status === "failed") heardLine = `Heard vs the edit's words: the preview's sound could not be transcribed again (${h.error ?? "unknown error"})`;
   const look = lookText(tl);
   const head = `${snap.aspect}${look ? ` | ${look}` : ""} | ${spoken.length} words spoken${total ? `, ${Math.round((spoken.length / total) * 60)}/min` : ""}`;
 
@@ -273,7 +302,10 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
       : `CHECK ${total.toFixed(1)}s of ${tl.duration.toFixed(1)}s footage | ${head}`,
     ...fileLines,
     sequenceLine(tl, view),
-    `Pauses over ${over}s: ${pauses.length ? list(pauses.map((p) => `${fmtT(p.at)} (${p.len.toFixed(1)}s)`)) : "none"}`,
+    pauseLine,
+    ...(fileSound ? [`Clicks at joins: ${clicks.length ? `${clicks.length}: ${list(clicks, 10)}` : "none"}`] : []),
+    ...(clipped ? [clippedLine(clipped, main)] : []),
+    ...(heardLine ? [heardLine] : []),
     `Fillers left: ${fillers.length ? list(fillers.map((x) => `"${x.w.text.replace(/[^\w'-]/g, "")}" ${fmtT(x.at)}`)) : "none"}`,
     `Captions: ${tl.captionsOn ? `on (${tl.captionStyle ? "own style: " + styleText(tl.captionStyle) : tl.captionLook}), ${coverPct}% of spoken words` : "off"}`,
     `Text: ${texts.length ? `${texts.length} ${texts.length === 1 ? "layer" : "layers"}: ` + list(texts.map((x) => `${fmtT(x.c.start)}-${fmtT(x.c.end)} ${JSON.stringify(x.lines.join(" / ").slice(0, 40))}${x.card ? " (card)" : ""}${x.anim !== "none" ? ` ${x.anim}` : ""}`), 6) : "none"}`,

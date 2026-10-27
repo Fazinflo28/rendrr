@@ -1,10 +1,11 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
 // Every response is small text; images only when asked for (images: true, get_frames, get_preview_frames).
 // Every write goes through applyTimelineChange.
-import { AppError, applyTimelineChange, enqueue, notFound, putObject, readGraphic, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
+import { AppError, applyTimelineChange, enqueue, notFound, putObject, readGraphic, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   AddFontInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
+  heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript,
   MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
@@ -200,10 +201,10 @@ async function renderOut(renderId: string): Promise<ToolOut> {
   const took = res.renderSeconds != null ? `, rendered in ${res.renderSeconds < 60 ? `${Math.round(res.renderSeconds)} s` : `${Math.floor(res.renderSeconds / 60)} min ${Math.round(res.renderSeconds % 60)} s`}` : "";
   const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s${took}. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
   if (r.kind === "final") return { text: head, data: { renderId: r.id } };
-  const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number; operations?: string[] } | null;
+  const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number; operations?: string[]; heard?: HeardTranscript } | null;
   // Phase 6: what the render itself said about HDR and missing LUTs goes into the check.
   const notes = (plan?.operations ?? []).filter((l) => l.startsWith("HDR:") || /^Color: LUT .* left out/.test(l) || /^Graphic \S+ left out/.test(l));
-  return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null, plan?.outputSeconds ?? null, notes)}`, data: { renderId: r.id } };
+  return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null, plan?.outputSeconds ?? null, notes, plan?.heard ?? null)}`, data: { renderId: r.id } };
 }
 
 /** The footage facts the Export line needs (Phase 7). */
@@ -234,13 +235,15 @@ const defaultsText = (schema: unknown) => { const d = graphicDefaults(schema); r
 const fmtLeft = (s: number) => (s < 60 ? `${Math.max(1, Math.round(s / 5) * 5)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h ${String(Math.round((s % 3600) / 60)).padStart(2, "0")} min`);
 
 /** The check of one version of an edit against its rendered file (pauses from 0.15 s, whatever the style says: the AI knows what it asked for). */
-async function checkOf(projectId: string, version: number, loudness: FileLoudness | null, measured: FileMeasure | null, planned: number | null = null, renderNotes: string[] = []): Promise<string> {
+async function checkOf(projectId: string, version: number, loudness: FileLoudness | null, measured: FileMeasure | null, planned: number | null = null, renderNotes: string[] = [], heard: HeardTranscript | null = null): Promise<string> {
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { video: { include: { analysis: true } } } });
   const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   const snap = (ver?.timeline ?? { timeline: p.timeline, name: p.name, aspect: p.aspect, styleId: p.styleId }) as unknown as Snapshot;
   const others = await otherSources(p.userId, snap.timeline, p.videoId);
   const luts = await prisma.lut.findMany({ where: { userId: p.userId }, select: { id: true, name: true } });
-  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, renderNotes, videoId: p.videoId, lutName: (id) => luts.find((l) => l.id === id)?.name, footage: footageOf(p.video), transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])) });
+  // Engine Part 3: each video's word edges in the sound, so the check names the words a cut goes through.
+  const aligned = { [p.videoId]: alignedMap(p.video.analysis?.alignment as unknown as Alignment | null), ...Object.fromEntries(Object.entries(others).map(([id, o]) => [id, alignedMap(o.alignment)])) };
+  return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, renderNotes, videoId: p.videoId, lutName: (id) => luts.find((l) => l.id === id)?.name, footage: footageOf(p.video), transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])), aligned, heard });
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
@@ -532,11 +535,33 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const view = sequenceView(tl, allWords(tr));
     const others = await otherSources(c.userId, tl, p.videoId);
     const cut = new Set(tl.cut);
-    const after = view.sound.filter((s) => !s.muted && !s.silent).map((s) => {
-      const ws = (s.videoId === view.mainVideoId ? allWords(tr) : allWords(others[s.videoId]?.transcript ?? [])).filter((w) => !(s.videoId === view.mainVideoId && cut.has(w.id)) && w.t >= s.srcIn && w.t < s.srcOut);
-      return ws.length ? `[${fmtClock(editOf(s, ws[0].t))}] ${ws.map((w) => w.text).join(" ")}` : null;
-    }).filter(Boolean).join("\n");
-    return { text: clip(`Preview v${r.version}${r.version === p.currentVersion ? "" : ` (the edit is at v${p.currentVersion} now)`}, ${r.seconds.toFixed(1)}s. Frames at ${times.map((t: number) => t.toFixed(1) + "s").join(", ")}.\nTranscript as it plays (output times):\n${after}`), images };
+    const wordsOf = (vid: string) => (vid === view.mainVideoId ? allWords(tr) : allWords(others[vid]?.transcript ?? []));
+    const isCut = (vid: string, id: string) => vid === view.mainVideoId && cut.has(id);
+    // Engine Part 3: what a viewer hears is the preview's sound transcribed again (a job after the render); the
+    // footage's word times are only a stand-in while there is no transcriber, said as such.
+    let h = (r.plan as { heard?: HeardTranscript } | null)?.heard;
+    if (!h && r.seconds > 0) {
+      // A preview from before this existed: transcribed now.
+      h = { status: "queued", seconds: r.seconds };
+      await prisma.render.update({ where: { id: r.id }, data: { plan: { ...((r.plan ?? {}) as Record<string, unknown>), heard: h } as unknown as Prisma.InputJsonValue } });
+      await enqueue<HeardJob>("heard", { renderId: r.id }, { jobId: `heard-${r.id}` }).catch(() => {});
+    }
+    let said: string;
+    if (h?.status === "done" && h.words) {
+      const ex = wordsAsPlayed(view, wordsOf, isCut);
+      said = `Transcript as it plays (the preview's sound transcribed again; output times):\n${(h.sentences ?? []).map(([t, x]) => `[${fmtT(t)}] ${x}`).join("\n")}\n${heardDiffLine(heardDiff(ex, h.words), h.words.length, ex.length)}`;
+    } else if (h?.status === "queued" || h?.status === "transcribing") {
+      const spent = h.startedAt ? (Date.now() - Date.parse(h.startedAt)) / 1000 : 0;
+      said = `Transcript as it plays: the preview's sound is being transcribed again (${h.status === "queued" ? "waiting its turn" : "transcribing"}, about ${fmtLeft(Math.max(5, 20 + (h.seconds ?? r.seconds) * 0.15 - spent))} left). Ask again then; the frames are below.`;
+    } else {
+      const why = h?.status === "failed" ? `could not be transcribed again (${h.error ?? "unknown error"})` : h?.status === "off" ? "is not transcribed again (no transcriber is set up)" : "was not transcribed again (a newer preview was)";
+      const after = view.sound.filter((s) => !s.muted && !s.silent).map((s) => {
+        const ws = wordsOf(s.videoId).filter((w) => !isCut(s.videoId, w.id) && w.t >= s.srcIn && w.t < s.srcOut);
+        return ws.length ? `[${fmtClock(editOf(s, ws[0].t))}] ${ws.map((w) => w.text).join(" ")}` : null;
+      }).filter(Boolean).join("\n");
+      said = `Transcript as it plays: the preview's sound ${why}. The edit's words from the footage's word times instead (not heard; output times):\n${after}`;
+    }
+    return { text: clip(`Preview v${r.version}${r.version === p.currentVersion ? "" : ` (the edit is at v${p.currentVersion} now)`}, ${r.seconds.toFixed(1)}s. Frames at ${times.map((t: number) => t.toFixed(1) + "s").join(", ")}.\n${said}`), images };
   },
 
   // ---------------- write ----------------

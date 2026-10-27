@@ -9,6 +9,7 @@ import { analyzeJob } from "./jobs/analyze";
 import { breakdownJob, queueMissingBreakdowns } from "./jobs/breakdown";
 import { deepFailed, deepJob, queueMissingDeep } from "./jobs/deep";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
+import { heardFailed, heardJob } from "./jobs/heard";
 import { framesJob } from "./jobs/frames";
 import { maintenanceJob } from "./jobs/maintenance";
 import { proxyJob } from "./jobs/proxy";
@@ -50,6 +51,7 @@ const workers = [
   new Worker(QUEUES.frames.name, guarded("frames", QUEUES.frames.timeoutMs, "Taking frames", framesJob, async () => {}), { connection: newRedis(), concurrency: conc("frames", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.breakdown.name, guarded("breakdown", videoLimit, "Reading the frames", breakdownJob, async () => {}), { connection: newRedis(), concurrency: conc("breakdown", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.deep.name, guarded("deep", deepLimit, "Measuring the footage", deepJob, (job, msg) => deepFailed((job.data as { videoId: string }).videoId, msg), videoUser), { connection: newRedis(), concurrency: conc("deep", 1), lockDuration: 60_000 }),
+  new Worker(QUEUES.heard.name, guarded("heard", QUEUES.heard.timeoutMs, "Transcribing the preview", heardJob, (job, msg) => heardFailed((job.data as { renderId: string }).renderId, msg), renderUser), { connection: newRedis(), concurrency: conc("heard", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),
 ];
 for (const w of workers) w.on("error", (e) => console.error(`[${w.name}] worker error:`, e.message));

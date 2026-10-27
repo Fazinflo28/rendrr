@@ -734,6 +734,18 @@ export function zoomExpr(zooms: ZoomOp[]): string {
   });
   return `min(2,1+${terms.join("+")})`;
 }
+/** zoomExpr's value at edit time t (the check uses it to place the face on screen). */
+export function zoomAt(zooms: ZoomOp[], t: number): number {
+  let z = 1;
+  for (const x of zooms) {
+    if (t < x.start || t > x.end) continue;
+    const s = x.scale - 1;
+    if (x.mode === "through") { const p = (t - x.start) / Math.max(0.01, x.end - x.start); z += s * (p < 0.5 ? (2 * p) ** 2 : (2 - 2 * p) ** 2); }
+    else if (x.mode === "push") z += (s * (t - x.start)) / Math.max(0.1, x.end - x.start);
+    else { const ramp = Math.min(0.12, (x.end - x.start) / 3); z += s * Math.min(1, (t - x.start) / ramp) * Math.min(1, (x.end - t) / ramp); }
+  }
+  return Math.min(2, z);
+}
 
 export type FfmpegOpts = {
   threads?: number;

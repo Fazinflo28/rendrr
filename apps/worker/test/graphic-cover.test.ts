@@ -36,15 +36,21 @@ describe("graphic cover", () => {
     assert.ok(c.min < 0.2, `min ${c.min}`);
     assert.ok(Math.abs(c.max - 25) < 1.5, `max ${c.max}`);
     assert.ok(c.avg > 10 && c.avg < 15, `avg ${c.avg}`); // 4 of the 8 moments
+    assert.equal(c.visible, 4); // the 4 moments that show it
+    // Sampled more densely (as the render does for a longer graphic: 2 a second): the moments spread the same way.
+    const d = (await graphicCover(f, 0, 4, undefined, 16))!;
+    assert.equal(d.samples, 16);
+    assert.equal(d.visible, 8);
   });
 
   it("a fully transparent graphic is under 0.2% at every moment; an opaque one covers its whole box", async () => {
     const f = join(dir, "none.webm");
     graphic(f, 2, "0");
-    assert.deepEqual(await graphicCover(f, 0, 2), { min: 0, avg: 0, max: 0 });
+    const pick = (c: Awaited<ReturnType<typeof graphicCover>>) => c && { min: c.min, avg: c.avg, max: c.max, samples: c.samples, visible: c.visible };
+    assert.deepEqual(pick(await graphicCover(f, 0, 2)), { min: 0, avg: 0, max: 0, samples: 8, visible: 0 });
     const o = join(dir, "opaque.webm");
     ff("-f", "lavfi", "-i", "color=red:s=320x180:r=30:d=2", "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", o);
-    assert.deepEqual(await graphicCover(o, 0, 2), { min: 100, avg: 100, max: 100 });
+    assert.deepEqual(pick(await graphicCover(o, 0, 2)), { min: 100, avg: 100, max: 100, samples: 8, visible: 8 });
   });
 
   it("a placement started part way in is measured on its own part, on a recording with still stretches", async () => {
@@ -53,7 +59,8 @@ describe("graphic cover", () => {
     graphic(f, 10, "gte(T,6)", true);
     const pictures = execFileSync("ffprobe", ["-v", "error", "-count_packets", "-select_streams", "v", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", f]).toString().trim();
     assert.ok(Number(pictures) < 10, `${pictures} pictures`);
-    assert.deepEqual(await graphicCover(f, 1, 4), { min: 0, avg: 0, max: 0 }); // 1-5 s: nothing yet
+    const early = (await graphicCover(f, 1, 4))!; // 1-5 s: nothing yet
+    assert.deepEqual([early.min, early.avg, early.max, early.visible], [0, 0, 0, 0]);
     const late = (await graphicCover(f, 6.5, 3))!; // 6.5-9.5 s: the held picture, at every moment
     assert.ok(Math.abs(late.min - 25) < 1.5 && Math.abs(late.max - 25) < 1.5, JSON.stringify(late));
   });

@@ -42,6 +42,8 @@ export type BreakdownJob = { videoId: string };
 /** The deeper measurements of a video (sound every 10 ms, word alignment, faces and picture). */
 /** force: measure again even when the video already has this version's measurements (its analysis just ran). */
 export type DeepJob = { videoId: string; force?: boolean };
+/** Engine Part 3: a finished preview's sound transcribed again (its render's plan keeps it as `heard`). */
+export type HeardJob = { renderId: string };
 /** Where a video's deeper measurements are: the step, its percent and the time left (Redis, an hour). */
 export type DeepProgress = { step: string; percent: number; etaSec: number | null };
 const deepKey = (videoId: string) => `deep:${videoId}:progress`;
