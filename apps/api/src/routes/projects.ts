@@ -6,6 +6,7 @@ import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
 import { projectChat } from "../services/aiChat";
+import { editorMarks } from "../services/marks";
 import { createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference } from "../services/projects";
 
 /** A picture of each edit for its card: a frame of its latest render (the edit as it looks), else its footage's
@@ -86,6 +87,9 @@ export default async function projects(app: FastifyInstance) {
     const p = await projectFull(req.user!.id, (req.params as { id: string }).id);
     return { ...p, aiChat: await projectChat(req.user!.id, p.id) };
   });
+
+  // Engine Part 6: the marks on the edit's videos where they play in the edit, for the timeline (thin lines with a note).
+  app.get("/projects/:id/marks", async (req) => editorMarks(req.user!.id, (req.params as { id: string }).id));
 
   app.post("/projects", async (req) => {
     const input = CreateProjectInput.parse(req.body);

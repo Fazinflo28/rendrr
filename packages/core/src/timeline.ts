@@ -1,6 +1,6 @@
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  allWords, applyOp, EditError, footageInputOf, footageMarks, graphicDefaults, GRAPHIC_TEMPLATES, outputDuration, stripLayout, StyleRulesSchema, TimelineSchema,
+  allWords, applyOp, EditError, footageInputOf, footageMarks, findTemplate, graphicDefaults, outputDuration, stripLayout, StyleRulesSchema, TimelineSchema,
   type Actor, type EditContext, type Lut, type Op, type Silence, type Snapshot, type StyleLite, type Timeline, type Transcript,
 } from "@rendrr/shared";
 import { AppError, notFound } from "./errors";
@@ -51,7 +51,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
     getStyle: (id) => styleMap.get(id),
     getVideo: (id) => { const v = videos.find((x) => x.id === id); return v ? { id: v.id, name: v.name, seconds: v.seconds, ready: v.status === "ready" } : undefined; },
     getGraphic: (id) => {
-      const g = graphics.find((x) => x.id === id) || GRAPHIC_TEMPLATES.find((x) => x.id === id);
+      const g = graphics.find((x) => x.id === id) || findTemplate(id);
       if (!g || ("status" in g && g.status === "failed")) return undefined;
       const custom = "kind" in g && g.kind === "custom";
       return { id: g.id, name: g.name, durationSec: g.durationSec, ...(custom ? { custom, params: graphicDefaults(g.paramsSchema) } : {}) };

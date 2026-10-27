@@ -1,0 +1,64 @@
+import { downloadFile, getBytes, type StyleJob } from "@rendrr/core";
+import { Prisma, prisma } from "@rendrr/db";
+import { allWords, buildStyleFile, type Breakdown, type DeepAudio, type ReferenceMeasure, type Transcript, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
+import { JobError, probe, run } from "../lib/ffmpeg";
+import type { Ctx } from "../lib/job";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PYTHON = process.env.PYTHON_BIN || "python3";
+
+/**
+ * Engine Part 4.4: analyze_reference. A reference video measured into a style file (python/reference.py: text on screen,
+ * what happens at each cut, the grade, the sound; with its breakdown, words and faces), saved on the style file row
+ * for the AI only. Progress on the row; a failure is written there, in plain words.
+ */
+export async function styleJob(ctx: Ctx) {
+  const { styleFileId } = ctx.job.data as StyleJob;
+  const sf = await prisma.styleFile.findUnique({ where: { id: styleFileId } });
+  if (!sf || sf.status === "ready" || !sf.videoId) return;
+  const v = await prisma.video.findUnique({ where: { id: sf.videoId }, include: { analysis: true } });
+  if (!v || v.userId !== sf.userId) throw new JobError("That video is gone.", "not-found", false);
+  if (!v.proxyKey || v.status !== "ready") throw new JobError(`"${v.name}" has no preview copy yet (it is ${v.status}).`, "not-ready", false);
+  const started = Date.now();
+  let last = -1;
+  const report = async (pct: number) => { if (pct !== last) { last = pct; await prisma.styleFile.update({ where: { id: sf.id }, data: { progress: Math.min(99, pct) }, select: { id: true } }); } };
+
+  const proxy = join(ctx.dir, "ref.mp4");
+  await downloadFile(v.proxyKey, proxy);
+  const info = await probe(proxy, { signal: ctx.signal });
+  await report(3);
+  const a = v.analysis;
+  const words = allWords((a?.transcript as unknown as Transcript) || []).map((w) => ({ t: w.t, end: w.end ?? w.t + 0.3 }));
+  const breakdown = (a?.breakdown as unknown as Breakdown | null) ?? null;
+  // The cuts: the breakdown's shots (one per scene), else the scene cuts measured at upload.
+  const cuts = breakdown?.shots?.length ? breakdown.shots.slice(1).map((s) => s.start) : ((a?.sceneCuts as unknown as number[]) || []);
+  const audio = (a?.audio as unknown as DeepAudio | null) ?? null;
+  const speech = audio?.speech?.length ? audio.speech : words.map((w) => [w.t, w.end]);
+  await writeFile(join(ctx.dir, "cuts.json"), JSON.stringify(cuts));
+  await writeFile(join(ctx.dir, "speech.json"), JSON.stringify(speech));
+
+  // Read at a short side of 360 (text 1.2% of the frame tall and up is found), keeping the shape.
+  const W0 = info.width || v.width || 1080, H0 = info.height || v.height || 1920, k = 360 / Math.min(W0, H0);
+  const w = Math.max(2, Math.round((W0 * k) / 2) * 2), h = Math.max(2, Math.round((H0 * k) / 2) * 2);
+  const out = join(ctx.dir, "reference.json");
+  await run(PYTHON, [join(HERE, "../../python/reference.py"), "--video", proxy, "--seconds", String(info.seconds || v.seconds), "--w", String(w), "--h", String(h),
+    "--cuts", join(ctx.dir, "cuts.json"), "--speech", join(ctx.dir, "speech.json"), "--out", out],
+    { signal: ctx.signal, onLine: (line) => { const m = /^PROGRESS (\d+)/.exec(line); if (m) void report(3 + Math.round(Number(m[1]) * 0.9)); } });
+  const measure = JSON.parse(await readFile(out, "utf8")) as ReferenceMeasure;
+
+  // The faces at 10 fps (measured at upload), for punch-ins and zooms.
+  const vs = (a?.vision as unknown as VisionSummary | null) ?? null;
+  const vision = vs?.key ? await getBytes(vs.key).then((b) => JSON.parse(gunzipSync(b).toString()) as VisionDetails).catch(() => null) : null;
+  const file = buildStyleFile({ video: { id: v.id, name: v.name, seconds: info.seconds || v.seconds, width: W0, height: H0 }, measure, breakdown, words, cuts, audio, vision });
+  await prisma.styleFile.update({ where: { id: sf.id }, data: { status: "ready", progress: 100, error: null, data: file as unknown as Prisma.InputJsonValue }, select: { id: true } });
+  console.log(`[style] ${v.id}: ${Math.round(info.seconds || v.seconds)}s reference measured in ${Math.round((Date.now() - started) / 1000)}s: ${measure.texts.length} texts, ${measure.transitions.length} cuts`);
+}
+
+/** The job failed for good: get_style says why. */
+export async function styleFailed(styleFileId: string, message: string) {
+  await prisma.styleFile.update({ where: { id: styleFileId }, data: { status: "failed", error: message.slice(0, 500) }, select: { id: true } }).catch(() => {});
+}

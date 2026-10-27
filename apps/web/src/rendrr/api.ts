@@ -226,6 +226,8 @@ export const api: any = {
   // ---- projects (assets inside folders) ----
   listProjects: async () => emptyIf(await get("/projects")),
   getProject: async (id: string) => { const p = await get(`/projects/${enc(id)}`); versions[id] = p.version; return p; },
+  // Engine Part 6: the marks on the edit's footage where they play (thin lines on the timeline).
+  getProjectMarks: async (id: string) => emptyIf(await get(`/projects/${enc(id)}/marks`)),
   // A new edit is the raw footage. `reference` ({ kind: style | recipe | video, id }) is attached for the AI, never applied.
   // videoIds: several videos in order (a video filmed in parts); the first is the edit's footage.
   createProject: async ({ videoId, videoIds, reference, name, folderId, cut, aspect }: any) => {

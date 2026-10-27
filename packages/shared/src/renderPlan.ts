@@ -2,7 +2,7 @@
 // planRender() is pure: it turns a snapshot + transcript into an ordered plan in OUTPUT time.
 // ffmpegArgs() turns a plan + local file paths into one FFmpeg command (a single pass: fast and lossless between steps).
 // Sequences (model B) are planned here; timelines stored in model A go to the unchanged A planner (renderPlanA.ts).
-import { catalogMusic, catalogSfx, GRAPHIC_TEMPLATES } from "./catalog";
+import { catalogMusic, catalogSfx, findTemplate } from "./catalog";
 import type { Aspect, CaptionLook } from "./constants";
 import { cutRegions, editOf, isSequence, mainVideoOf, mergeRanges, normalSpeed, rateOf, sequenceView, srcAt, type Attached, type PicturePart, type Range, type SeqClip, type SequenceView, type SoundPart } from "./sequence";
 import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
@@ -12,7 +12,7 @@ import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
 import { audioSettings, type AudioMixSettings } from "./timeline";
 import { buildStyledAss, captionStyleOf, layoutCaptions, styleText, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
-import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, ppm, SHADOW_DEFAULTS, type CardLook } from "./cardLook";
+import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
 import { areaPicture, blurSigma, buildLut, chromaKeyText, cubeText, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, pixelBlock, sdrToHdr, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
@@ -71,10 +71,10 @@ export type LookOp = { grade?: Grade; lut?: string; lutHdr?: string; key?: Chrom
 /** What a look file holds; lookFileData() writes it. shadow and border: a card's, in its framed place; gradient: what
  *  is behind V1 (a colour is a gradient from it to itself). */
 export type LookFile = { kind: "lut"; grade: Grade; hdr?: HdrTransfer } | { kind: "hdr"; hdr: HdrTransfer } | { kind: "mask"; masks: Mask[] } | { kind: "area"; area: Area }
-  | { kind: "shadow"; card: CardLook; framing: Framing | null } | { kind: "border"; card: CardLook; framing: Framing | null } | { kind: "gradient"; gradient: { from: string; to: string; angle?: number } };
+  | { kind: "shadow"; card: CardLook; framing: Framing | null } | { kind: "border"; card: CardLook; framing: Framing | null } | { kind: "gradient"; gradient: { from: string; to: string; angle?: number } } | { kind: "pattern"; pattern: Pattern };
 /** A V1 clip drawn as a card: its shadow under it and its border over it (crop and corners are in its mask). */
 export type CardOp = { shadow?: { file: string; color: string }; border?: { file: string; color: string } };
-/** What is behind V1: a picture file (colour or gradient), a library video (looped from the edit's start), or the
+/** What is behind V1: a picture file (colour, gradient or pattern), a library video (looped from the edit's start), or the
  *  clip's own picture blurred (sigma in pixels). */
 export type BackgroundOp = { file?: string; videoId?: string; seconds?: number; blur?: number; scale?: number; text: string };
 
@@ -417,7 +417,7 @@ export function planRender(input: PlanInput): RenderPlan {
     if (c.kind !== "graphic" || !c.graphicId || (input.graphicsReady && !input.graphicsReady[c.id])) continue;
     const sp = placed(c);
     // A custom graphic can start part way into its recording (add_graphic from); a template is drawn for each clip.
-    const from = !GRAPHIC_TEMPLATES.some((t) => t.id === c.graphicId) && c.sourceStart ? c.sourceStart : 0;
+    const from = !findTemplate(c.graphicId) && c.sourceStart ? c.sourceStart : 0;
     if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: from, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}) });
   }
   const audio: AudioOp[] = [];
@@ -477,7 +477,7 @@ export function planRender(input: PlanInput): RenderPlan {
   const hdrVideos = new Set(parts.map((p) => p.videoId).filter((v) => infoOf(v)?.hdr || input.hdrFootage?.[v]));
   const hdrT: HdrTransfer | null = kind === "final" && (tl.export?.hdr ?? "keep") === "keep" && hdrSrc ? hdrSrc.transfer ?? "pq" : null;
   const lookFiles: Record<string, LookFile> = {};
-  const file = (spec: LookFile) => { const name = `${spec.kind}_${hashOf(spec)}.${spec.kind === "mask" || spec.kind === "area" || spec.kind === "shadow" || spec.kind === "border" ? "pgm" : spec.kind === "gradient" ? "ppm" : "cube"}`; lookFiles[name] = spec; return name; };
+  const file = (spec: LookFile) => { const name = `${spec.kind}_${hashOf(spec)}.${spec.kind === "mask" || spec.kind === "area" || spec.kind === "shadow" || spec.kind === "border" ? "pgm" : spec.kind === "gradient" || spec.kind === "pattern" ? "ppm" : "cube"}`; lookFiles[name] = spec; return name; };
   const hdr = hdrT ? { transfer: hdrT, lut: file({ kind: "hdr", hdr: hdrT }) } : null;
   // Phase 7: a final's codec (HDR kept is always HEVC 10-bit); previews are H.264.
   const codec: Codec = kind === "final" && (hdr || tl.export?.codec === "hevc") ? "hevc" : "h264";
@@ -514,6 +514,7 @@ export function planRender(input: PlanInput): RenderPlan {
   const bgIn = tl.background;
   const background: BackgroundOp | null = !bgIn ? null
     : bgIn.color || bgIn.gradient ? { file: file({ kind: "gradient", gradient: bgIn.gradient ?? { from: bgIn.color!, to: bgIn.color! } }), text: backgroundText(bgIn) }
+    : bgIn.pattern ? { file: file({ kind: "pattern", pattern: bgIn.pattern }), text: backgroundText(bgIn) }
     : bgIn.videoId ? (input.brollSeconds?.[bgIn.videoId] ? { videoId: bgIn.videoId, seconds: input.brollSeconds[bgIn.videoId], text: backgroundText(bgIn) } : null)
     : (() => { const sg = backgroundSigma(bgIn.blur!, width, height); return { blur: sg, scale: backgroundScale(sg, width, height), text: backgroundText(bgIn) }; })();
   for (const b of [...broll, ...under]) lookFor((tl.tracks.v2 as (V2Clip & ClipLook)[]).find((x) => x.id === b.clipId)!);
@@ -620,6 +621,7 @@ export function lookFileData(spec: LookFile, plan: { width: number; height: numb
   if (spec.kind === "shadow") return pgm(cardShadowPicture(spec.card, spec.framing, W, H), W, H);
   if (spec.kind === "border") return pgm(cardBorderPicture(spec.card, spec.framing, W, H), W, H);
   if (spec.kind === "gradient") return ppm(gradientPicture(spec.gradient, W, H), W, H);
+  if (spec.kind === "pattern") return ppm(patternPicture(spec.pattern, W, H), W, H);
   if (spec.kind === "hdr") return cubeText(hdrLut(spec.hdr), undefined, "SDR into HDR");
   const lut = spec.grade.lut ? luts[spec.grade.lut.id] : null;
   return cubeText(spec.hdr ? hdrLut(spec.hdr, gradeFn(spec.grade, lut)) : buildLut(spec.grade, lut));

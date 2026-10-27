@@ -1,6 +1,6 @@
 import { downloadFile, getBytes, graphicVariant, headObject, queue, readGraphic, setVariantWarnings, signGet, uploadFile, type GraphicVariant } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { GRAPHIC_FONT_WATCH, GRAPHIC_TEMPLATES, PREFIX, templateHtml, templateSize, withClock, withEarly, withParams, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
+import { findTemplate, GRAPHIC_FONT_WATCH, PREFIX, templateHtml, templateSize, withClock, withEarly, withParams, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -96,6 +96,20 @@ async function stepTo(g: GPage, from: number, to: number, drawLast = true) {
 async function shoot(g: GPage, w: number, h: number, scale = 1): Promise<Buffer> {
   const shot = await g.cdp.send("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, captureBeyondViewport: false, ...(scale < 1 ? { clip: { x: 0, y: 0, width: w, height: h, scale } } : {}) });
   return Buffer.from(shot.data, "base64");
+}
+
+/**
+ * One picture of a page at a time (a library item's preview frame, a sheet of icons), drawn as the recorder draws:
+ * the locked browser, the virtual clock stepped frame by frame to `at`. PNG bytes and any errors the page threw.
+ */
+export async function snapshotHtml(html: string, o: { width: number; height: number; at: number; transparent?: boolean }): Promise<{ png: Buffer; errors: string[] }> {
+  const browser = await launchLocked();
+  const errors: string[] = [];
+  try {
+    const g = await openGraphicPage(browser, html, o.width, o.height, !!o.transparent, errors);
+    await stepTo(g, 0, Math.max(0, Math.round(o.at * GRAPHIC_LIMITS.fps)));
+    return { png: await shoot(g, o.width, o.height), errors };
+  } finally { await browser.close().catch(() => {}); }
 }
 
 /** How many pixels differ between two pictures of the same size (any channel by more than 2 levels). */
@@ -404,12 +418,13 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
   // ending animation is never cut off. Phase 7: however long that is (over 15 s it is sampled, see recordLong).
   const dur = Math.min(GRAPHIC_LIMITS.maxSeconds, Math.max(0.5, o.durationSec ?? clip.end - clip.start));
   const local = join(o.dir, `graphic-${clip.id}.webm`);
-  const tpl = GRAPHIC_TEMPLATES.find((t) => t.id === id);
+  const tpl = findTemplate(id);
   if (tpl) {
     // Drawn at up to 720p (short side), keeping the output's shape; the overlay scales it to the output size.
     const { width: w, height: h } = templateSize(o.width, o.height);
     const logo = id === "gt_logo_reveal" ? await brandLogoDataUrl(o.userId) : null;
-    const html = templateHtml(id, clip.params || {}, w, h, dur, logo);
+    // A library graphic may name a font the user added (add_font): its file goes in the page.
+    const html = withEarly(templateHtml(id, clip.params || {}, w, h, dur, logo), id.startsWith("lib_") ? await userFontsTag(o.userId, JSON.stringify(clip.params || {})) : "");
     const hash = createHash("sha256").update(JSON.stringify([id, html, w, h, dur, GRAPHIC_ENCODER])).digest("hex").slice(0, 24);
     const key = `${PREFIX.graphics}${o.userId}/tpl-${hash}.webm`;
     if (await headObject(key)) { await downloadFile(key, local); return { path: local, seconds: dur }; }

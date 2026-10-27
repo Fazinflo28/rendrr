@@ -1,6 +1,6 @@
 import { graphicVariant, headObject, putObject, signGet, uploadFile, type TestGraphicJob, type TestGraphicResult } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { boxCover, boxOnScreen, faceAt, graphicDefaults, GRAPHIC_TEMPLATES, PREFIX, templateHtml, templateSize, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { boxCover, boxOnScreen, faceAt, findTemplate, graphicDefaults, PREFIX, templateHtml, templateSize, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { outputSize } from "@rendrr/shared/renderPlan";
 import { gunzipSync } from "node:zlib";
 import { join } from "node:path";
@@ -27,7 +27,7 @@ export async function testGraphicJob(ctx: Ctx): Promise<TestGraphicResult> {
   const warnings: string[] = [];
   let gfile: string, from: number, recordedMs = 0;
 
-  const tpl = GRAPHIC_TEMPLATES.find((t) => t.id === d.graphicId);
+  const tpl = findTemplate(d.graphicId);
   if (tpl) {
     // Templates time their exit to the placement's length.
     const len = Math.max(seconds, d.length ?? tpl.durationSec);

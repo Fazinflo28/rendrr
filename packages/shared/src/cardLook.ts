@@ -30,9 +30,11 @@ export const BackgroundSchema = z.object({
   gradient: z.object({ from: hex, to: hex, angle: z.number().min(0).max(360).optional() }).optional(),
   videoId: z.string().min(1).max(80).optional(),
   blur: z.number().min(1).max(100).optional(),
+  /** Engine Part 4.1: paper with a grid, a dot grid or fibres (size: cell or spacing, share of the short side). */
+  pattern: z.object({ kind: z.enum(["grid", "dots", "paper"]), color: hex, ink: hex, size: z.number().min(0.01).max(0.3).optional() }).optional(),
 }).superRefine((b, ctx) => {
-  const n = [b.color, b.gradient, b.videoId, b.blur].filter((x) => x != null).length;
-  if (n !== 1) ctx.addIssue({ code: "custom", message: "a background is one of color, gradient, videoId or blur" });
+  const n = [b.color, b.gradient, b.videoId, b.blur, b.pattern].filter((x) => x != null).length;
+  if (n !== 1) ctx.addIssue({ code: "custom", message: "a background is one of color, gradient, videoId, blur or pattern" });
 });
 export type Background = z.infer<typeof BackgroundSchema>;
 
@@ -115,6 +117,40 @@ export function gradientPicture(g: { from: string; to: string; angle?: number },
   return out;
 }
 
+export type Pattern = { kind: "grid" | "dots" | "paper"; color: string; ink: string; size?: number };
+/** A pattern as RGB at W x H (the same pixels in the render's picture and the editor's canvas): grid lines or dots
+ *  every `size` of the short side, centred, anti-aliased by coverage; paper: soft fibres from a fixed seed. */
+export function patternPicture(p: Pattern, W: number, H: number): Uint8Array {
+  const m = Math.min(W, H), [r0, g0, b0] = rgbOf(p.color), [r1, g1, b1] = rgbOf(p.ink), out = new Uint8Array(W * H * 3);
+  const step = Math.max(4, (p.size ?? (p.kind === "dots" ? 0.04 : 0.06)) * m), line = Math.max(1, m / 540), dot = Math.max(1.2, m / 300);
+  const ox = (W / 2) % step, oy = (H / 2) % step;
+  // Paper: value noise at two scales from a seeded table, so it is the same everywhere it is drawn.
+  let seed = 0x2545f491;
+  const rnd = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return ((seed >>> 0) % 10000) / 10000; };
+  const G = 64, tab = Float32Array.from({ length: G * G }, rnd), fine = Float32Array.from({ length: G * G }, rnd);
+  const noise = (t: Float32Array, x: number, y: number) => {
+    const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, at = (a: number, b: number) => t[((b % G) + G) % G * G + (((a % G) + G) % G)];
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    return (at(xi, yi) * (1 - sx) + at(xi + 1, yi) * sx) * (1 - sy) + (at(xi, yi + 1) * (1 - sx) + at(xi + 1, yi + 1) * sx) * sy;
+  };
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let k = 0;
+    // Distance to the nearest line across and down (lines every `step`, one through the centre).
+    const rx = (((x + 0.5 - ox) % step) + step) % step, ry = (((y + 0.5 - oy) % step) + step) % step;
+    const dX = Math.min(rx, step - rx), dY = Math.min(ry, step - ry);
+    if (p.kind === "grid") k = Math.min(1, Math.max(0, line / 2 + 0.5 - Math.min(dX, dY)));
+    else if (p.kind === "dots") k = Math.min(1, Math.max(0, dot + 0.5 - Math.hypot(dX, dY)));
+    else {
+      const u = (x / m) * 24, v = (y / m) * 24;
+      k = Math.min(1, Math.max(0, (noise(tab, u, v * 0.35) - 0.5) * 0.9 + (noise(fine, u * 6, v * 6) - 0.5) * 0.5 + 0.25));
+      k *= 0.55;
+    }
+    const i = (y * W + x) * 3;
+    out[i] = Math.round(r0 + (r1 - r0) * k); out[i + 1] = Math.round(g0 + (g1 - g0) * k); out[i + 2] = Math.round(b0 + (b1 - b0) * k);
+  }
+  return out;
+}
+
 /** RGB as a binary PPM file (FFmpeg reads it as a picture). */
 export function ppm(px: Uint8Array, W: number, H: number): Uint8Array {
   const head = new TextEncoder().encode(`P6\n${W} ${H}\n255\n`);
@@ -142,6 +178,7 @@ export function backgroundText(b: Background | null | undefined, videoName?: (id
   if (!b) return "black";
   if (b.color) return b.color;
   if (b.gradient) return `gradient ${b.gradient.from} to ${b.gradient.to} at ${b.gradient.angle ?? 180}°`;
+  if (b.pattern) return `${b.pattern.kind} pattern, ${b.pattern.ink} on ${b.pattern.color}${b.pattern.size ? ` every ${pct(b.pattern.size)}` : ""}`;
   if (b.videoId) return `video ${b.videoId}${videoName?.(b.videoId) ? ` "${videoName(b.videoId)}"` : ""} (looped)`;
   return `the clip's own picture, blurred ${b.blur}`;
 }

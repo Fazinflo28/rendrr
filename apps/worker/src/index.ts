@@ -1,6 +1,6 @@
 import { env, newRedis, queue, type GraphicJob, type MaintenanceJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { deepTimeoutMs, processTimeoutMs, QUEUES, renderTimeoutMs } from "@rendrr/shared";
+import { deepTimeoutMs, processTimeoutMs, QUEUES, renderTimeoutMs, styleTimeoutMs } from "@rendrr/shared";
 import { Worker, type Job } from "bullmq";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -10,6 +10,8 @@ import { breakdownJob, queueMissingBreakdowns } from "./jobs/breakdown";
 import { deepFailed, deepJob, queueMissingDeep } from "./jobs/deep";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
 import { heardFailed, heardJob } from "./jobs/heard";
+import { snapshotJob } from "./jobs/snapshot";
+import { styleFailed, styleJob } from "./jobs/style";
 import { testGraphicJob } from "./jobs/testGraphic";
 import { framesJob } from "./jobs/frames";
 import { maintenanceJob } from "./jobs/maintenance";
@@ -43,6 +45,11 @@ const graphicLimit = async (job: Job) => {
   return Math.max(QUEUES.graphic.timeoutMs, recordLimitMs(g?.durationSec ?? 0, g?.width, g?.height) + 60_000);
 };
 
+// A reference's limit grows with its length (styleTimeoutMs).
+const styleRow = (job: Job) => prisma.styleFile.findUnique({ where: { id: (job.data as { styleFileId: string }).styleFileId }, select: { userId: true, videoId: true } });
+const styleLimit = async (job: Job) => { const r = await styleRow(job); const v = r?.videoId ? await prisma.video.findUnique({ where: { id: r.videoId }, select: { seconds: true } }) : null; return styleTimeoutMs(v?.seconds ?? 0); };
+const styleUser = async (job: Job) => (await styleRow(job))?.userId ?? null;
+
 const conc = (name: string, d: number) => Math.max(1, Math.floor(Number(process.env[`CONCURRENCY_${name.toUpperCase()}`]) || d));
 const workers = [
   new Worker(QUEUES.proxy.name, guarded("proxy", videoLimit, "Making the preview", proxyJob, videoFailed, videoUser), { connection: newRedis(), concurrency: conc("proxy", 2), lockDuration: 60_000 }),
@@ -53,8 +60,11 @@ const workers = [
   new Worker(QUEUES.breakdown.name, guarded("breakdown", videoLimit, "Reading the frames", breakdownJob, async () => {}), { connection: newRedis(), concurrency: conc("breakdown", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.deep.name, guarded("deep", deepLimit, "Measuring the footage", deepJob, (job, msg) => deepFailed((job.data as { videoId: string }).videoId, msg), videoUser), { connection: newRedis(), concurrency: conc("deep", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.heard.name, guarded("heard", QUEUES.heard.timeoutMs, "Transcribing the preview", heardJob, (job, msg) => heardFailed((job.data as { renderId: string }).renderId, msg), renderUser), { connection: newRedis(), concurrency: conc("heard", 2), lockDuration: 60_000 }),
-  // test_graphic: its own queue so a render or a long recording does not hold it up.
-  new Worker(QUEUES.test.name, guarded("test", QUEUES.test.timeoutMs, "Testing the graphic", testGraphicJob, async () => {}), { connection: newRedis(), concurrency: conc("test", 2), lockDuration: 60_000 }),
+  // test_graphic (and the library's preview frames and icon sheets): its own queue so a render or a long recording
+  // does not hold it up.
+  new Worker(QUEUES.test.name, guarded("test", QUEUES.test.timeoutMs, "Testing the graphic", (ctx): Promise<unknown> => ((ctx.job.data as { kind?: string }).kind === "snapshot" ? snapshotJob(ctx) : testGraphicJob(ctx)), async () => {}), { connection: newRedis(), concurrency: conc("test", 2), lockDuration: 60_000 }),
+  // analyze_reference: a reference video measured into a style file.
+  new Worker(QUEUES.style.name, guarded("style", styleLimit, "Measuring the reference", styleJob, (job, msg) => styleFailed((job.data as { styleFileId: string }).styleFileId, msg), styleUser), { connection: newRedis(), concurrency: conc("style", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),
 ];
 for (const w of workers) w.on("error", (e) => console.error(`[${w.name}] worker error:`, e.message));

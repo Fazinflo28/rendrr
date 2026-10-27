@@ -31,6 +31,8 @@ const generated = join(dirname(prismaPkg), "..", ".prisma", "client");
 cpSync(realpathSync(prismaPkg), join(fn, "node_modules/@prisma/client"), { recursive: true, dereference: true });
 cpSync(realpathSync(generated), join(fn, "node_modules/.prisma/client"), { recursive: true, dereference: true });
 
+// Data files the API reads at run time (the icon set).
+cpSync("src/data", join(fn, "data"), { recursive: true });
 writeFileSync(join(fn, ".vc-config.json"), JSON.stringify({
   runtime: "nodejs22.x", handler: "index.mjs", launcherType: "Nodejs", shouldAddHelpers: false, supportsResponseStreaming: true, maxDuration: 300,
 }, null, 2));

@@ -348,6 +348,28 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Graphics visible | Sampled 2 a second across the part on screen, 8 to 24 moments. Invisible only when no moment has a pixel over 1% opaque (the old rule, under 0.2% of the frame at the most covered moment, stays for older checks; it missed a small graphic). |
 | Graphic over the face | The main face (largest box) from Part 2's 10 fps faces at the footage moment playing then, placed as the render draws it: undo vision's measuring turn, the clip's turn, fit (cover, centred across, 40% down), framing, V1 keyframes, zoom. The cover is the graphic's alpha (64x64 per moment) averaged over that box. A keyframed graphic moves, so it is not measured; b-roll over V1 means no face then. Flagged over 25%; a full-screen title over the face is flagged too (the AI knows if it meant it). |
 
+## Engine Part 6: the user interface (28 October)
+
+| Question | Decision |
+|---|---|
+| Waveform drawing | One canvas per sound track the width of the timeline's view, moved with the scroll and redrawn from the peaks for the columns on screen (min and max of every 10 ms frame each column covers). A canvas the length of a 22-minute edit at full zoom would be 800,000 px wide, past what browsers draw. |
+| Music and effects | They have no stored peaks (they are files from the catalog): the browser decodes each once and works out the same 10 ms peaks. |
+| Marks | Fetched with their own call (GET /projects/:id/marks) after the edit opens, so opening an edit is not slowed by working them out. Lines start under the ruler, so a click on the ruler still lands where it should. Beats (music_beat) are left out. |
+| "Only their videos, the editor, the timeline" | The hidden things are hidden (the library, style files, measurements, tool names). The screens already there are kept: removing them was not asked for in so many words, and safest is to keep what works. Say if you want any of them gone. |
+| The reference switch | Kept on the footage page (footage or reference), without the measurements around it. |
+
+## Engine Part 4: the hidden library (28 October)
+
+| Question | Decision |
+|---|---|
+| How the library is drawn | Each graphic item is an HTML template with a small runtime (easings, entrance and exit progress) whose renderFrame draws the whole frame from the time alone (renderFramePure). It goes through the same recorder, cache and editor player as the six templates (findTemplate), so nothing new had to be trusted. Items are not seeded into the graphics table, so they never show in the editor's graphics list. |
+| Edits items | A picture in picture, a transition on a cut and a background are edits Rendrr already had. add_library_item makes those edits and says which; nothing new is hidden in the timeline. A picture in picture over part of a clip splits V1 first: that is a second version (undo steps 2), said in the result. |
+| Position auto | Only add_library_item works it out (from the face's box at 9 moments of the range, as the render draws it), and stores the result in the params, so the render and the editor draw the same place. A tall frame's named places keep clear of the app's buttons (top 12%, bottom 20%). |
+| Icons | Tabler (MIT): about 5,800 icons, the most of the three named, with tags for searching. Its "Brand" category (378 real logos) is left out. 413 KB gzipped on the API. The icon's SVG goes into the placement's params (the recording page has no network). |
+| Illustration packs | Left out: the open packs on npm (Open Doodles, Open Peeps) ship as React code, and pulling their pictures out meant running that code. Safest: skip and note it. |
+| Fonts | A library item naming a font that is not installed or added is refused before anything changes ("never fall back silently"). The editor's player embeds the same font files as data (its frame has no network). |
+| Style files | A table of their own (StyleFile), read only by the AI tools, so they can never appear in a screen. Measured once per reference (again true measures again). The measuring is plain image and sound processing: text found by its strokes (contrast, even stroke width, one or two ink colours), followed frame to frame at 10 fps; cuts read at 30 fps; ducking from the 40-80 Hz band (under the voice) in pauses against under speech. Fonts are not named (Rendrr does not read letters); the weight is. |
+
 ## Engine Part 5: graphic engine reliability (27 October)
 
 | Question | Decision |

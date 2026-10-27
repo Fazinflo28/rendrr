@@ -109,7 +109,9 @@ describe("connector tool list", () => {
     // 28: mark_silences, mark_fillers, list_marks, get_retakes (Rendrr measures, the AI cuts);
     // 32: get_audio, get_waveform_image, get_vision, map_time (the deeper measurements and time conversion).
     // 33: test_graphic (a few seconds of a graphic over the footage, before a full preview).
-    expect(MCP_TOOLS.length).toBeLessThanOrEqual(33);
+    // 37: list_library, get_library_item, add_library_item, search_icons (the hidden library: ready animations).
+    // 38: analyze_reference (a reference video measured into a style file).
+    expect(MCP_TOOLS.length).toBeLessThanOrEqual(38);
     const names = MCP_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
     for (const gone of ["cut_silences", "remove_fillers", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);

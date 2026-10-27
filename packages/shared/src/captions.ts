@@ -33,6 +33,10 @@ export function textWidth(text: string, face: Face, size: number): number {
 export function fontFaceCss(base = "/fonts/"): string {
   return Object.values(FONT_METRICS).map((m) => `@font-face{font-family:"${m.family}";src:url(${base}${m.file}) format("truetype");font-display:block;ascent-override:${((m.winAscent / m.upm) * 100).toFixed(3)}%;descent-override:${((m.winDescent / m.upm) * 100).toFixed(3)}%;line-gap-override:0%}`).join("\n");
 }
+/** The bundled files of a font family, one per weight (the editor's graphic player embeds the ones a graphic uses). */
+export function fontFilesOf(family: string): { weight: number; file: string }[] {
+  return (FONT_WEIGHTS[family] ?? []).map((w) => ({ weight: w, file: FONT_METRICS[`${family}:${w}`].file }));
+}
 /** CSS font-size for an ASS font size. */
 export const cssSize = (face: Face, size: number) => (size * face.upm) / (face.winAscent + face.winDescent);
 

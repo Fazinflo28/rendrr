@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@rendrr/db";
-import { canonicalJson, graphicDefaults, GRAPHIC_TEMPLATES, PREFIX, type Timeline, type V3Clip } from "@rendrr/shared";
+import { canonicalJson, findTemplate, graphicDefaults, PREFIX, type Timeline, type V3Clip } from "@rendrr/shared";
 import { enqueue, redis, type GraphicJob } from "./queue";
 import { headObject } from "./storage";
 
@@ -42,7 +42,7 @@ export async function readVariantWarnings(progressId: string): Promise<string[]>
   return s ? (JSON.parse(s) as string[]) : [];
 }
 
-const isCustomPlacement = (c: V3Clip) => c.kind === "graphic" && !!c.graphicId && !GRAPHIC_TEMPLATES.some((t) => t.id === c.graphicId);
+const isCustomPlacement = (c: V3Clip) => c.kind === "graphic" && !!c.graphicId && !findTemplate(c.graphicId);
 
 /**
  * After an edit is saved: queues a recording for each set of params a custom graphic is placed with that has none

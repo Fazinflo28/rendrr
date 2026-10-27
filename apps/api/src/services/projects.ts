@@ -1,6 +1,6 @@
 import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, asSequence, aspectFor, buildRawSequence, catalogMusic, catalogSfx, GRAPHIC_TEMPLATES, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { allWords, asSequence, aspectFor, buildRawSequence, catalogMusic, catalogSfx, findTemplate, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { otherVideoIds, playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
@@ -95,6 +95,15 @@ async function sidewaysOf(ids: string[]): Promise<Record<string, number>> {
   return Object.fromEntries(rows.map((r) => [r.videoId, (r.vision as { turned?: number } | null)?.turned ?? 0]).filter(([, t]) => t));
 }
 
+/** Engine Part 6: a link to each video's 10 ms sound peaks (the deep measurements' audio.bin: 4 bytes per 10 ms), for
+ *  the timeline's waveform. Videos not measured yet have none. */
+async function peaksOf(videoIds: string[]): Promise<Record<string, string>> {
+  const rows = await prisma.footageAnalysis.findMany({ where: { videoId: { in: videoIds } }, select: { videoId: true, audio: true } });
+  const out: Record<string, string> = {};
+  for (const r of rows) { const key = (r.audio as { key?: string } | null)?.key; if (key) out[r.videoId] = await signGet(key, 6 * 3600); }
+  return out;
+}
+
 export async function projectFull(userId: string, id: string) {
   const p = await getOwnedProject(userId, id);
   const [video, style, versions, reviews, activity, notes, owner] = await Promise.all([
@@ -121,6 +130,7 @@ export async function projectFull(userId: string, id: string) {
     ...(await playerMedia(userId, timeline)),
     videos: await playerVideos(userId, timeline, p.videoId), // the other videos on V1
     sideways: await sidewaysOf([p.videoId, ...otherVideoIds(timeline, p.videoId)]), // footage measured as filmed sideways
+    peaks: await peaksOf([p.videoId, ...otherVideoIds(timeline, p.videoId)]), // each video's 10 ms sound peaks, for the waveform
     ...projectOut(p),
     style: style ? styleOut(style) : undefined,
     video: { ...(await videoOut(video)), proxyUrl: video.proxyKey && video.status !== "expired" ? await signGet(video.proxyKey, 6 * 3600) : null },
@@ -159,7 +169,7 @@ async function playerMedia(userId: string, tl: Snapshot["timeline"]) {
 
 /** Each custom graphic placement: the storage key of the file it plays, or why there is none yet (state). */
 export async function graphicPlacements(userId: string, tl: Snapshot["timeline"]) {
-  const clips = (tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId && !GRAPHIC_TEMPLATES.some((t) => t.id === c.graphicId));
+  const clips = (tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId && !findTemplate(c.graphicId));
   if (!clips.length) return [];
   const gs = await prisma.graphic.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.graphicId!))) }, ownerId: userId, kind: "custom" },
     select: { id: true, ownerId: true, paramsSchema: true, status: true, renderedKey: true, error: true, durationSec: true, width: true, height: true } });

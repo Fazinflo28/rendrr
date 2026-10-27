@@ -59,3 +59,11 @@ export function allMarks(scope: MarkScope): MarkRow[] {
 export function retakesOf(scope: MarkScope): (RetakeGroup & { videoId: string })[] {
   return scope.inputs.flatMap((f) => findRetakes(f).map((g) => ({ ...g, videoId: f.videoId })));
 }
+
+/** Engine Part 6: the marks on an edit's videos where they play in the edit, for the timeline's lines (hidden ones and
+ *  beats left out). */
+export async function editorMarks(userId: string, projectId: string) {
+  const scope = await markScope(userId, { projectId });
+  return allMarks(scope).filter((m) => !m.hidden && m.edit && m.kind !== "music_beat").slice(0, 3000)
+    .map((m) => ({ id: m.id, kind: m.kind, source: m.source, label: m.label ?? null, note: m.note ?? null, start: m.edit!.start, end: m.edit!.end }));
+}

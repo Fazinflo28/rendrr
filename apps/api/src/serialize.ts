@@ -52,7 +52,8 @@ export function noteOut(n: ProjectComment, author: string) {
 }
 
 export function activityOut(a: AiAction, project?: Project | null) {
-  return { id: a.id, projectId: a.projectId, ai: a.ai, text: a.text, at: a.createdAt.getTime(), undone: a.undone, toolName: a.toolName, ...(project ? { project: projectOut(project) } : {}) };
+  // Engine Part 6: tool names stay out of the user interface.
+  return { id: a.id, projectId: a.projectId, ai: a.ai, text: a.text, at: a.createdAt.getTime(), undone: a.undone, ...(project ? { project: projectOut(project) } : {}) };
 }
 
 export async function brandLogo(u: Pick<User, "logoKey">) {

@@ -20,6 +20,8 @@ import { allMarks, inRange, markScope, retakesOf } from "./services/marks";
 import { audioFramesOf, deepOf, visionDetailsOf } from "./services/deep";
 import { waveformPng } from "./services/waveform";
 import { testGraphic } from "./services/testGraphic";
+import { addLibraryItem, getLibraryItem, listLibrary, searchIcons, withIcons } from "./services/library";
+import { analyzeReference, styleFileLines, styleFileOut } from "./services/styleFiles";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
 /** loginId: the Clerk user who called (a linked login opens its account's userId). */
@@ -168,7 +170,7 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   // The activity log keeps the edits, but long lists (clips, word ids) only as counts.
   const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e)) };
   // Phase 6: match_color gets the clips' measured frames (the worker reads them; a failure stops here, loudly).
-  const ready = await withMeasurements(projectId, edits);
+  const ready = await withMeasurements(projectId, withIcons(edits));
   const luts = ready.some((e) => e.op === "match_color") ? await lutsFor(c.userId, p0.timeline as unknown as Timeline) : undefined;
   const r = await applyTimelineChange(projectId, ready.length === 1 ? ready[0] : { op: "batch", ops: ready }, actorFor(c, "apply_edits", logged), { luts });
   const v = await prisma.video.findUniqueOrThrow({ where: { id: p0.videoId }, include: { analysis: true } });
@@ -317,10 +319,13 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
 
   async list_styles(c) {
     const ss = await prisma.style.findMany({ where: { OR: [{ ownerId: null }, { ownerId: c.userId }] }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] });
-    return { text: "Styles (id | name | type | vibe | shapes | platforms):\n" + ss.map((s) => `${s.id} | ${s.name} | ${s.type} | ${s.vibe} | ${s.ori.join(" ")} | ${s.platforms.join(" ")}`).join("\n") };
+    const files = await styleFileLines(c.userId);
+    return { text: "Styles (id | name | type | vibe | shapes | platforms):\n" + ss.map((s) => `${s.id} | ${s.name} | ${s.type} | ${s.vibe} | ${s.ori.join(" ")} | ${s.platforms.join(" ")}`).join("\n") + (files.length ? `\nStyle files (analyze_reference; read with get_style):\n${files.join("\n")}` : "") };
   },
 
   async get_style(c, i) {
+    const file = await styleFileOut(c.userId, i.styleId);
+    if (file) return { text: file };
     const s = await prisma.style.findFirst({ where: { id: i.styleId, OR: [{ ownerId: null }, { ownerId: c.userId }] } });
     if (!s) throw notFound("That style does not exist. Use list_styles for the ids.");
     return { text: [`${s.name} (${s.id}), ${s.type}: ${s.vibe}`, `Cut pace: ${s.cutPace}. Captions: ${s.captionRule} (${s.captionLook}). Zooms: ${s.zoomRules}. Music: ${s.musicVibe}.`, `apply_style sets its captions only. Its other rules, for you to carry out with explicit edits: ${styleGuidance(StyleRulesSchema.parse(s.rules)).join("; ") || "none"}.`, `Rules: ${JSON.stringify(s.rules)}`].join("\n") };
@@ -626,6 +631,13 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   test_graphic: async (c, i) => testGraphic(c.userId, i),
+
+  // Engine Part 4: the hidden library (for the AI only).
+  list_library: async (_c, i) => ({ text: listLibrary(i.kind) }),
+  get_library_item: async (c, i) => getLibraryItem(c.userId, i.id),
+  add_library_item: async (c, i) => addLibraryItem(c.userId, i, (edits, note) => applyEdits(c, i.projectId, edits, note, i)),
+  search_icons: async (c, i) => searchIcons(c.userId, i.query, i.limit),
+  analyze_reference: async (c, i) => analyzeReference(c.userId, i),
 
   async add_font(c, i) {
     const f = AddFontInput.safeParse(i);

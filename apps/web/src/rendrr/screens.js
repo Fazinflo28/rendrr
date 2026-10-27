@@ -329,30 +329,15 @@ function LibraryPage() {
   </div>`;
 }
 
-/* ---------- What Claude sees: the video as text ("video code") and contact sheets ---------- */
-const pctOf = (x) => Math.round((x || 0) * 100) + "%";
-function ClaudeSees({ v, pb, onChanged }) {
-  const toast = useToast(); const [busy, setBusy] = useState(false); const [showCode, setShowCode] = useState(false);
-  const b = v.breakdown; const dur = Math.max(0.1, v.seconds);
+/* ---------- A video's use: footage to edit, or a reference whose style the AI copies ---------- */
+// Engine Part 6: the measurements (the breakdown, frames the AI reads, the video as text) stay with the AI; the page
+// keeps only the switch between footage and reference.
+function VideoUse({ v, onChanged }) {
+  const toast = useToast(); const [busy, setBusy] = useState(false);
   const isRef = v.kind === "reference";
-  const flip = async () => { setBusy(true); try { await api.updateVideo(v.id, { kind: isRef ? "footage" : "reference" }); toast(isRef ? "Now footage you can edit" : "Marked as a reference. The AI can copy its style.", { icon: "check", tone: "brand" }); onChanged(); } catch (e) { toast(e.message); } finally { setBusy(false); } };
-  const copy = async () => { try { await navigator.clipboard.writeText(b.text); toast("Copied the video code", { icon: "check", tone: "brand" }); } catch { setShowCode(true); toast("Select the text below to copy it.", { ms: 3500 }); } };
-  // A click on a contact sheet jumps to the frame under the pointer.
-  const jump = (s) => (e) => { const r = e.currentTarget.getBoundingClientRect(); const col = Math.min(s.cols - 1, Math.floor(((e.clientX - r.left) / r.width) * s.cols)); const row = Math.min(s.rows - 1, Math.floor(((e.clientY - r.top) / r.height) * s.rows)); const t = s.times[row * s.cols + col]; if (t != null) pb.seek(t); };
-  const stat = (label, value) => html`<div class="sb-cell"><span class="t-small muted">${label}</span><b class="t-label">${value}</b></div>`;
-  return html`<div class="card col" id="claude-sees" style="gap:16px">
-    <div class="row between" style="gap:12px;flex-wrap:wrap"><div style="min-width:0"><b class="t-heading row" style="gap:8px"><${Icon} name="eye" size="18" />What Claude sees</b><p class="t-small muted">Rendrr turned this ${isRef ? "reference" : "video"} into text and frames, so Claude reads it instead of watching it. Claude only does the thinking; Rendrr does the rendering.</p></div>
-      <div class="row" style="gap:8px">${b && html`<${Btn} kind="secondary" size="sm" icon="copy" id="copy-code" onClick=${copy}>Copy as text<//>`}<${Btn} kind="ghost" size="sm" id="flip-kind" disabled=${busy} onClick=${flip}>${isRef ? "Use as footage" : "Mark as reference"}<//></div></div>
-    ${!b ? html`<div class="row" style="gap:8px"><span class="dot brand pulse" /><span class="t-small muted">${v.status === "ready" ? "Reading the frames. This takes about a minute; the page updates on its own." : "Ready once the video has been prepared."}</span></div>` : html`
-      <div class="card tight statrow" id="pacing">${stat("Shots", b.pacing.shots + " · avg " + b.pacing.avgShotSec + "s")}${stat("Cuts per minute", b.pacing.cutsPerMin)}${stat("Words per minute", b.pacing.wordsPerMin)}${stat("Speech", pctOf(b.pacing.speechShare))}${stat("Beat", b.beat ? Math.round(b.beat.bpm) + " BPM" : b.musicLikely ? "Music, no steady beat" : "None")}</div>
-      <div><div class="row between" style="padding:0 4px 8px"><b class="t-label">Shots</b><span class="t-small muted">Click to jump</span></div>
-        <div class="shotbar" id="shotbar">${b.shots.map((s) => html`<button key=${s.id} title=${s.id + " · " + fmtTime(s.start) + "–" + fmtTime(s.end) + " · " + s.light + ", " + s.motion + (s.says ? " · “" + s.says + "”" : "")} aria-label=${"Shot " + s.id + " at " + fmtTime(s.start)} onClick=${() => pb.seek(s.start)} style=${{ flex: Math.max(0.2, s.sec) + " 1 0", background: s.colours[0] || "var(--raised)" }} class=${pb.time >= s.start && pb.time < s.end ? "on" : ""} />`)}</div></div>
-      <div><div class="row between" style="padding:0 4px 8px"><b class="t-label">Frames Claude reads</b><span class="t-small muted">${b.frames.count} frames on ${b.sheets.length} ${b.sheets.length === 1 ? "sheet" : "sheets"} · click a frame to jump</span></div>
-        ${b.sheets.length ? html`<div class="sheets" id="sheets">${b.sheets.map((s, i) => html`<figure key=${i} class="sheet"><img src=${s.url} alt=${"Frames " + fmtTime(s.from) + " to " + fmtTime(s.to)} loading="lazy" onClick=${jump(s)} style=${{ aspectRatio: "auto " + s.cols * (v.width || 16) + " / " + s.rows * (v.height || 9) }} /><figcaption class="t-small muted">${fmtTime(s.from)}–${fmtTime(s.to)}</figcaption></figure>`)}</div>`
-          : html`<p class="t-small muted">The frames went with the expired preview copy. Rebuild the preview to read them again; the text below still holds.</p>`}</div>
-      <div><button class="row between codehead" id="show-code" aria-expanded=${showCode} onClick=${() => setShowCode(!showCode)}><b class="t-label">Video code</b><span class="t-small muted row" style="gap:4px">${showCode ? "Hide" : "Show"}<${Icon} name="down" size="14" /></span></button>
-        ${showCode && html`<pre class="code" id="video-code" style="margin-top:8px;max-height:360px;overflow:auto">${b.text}</pre>`}</div>`}
-  </div>`;
+  const flip = async () => { setBusy(true); try { await api.updateVideo(v.id, { kind: isRef ? "footage" : "reference" }); toast(isRef ? "Now footage you can edit" : "Marked as a reference. The AI can copy its style.", { icon: "check", tone: "brand" }); onChanged?.(); } catch (e) { toast(e.message); } finally { setBusy(false); } };
+  return html`<div class="card row between" id="video-use" style="gap:12px;flex-wrap:wrap"><div style="min-width:0"><b class="t-label">${isRef ? "A reference" : "Footage"}</b><p class="t-small muted">${isRef ? "Your AI copies the style of this video. It is not edited." : "A video you edit. Mark it as a reference to have your AI copy its style instead."}</p></div>
+    <${Btn} kind="ghost" size="sm" id="flip-kind" disabled=${busy} onClick=${flip}>${isRef ? "Use as footage" : "Mark as reference"}<//></div>`;
 }
 
 /* ---------- /library/:id (footage) ---------- */
@@ -403,7 +388,7 @@ function FootagePage({ id }) {
             ${selIds.length > 0 && html`<div class="selpop" id="footage-selpop"><span class="t-small">${selIds.length} ${selIds.length === 1 ? "word" : "words"} selected</span><${Btn} size="xs" icon="scissors" id="start-without" disabled=${busy} onClick=${startWithout}>Remove and start an edit<//><${Btn} kind="quiet" size="xs" icon="x" aria-label="Clear selection" onClick=${() => setWsel(null)} /></div>`}
           </div></div>
       </div>
-      <${ClaudeSees} v=${v} pb=${pb} onChanged=${() => api.getVideo(id).then((x) => q.setData(x)).catch(() => {})} />`}<//>
+      <${VideoUse} v=${v} onChanged=${() => api.getVideo(id).then((x) => q.setData(x)).catch(() => {})} />`}<//>
   </div>`;
 }
 

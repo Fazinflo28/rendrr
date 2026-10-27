@@ -42,6 +42,7 @@ model User {
   logins      UserLogin[]
   luts        Lut[]
   fonts       Font[]
+  styleFiles  StyleFile[]
 }
 
 // More logins that open the same Rendrr account: for example the Google account someone used for the AI connector
@@ -487,4 +488,22 @@ model Lut {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+/// Engine Part 4.4: a reference video measured into a style file (analyze_reference), for the AI only: never shown in
+/// the user interface. status: measuring | ready | failed; data: the StyleFile (packages/shared/src/styleFile.ts).
+model StyleFile {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoId   String?
+  name      String
+  status    String   @default("measuring")
+  progress  Int      @default(0)
+  error     String?
+  data      Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
 }

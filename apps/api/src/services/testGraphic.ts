@@ -2,7 +2,7 @@
 // the tool waits under 10 s for it. The same test asked again within a day answers from the kept result.
 import { AppError, enqueue, getBytes, newRedis, notFound, signGet, type TestGraphicJob, type TestGraphicResult } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { GRAPHIC_TEMPLATES, PREFIX, QUEUES } from "@rendrr/shared";
+import { findTemplate, PREFIX, QUEUES } from "@rendrr/shared";
 import { QueueEvents } from "bullmq";
 import { createHash } from "node:crypto";
 
@@ -18,7 +18,7 @@ const pc = (x: number) => (x === 0 ? "0" : x < 1 ? x.toFixed(1) : String(Math.ro
 
 export async function testGraphic(userId: string, i: Input): Promise<{ text: string; images: string[] }> {
   // Checked here first, so a wrong id or a graphic still recording answers at once.
-  const tpl = GRAPHIC_TEMPLATES.find((t) => t.id === i.graphicId);
+  const tpl = findTemplate(i.graphicId);
   let name = tpl?.name ?? "", gShape: ReturnType<typeof shape>;
   if (!tpl) {
     const g = await prisma.graphic.findUnique({ where: { id: i.graphicId }, select: { ownerId: true, name: true, status: true, width: true, height: true, error: true } });

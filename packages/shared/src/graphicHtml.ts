@@ -1,6 +1,8 @@
 // The six built-in graphic templates, as HTML + CSS animations, and the virtual clock that drives any graphic.
 // The recorder (worker) and the editor's live player use the same HTML and clock, so a graphic looks the same in
 // both. The recorder seeks every animation to the exact frame time. Params are escaped; colours are validated.
+import { libraryHtml } from "./libraryHtml";
+
 type P = Record<string, unknown>;
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 // A string for inline <script>: JSON, with "<" escaped so text like "</script>" cannot end the script early.
@@ -13,6 +15,8 @@ html,body{margin:0;width:${w}px;height:${h}px;overflow:hidden;background:transpa
 *{box-sizing:border-box}${css}</style></head><body>${body}<script>${script}</script></body></html>`;
 
 export function templateHtml(id: string, params: P, w: number, h: number, dur: number, brandLogo?: string | null): string {
+  const lib = libraryHtml(id, params, w, h, dur);
+  if (lib) return lib;
   const m = Math.min(w, h);
   const out = Math.max(0.1, dur - 0.45);
   switch (id) {
@@ -203,9 +207,10 @@ export function templateSize(outW: number, outH: number) {
  * A template for the editor's live player: the recorder's exact HTML and clock, no network (CSP), and time set
  * by the player with postMessage({ rendrrT: seconds }). Shown in a sandboxed iframe (scripts only).
  */
-export function playerGraphicHtml(id: string, params: Record<string, unknown>, w: number, h: number, dur: number): string {
+export function playerGraphicHtml(id: string, params: Record<string, unknown>, w: number, h: number, dur: number, fontCss = ""): string {
   const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">`;
   const listen = `<script>addEventListener("message",function(e){var t=e.data&&e.data.rendrrT;if(typeof t==="number")window.__rendrrAdvance(t)});window.__rendrrAdvance(0);</script>`;
   const html = withClock(templateHtml(id, params, w, h, dur, null));
-  return html.replace(/<head[^>]*>/i, (m) => m + csp).replace(/<\/body>/i, listen + "</body>");
+  // The fonts it draws with, as data (the frame has no network): the same files the recorder's browser has.
+  return html.replace(/<head[^>]*>/i, (m) => m + csp + (fontCss ? `<style>${fontCss}</style>` : "")).replace(/<\/body>/i, listen + "</body>");
 }

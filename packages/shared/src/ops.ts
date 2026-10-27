@@ -14,6 +14,7 @@ import { MARK_KINDS, type Mark, type MarkEdit } from "./timeline";
 import { editToFootage, RENDRR_MARK } from "./marks";
 import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
+import { libraryItem, libraryParams } from "./library";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
 import { ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutRefSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, type ChromaKey, type ClipLook, type Grade, type Lut } from "./look";
 import {
@@ -78,11 +79,11 @@ const EDIT_OPS = [
   z.object({ op: z.literal("set_card"), clipIds: z.array(clipId).max(2000).optional(), reset: z.boolean().optional(),
     crop: CardLookSchema.shape.crop.unwrap().nullable().optional(), radius: CardLookSchema.shape.radius.unwrap().nullable().optional(),
     shadow: CardLookSchema.shape.shadow.unwrap().nullable().optional(), border: CardLookSchema.shape.border.unwrap().nullable().optional() }),
-  // What is behind V1 for the whole edit: one of color, gradient, videoId (a library video, looped) or blur (the
-  // clip's own picture, 1-100); none: black again.
+  // What is behind V1 for the whole edit: one of color, gradient, videoId (a library video, looped), blur (the
+  // clip's own picture, 1-100) or pattern (grid, dots, paper); none: black again.
   z.object({ op: z.literal("set_background"), color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "a colour like #FF66AA").optional(),
     gradient: z.object({ from: z.string().regex(/^#[0-9a-fA-F]{6}$/), to: z.string().regex(/^#[0-9a-fA-F]{6}$/), angle: z.number().min(0).max(360).optional() }).optional(),
-    videoId: z.string().min(1).max(80).optional(), blur: z.number().min(1).max(100).optional(), none: z.boolean().optional() }),
+    videoId: z.string().min(1).max(80).optional(), blur: z.number().min(1).max(100).optional(), pattern: BackgroundSchema.innerType().shape.pattern, none: z.boolean().optional() }),
   z.object({ op: z.literal("rename"), name: z.string().min(1).max(200) }),
   z.object({ op: z.literal("apply_style"), styleId: z.string().max(80), overrides: StyleRulesPatchSchema.optional() }),
   // ---- the sequence ----
@@ -622,6 +623,9 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (from && !g.custom) throw new EditError("from works on custom graphics (create_graphic). A template is drawn for each placement: it always starts at its beginning.");
       if (from && from > g.durationSec - 0.05) throw new EditError(`from ${at2(from)}s is past the end of ${g.name} (${at2(g.durationSec)}s long).`);
       if (g.custom) { const p = placementParams(g.name, g.params ?? {}, op.params); if ("error" in p) throw new EditError(p.error); }
+      // A library graphic's params are checked against what it takes (names, types, limits).
+      const li = libraryItem(g.id);
+      if (li) { const p = libraryParams(li, op.params ?? {}); if ("error" in p) throw new EditError(p.error); }
       const c = attachAt(view(), { id: rid("g"), start: 0, end: 0, label: op.label || g.name, kind: "graphic" as const, graphicId: g.id, params: op.params, ...(from ? { sourceStart: from } : {}) } as Clip, s, e);
       return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added graphic ${g.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}${from ? ` from ${at2(from)}s of it` : ""} (clip ${c.id})` };
     }
@@ -668,15 +672,15 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, timeline: next }, summary: card && hasCard(card) ? `${what} drawn as a card: ${cardLookText(card)}${framed ? "" : " (set_framing scale under 1 shows it as a card on the background)"}` : `${what}: no card look` };
     }
     case "set_background": {
-      const n = [op.color, op.gradient, op.videoId, op.blur].filter((x) => x != null).length;
-      if (op.none) { if (n) throw new EditError("set_background: none true, or one of color, gradient, videoId, blur."); const { background: _b, ...rest } = tl; return { snap: { ...snap, timeline: rest as Timeline }, summary: "background back to black" }; }
-      if (n !== 1) throw new EditError("set_background takes one of color, gradient, videoId (a library video) or blur (1-100), or none true.");
+      const n = [op.color, op.gradient, op.videoId, op.blur, op.pattern].filter((x) => x != null).length;
+      if (op.none) { if (n) throw new EditError("set_background: none true, or one of color, gradient, videoId, blur, pattern."); const { background: _b, ...rest } = tl; return { snap: { ...snap, timeline: rest as Timeline }, summary: "background back to black" }; }
+      if (n !== 1) throw new EditError("set_background takes one of color, gradient, videoId (a library video), blur (1-100) or pattern {kind: grid|dots|paper, color, ink, size}, or none true.");
       if (op.videoId) {
         const v = ctx.getVideo?.(op.videoId);
         if (!v) throw new EditError("That background video is not in your library.");
         if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
       }
-      const bg = BackgroundSchema.parse({ ...(op.color ? { color: op.color.toUpperCase() } : {}), ...(op.gradient ? { gradient: op.gradient } : {}), ...(op.videoId ? { videoId: op.videoId } : {}), ...(op.blur ? { blur: op.blur } : {}) });
+      const bg = BackgroundSchema.parse({ ...(op.color ? { color: op.color.toUpperCase() } : {}), ...(op.gradient ? { gradient: op.gradient } : {}), ...(op.videoId ? { videoId: op.videoId } : {}), ...(op.blur ? { blur: op.blur } : {}), ...(op.pattern ? { pattern: { ...op.pattern, color: op.pattern.color.toUpperCase(), ink: op.pattern.ink.toUpperCase() } } : {}) });
       return { snap: { ...snap, timeline: { ...tl, background: bg } }, summary: `background: ${backgroundText(bg, (id) => ctx.getVideo?.(id)?.name)} (it shows where V1 is framed smaller, cropped, rounded, keyed or masked)` };
     }
     case "set_rotation": {

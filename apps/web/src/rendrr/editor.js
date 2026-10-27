@@ -10,7 +10,7 @@ import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./colo
 import { ExportModal, timeLeft } from "./export";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
-import { applyOp, asSequence, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, TEXT_ANIMS, TEXT_PRESETS, textPreset, GRAPHIC_TEMPLATES, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -23,6 +23,10 @@ function useHistory(initial) {
   return { state: h.present, commit, replace, commitFrom, undo, redo, canUndo: h.past.length > 0, canRedo: h.future.length > 0 };
 }
 const TRACKS = [["v3", "V3"], ["v2", "V2"], ["v1", "V1"], ["a1", "A1"], ["a2", "A2"], ["a3", "A3"]];
+/** Timeline zoom in pixels a second: down to the whole edit, up to the 10 ms frames of the waveform (6 px each). */
+const ZMIN = 4, ZMAX = 600;
+/** Each track's height in pixels (the dialogue is taller: its waveform). */
+const TRACK_H = { a1: 56, a2: 40, a3: 34 };
 const TRACK_HINT = { v1: "Main cut", v2: "B-roll, effects", v3: "Titles", a1: "Dialogue", a2: "Music", a3: "Sound FX" };
 // The style, broken down like a recipe. Keys muted, values plain, nested with two spaces.
 const styleCode = (st, S) => [
@@ -63,11 +67,24 @@ function CardLayer({ spec, color, W, H }) {
   }, [key]);
   return html`<canvas ref=${ref} width=${W} height=${H} data-card=${spec?.kind} style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none" />`;
 }
+// A pattern behind V1 (grid, dots, paper): the shared picture the render reads as a file, at the plan's size.
+function PatternLayer({ pattern, W, H }) {
+  const ref = useRef(null);
+  const key = JSON.stringify([pattern, W, H]);
+  useEffect(() => {
+    const cv = ref.current; if (!cv) return;
+    const px = patternPicture(pattern, W, H), im = new ImageData(W, H);
+    for (let i = 0, n = W * H; i < n; i++) { im.data[i * 4] = px[i * 3]; im.data[i * 4 + 1] = px[i * 3 + 1]; im.data[i * 4 + 2] = px[i * 3 + 2]; im.data[i * 4 + 3] = 255; }
+    cv.getContext("2d").putImageData(im, 0, 0);
+  }, [key]);
+  return html`<canvas ref=${ref} width=${W} height=${H} data-back="pattern" style="position:absolute;inset:0;width:100%;height:100%" />`;
+}
 // What is behind V1 (plan.background): the gradient by the CSS rule the render's picture follows, a library video looped,
 // or the clip's own picture blurred (sigma at the stage's scale) and scaled up as the render does.
 function BackLayer({ plan, time, playing, broll, part, partUrl, aspect, k }) {
   const bg = plan.background; if (!bg) return null;
   const spec = bg.file ? plan.lookFiles?.[bg.file] : null;
+  if (spec?.kind === "pattern") return html`<${PatternLayer} pattern=${spec.pattern} W=${plan.width} H=${plan.height} />`;
   if (spec?.kind === "gradient") return html`<div data-back="gradient" style=${{ position: "absolute", inset: 0, background: `linear-gradient(${spec.gradient.angle ?? 180}deg, ${spec.gradient.from}, ${spec.gradient.to})` }} />`;
   if (bg.videoId && broll[bg.videoId]) return html`<div data-back="video" style="position:absolute;inset:0"><${SyncedVideo} src=${broll[bg.videoId].url} time=${bg.seconds ? time % bg.seconds : time} playing=${playing} /></div>`;
   if (bg.blur && part && partUrl) {
@@ -88,12 +105,72 @@ function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = nu
     ${gl && html`<${LookCanvas} videoRef=${ref} look=${look} W=${plan.width} H=${plan.height} fitY=${0.5} luts=${luts} onFail=${() => setNoGl(true)} />`}`;
 }
 
-// A built-in graphic template drawn live with the recorder's own HTML and clock, at the size the render draws it.
+// Engine Part 6: the sound's 10 ms peaks for the waveform: each video's measured peaks (4 bytes per 10 ms), a music or
+// effect file decoded here. Kept for the session.
+const peakCache = new Map();
+function loadPeaks(key, url, decode) {
+  if (!peakCache.has(key)) peakCache.set(key, fetch(url).then((r) => (r.ok ? r.arrayBuffer() : null)).then(async (b) => {
+    if (!b) return null;
+    if (!decode) { const f = audioFrames(new Uint8Array(b)); return { n: f.n, min: f.min, max: f.max }; }
+    const Ctx = window.OfflineAudioContext || window.webkitOfflineAudioContext; if (!Ctx) return null;
+    const buf = await new Ctx(1, 1, 44100).decodeAudioData(b);
+    return peaksFromSamples(buf.getChannelData(0), buf.sampleRate);
+  }).catch(() => null));
+  return peakCache.get(key);
+}
+// A track's waveform: only the part of the timeline on screen is drawn (any zoom, any length), one column a pixel.
+function WaveLayer({ parts, peaks, zoom, pad, canvasRef, height }) {
+  const ref = useRef(null); const [vp, setVp] = useState({ left: 0, width: 0 });
+  useEffect(() => {
+    const sc = canvasRef.current?.parentElement; if (!sc) return;
+    const on = () => setVp({ left: sc.scrollLeft, width: sc.clientWidth });
+    on(); sc.addEventListener("scroll", on, { passive: true }); const ro = new ResizeObserver(on); ro.observe(sc);
+    return () => { sc.removeEventListener("scroll", on); ro.disconnect(); };
+  }, []);
+  useEffect(() => {
+    const cv = ref.current; if (!cv || !vp.width) return;
+    const dpr = window.devicePixelRatio || 1, W = Math.ceil(vp.width);
+    cv.width = W * dpr; cv.height = height * dpr;
+    const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, height);
+    const cols = waveColumns(parts, (k) => peaks[k], (vp.left - pad) / zoom, 1 / zoom, W);
+    const css = getComputedStyle(cv), on = css.getPropertyValue("--wave").trim() || "#4f9fe0", off = css.getPropertyValue("--wave-off").trim() || "#8888";
+    const mid = height / 2, amp = height / 2 - 3;
+    for (let x = 0; x < W; x++) {
+      const lo = cols.lo[x]; if (Number.isNaN(lo)) continue;
+      g.fillStyle = cols.muted[x] ? off : on;
+      const y0 = mid - cols.hi[x] * amp, y1 = mid - lo * amp;
+      g.fillRect(x, y0, 1, Math.max(1, y1 - y0));
+    }
+  }, [vp, parts, peaks, zoom, height]);
+  return html`<canvas ref=${ref} class="wave" data-wave="1" style=${{ left: vp.left + "px", width: vp.width + "px", height: height + "px" }} />`;
+}
+// Marks (Rendrr's measurements and the AI's notes) as thin coloured lines with a note.
+const MARK_WORDS = { silence: "Silence", filler: "Filler word", retake: "Retake", stumble: "Stumble", false_start: "False start", off_camera: "Off camera", director_note: "Note to the crew", breath: "Breath", click_pop: "Click", loud_peak: "Loud peak", clipped_audio: "Clipped sound", low_light: "Dark", out_of_focus: "Soft focus", scene_change: "Scene change", face_lost: "Face lost", music_beat: "Beat", custom: "Note" };
+const MARK_COLORS = { silence: "#8a8f98", filler: "#f5a524", retake: "#e5484d", stumble: "#f76b15", false_start: "#d6409f", off_camera: "#8e4ec6", director_note: "#0090ff", breath: "#68c6e8", click_pop: "#e2c400", loud_peak: "#ff977d", clipped_audio: "#ce2c31", low_light: "#6e56cf", out_of_focus: "#ab4aba", scene_change: "#12a594", face_lost: "#a18072", music_beat: "#46a758", custom: "#30a46c" };
+const mss = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
+const markNote = (m) => `${MARK_WORDS[m.kind] || m.kind}${m.label ? ": " + m.label : ""}${m.note ? " · " + m.note : ""} (${mss(m.start)}${m.end > m.start + 0.05 ? "–" + mss(m.end) : ""})${m.source === "ai" ? " · from your AI" : ""}`;
+const readFlag = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v === "1"; } catch { return d; } };
+const writeFlag = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch {} };
+
+// The font a built-in graphic draws with, as @font-face rules with the files inside (its frame has no network): the
+// bundled files of the family, at the weights it uses. Kept for the session.
+const fontData = {};
+const b64 = (buf) => { let s = ""; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+function graphicFontCss(family, weights) {
+  const files = fontFilesOf(family); if (!files.length) return Promise.resolve("");
+  const pick = Array.from(new Set(weights.map((w) => files.reduce((b, x) => (Math.abs(x.weight - w) < Math.abs(b.weight - w) ? x : b), files[0]))));
+  return Promise.all(pick.map((f) => (fontData[f.file] ??= fetch("/fonts/" + f.file).then((r) => (r.ok ? r.arrayBuffer() : null)).then((buf) => (buf ? `@font-face{font-family:"${family}";src:url(data:font/ttf;base64,${b64(buf)}) format("truetype");font-weight:${f.weight};font-display:block}` : "")).catch(() => "")))).then((r) => r.join(""));
+}
+// A built-in graphic (a template, or one from the library) drawn live with the recorder's own HTML and clock, at the
+// size the render draws it, with the font files the recorder's browser has.
 function TemplateFrame({ graphicId, params, start, end, t, aspect }) {
   const out = outputSize(aspect, "preview"); const { width: w, height: h } = templateSize(out.width, out.height);
   // Phase 7: drawn over the clip's whole length, as the render records it (no longer stopped at 15 s).
   const dur = Math.max(0.5, end - start);
-  const doc = useMemo(() => playerGraphicHtml(graphicId, params || {}, w, h, dur), [graphicId, JSON.stringify(params || {}), w, h, dur]);
+  const family = typeof params?.font === "string" ? params.font : "Inter", weight = Number(params?.weight) || 800;
+  const [fontCss, setFontCss] = useState("");
+  useEffect(() => { let live = true; graphicFontCss(family, [weight, 400, 500, 600, 700]).then((c) => live && setFontCss(c)); return () => { live = false; }; }, [family, weight]);
+  const doc = useMemo(() => playerGraphicHtml(graphicId, params || {}, w, h, dur, fontCss), [graphicId, JSON.stringify(params || {}), w, h, dur, fontCss]);
   const box = useRef(null); const fr = useRef(null); const [k, setK] = useState(0);
   useEffect(() => { const el = box.current; if (!el) return; const ro = new ResizeObserver(() => setK(el.clientWidth / w)); ro.observe(el); setK(el.clientWidth / w); return () => ro.disconnect(); }, [w]);
   const post = () => fr.current?.contentWindow?.postMessage({ rendrrT: t }, "*");
@@ -508,6 +585,17 @@ function EditorInner({ project, reload, ai, keep }) {
   const [rtab, setRtabNow] = useState(keep.current.tab); const setRtab = (t) => { keep.current.tab = t; setRtabNow(t); }; const [verMenu, setVerMenu] = useState(false);
   useEffect(() => { const k = () => setVerMenu(false); window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
   const [zoom, setZoom] = useState(36);
+  // Engine Part 6: the waveform's peaks and the marks.
+  const [peaks, setPeaks] = useState({});
+  useEffect(() => {
+    let live = true;
+    const want = [...Object.entries(project.peaks || {}).map(([vid, url]) => ["v:" + vid, url, false]), ...Object.entries(project.audioMedia || {}).map(([k, url]) => ["a:" + k, url, true])];
+    for (const [k, url, dec] of want) loadPeaks(k, url, dec).then((p) => { if (live && p) setPeaks((x) => (x[k] ? x : { ...x, [k]: p })); });
+    return () => { live = false; };
+  }, [project]);
+  const [marks, setMarks] = useState([]); const [showMarks, setShowMarksNow] = useState(() => readFlag("rendrr.marks", true));
+  const setShowMarks = (v) => { writeFlag("rendrr.marks", v); setShowMarksNow(v); };
+  useEffect(() => { let live = true; api.getProjectMarks(project.id).then((m) => live && setMarks(Array.isArray(m) ? m : [])).catch(() => {}); return () => { live = false; }; }, [project.id, project.version]);
   const [tool, setTool] = useState("select"); const [snapOn, setSnapOn] = useState(true); const [addOpen, setAddOpen] = useState(false);
   const [render, setRender] = useState(null);
   const [share, setShare] = useState(false); const [help, setHelp] = useState(false); const [exportOpen, setExportOpen] = useState(false);
@@ -539,7 +627,7 @@ function EditorInner({ project, reload, ai, keep }) {
         transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript || []])),
         brollSeconds: Object.fromEntries(Object.entries(media.broll).map(([id, b]) => [id, b.seconds])),
         // Templates draw live; a custom graphic shows once its recorded file is there (as in the render).
-        graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, GRAPHIC_TEMPLATES.some((g) => g.id === c.graphicId) || !!media.graphicClips[c.id]])), luts });
+        graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, !!findTemplate(c.graphicId) || !!media.graphicClips[c.id]])), luts });
     } catch { return null; } // everything is cut
   }, [timeline, S.aspect, captionRules, media, others, luts]);
   const clock = useMemo(() => sequenceClock(plan || { parts: [], sound: [], outputSeconds: 0 }), [plan]);
@@ -567,7 +655,7 @@ function EditorInner({ project, reload, ai, keep }) {
   // ---- editing: every change is one of the connector's ops, run here on the editor's state ----
   const ectx = useMemo(() => ({ videoId: project.videoId, transcript, silences: project.silences || [], sceneCuts: [], duration: footDur, getStyle: () => undefined,
     getVideo: (id) => (others[id] ? { id, name: others[id].name, seconds: others[id].seconds || 0, ready: true } : undefined),
-    getGraphic: (id) => { const g = GRAPHIC_TEMPLATES.find((x) => x.id === id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
+    getGraphic: (id) => { const g = findTemplate(id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
     sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others]);
   const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
   const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export }, summary: r.summary }; };
@@ -611,7 +699,7 @@ function EditorInner({ project, reload, ai, keep }) {
   const lookClip = selV1 || lay.tracks.v1.find((c) => c.sourceVideoId === main) || null;
   const rotNow = lookClip?.rotate || 0; const frNow = lookClip?.framing || { scale: 1, x: 0, y: 0 };
   const onDelete = () => { const ids = selWords(); if (ids.length) { cutWords(ids); setWsel(null); } else if (sel) removeSel(); };
-  const fit = () => setZoom(Math.max(16, Math.min(90, Math.floor(((canvasRef.current?.parentElement?.clientWidth || 900) - 40) / Math.max(1, dur)))));
+  const fit = () => setZoom(Math.max(ZMIN, Math.min(ZMAX, Math.floor(((canvasRef.current?.parentElement?.clientWidth || 900) - 40) / Math.max(1, dur)))));
   // Clips of other videos: their preview copies, so they play here at once. Several go in one after another, from the
   // playhead (or the end), as one change.
   const addClip = async ({ items, at }) => {
@@ -771,7 +859,8 @@ function EditorInner({ project, reload, ai, keep }) {
     });
   };
   const canvasW = Math.max(900, px(dur) + 40);
-  const ticks = []; for (let t = 0; t <= dur; t += zoom < 30 ? 5 : zoom < 60 ? 2 : 1) ticks.push(t);
+  const tickStep = zoom < 8 ? 30 : zoom < 14 ? 10 : zoom < 30 ? 5 : zoom < 60 ? 2 : zoom < 150 ? 1 : zoom < 400 ? 0.5 : 0.2;
+  const ticks = []; for (let k = 0; k * tickStep <= dur; k++) ticks.push(r2(k * tickStep));
   const v1ById = useMemo(() => new Map(lay.tracks.v1.map((c) => [c.id, c])), [lay]);
   const clipText = (k, c) => {
     if (k === "v1") { const vn = c.sourceVideoId !== main ? others[c.sourceVideoId]?.name || "Other video" : ""; const sp = c.freeze ? " · freeze" : c.ramp?.length ? " · ramp" : (c.speed && c.speed !== 1 ? ` · ${c.speed}x` : "") + (c.reverse ? " · reversed" : ""); return (vn && vn !== c.label ? vn + " · " : "") + (c.label || vn) + (c.rotate ? ` ↻${c.rotate}°` : "") + sp; }
@@ -781,6 +870,12 @@ function EditorInner({ project, reload, ai, keep }) {
   };
   // Sound fades drawn on the clips, as they render (music without its own fades gets the automatic ones).
   const planAudio = useMemo(() => new Map((plan?.audio || []).map((a) => [a.clipId, a])), [plan]);
+  // What each sound track plays, for its waveform: the dialogue parts (their videos' measured peaks), music and effects.
+  const waveParts = useMemo(() => ({
+    a1: (plan?.sound || []).filter((x) => !x.silent).map((x) => ({ ...x, key: "v:" + x.videoId })),
+    a2: (plan?.audio || []).filter((a) => a.kind === "music").map((a) => ({ start: a.start, end: a.end, srcIn: 0, srcOut: a.end - a.start, key: "a:" + a.assetKey })),
+    a3: (plan?.audio || []).filter((a) => a.kind === "sfx").map((a) => ({ start: a.start, end: a.end, srcIn: 0, srcOut: a.end - a.start, key: "a:" + a.assetKey })),
+  }), [plan]);
   // Phase 5 marks: the transition on the cut before a V1 clip, and keyframes as diamonds where they sit in the clip.
   const marksOf = (k, c) => {
     if (k !== "v1" && k !== "v2" && k !== "v3") return null;
@@ -837,6 +932,7 @@ function EditorInner({ project, reload, ai, keep }) {
         <div class="tl-tools">
           <span class="row tool-set" role="radiogroup" aria-label="Tool">${TOOLS.map(([k, key, label, hint]) => html`<button key=${k} class=${"tool" + (tool === k ? " on" : "")} id=${"tool-" + k} role="radio" aria-checked=${tool === k} title=${label + " (" + key + "): " + hint} onClick=${() => setTool(k)}>${label}<span class="kbd">${key}</span></button>`)}</span>
           <button class="tool" id="snap" aria-pressed=${snapOn} title="Snapping (S): edges land on the playhead and on other clips' edges" onClick=${() => setSnapOn((x) => !x)}>${snapOn ? "Snap on" : "Snap off"}<span class="kbd">S</span></button>
+          <button class="tool" id="marks-toggle" aria-pressed=${showMarks} title=${showMarks ? "Hide the marks on the timeline" : "Show the marks on the timeline (silences, fillers, retakes and notes, as thin lines)"} onClick=${() => setShowMarks(!showMarks)}>${showMarks ? "Marks on" : "Marks off"}${marks.length ? html`<span class="kbd">${marks.length}</span>` : null}</button>
           <button class="tool" id="split" title="Split at the playhead (Cmd K)" onClick=${split}><${Icon} name="scissors" size="15" />Split<span class="kbd">⌘K</span></button>
           <button class="tool" id="add-clip" title="Add whole videos (the parts of a video filmed in parts) or a part of one to the sequence" onClick=${() => setAddOpen(true)}><${Icon} name="plus" size="15" />Add videos</button>
           <button class="tool" id="rotate" title=${"Turn " + (selV1 ? "this clip" : "the footage") + " 90° clockwise (footage filmed sideways)"} onClick=${() => doOp({ op: "set_rotation", degrees: (rotNow + 90) % 360, clipIds: lookIds })}><${Icon} name="refresh" size="15" />Rotate${rotNow ? " " + rotNow + "°" : ""}</button>
@@ -846,14 +942,16 @@ function EditorInner({ project, reload, ai, keep }) {
           ${selV1 && html`<button class="tool" id="mute-clip" title="Silence this clip's dialogue, or bring it back" onClick=${toggleMute}><${Icon} name="mic" size="15" />${selV1.audioMuted ? "Unmute" : "Mute"}</button>`}
           ${selClip && html`<span class="t-small muted" style="margin-left:4px">${selClip.label}</span>`}
         </div>
-        <div class="zoom"><button class="tool icon" aria-label="Zoom out" onClick=${() => setZoom((z) => Math.max(16, z - 8))}><${Icon} name="more" size="14" /></button><input id="tl-zoom" type="range" min="16" max="90" value=${zoom} onInput=${(e) => setZoom(+e.target.value)} aria-label="Timeline zoom" /><button class="tool icon" aria-label="Zoom in" onClick=${() => setZoom((z) => Math.min(90, z + 8))}><${Icon} name="plus" size="14" /></button><button class="tool" id="zoom-fit" title="Zoom to fit (Shift Z)" onClick=${fit}>Fit</button></div>
+        <div class="zoom"><button class="tool icon" aria-label="Zoom out" onClick=${() => setZoom((z) => Math.max(ZMIN, Math.round(z / 1.4)))}><${Icon} name="more" size="14" /></button><input id="tl-zoom" type="range" min="0" max="1000" value=${Math.round((1000 * Math.log(zoom / ZMIN)) / Math.log(ZMAX / ZMIN))} onInput=${(e) => setZoom(Math.round(ZMIN * Math.pow(ZMAX / ZMIN, +e.target.value / 1000)))} aria-label="Timeline zoom" /><button class="tool icon" aria-label="Zoom in" onClick=${() => setZoom((z) => Math.min(ZMAX, Math.round(z * 1.4)))}><${Icon} name="plus" size="14" /></button><button class="tool" id="zoom-fit" title="Zoom to fit (Shift Z)" onClick=${fit}>Fit</button></div>
       </div>
       <div class="tl-body">
-        <div class="tl-labels">${TRACKS.map(([k, l]) => html`<div key=${k} class=${k[0]} title=${TRACK_HINT[k]}><b>${l}</b><span>${TRACK_HINT[k]}</span></div>`)}</div>
+        <div class="tl-labels">${TRACKS.map(([k, l]) => html`<div key=${k} class=${k[0]} style=${TRACK_H[k] ? { height: TRACK_H[k] + "px" } : null} title=${TRACK_HINT[k]}><b>${l}</b><span>${TRACK_HINT[k]}</span></div>`)}</div>
         <div class="tl-scroll"><div class=${"tl-canvas tool-" + tool} ref=${canvasRef} style=${{ width: canvasW }} id="timeline">
-          <div class="ruler" onPointerDown=${scrubTimeline}>${ticks.map((t) => html`<span key=${t} style=${{ left: px(t) }}>${fmtTime(t)}</span>`)}${Array.from({ length: Math.floor(dur) + 1 }).map((_, t) => html`<i key=${"m" + t} class="mt" style=${{ left: px(t) }} />`)}
+          <div class="ruler" onPointerDown=${scrubTimeline}>${ticks.map((t) => html`<span key=${t} style=${{ left: px(t) }}>${tickStep < 1 ? fmtTime(t, true) : fmtTime(t)}</span>`)}${zoom >= 8 ? Array.from({ length: Math.floor(dur) + 1 }).map((_, t) => html`<i key=${"m" + t} class="mt" style=${{ left: px(t) }} />`) : null}
+            ${showMarks && marks.filter((m) => m.end > m.start + 0.05).map((m) => html`<i key=${"r" + m.id} class="tl-mrange" style=${{ left: px(m.start), width: Math.max(2, (m.end - m.start) * zoom), background: MARK_COLORS[m.source === "ai" ? "custom" : m.kind] }} />`)}
             ${comments.filter((c) => c.time > 0).map((c) => html`<div key=${c.id} class="cm" title=${c.text} onPointerDown=${(e) => { e.stopPropagation(); pb.seek(c.time); setRtab("comments"); }} style=${{ left: px(c.time) }} />`)}</div>
-          ${TRACKS.map(([k]) => html`<div key=${k} class=${"track " + k[0] + (k === "v1" ? " v1main" : "")} onPointerDown=${(e) => { setSel(null); scrubTimeline(e); }}>
+          ${TRACKS.map(([k]) => html`<div key=${k} class=${"track " + k[0] + " " + k + (k === "v1" ? " v1main" : "")} style=${TRACK_H[k] ? { height: TRACK_H[k] + "px" } : null} onPointerDown=${(e) => { setSel(null); scrubTimeline(e); }}>
+            ${k[0] === "a" && waveParts[k].length > 0 && html`<${WaveLayer} parts=${waveParts[k]} peaks=${peaks} zoom=${zoom} pad=${PAD} canvasRef=${canvasRef} height=${(TRACK_H[k] || 34) - 1} />`}
             ${lay.tracks[k].map((c) => { const gone = c.end - c.start < 0.01; const other = k === "v1" && c.sourceVideoId !== main;
               return html`<div key=${c.id} class=${"clip " + (k === "v1" ? "video" : k[0] === "a" ? "audio" : c.kind === "zoom" ? "fx" : "title") + (isOn(k, c) ? " on" : "") + (gone ? " gone" : "") + (other ? " other" : "") + (c.audioMuted ? " muted" : "")} data-clip=${c.id} data-track=${k}
                 title=${gone ? "Not in the edit: its footage is cut" : k === "a1" ? "Its V1 clip's dialogue. Alt-drag an edge for a J or L cut." : k === "v1" ? `${clipText(k, c)} · footage ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}s` : c.label}
@@ -861,6 +959,7 @@ function EditorInner({ project, reload, ai, keep }) {
                 onPointerDown=${clipDown(k, c)}>${fadesOf(k, c)}${marksOf(k, c)}<span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
             ${k === "v1" && drop != null && html`<div class="tl-drop" id="drop-marker" style=${{ left: px(drop) - 1 }} />`}
           </div>`)}
+          ${showMarks && marks.map((m) => html`<i key=${m.id} class="tl-mark" data-kind=${m.kind} title=${markNote(m)} style=${{ left: px(m.start) - 3, "--mk": MARK_COLORS[m.source === "ai" ? "custom" : m.kind] }} onPointerDown=${(e) => { e.stopPropagation(); pb.seek(m.start); }} />`)}
           <div class="playhead" id="playhead" style=${{ left: px(pb.time) - 1 }}><i /></div>
         </div></div>
       </div>

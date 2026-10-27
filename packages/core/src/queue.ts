@@ -44,6 +44,12 @@ export type BreakdownJob = { videoId: string };
 export type DeepJob = { videoId: string; force?: boolean };
 /** Engine Part 5: test_graphic. A few seconds of a graphic (a template or a custom graphic, with these params) over a
  *  video at a time, or a plain frame, at 540p. key: the test's hash (its files and result are kept under it a day). */
+/** One picture of a page drawn by the graphics browser (a library item's preview frame, a sheet of icons), stored at
+ *  `${PREFIX.tests}${userId}/${key}.png`. Sent on the test queue: `kind` tells it from a TestGraphicJob. */
+/** Engine Part 4.4: measure a reference video into the style file row styleFileId. */
+export type StyleJob = { styleFileId: string };
+export type SnapshotJob = { kind: "snapshot"; userId: string; key: string; html: string; width: number; height: number; at: number };
+export type SnapshotResult = { image: string; width: number; height: number; errors: string[]; ms: number };
 export type TestGraphicJob = { userId: string; key: string; graphicId: string; params?: Record<string, unknown>; at: number; seconds: number; length?: number; aspect: "16:9" | "9:16" | "1:1"; over?: { videoId: string; time: number } };
 /** Storage keys of the clip and its frames (at `times`, test seconds); how long the graphic took to record (0: it had
  *  a recording) and the whole test; what of the frame and of the face it covers (Engine Part 3's measures). */

@@ -8,7 +8,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { applyOp, buildInitialTimeline, cardBorderPicture, cardScreenBox, cardShadowPicture, gradientPicture, maskPicture, masksWithCard, type CardLook, type EditContext, type Op, type Snapshot } from "@rendrr/shared";
+import { applyOp, buildInitialTimeline, cardBorderPicture, cardScreenBox, cardShadowPicture, gradientPicture, maskPicture, masksWithCard, patternPicture, type CardLook, type EditContext, type Op, type Snapshot } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, planRender, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -111,6 +111,21 @@ describe("a card on a background, rendered", () => {
     const px = await rgbAt(await render(bp, "bgblur"), 1);
     const c = Array.from(px.subarray(12 * 3 + 12 * bp.width * 3, 12 * 3 + 12 * bp.width * 3 + 3));
     assert.ok(c.every((v, k) => Math.abs(v - BLUE[k]) <= 8), `the footage, blurred, fills the frame behind it (${c})`);
+  });
+
+  it("a pattern behind V1 (grid, dots, paper): the shared picture the player draws", async () => {
+    for (const kind of ["grid", "dots", "paper"] as const) {
+      const pattern = { kind, color: "#FDF2F8", ink: "#DB2777", size: 0.08 };
+      const snap = edit([{ op: "set_framing", ...FRAMING } as Op, { op: "set_background", pattern } as Op]);
+      const plan = planRender({ kind: "preview", snapshot: snap, transcript: [], source, videoId: "v" });
+      assert.ok(plan.operations.some((o) => o.startsWith(`Behind V1: ${kind} pattern`)), plan.operations.join(" | "));
+      const W = plan.width, H = plan.height, want = patternPicture(pattern, W, H);
+      const px = await rgbAt(await render(plan, `bg-${kind}`), 1);
+      // The top band above the card (framed 60%, 15% down): the pattern, within what the encoding changes.
+      let sum = 0, n = 0;
+      for (let y = 4; y < Math.round(H * 0.15); y++) for (let x = 4; x < W - 4; x++) for (let k = 0; k < 3; k++) { sum += Math.abs(px[(y * W + x) * 3 + k] - want[(y * W + x) * 3 + k]); n++; }
+      assert.ok(sum / n < 4, `${kind}: mean difference ${(sum / n).toFixed(2)} levels`);
+    }
   });
 
   it("two clips framed apart (each part drawn on its own): each card has its shadow, border and the background", async () => {

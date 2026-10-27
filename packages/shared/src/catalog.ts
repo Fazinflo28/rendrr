@@ -1,4 +1,5 @@
 import { PREFIX } from "./constants";
+import { LIBRARY_ITEMS } from "./library";
 
 // Royalty free by construction: these tracks are synthesised by scripts/make-assets.ts with FFmpeg.
 export type MusicTrack = { id: string; name: string; mood: string; bpm: number; seconds: number; key: string };
@@ -59,6 +60,13 @@ export const GRAPHIC_TEMPLATES: GraphicTemplate[] = [
   { id: "gt_logo_reveal", name: "Logo reveal", durationSec: 3, transparent: true,
     paramsSchema: obj({ text: str("Brand name shown with the logo", "Rendrr", 40), logo: { type: "string", description: "Use \"brand\" for the logo saved in Settings, or leave empty", default: "brand", maxLength: 20 }, color: color("Text colour", "#ffffff") }) },
 ];
+
+/** A built-in graphic drawn for each placement from its params: one of the six templates, or a graphic of the hidden
+ *  library (Engine Part 4.1). Everything that treats templates differently from custom graphics asks this. */
+export function findTemplate(id: string | null | undefined): GraphicTemplate | undefined {
+  if (!id) return undefined;
+  return GRAPHIC_TEMPLATES.find((t) => t.id === id) ?? LIBRARY_ITEMS.find((x) => x.id === id && x.place === "graphic");
+}
 
 // ---- custom graphic params (window.params) ----
 const jsonType = (v: unknown) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);

@@ -37,7 +37,11 @@ export const QUEUES = {
   heard: { name: "heard", timeoutMs: 10 * 60_000, attempts: 2 },
   // Engine Part 5: test_graphic, a few seconds of a graphic over the footage; the tool waits under 10 s for it.
   test: { name: "test", timeoutMs: 90_000, attempts: 1 },
+  // Engine Part 4.4: analyze_reference, a reference video measured into a style file (styleTimeoutMs).
+  style: { name: "style", timeoutMs: 30 * 60_000, attempts: 1 },
 } as const;
+/** A reference is read at about 7x its speed on the worker; the limit allows 0.5 s a second of video and 4 minutes. */
+export const styleTimeoutMs = (seconds: number) => 4 * 60_000 + Math.round(seconds * 500);
 /** The deeper measurements' limit grows with the footage: 0.6x its length (faces at 10 fps are most of it) plus a
  *  fixed 5 minutes; a 22-minute video gets 18 minutes. */
 export const deepTimeoutMs = (seconds: number) => 5 * 60_000 + Math.round(seconds * 600);

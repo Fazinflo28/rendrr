@@ -103,9 +103,36 @@ Object.assign(api, {
     const q = p.timeline ? { ...p, timeline: { ...p.timeline, tracks: { ...p.timeline.tracks, a2, v3 } } } : p;
     // A check can mark the footage as measured sideways (the real API sends what the deeper measurements found).
     const side = globalThis.__rendrrDemoSideways ? { sideways: { [p.videoId]: globalThis.__rendrrDemoSideways } } : {};
-    return { ...(src ? { ...q, video: { ...q.video, proxyUrl: src } } : q), audioMedia: { ...sounds }, ...side };
+    return { ...(src ? { ...q, video: { ...q.video, proxyUrl: src } } : q), audioMedia: { ...sounds }, ...side, peaks: { [p.videoId]: demoPeaks(p) } };
+  },
+  // Rendrr's marks where they play (the real API measures them): pauses between lines, a filler, and an AI's note.
+  getProjectMarks: async (id) => {
+    const p = await getProject(id);
+    const ws = (p.transcript || []).flatMap((l) => l.words || []);
+    const out = [];
+    for (let i = 1; i < ws.length; i++) { const gap = ws[i].t - (ws[i - 1].end ?? ws[i - 1].t + 0.3); if (gap > 0.35) out.push({ id: "sil_" + i, kind: "silence", source: "rendrr", label: null, note: null, start: ws[i - 1].end ?? ws[i - 1].t + 0.3, end: ws[i].t }); }
+    const um = ws.find((w) => /^(um|uh)/i.test(w.text)) || ws[3];
+    if (um) out.push({ id: "fil_1", kind: "filler", source: "rendrr", label: um.text, note: null, start: um.t, end: um.end ?? um.t + 0.3 });
+    if (ws[8]) out.push({ id: "mk_1", kind: "custom", source: "ai", label: "Hook ends", note: "Cut here for the short version", start: ws[8].t, end: ws[8].t });
+    return out;
   },
 });
+
+// The sound's 10 ms peaks for the waveform, as the deep measurements store them (4 bytes per 10 ms: min, max, dB,
+// speech): louder where the transcript has words, a soft room tone between, as a data URL.
+function demoPeaks(p) {
+  const secs = Math.max(5, p.timeline?.duration || 30), n = Math.ceil(secs * 100), b = new Uint8Array(n * 4);
+  const ws = (p.transcript || []).flatMap((l) => l.words || []);
+  let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < n; i++) {
+    const t = i / 100, w = ws.find((x) => t >= x.t && t < (x.end ?? x.t + 0.3));
+    const env = w ? 0.25 + 0.55 * Math.sin(Math.PI * Math.min(1, (t - w.t) / Math.max(0.05, (w.end ?? w.t + 0.3) - w.t))) : 0.02;
+    const a = Math.min(1, env * (0.6 + 0.4 * rnd()));
+    b[i * 4] = (-Math.round(a * 127)) & 255; b[i * 4 + 1] = Math.round(a * 127); b[i * 4 + 2] = (Math.round(20 * Math.log10(a + 1e-4))) & 255; b[i * 4 + 3] = w ? 220 : 10;
+  }
+  let bin = ""; for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  return "data:application/octet-stream;base64," + btoa(bin);
+}
 
 // Files you pick play in the editor (the transcript and timeline stay demo data). The build adds this hook
 // where the design's fake backend stores a picked file, so the real length and shape can be filled in.

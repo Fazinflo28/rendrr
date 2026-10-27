@@ -360,8 +360,18 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .clip { position: absolute; top: 4px; height: 26px; border-radius: 6px; background: var(--raised); display: flex; align-items: center; padding: 0 10px; font-size: 11px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; cursor: pointer; user-select: none; box-shadow: inset 0 0 0 1px var(--hair-strong); transition: box-shadow .1s; }
 .clip .cl { overflow: hidden; text-overflow: ellipsis; position: relative; }
 .clip.video { background: var(--ink); color: var(--bg); box-shadow: none; }
-.clip.audio { background: var(--surface); box-shadow: inset 0 0 0 1px var(--hair-strong); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='%23888' fill-opacity='.45'%3E%3Crect x='1' y='9' width='2' height='6' rx='1'/%3E%3Crect x='5' y='6' width='2' height='12' rx='1'/%3E%3Crect x='9' y='10' width='2' height='4' rx='1'/%3E%3Crect x='13' y='4' width='2' height='16' rx='1'/%3E%3Crect x='17' y='8' width='2' height='8' rx='1'/%3E%3Crect x='21' y='7' width='2' height='10' rx='1'/%3E%3C/g%3E%3C/svg%3E"); background-repeat: repeat-x; background-position: 0 50%; }
-.clip.audio .cl { background: var(--surface); padding: 0 6px; border-radius: 4px; margin-left: -6px; }
+/* Engine Part 6: sound clips are see-through boxes over their real waveform (the track's canvas, drawn from the 10 ms
+   peaks); the label sits at the top left. */
+.clip.audio { background: color-mix(in srgb, var(--surface) 30%, transparent); box-shadow: inset 0 0 0 1px var(--hair-strong); align-items: flex-start; padding-top: 2px; }
+.clip.audio .cl { background: color-mix(in srgb, var(--surface) 85%, transparent); padding: 0 6px; border-radius: 4px; margin-left: -6px; line-height: 16px; font-size: 10.5px; }
+.track.a .clip { top: 3px; bottom: 3px; height: auto; }
+.track .wave { position: absolute; top: 0; pointer-events: none; --wave: #4f9fe0; --wave-off: rgba(136,136,136,.45); }
+.track.a2 .wave { --wave: #46a758; } .track.a3 .wave { --wave: #e2a336; }
+/* Marks: a thin coloured line through the tracks (a 7 px wide hover area), a tint in the ruler over a stretch. */
+.tl-canvas .tl-mark { position: absolute; top: 24px; bottom: 0; width: 7px; z-index: 3; cursor: pointer; }
+.tl-canvas .tl-mark::after { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: var(--mk, #999); opacity: .75; }
+.tl-canvas .tl-mark:hover::after { width: 2px; opacity: 1; }
+.ruler .tl-mrange { position: absolute; bottom: 0; height: 4px; opacity: .55; pointer-events: none; border-radius: 1px; }
 .clip.title { background: var(--surface); box-shadow: inset 0 0 0 1px var(--hair-strong); }
 .clip.title::before { content: ""; width: 3px; height: 14px; border-radius: 2px; background: var(--ink); margin-right: 7px; flex: none; }
 .clip.fx { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--hair-strong); border: 0; background-image: repeating-linear-gradient(135deg, transparent 0 6px, var(--hair) 6px 7px); }
