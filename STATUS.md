@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 26 October 2026 (UTC). New: Rendrr is the engine, the AI is the editor. Part 1: marks instead of automatic edits (see "Rendrr is the engine" below). Before that: long graphics, reusable graphics, fonts, quick tool calls, the graphic check and face framing (see "Faster graphics and framing" below). Before that: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
+Last updated: 27 October 2026 (UTC). New: one edit from several videos (see "Several videos in one edit" below). Before that: Rendrr is the engine, the AI is the editor. Part 1: marks instead of automatic edits (see "Rendrr is the engine" below). Before that: long graphics, reusable graphics, fonts, quick tool calls, the graphic check and face framing (see "Faster graphics and framing" below). Before that: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
 
 ## 1. Links
 
@@ -20,6 +20,18 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
+
+## Several videos in one edit (27 October)
+
+For a video filmed in parts. Adding many videos at once already worked (Add footage takes several files, or several videos in Drive); this makes one edit of them.
+
+| What | Where | Tests |
+|---|---|---|
+| Library › Select: click videos in the order they play (each gets its number), then Make one edit. A video still processing, or a reference, is refused with a message. | `web/src/rendrr/screens.js` | `web/demo/multi-video.mjs` |
+| New edit: tick one video or several; the order list moves them up or down or leaves one out. The parts play whole, back to back; the first is the edit's footage. Up to 20 at the start. | `screens.js` (`VideoOrderPicker`, `NewProjectModal`), `api/src/services/projects.ts`, `shared/src/ops.ts` (`buildRawSequence`) | `shared/test/multi-video.test.ts`, `api/test/multi-video.test.ts` |
+| Editor › Add videos: several whole videos at once, in order, at the end or the playhead (or a part of one, as before). One change, one undo. | `web/src/rendrr/editor.js` | `web/demo/multi-video.mjs` |
+| Connector: `create_project` takes `videoIds` (in order); the result names each part's clip. | `shared/src/mcpTools.ts`, `api/src/tools.ts` | `api/test/multi-video.test.ts` |
+| Deleting a video now also names the edits that play it on V1 (a part of a several-video edit), not only the edits made from it. | `api/src/routes/library.ts` | `api/test/multi-video.test.ts` |
 
 ## Rendrr is the engine (26 October, night)
 

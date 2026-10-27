@@ -16,14 +16,16 @@ export const ReferenceInput = z.object({ kind: z.enum(REFERENCE_KINDS), id });
 export type ReferenceRef = z.infer<typeof ReferenceInput> & { name: string };
 
 export const CreateProjectInput = z.object({
-  videoId: z.string({ required_error: "Pick footage first." }).min(1, "Pick footage first.").max(80),
+  videoId: z.string().min(1, "Pick footage first.").max(80).optional(),
+  /** Several videos in order (a video filmed in parts): the first is the edit's footage, the others follow it. */
+  videoIds: z.array(z.string().min(1).max(80)).min(1, "Pick footage first.").max(20, "An edit starts from up to 20 videos; add more in the editor.").optional(),
   styleId: id.optional().nullable(), // attached as a style reference (the connector's create_project), not applied
   reference: ReferenceInput.optional().nullable(),
   name: z.string().max(200).optional().nullable(),
   folderId: id.optional().nullable(),
   cut: z.array(z.string().max(40)).max(50_000).optional(),
   aspect: z.enum(ASPECTS).optional(),
-});
+}).refine((x) => !!x.videoId || !!x.videoIds?.length, { message: "Pick footage first.", path: ["videoId"] });
 
 export const UpdateProjectInput = z.object({
   name: z.string().trim().min(1).max(200).optional(),

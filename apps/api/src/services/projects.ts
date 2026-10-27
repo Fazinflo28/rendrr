@@ -1,6 +1,6 @@
 import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, signGet } from "@rendrr/core";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, asSequence, aspectFor, buildRawTimeline, catalogMusic, catalogSfx, GRAPHIC_TEMPLATES, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { allWords, asSequence, aspectFor, buildRawSequence, catalogMusic, catalogSfx, GRAPHIC_TEMPLATES, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
@@ -38,12 +38,21 @@ export async function resolveReference(userId: string, ref: { kind: ReferenceRef
 /**
  * Creates an edit. Version 1 is the footage as recorded and nothing else: no style, no captions, no cuts (only words
  * the user removed on the footage page). A reference (a style, a gallery recipe or a reference video; `styleId` from
- * the connector is a style reference) is attached for the user's AI to read. Rendrr never applies it.
+ * the connector is a style reference) is attached for the user's AI to read. Rendrr never applies it. Several videos
+ * (videoIds, in order): the first is the edit's footage, the others follow it whole on V1.
  */
-export async function createProject(userId: string, input: { videoId: string; styleId?: string | null; reference?: { kind: ReferenceRef["kind"]; id: string } | null; name?: string | null; folderId?: string | null; cut?: string[]; aspect?: string }, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}) {
-  const v = await prisma.video.findUnique({ where: { id: input.videoId }, include: { analysis: true } });
-  if (!v || v.userId !== userId) throw new AppError("Pick footage first.", 400, "no-footage");
-  if (v.status !== "ready" || !v.analysis) throw new AppError(`"${v.name}" is not ready yet. Wait until it finishes processing.`, 409, "not-ready");
+export async function createProject(userId: string, input: { videoId?: string; videoIds?: string[]; styleId?: string | null; reference?: { kind: ReferenceRef["kind"]; id: string } | null; name?: string | null; folderId?: string | null; cut?: string[]; aspect?: string }, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}) {
+  // One video, or several in order (a video filmed in parts): the first is the edit's footage.
+  const ids = Array.from(new Set(input.videoIds?.length ? input.videoIds : input.videoId ? [input.videoId] : []));
+  if (!ids.length) throw new AppError("Pick footage first.", 400, "no-footage");
+  const found = await prisma.video.findMany({ where: { id: { in: ids }, userId }, include: { analysis: true } });
+  const vids = ids.map((id) => found.find((v) => v.id === id));
+  if (vids.some((v) => !v)) throw new AppError(ids.length > 1 ? "One of those videos is not in your library any more. Pick them again." : "Pick footage first.", 400, "no-footage");
+  const waiting = vids.filter((v) => v!.status !== "ready" || !v!.analysis);
+  if (waiting.length) throw new AppError(`${waiting.map((v) => `"${v!.name}"`).join(", ")} ${waiting.length === 1 ? "is" : "are"} not ready yet. Wait until ${waiting.length === 1 ? "it finishes" : "they finish"} processing.`, 409, "not-ready");
+  const refs = vids.filter((v) => v!.kind === "reference" && ids.length > 1);
+  if (refs.length) throw new AppError(`${refs.map((v) => `"${v!.name}"`).join(", ")} ${refs.length === 1 ? "is a reference" : "are references"}: an edit is made of footage. Leave ${refs.length === 1 ? "it" : "them"} out, or attach one as the reference.`, 400, "reference-as-footage");
+  const [v, ...more] = vids as NonNullable<(typeof vids)[number]>[];
   const asked = input.reference ?? (input.styleId ? { kind: "style" as const, id: input.styleId } : null);
   const reference = asked ? await resolveReference(userId, asked) : null;
   let folderId = input.folderId || null;
@@ -52,16 +61,17 @@ export async function createProject(userId: string, input: { videoId: string; st
     if (!f || f.userId !== userId) folderId = null;
   }
   folderId ||= await defaultFolderId(userId);
-  const transcript = v.analysis.transcript as unknown as Transcript;
-  const timeline = buildRawTimeline(transcript, v.seconds, Array.isArray(input.cut) ? input.cut : [], v.id);
+  const transcript = v.analysis!.transcript as unknown as Transcript;
+  const timeline = buildRawSequence(transcript, v.seconds, Array.isArray(input.cut) ? input.cut : [], v.id, more.map((m) => ({ id: m.id, name: m.name, seconds: m.seconds, ready: true })));
   const aspect = input.aspect || aspectFor(v.orientation);
-  const name = (input.name || "").trim() || v.name + " edit";
+  const name = (input.name || "").trim() || (more.length ? `${v.name} + ${more.length} more` : v.name + " edit");
   const snap: Snapshot = { timeline, name, aspect: aspect as Snapshot["aspect"], styleId: null };
+  const note = more.length ? `${vids.length} videos as recorded, back to back` : input.cut?.length ? `First cut (${input.cut.length} words removed)` : "Footage as recorded";
   const p = await prisma.project.create({
     data: {
       userId, folderId, videoId: v.id, styleId: null, ...(reference ? { reference } : {}), name, aspect, status: "Draft", art: v.art,
       timeline: timeline as unknown as Prisma.InputJsonValue, currentVersion: 1, outputSeconds: Math.round(outputDuration(timeline, allWords(transcript)) * 100) / 100,
-      versions: { create: { v: 1, note: input.cut?.length ? `First cut (${input.cut.length} words removed)` : "Footage as recorded", timeline: snap as unknown as Prisma.InputJsonValue, createdBy: opts.actorKind || "user", sealed: true } },
+      versions: { create: { v: 1, note, timeline: snap as unknown as Prisma.InputJsonValue, createdBy: opts.actorKind || "user", sealed: true } },
     },
   });
   await prisma.folder.update({ where: { id: folderId }, data: { updatedAt: new Date() } });

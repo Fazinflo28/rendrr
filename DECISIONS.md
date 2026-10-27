@@ -300,3 +300,14 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | `apply_style` | Looks only (D1): its captions (on, look, full caption style; the style's word counts shape them as before). It no longer rebuilds the clips, trims, cuts pauses or fillers, or adds zooms, music or sound effects; it lists those rules in its result for the AI. Clips an older style added stay until the AI removes them. |
 | Cut silences button | Removed from the editor (D2). Cutting by hand (split, delete, trim) stays. |
 
+## Several videos in one edit (27 October)
+
+| Question | Decision |
+|---|---|
+| What an edit of several videos is | The first video is the edit's footage (`Project.videoId`: its transcript, cut words, aspect and thumbnail); each other video follows it on V1 as one whole clip, back to back, in the order picked, made by the same `add_clip` op the editor and the AI use. No new storage: a V1 sequence already plays clips of any video (Phase 2), with their own captions, sound and render source. |
+| Order | The order clicked in the Library, changed in the new edit window (up, down, leave out). The AI or the user reorders later with move_clip or by dragging. |
+| Limits | Up to 20 videos when the edit is made (more can be added in the editor). Every one must be ready; a reference video is refused in a several-video edit (it is a style to copy). |
+| Name | "<first> + N more" unless named; v1 says "N videos as recorded, back to back". |
+| Deleting a part | Treated like deleting the footage: the edits that play it on V1 are named first, and go with it only when the user confirms (found with `jsonb_path_exists` on the stored V1). |
+| Demo build | The design's fake backend makes an edit of one video, so the preview opens the first of them. |
+

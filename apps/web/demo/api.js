@@ -6,7 +6,7 @@ import { breakdownAsText, buildBreakdown } from "../../../packages/shared/src/br
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const playable = {}; // videoId -> blob URL of the file picked in this tab, so the editor can play it
 
-const getProject = api.getProject;
+const getProject = api.getProject, createProject = api.createProject;
 const getVideo = api.getVideo, listVideos = api.listVideos, addFromDrive = api.addFromDrive, addFromComputer = api.addFromComputer;
 const kinds = {}; // videoId -> "footage" | "reference" (the design's fake backend has no references)
 const withKind = (v) => (v ? { ...v, kind: kinds[v.id] || "footage" } : v);
@@ -88,6 +88,8 @@ Object.assign(api, {
   saveFinalToDrive: async () => { await wait(900); return { ok: true, message: "Saved to your Google Drive (demo)." }; },
   getVideo: async (id) => { const v = withKind(await getVideo(id)); return { ...v, proxyUrl: playable[id] || null, breakdown: v.status === "ready" ? demoBreakdown(v) : null }; },
   listVideos: async () => { const vs = await listVideos(); return Array.isArray(vs) ? vs.map(withKind) : vs; },
+  // The design's fake backend makes an edit of one video: several (videoIds) start from the first in the preview.
+  createProject: async ({ videoIds, videoId, ...rest }) => createProject({ ...rest, videoId: (Array.isArray(videoIds) && videoIds[0]) || videoId }),
   updateVideo: async (id, body) => { await wait(300); if (body.kind) kinds[id] = body.kind; return withKind(await getVideo(id)); },
   addFromDrive: async (ids, kind) => { const out = await addFromDrive(ids); if (kind) out.forEach((v) => { kinds[v.id] = kind; }); return out.map(withKind); },
   addFromComputer: async (files, onProgress, kind) => { const out = await addFromComputer(files, onProgress); if (kind) (out || []).forEach((v) => { kinds[v.id] = kind; }); return (out || []).map(withKind); },

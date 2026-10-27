@@ -3,7 +3,7 @@
 // edits, autosave conflicts, real undo/restore, the rendered preview plays in the player, real downloads.
 // Phase 2: the edit is a sequence (clips of any video, in any order, J/L cuts) with Premiere's tools.
 import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, turnedVideoStyle, Art, useNav, useApp } from "./ui";
-import { StyleArt, CreateLinkModal, ReferencePicker } from "./screens";
+import { StyleArt, CreateLinkModal, ReferencePicker, VideoOrderPicker } from "./screens";
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
 import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./color";
@@ -407,21 +407,26 @@ function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp }) {
   </div></div>`;
 }
 
-// Puts a clip of any video into the sequence (the connector's add_clip).
+// Puts whole videos (the parts of a video filmed in parts, in order) or a part of one video into the sequence (the
+// connector's add_clip).
 function AddClipModal({ main, at, onAdd, onClose }) {
   const q = useAsync(() => api.listVideos(), []);
   const list = [main, ...(Array.isArray(q.data) ? q.data : []).filter((v) => v.id !== main.id && v.status === "ready" && v.kind !== "reference")];
+  const [mode, setMode] = useState("whole"); const [ids, setIds] = useState([]);
   const [vid, setVid] = useState(main.id);
   const v = list.find((x) => x.id === vid) || main;
-  const [from, setFrom] = useState(0); const [to, setTo] = useState(Math.min(5, main.seconds || 5)); const [where, setWhere] = useState("playhead");
-  const ok = to - from >= 0.1 && from >= 0 && to <= (v.seconds || 0) + 0.05;
-  return html`<${Modal} title="Add a clip" sub="Any video of yours, any part of it. It goes into the sequence and the edit makes room." onClose=${onClose}
-    footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="add-clip-go" icon="plus" disabled=${!ok} onClick=${() => onAdd({ video: v, from: r2(from), to: r2(to), at: where === "playhead" ? at : undefined })}>Add clip<//>`}>
+  const [from, setFrom] = useState(0); const [to, setTo] = useState(main.seconds || 5); const [where, setWhere] = useState("end");
+  const ok = mode === "whole" ? ids.length > 0 : to - from >= 0.1 && from >= 0 && to <= (v.seconds || 0) + 0.05;
+  const go_ = () => onAdd({ items: mode === "whole" ? ids.map((id) => { const x = list.find((y) => y.id === id); return { video: x, from: 0, to: r2(x.seconds || 0) }; }) : [{ video: v, from: r2(from), to: r2(to) }], at: where === "playhead" ? at : undefined });
+  return html`<${Modal} title="Add videos" sub="Whole videos, in the order they play (a video filmed in parts), or a part of one. They go into the sequence and the edit makes room." onClose=${onClose}
+    footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="add-clip-go" icon="plus" disabled=${!ok} onClick=${go_}>${mode === "whole" && ids.length > 1 ? "Add " + ids.length + " videos" : mode === "whole" ? "Add video" : "Add clip"}<//>`}>
     <div class="col" style="gap:12px" id="add-clip-form">
-      <label class="t-small" style="display:grid;gap:4px">Video<select class="input sm" id="add-clip-video" value=${vid} onChange=${(e) => { setVid(e.target.value); const nv = list.find((x) => x.id === e.target.value); if (nv) { setFrom(0); setTo(Math.min(5, nv.seconds || 5)); } }}>${list.map((x) => html`<option key=${x.id} value=${x.id}>${x.id === main.id ? x.name + " (this edit's footage)" : x.name} · ${fmtTime(x.seconds || 0)}</option>`)}</select></label>
+      <div class="row" style="gap:12px">${[["whole", "Whole videos"], ["part", "A part of a video"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-mode" data-mode=${k} checked=${mode === k} onChange=${() => setMode(k)} />${l}</label>`)}</div>
+      ${mode === "whole" ? html`<${VideoOrderPicker} id="add-videos" videos=${list.map((x) => (x.id === main.id ? { ...x, name: x.name + " (this edit's footage)" } : x))} value=${ids} onChange=${setIds} />`
+      : html`<label class="t-small" style="display:grid;gap:4px">Video<select class="input sm" id="add-clip-video" value=${vid} onChange=${(e) => { setVid(e.target.value); const nv = list.find((x) => x.id === e.target.value); if (nv) { setFrom(0); setTo(nv.seconds || 5); } }}>${list.map((x) => html`<option key=${x.id} value=${x.id}>${x.id === main.id ? x.name + " (this edit's footage)" : x.name} · ${fmtTime(x.seconds || 0)}</option>`)}</select></label>
       <div class="row" style="gap:8px"><label class="t-small grow" style="display:grid;gap:4px">From (s)<input class="input sm" id="add-clip-from" type="number" min="0" step="0.1" value=${from} onInput=${(e) => setFrom(+e.target.value)} /></label><label class="t-small grow" style="display:grid;gap:4px">To (s)<input class="input sm" id="add-clip-to" type="number" min="0" step="0.1" value=${to} onInput=${(e) => setTo(+e.target.value)} /></label></div>
-      <div class="row" style="gap:12px">${[["playhead", "At the playhead (" + fmtTime(at) + ")"], ["end", "At the end"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-where" data-where=${k} checked=${where === k} onChange=${() => setWhere(k)} />${l}</label>`)}</div>
-      ${!ok && html`<p class="t-small muted" role="alert">Pick a part at least 0.1 s long inside the video (${fmtTime(v.seconds || 0)}).</p>`}
+      ${!ok && html`<p class="t-small muted" role="alert">Pick a part at least 0.1 s long inside the video (${fmtTime(v.seconds || 0)}).</p>`}`}
+      <div class="row" style="gap:12px">${[["end", "At the end"], ["playhead", "At the playhead (" + fmtTime(at) + ")"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-where" data-where=${k} checked=${where === k} onChange=${() => setWhere(k)} />${l}</label>`)}</div>
     </div>
   <//>`;
 }
@@ -573,18 +578,29 @@ function EditorInner({ project, reload, ai, keep }) {
   const rotNow = lookClip?.rotate || 0; const frNow = lookClip?.framing || { scale: 1, x: 0, y: 0 };
   const onDelete = () => { const ids = selWords(); if (ids.length) { cutWords(ids); setWsel(null); } else if (sel) removeSel(); };
   const fit = () => setZoom(Math.max(16, Math.min(90, Math.floor(((canvasRef.current?.parentElement?.clientWidth || 900) - 40) / Math.max(1, dur)))));
-  // A clip of another video: its preview copy and words, so it plays here at once.
-  const addClip = async ({ video, from, to, at }) => {
+  // Clips of other videos: their preview copies, so they play here at once. Several go in one after another, from the
+  // playhead (or the end), as one change.
+  const addClip = async ({ items, at }) => {
     setAddOpen(false);
-    if (video.id !== main && !others[video.id]) {
+    for (const { video } of items) {
+      if (video.id === main || others[video.id]) continue;
       try { const v = await api.getVideo(video.id); setAdded((a) => ({ ...a, [video.id]: { name: v.name, seconds: v.seconds, width: v.width, height: v.height, url: v.proxyUrl || null, transcript: [] } })); }
       catch (e) { toast(e.message); return; }
     }
-    // The op needs to know the video: run it with this video known.
+    // The ops need to know the videos: run them with these videos known.
     try {
-      const ctx2 = { ...ectx, getVideo: (id) => (id === video.id ? { id, name: video.name, seconds: video.seconds || 0, ready: true } : ectx.getVideo(id)) };
-      const r = applyOp(snapOf(H.state), { op: "add_clip", videoId: video.id === main ? undefined : video.id, from, to, ...(at != null ? { at: r2(at) } : {}), label: video.id === main ? undefined : video.name }, ctx2);
-      H.commit((s) => ({ ...s, cut: r.snap.timeline.cut, tracks: r.snap.timeline.tracks })); toast(say(r.summary), { icon: "plus" });
+      const known = Object.fromEntries(items.map(({ video }) => [video.id, video]));
+      const ctx2 = { ...ectx, getVideo: (id) => (known[id] ? { id, name: known[id].name, seconds: known[id].seconds || 0, ready: true } : ectx.getVideo(id)) };
+      let snap = snapOf(H.state), index; const said = [];
+      for (const [k, { video, from, to }] of items.entries()) {
+        const before = new Set(snap.timeline.tracks.v1.map((c) => c.id));
+        const place = k > 0 ? { index } : at != null ? { at: r2(at) } : {};
+        const r = applyOp(snap, { op: "add_clip", videoId: video.id === main ? undefined : video.id, from, to, ...place, label: video.id === main ? undefined : video.name }, ctx2);
+        snap = r.snap; said.push(r.summary);
+        index = snap.timeline.tracks.v1.findIndex((c) => !before.has(c.id)) + 1; // right after the clip just added
+      }
+      H.commit((s) => ({ ...s, cut: snap.timeline.cut, tracks: snap.timeline.tracks }));
+      toast(items.length === 1 ? say(said[0]) : "Added " + items.length + " videos, one after another", { icon: "plus" });
     } catch (e) { toast(e.message); }
   };
 
@@ -787,7 +803,7 @@ function EditorInner({ project, reload, ai, keep }) {
           <span class="row tool-set" role="radiogroup" aria-label="Tool">${TOOLS.map(([k, key, label, hint]) => html`<button key=${k} class=${"tool" + (tool === k ? " on" : "")} id=${"tool-" + k} role="radio" aria-checked=${tool === k} title=${label + " (" + key + "): " + hint} onClick=${() => setTool(k)}>${label}<span class="kbd">${key}</span></button>`)}</span>
           <button class="tool" id="snap" aria-pressed=${snapOn} title="Snapping (S): edges land on the playhead and on other clips' edges" onClick=${() => setSnapOn((x) => !x)}>${snapOn ? "Snap on" : "Snap off"}<span class="kbd">S</span></button>
           <button class="tool" id="split" title="Split at the playhead (Cmd K)" onClick=${split}><${Icon} name="scissors" size="15" />Split<span class="kbd">⌘K</span></button>
-          <button class="tool" id="add-clip" title="Add a clip of any video to the sequence" onClick=${() => setAddOpen(true)}><${Icon} name="plus" size="15" />Add clip</button>
+          <button class="tool" id="add-clip" title="Add whole videos (the parts of a video filmed in parts) or a part of one to the sequence" onClick=${() => setAddOpen(true)}><${Icon} name="plus" size="15" />Add videos</button>
           <button class="tool" id="rotate" title=${"Turn " + (selV1 ? "this clip" : "the footage") + " 90° clockwise (footage filmed sideways)"} onClick=${() => doOp({ op: "set_rotation", degrees: (rotNow + 90) % 360, clipIds: lookIds })}><${Icon} name="refresh" size="15" />Rotate${rotNow ? " " + rotNow + "°" : ""}</button>
           <span style="position:relative"><button class="tool" id="frame-btn" title=${"Position and scale of " + (selV1 ? "this clip" : "the footage")} onClick=${() => setFrameOpen((o) => !o)}><${Icon} name="image" size="15" />Frame</button>
             ${frameOpen && html`<div class="menu" id="frame-pop" style="left:0;right:auto;top:36px;min-width:240px;padding:12px;display:grid;gap:8px"><span class="t-small muted">${selV1 ? "This clip" : "Every clip of the footage"}</span>${[["scale", "Scale", 0.5, 2, 0.01], ["x", "Left / right", -0.5, 0.5, 0.01], ["y", "Up / down", -0.5, 0.5, 0.01]].map(([k, l, lo, hi, st]) => html`<label key=${k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${frNow[k]}</span><input type="range" data-frame=${k} min=${lo} max=${hi} step=${st} value=${frNow[k]} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => liveOp(H.state, { op: "set_framing", [k]: +e.target.value, clipIds: lookIds })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}<${Btn} kind="ghost" size="xs" onClick=${() => doOp({ op: "set_framing", scale: 1, x: 0, y: 0, clipIds: lookIds }, false)}>Reset<//></div>`}</span>

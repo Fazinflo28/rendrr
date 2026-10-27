@@ -252,6 +252,16 @@ export function buildRawTimeline(tr: Transcript, duration: number, cut: string[]
   return { ...buildInitialTimeline(tr, duration, "clean", cut, videoId), captionsOn: false };
 }
 
+/** A new edit of several videos (a video filmed in parts), in their order: the first is the edit's footage, the others
+ *  follow it on V1, each whole, back to back, as add_clip puts them. Nothing else is applied. */
+export function buildRawSequence(tr: Transcript, duration: number, cut: string[], videoId: string, more: VideoLite[]): Timeline {
+  const tl = buildRawTimeline(tr, duration, cut, videoId);
+  if (!more.length) return tl;
+  const ctx: EditContext = { videoId, transcript: tr, silences: [], sceneCuts: [], duration, getStyle: () => undefined, getVideo: (id) => more.find((v) => v.id === id) };
+  const ops = more.map((v) => ({ op: "add_clip" as const, videoId: v.id, from: 0, to: rT(v.seconds), label: v.name }));
+  return applyOp({ timeline: tl, name: "", aspect: "16:9", styleId: null }, { op: "batch", ops } as Op, ctx).snap.timeline;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Helpers used by ops.
 // ---------------------------------------------------------------------------------------------

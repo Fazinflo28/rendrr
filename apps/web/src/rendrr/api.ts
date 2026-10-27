@@ -227,9 +227,11 @@ export const api: any = {
   listProjects: async () => emptyIf(await get("/projects")),
   getProject: async (id: string) => { const p = await get(`/projects/${enc(id)}`); versions[id] = p.version; return p; },
   // A new edit is the raw footage. `reference` ({ kind: style | recipe | video, id }) is attached for the AI, never applied.
-  createProject: async ({ videoId, reference, name, folderId, cut, aspect }: any) => {
-    if (!videoId) throw fail("Pick footage first.");
-    const p = await post("/projects", { videoId, reference: reference ? { kind: reference.kind, id: reference.id } : undefined, name: name || undefined, folderId: folderId || undefined, cut: Array.isArray(cut) ? cut : undefined, aspect: aspect || undefined });
+  // videoIds: several videos in order (a video filmed in parts); the first is the edit's footage.
+  createProject: async ({ videoId, videoIds, reference, name, folderId, cut, aspect }: any) => {
+    const ids = Array.isArray(videoIds) && videoIds.length ? videoIds : videoId ? [videoId] : [];
+    if (!ids.length) throw fail("Pick footage first.");
+    const p = await post("/projects", { ...(ids.length > 1 ? { videoIds: ids } : { videoId: ids[0] }), reference: reference ? { kind: reference.kind, id: reference.id } : undefined, name: name || undefined, folderId: folderId || undefined, cut: Array.isArray(cut) ? cut : undefined, aspect: aspect || undefined });
     versions[p.id] = p.version;
     return p;
   },

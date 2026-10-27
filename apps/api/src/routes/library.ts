@@ -126,7 +126,9 @@ export default async function library(app: FastifyInstance) {
     // ?edits=delete: the edits made from it go too (the app asks first, naming them). Without it, footage in use stays.
     a.delete("/videos/:id", async (req) => {
       const v = await ownedVideo(req.user!.id, (req.params as { id: string }).id);
-      const edits = await prisma.project.findMany({ where: { videoId: v.id, deletedAt: null }, select: { id: true, name: true }, orderBy: { updatedAt: "desc" } });
+      // Edits made from it, and edits that play it on V1 (one of the parts of a several-video edit, an added clip).
+      const onV1 = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Project" WHERE "userId" = ${v.userId} AND "deletedAt" IS NULL AND jsonb_path_exists(timeline, '$.tracks.v1[*] ? (@.sourceVideoId == $vid)', jsonb_build_object('vid', ${v.id}::text))`;
+      const edits = await prisma.project.findMany({ where: { OR: [{ videoId: v.id }, { id: { in: onV1.map((r) => r.id) } }], deletedAt: null }, select: { id: true, name: true }, orderBy: { updatedAt: "desc" } });
       if (edits.length && (req.query as { edits?: string }).edits !== "delete") {
         const names = edits.slice(0, 5).map((p) => `"${p.name}"`).join(", ") + (edits.length > 5 ? ` and ${edits.length - 5} more` : "");
         throw new AppError(`"${v.name}" is used by ${edits.length} ${edits.length === 1 ? "edit" : "edits"}: ${names}. Deleting it deletes ${edits.length === 1 ? "that edit" : "those edits"} too.`, 409, "in-use");
