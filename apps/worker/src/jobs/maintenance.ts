@@ -49,6 +49,14 @@ export async function cleanup() {
     console.warn("[cleanup] temp-raw sweep:", (e as Error).message);
   }
 
+  // test_graphic's clips and frames: a day.
+  try {
+    const tests = (await listPrefix(PREFIX.tests, 5000)).filter((o) => o.lastModified < new Date(now.getTime() - DAY_MS)).map((o) => o.key);
+    await deleteObjects(tests);
+  } catch (e) {
+    console.warn("[cleanup] tests sweep:", (e as Error).message);
+  }
+
   const oldPreviews = await prisma.render.findMany({ where: { kind: "preview", outputKey: { not: null }, createdAt: { lt: new Date(now.getTime() - PREVIEW_RETENTION_DAYS * DAY_MS) } } });
   for (const r of oldPreviews) {
     await deleteObjects([r.outputKey, ...((r.framesKeys as string[]) || [])]);

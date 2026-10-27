@@ -35,6 +35,8 @@ export const QUEUES = {
   deep: { name: "deep", timeoutMs: 10 * 60_000, attempts: 2 },
   // The transcriber gives up after 8 minutes; this is the job's limit around it.
   heard: { name: "heard", timeoutMs: 10 * 60_000, attempts: 2 },
+  // Engine Part 5: test_graphic, a few seconds of a graphic over the footage; the tool waits under 10 s for it.
+  test: { name: "test", timeoutMs: 90_000, attempts: 1 },
 } as const;
 /** The deeper measurements' limit grows with the footage: 0.6x its length (faces at 10 fps are most of it) plus a
  *  fixed 5 minutes; a 22-minute video gets 18 minutes. */
@@ -89,6 +91,7 @@ export const PREFIX = {
   samples: "samples/",
   luts: "luts/",
   fonts: "fonts/",
+  tests: "tests/", // test_graphic clips and frames, swept after a day
 } as const;
 
 export const FILLER_WORDS = ["um", "uh", "like", "basically", "honestly"] as const;

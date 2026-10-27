@@ -47,8 +47,15 @@ export async function putObject(key: string, body: Buffer | string | Readable, c
 export async function uploadFile(key: string, path: string, contentType: string): Promise<number> {
   const { size } = await stat(path);
   if (size > 4.5e9) throw new Error("file too large for single upload");
-  await putObject(key, createReadStream(path), contentType, size);
-  return size;
+  // A dropped connection (a kept-alive socket the server had already closed after a pause) cannot be retried by the
+  // SDK with a stream; a file can be read again, so it is sent again (twice at most).
+  for (let attempt = 0; ; attempt++) {
+    try { await putObject(key, createReadStream(path), contentType, size); return size; }
+    catch (e) {
+      const why = `${(e as Error).message} ${(e as { code?: string }).code ?? ""}`;
+      if (attempt >= 2 || !/socket hang up|ECONNRESET|EPIPE|non-retryable streaming/i.test(why)) throw e;
+    }
+  }
 }
 export async function downloadFile(key: string, path: string): Promise<number> {
   const r = await s3().send(new GetObjectCommand({ Bucket: Bucket(), Key: key }));

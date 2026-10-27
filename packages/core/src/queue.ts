@@ -42,6 +42,15 @@ export type BreakdownJob = { videoId: string };
 /** The deeper measurements of a video (sound every 10 ms, word alignment, faces and picture). */
 /** force: measure again even when the video already has this version's measurements (its analysis just ran). */
 export type DeepJob = { videoId: string; force?: boolean };
+/** Engine Part 5: test_graphic. A few seconds of a graphic (a template or a custom graphic, with these params) over a
+ *  video at a time, or a plain frame, at 540p. key: the test's hash (its files and result are kept under it a day). */
+export type TestGraphicJob = { userId: string; key: string; graphicId: string; params?: Record<string, unknown>; at: number; seconds: number; length?: number; aspect: "16:9" | "9:16" | "1:1"; over?: { videoId: string; time: number } };
+/** Storage keys of the clip and its frames (at `times`, test seconds); how long the graphic took to record (0: it had
+ *  a recording) and the whole test; what of the frame and of the face it covers (Engine Part 3's measures). */
+export type TestGraphicResult = {
+  clip: string; frames: string[]; times: number[]; width: number; height: number; from: number; seconds: number; recordedMs: number; totalMs: number;
+  cover: { min: number; avg: number; max: number; samples: number; visible: number } | null; face: { max: number; at: number; of: number } | null | undefined; warnings: string[];
+};
 /** Engine Part 3: a finished preview's sound transcribed again (its render's plan keeps it as `heard`). */
 export type HeardJob = { renderId: string };
 /** Where a video's deeper measurements are: the step, its percent and the time left (Redis, an hour). */

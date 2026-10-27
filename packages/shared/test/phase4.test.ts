@@ -37,8 +37,11 @@ describe("caption styles", () => {
     expect(edit(r.snap, { op: "set_captions", on: true, look: "outline" }).snap.timeline.captionStyle).toBeUndefined();
   });
   it("faces: the nearest weight of a font; widths from the font's own metrics", () => {
-    expect(faceOf("Montserrat", 700).weight).toBe(600);
-    expect(faceOf("Montserrat", 850).weight).toBe(800);
+    // Every weight a family comes in is bundled (Engine Part 4.3); a weight it has not is drawn with the nearest.
+    expect(faceOf("Montserrat", 700).weight).toBe(700);
+    expect(faceOf("Roboto", 640).weight).toBe(700);
+    expect(faceOf("Kalam", 850).weight).toBe(700);
+    expect(faceOf("Open Sans", 950).weight).toBe(800);
     expect(faceOf("Nope", 400).font).toBe("Inter");
     const f = faceOf("Inter", 400);
     expect(textWidth("WWW", f, 40)).toBeGreaterThan(textWidth("iii", f, 40) * 2);

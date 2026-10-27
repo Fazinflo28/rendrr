@@ -172,7 +172,9 @@ def main():
     # At the joins of a rendered edit (--joins): the clicks above within 20 ms of a join at the in-speech bar, 30 dB (a
     # lip smack or bump kept at a clip's edge; a word starting right at the cut is speech, even where the detector has
     # not caught up yet: its consonant is sharp too), and the cut itself: the biggest sample-to-sample jump within 1 ms
-    # of the join, 20 dB or more over the usual jump around it (25 ms each side), is a cut that jumps the waveform.
+    # of the join, 20 dB or more over the usual jump on the LOUDER side of it (2-25 ms before, 2-25 ms after), is a cut
+    # that jumps the waveform. Against both sides together a word starting after a pause passed too (half the window
+    # is the quiet pause: found live, 9 joins at 20-26 dB, all words after a pause).
     join_clicks = {}
     if joins is not None:
         for c in clicks:
@@ -185,7 +187,7 @@ def main():
                 continue
             d = np.abs(np.diff(x48[i - 1200:i + 1200].astype(np.float32))) / 32768.0
             near = d[1200 - 48:1200 + 48].max()
-            around = np.median(np.concatenate([d[:1200 - 96], d[1200 + 96:]]))
+            around = max(np.median(d[:1200 - 96]), np.median(d[1200 + 96:]))
             ratio = float(20 * np.log10((near + 1e-6) / (around + 1e-4)))
             if near > 0.02 and ratio >= 20 and (k not in join_clicks or ratio > join_clicks[k][1]):
                 join_clicks[k] = [round(jt, 3), round(ratio, 1), "cut"]

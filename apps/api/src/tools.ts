@@ -19,6 +19,7 @@ import { lutsFor, withMeasurements } from "./services/color";
 import { allMarks, inRange, markScope, retakesOf } from "./services/marks";
 import { audioFramesOf, deepOf, visionDetailsOf } from "./services/deep";
 import { waveformPng } from "./services/waveform";
+import { testGraphic } from "./services/testGraphic";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
 /** loginId: the Clerk user who called (a linked login opens its account's userId). */
@@ -623,6 +624,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const images = i.images === true ? await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
     return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}).${images.length ? " 4 check frames attached." : ""}${warningsText(done.warnings)} Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };
   },
+
+  test_graphic: async (c, i) => testGraphic(c.userId, i),
 
   async add_font(c, i) {
     const f = AddFontInput.safeParse(i);

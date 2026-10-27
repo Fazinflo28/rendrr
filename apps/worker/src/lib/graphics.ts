@@ -4,7 +4,7 @@ import { GRAPHIC_FONT_WATCH, GRAPHIC_TEMPLATES, PREFIX, templateHtml, templateSi
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-core";
@@ -115,6 +115,19 @@ function changedIn(x: Uint8Array, y: Uint8Array) {
 
 type Piece = { file: string; start: number; end: number };
 const CHUNK = 90; // pictures per encoded piece: encoding keeps pace with capturing, and few PNGs sit on disk
+/** A recording chunk: at most 90 s of the graphic (Engine Part 5: long graphics in chunks of 60-90 s). */
+const CHUNK_FRAMES = 90 * 30;
+/** Memory this container may use (cgroup memory.max, else the machine's). */
+function memoryBudget() {
+  try { const v = readFileSync("/sys/fs/cgroup/memory.max", "utf8").trim(); if (v !== "max" && Number(v) > 0) return Number(v); } catch { /* no cgroup v2 limit */ }
+  return totalmem();
+}
+/** Pieces that may encode at once: what memory allows after the browsers (about 0.5 GB each) and 1.5 GB for the rest
+ *  of the worker (a render may run too), at about 0.9 GB per encoder at 1080x1920 (less when smaller); 1 to `workers`. */
+function encodeSlots(w: number, h: number, workers: number) {
+  const per = 0.25e9 + (0.65e9 * w * h) / (1080 * 1920);
+  return Math.max(1, Math.min(workers, Math.floor((memoryBudget() - 1.5e9 - workers * 0.5e9) / per)));
+}
 
 /**
  * Records HTML into a transparent WebM in locked headless Chromiums: no network (every request except data: is
@@ -123,8 +136,9 @@ const CHUNK = 90; // pictures per encoded piece: encoding keeps pace with captur
  * Up to 15 s every frame is captured. A longer graphic is first scanned (in parallel): a quarter-size picture every
  * 0.5 s says which half seconds change. No change: the frame is held. A small change (under 0.2% of the pixels): the
  * full picture from that moment. A bigger change: every frame of that half second. The scan gives the cost before any
- * recording: over the limit, it fails at once and says why. Then the frames to capture are split into ranges with
- * the same amount of work, one browser each. A range's page steps its clock frame by frame from 0, so timers,
+ * recording: over the limit, it fails at once and says why. Then the frames to capture are split into lanes with
+ * the same amount of work, one browser each, and each lane into chunks of at most 90 s, recorded in order (a chunk
+ * that crashes is recorded again once on a fresh page). A lane's page steps its clock frame by frame from 0, so timers,
  * transitions and JS state arrive as if playing; renderFrame runs on every frame unless the graphic sets
  * window.renderFramePure = true (it draws the whole frame from t alone), then only on captured frames. Pictures are
  * encoded in pieces as they come (variable frame rate: each keeps its own time) and joined, so the file is exactly as
@@ -172,8 +186,8 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   const capture = new Uint8Array(frames);
   let dense = 0, pictures = 0;
   const missingFonts = new Set<string>(); // fonts asked for that drew with a fallback (each range's page says)
-  const pieces: Piece[][] = [];
-  const encodes: Promise<void>[] = [];
+  const pieces: Piece[] = [];
+  let chunkCount = 0, retried = 0;
   try {
     if (!sampled) capture.fill(1);
     else {
@@ -218,63 +232,109 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
     phase = "record";
     deadline = Math.min(t0 + maxMs, Date.now() + 60_000 + Math.round(estimateMs * 2.5));
 
-    // Ranges with the same number of captures (each starts with a capture), at least 2 s long.
+    // Lanes, one per browser, with the same number of captures (each starts with a capture), at least 2 s long. Each
+    // lane is cut into chunks of at most 90 s, recorded in order on one page (so its clock never steps back to 0). A
+    // chunk whose page or browser crashes is recorded once more on a fresh page; the pieces of the failed try are
+    // dropped.
     const nRanges = Math.max(1, Math.min(workers, Math.floor(frames / 60), captures));
-    const ranges: { a: number; b: number }[] = [];
+    const lanes: { a: number; b: number }[] = [];
     let acc = 0, a = 0;
     for (let f = 0; f < frames; f++) {
       acc += capture[f];
-      if (ranges.length < nRanges - 1 && acc >= ((ranges.length + 1) * captures) / nRanges && f + 1 - a >= 60 && frames - (f + 1) >= 60) { ranges.push({ a, b: f + 1 }); a = f + 1; }
+      if (lanes.length < nRanges - 1 && acc >= ((lanes.length + 1) * captures) / nRanges && f + 1 - a >= 60 && frames - (f + 1) >= 60) { lanes.push({ a, b: f + 1 }); a = f + 1; }
     }
-    ranges.push({ a, b: frames });
-    for (const r of ranges) capture[r.a] = 1;
+    lanes.push({ a, b: frames });
+    const chunksOf = (l: { a: number; b: number }) => {
+      const n = Math.max(1, Math.ceil((l.b - l.a) / CHUNK_FRAMES)), out: { a: number; b: number }[] = [];
+      for (let k = 0; k < n; k++) out.push({ a: l.a + Math.round(((l.b - l.a) * k) / n), b: l.a + Math.round(((l.b - l.a) * (k + 1)) / n) });
+      return out;
+    };
+    const laneChunks = lanes.map(chunksOf);
+    chunkCount = laneChunks.reduce((x, c) => x + c.length, 0);
+    for (const c of laneChunks.flat()) capture[c.a] = 1;
     const total = capture.reduce((x, y) => x + y, 0);
     let captured = 0;
 
-    await pool(workers, ranges.length, async (browser, ri) => {
-      const { a, b } = ranges[ri];
-      const rdir = join(root, `r${ri}`);
-      await mkdir(rdir, { recursive: true });
-      let chunk: { frame: number; file: string }[] = [], last: Buffer | null = null, lastFile = "", lastFrame = a, n = 0;
-      const flush = (end: number) => {
-        if (!chunk.length) return;
-        const list = chunk, mine = (pieces[ri] ??= []), piece = join(root, `p${ri}-${mine.length}.webm`);
-        mine.push({ file: piece, start: list[0].frame, end });
-        chunk = [];
-        encodes.push(encodePiece(list, end, piece, o.transparent, ri === ranges.length - 1 && end === frames, o.signal));
+    // At most `slots` pieces encode at once (a VP9 encoder holds about 0.8 GB at 1080x1920): capturing waits for a
+    // free one, so a busy graphic cannot start encoders faster than they finish and run the container out of memory.
+    const slots = encodeSlots(w, h, workers);
+    let active = 0;
+    const waiting: (() => void)[] = [];
+    const acquire = async () => { while (active >= slots) await new Promise<void>((r) => waiting.push(r)); active++; };
+    const release = () => { active--; waiting.shift()?.(); };
+
+    await pool(workers, lanes.length, async (browser0, li) => {
+      let browser = browser0, g: GPage | null = null, at = -1; // the page and the last frame its clock stepped to
+      const fresh = async () => {
+        if (g) await g.page.close().catch(() => {});
+        if (!browser.connected) { browser = await launchLocked(); browsers.push(browser); if (stopped || timedOut) killAll(); }
+        g = await openGraphicPage(browser, html, w, h, o.transparent, errors);
+        at = -1;
       };
-      // The picture showing at a check frame is the last one kept at or before it.
-      const checks = async (upTo: number) => { for (const [i, c] of checkAt.entries()) if (c >= lastFrame && c < upTo && c >= a && c < b && lastFile) await copyFile(lastFile, checkFiles[i]); };
-      const keep = async (frame: number, png: Buffer) => {
-        if (last && last.equals(png)) return;
-        await checks(frame);
-        if (chunk.length >= CHUNK) flush(frame);
-        const file = join(rdir, `k${String(n++).padStart(6, "0")}.png`);
-        await writeFile(file, png);
-        chunk.push({ frame, file });
-        last = png; lastFile = file; lastFrame = frame;
-        pictures++;
-      };
-      const g = await openGraphicPage(browser, html, w, h, o.transparent, errors);
       try {
-        await stepTo(g, 0, a - 1, false);
-        for (let f = a; f < b; ) {
-          check();
-          if (!capture[f]) { let e = f; while (e < b && !capture[e]) e++; await stepTo(g, f, e - 1, false); f = e; continue; }
-          await stepTo(g, f, f, true);
-          await keep(f, await shoot(g, w, h));
-          progress(0.1 + (0.9 * ++captured) / total);
-          f++;
+        for (const [ci, ch] of laneChunks[li].entries()) {
+          for (let attempt = 0; ; attempt++) {
+            const mine: Piece[] = [], tries: Promise<unknown>[] = [];
+            let failed: unknown = null, done = 0;
+            try {
+              if (!g || attempt > 0) await fresh();
+              const rdir = join(root, `r${li}-${ci}-${attempt}`);
+              await mkdir(rdir, { recursive: true });
+              let list: { frame: number; file: string }[] = [], last: Buffer | null = null, lastFile = "", lastFrame = ch.a, n = 0;
+              const flush = async (end: number) => {
+                if (!list.length) return;
+                const l = list, piece = join(root, `p${li}-${ci}-${attempt}-${mine.length}.webm`);
+                list = [];
+                mine.push({ file: piece, start: l[0].frame, end });
+                await acquire();
+                tries.push(encodePiece(l, end, piece, o.transparent, ch.b === frames && end === frames, o.signal).catch((e) => { failed ??= e; }).finally(release));
+              };
+              // The picture showing at a check frame is the last one kept at or before it.
+              const checks = async (upTo: number) => { for (const [i, c] of checkAt.entries()) if (c >= lastFrame && c < upTo && c >= ch.a && c < ch.b && lastFile) await copyFile(lastFile, checkFiles[i]); };
+              const keep = async (frame: number, png: Buffer) => {
+                if (last && last.equals(png)) return;
+                await checks(frame);
+                if (list.length >= CHUNK) await flush(frame);
+                const file = join(rdir, `k${String(n++).padStart(6, "0")}.png`);
+                await writeFile(file, png);
+                list.push({ frame, file });
+                last = png; lastFile = file; lastFrame = frame;
+                done++;
+              };
+              await stepTo(g!, at + 1, ch.a - 1, false);
+              for (let f = ch.a; f < ch.b; ) {
+                check();
+                if (failed) throw failed;
+                if (!capture[f]) { let e = f; while (e < ch.b && !capture[e]) e++; await stepTo(g!, f, e - 1, false); f = e; continue; }
+                await stepTo(g!, f, f, true);
+                await keep(f, await shoot(g!, w, h));
+                progress(0.1 + (0.9 * ++captured) / total);
+                f++;
+              }
+              at = ch.b - 1;
+              await checks(ch.b);
+              await flush(ch.b);
+              await Promise.all(tries);
+              if (failed) throw failed;
+              pieces.push(...mine);
+              pictures += done;
+              break;
+            } catch (e) {
+              await Promise.allSettled(tries);
+              for (const p of mine) await rm(p.file, { force: true }).catch(() => {});
+              captured -= done;
+              // Only a crash is tried again: not the graphic's own errors, a time limit or a stop.
+              if (attempt >= 1 || e instanceof JobError || stopped || timedOut || errors.length) throw e;
+              retried++;
+              console.warn(`[graphic] chunk ${ci + 1} of lane ${li + 1} (frames ${ch.a}-${ch.b}) failed, recording it again: ${(e as Error).message.slice(0, 200)}`);
+            }
+          }
         }
-        await checks(b);
-        flush(b);
-        for (const f of (await g.page.evaluate("window.__rendrrMissingFonts ? window.__rendrrMissingFonts() : []")) as string[]) missingFonts.add(f);
-      } finally { await g.page.close().catch(() => {}); }
+        if (g) for (const f of (await (g as GPage).page.evaluate("window.__rendrrMissingFonts ? window.__rendrrMissingFonts() : []")) as string[]) missingFonts.add(f);
+      } finally { if (g) await (g as GPage).page.close().catch(() => {}); }
     });
-    await Promise.all(encodes);
     check();
   } catch (e) {
-    await Promise.allSettled(encodes);
     if (stopped || o.signal?.aborted) throw new JobError("Stopped.");
     if (timedOut === "scan") throw new JobError(`The graphic took too long to step through (${Math.round((lastP / 0.1) * 100)}% scanned in ${Math.round((Date.now() - t0) / 1000)} s): its code is slow to run on every frame. If renderFrame(t) draws the whole frame from t alone, set window.renderFramePure = true so frames that are not recorded skip it.`, "graphic-slow", false);
     if (timedOut === "record") throw new JobError(`The graphic did not finish recording in time (${Math.round(lastP * 100)}% done after ${Math.round((Date.now() - t0) / 1000)} s; ${dense} frames move one by one). Make less of it move at once, draw it smaller, or split it into graphics placed where they are needed.`, "graphic-slow", false);
@@ -286,7 +346,7 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
     for (const b of browsers) await b.close().catch(() => b.process()?.kill("SIGKILL"));
   }
   // The pieces, in time order, joined without re-encoding; each lasts exactly until the next one starts.
-  const all = pieces.flat().sort((x, y) => x.start - y.start);
+  const all = [...pieces].sort((x, y) => x.start - y.start);
   const out = join(o.dir, `g-${Math.random().toString(36).slice(2, 7)}.webm`);
   if (all.length === 1) await rename(all[0].file, out);
   else {
@@ -295,7 +355,7 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
     await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", out], { signal: o.signal });
   }
   o.onProgress?.(1);
-  return { path: out, checkFrames: checkFiles, seconds: frames / FPS, width: w, height: h, pictures, dense, missingFonts: Array.from(missingFonts).sort() };
+  return { path: out, checkFrames: checkFiles, seconds: frames / FPS, width: w, height: h, pictures, dense, missingFonts: Array.from(missingFonts).sort(), chunks: chunkCount, retried };
 }
 
 /**
@@ -325,7 +385,7 @@ export async function encodeFrames(fdir: string, fps: number, out: string, trans
 /** Changes when the encoding does, so cached template files are recorded again. */
 export const GRAPHIC_ENCODER = "vp9-crf20";
 
-async function brandLogoDataUrl(userId: string): Promise<string | null> {
+export async function brandLogoDataUrl(userId: string): Promise<string | null> {
   const u = await prisma.user.findUnique({ where: { id: userId } });
   if (!u?.logoKey) return null;
   const r = await fetch(await signGet(u.logoKey, 300)).catch(() => null);
