@@ -1,6 +1,6 @@
-import { downloadFile, signGet, transcriber, type AnalyzeJob } from "@rendrr/core";
+import { downloadFile, enqueue, signGet, transcriber, type AnalyzeJob, type DeepJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { buildTranscript, DAY_MS, PREVIEW_RETENTION_DAYS, stubTranscript, type Transcript } from "@rendrr/shared";
+import { buildTranscript, DAY_MS, DEEP_VERSION, PREVIEW_RETENTION_DAYS, stubTranscript, type Transcript } from "@rendrr/shared";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JobError, run, silences } from "../lib/ffmpeg";
@@ -66,4 +66,6 @@ export async function analyzeJob(ctx: Ctx) {
     console.error(`[analyze] breakdown failed for ${v.id}, continuing:`, (e as Error).message.slice(0, 300));
   });
   await prisma.video.update({ where: { id: v.id }, data: { status: "ready", step: null, progress: null, error: null, previewExpiresAt: new Date(Date.now() + PREVIEW_RETENTION_DAYS * DAY_MS) } });
+  // The deeper measurements run after the video is ready: editing never waits for them.
+  await enqueue<DeepJob>("deep", { videoId: v.id }, { jobId: `deep-${v.id}-v${DEEP_VERSION}-${Date.now()}` }).catch((e) => console.error(`[analyze] could not queue the deeper measurements for ${v.id}:`, (e as Error).message));
 }

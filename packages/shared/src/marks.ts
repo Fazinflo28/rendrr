@@ -4,6 +4,7 @@
 // with the edit (timeline.marks, timeline.markEdits) and so go back with undo. Times are seconds of the footage
 // (videoId), so a mark stays on its moment whatever the edit does; reads add the edit time where it plays.
 import type { Breakdown } from "./breakdown";
+import { levelDb, type DeepAudio, type VisionSummary } from "./deep";
 import type { Mark, MarkEdit, Timeline } from "./timeline";
 import type { Line, Silence, Transcript, Word } from "./transcript";
 import { editOf, srcAt, type SequenceView } from "./sequence";
@@ -16,7 +17,7 @@ const r3 = (n: number) => Math.round(n * 1000) / 1000;
 const tagOf = (videoId: string) => videoId.slice(-4);
 const idFor = (prefix: string, t: number, videoId: string) => `${prefix}_${Math.round(t * 1000)}_${tagOf(videoId)}`;
 /** Ids Rendrr gives its own marks (an AI's mark gets "mk_…"). */
-export const RENDRR_MARK = /^(sil|fil|rt|stb|fs|dir|scn|beat|dark|loud)_/;
+export const RENDRR_MARK = /^(sil|fil|rt|stb|fs|dir|scn|beat|dark|loud|br|ck|cl|sf|fl|oc)_/;
 
 export type FootageInput = {
   videoId: string;
@@ -31,6 +32,9 @@ export type FootageInput = {
   dark?: { start: number; end: number }[];
   /** The video's length: the silence after the last word runs to it. */
   duration?: number;
+  /** The deeper measurements (Part 2), when the video has them: the sound every 10 ms and the picture. */
+  audio?: DeepAudio | null;
+  vision?: VisionSummary | null;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -41,16 +45,25 @@ export function silenceMarks(f: FootageInput): FootageMark[] {
   const words = f.transcript.flatMap((l) => l.words);
   const out: FootageMark[] = [];
   const quiet = (a: number, b: number) => f.silences.some((s) => s.start <= a + 0.05 && s.end >= b - 0.05);
+  // The level of a gap: measured every 100 ms when the video has its sound measured, else -35 where silencedetect
+  // found it quiet (its threshold) and unknown elsewhere.
+  const level = (a: number, b: number): { level_db: number | null; confidence: number } => {
+    if (f.audio) {
+      const d = levelDb(f.audio, a, b);
+      if (d != null) return { level_db: d, confidence: d <= f.audio.roomDb + 6 ? 0.95 : d <= f.audio.speechDb - 15 ? 0.8 : 0.6 };
+    }
+    return quiet(a, b) ? { level_db: -35, confidence: 0.95 } : { level_db: null, confidence: 0.7 };
+  };
   // Before the first word, between words, after the last word.
   for (let i = 0; i <= words.length; i++) {
     const a = i === 0 ? 0 : words[i - 1].end, b = i === words.length ? (words.length ? Math.max(a, f.duration ?? 0, ...f.silences.map((s) => s.end)) : 0) : words[i].t;
-    if (b - a >= SILENCE_MIN) out.push({ id: idFor("sil", a, f.videoId), kind: "silence", videoId: f.videoId, start: r3(a), end: r3(b), source: "rendrr", confidence: quiet(a, b) ? 0.95 : 0.7, level_db: quiet(a, b) ? -35 : null, label: i === 0 ? "before the first word" : i === words.length ? "after the last word" : "between words" });
+    if (b - a >= SILENCE_MIN) out.push({ id: idFor("sil", a, f.videoId), kind: "silence", videoId: f.videoId, start: r3(a), end: r3(b), source: "rendrr", ...level(a, b), label: i === 0 ? "before the first word" : i === words.length ? "after the last word" : "between words" });
   }
   // The audio's own silences where the transcript has no words (nothing said for a while: not between two words).
   for (const s of f.silences) {
     if (words.some((w) => w.t < s.end && w.end > s.start)) continue;
     if (out.some((m) => m.start <= s.start + 0.05 && m.end >= s.end - 0.05)) continue;
-    out.push({ id: idFor("sil", s.start, f.videoId), kind: "silence", videoId: f.videoId, start: r3(s.start), end: r3(s.end), source: "rendrr", confidence: 0.95, level_db: -35, label: "no speech" });
+    out.push({ id: idFor("sil", s.start, f.videoId), kind: "silence", videoId: f.videoId, start: r3(s.start), end: r3(s.end), source: "rendrr", ...level(s.start, s.end), label: "no speech" });
   }
   return out.sort((a, b) => a.start - b.start);
 }
@@ -188,14 +201,34 @@ export function pictureMarks(f: FootageInput): FootageMark[] {
   return out;
 }
 
+/** From the deeper measurements: breaths, clicks, clipping, soft focus, a face lost or looking away. */
+export function deepMarks(f: FootageInput): FootageMark[] {
+  const out: FootageMark[] = [];
+  const a = f.audio, v = f.vision;
+  if (a) {
+    for (const [s, e, db, c] of a.breaths) out.push({ id: idFor("br", s, f.videoId), kind: "breath", videoId: f.videoId, start: s, end: e, source: "rendrr", confidence: c, level_db: db, label: `breath ${db} dB` });
+    for (const [t, db] of a.clicks) out.push({ id: idFor("ck", t, f.videoId), kind: "click_pop", videoId: f.videoId, start: t, end: r3(t + 0.005), source: "rendrr", confidence: Math.min(1, db / 40), label: `click ${db} dB over the sound around it` });
+    for (const [s, e, pk] of a.clipping) out.push({ id: idFor("cl", s, f.videoId), kind: "clipped_audio", videoId: f.videoId, start: s, end: e, source: "rendrr", confidence: 0.9, label: `flat tops at ${pk} dBFS` });
+  }
+  if (v) {
+    for (const [s, e] of v.sharpness.soft) out.push({ id: idFor("sf", s, f.videoId), kind: "out_of_focus", videoId: f.videoId, start: s, end: e, source: "rendrr", confidence: 0.7, label: "soft picture" });
+    for (const [s, e] of v.faces.lost) out.push({ id: idFor("fl", s, f.videoId), kind: "face_lost", videoId: f.videoId, start: s, end: e, source: "rendrr", confidence: 0.8, label: "no face on screen" });
+    for (const [s, e, y] of v.faces.offCamera) out.push({ id: idFor("oc", s, f.videoId), kind: "off_camera", videoId: f.videoId, start: s, end: e, source: "rendrr", confidence: 0.7, label: `looking away${y != null ? ` (${y} degrees)` : ""}` });
+    for (const [s, e] of v.light.dark) out.push({ id: idFor("dark", s, f.videoId), kind: "low_light", videoId: f.videoId, start: s, end: e, source: "rendrr", confidence: 0.8, label: "dark picture" });
+  }
+  return out;
+}
+
 /** Every mark Rendrr makes for one video, in time order (one per id). */
 export function footageMarks(f: FootageInput): FootageMark[] {
   const seen = new Set<string>();
-  return [...silenceMarks(f), ...fillerMarks(f), ...speechMarks(f), ...pictureMarks(f)].filter((m) => !seen.has(m.id) && !!seen.add(m.id)).sort((a, b) => a.start - b.start || a.kind.localeCompare(b.kind));
+  // The picture measured at 0.5 s replaces the breakdown's dark shots.
+  const picture = f.vision ? pictureMarks({ ...f, dark: [] }) : pictureMarks(f);
+  return [...silenceMarks(f), ...fillerMarks(f), ...speechMarks(f), ...deepMarks(f), ...picture].filter((m) => !seen.has(m.id) && !!seen.add(m.id)).sort((a, b) => a.start - b.start || a.kind.localeCompare(b.kind));
 }
 
 /** What the marks read from a video's stored analysis (transcript, silences, scene cuts and the breakdown). */
-export function footageInputOf(videoId: string, a: { transcript?: unknown; silences?: unknown; sceneCuts?: unknown; breakdown?: unknown } | null | undefined, duration?: number): FootageInput {
+export function footageInputOf(videoId: string, a: { transcript?: unknown; silences?: unknown; sceneCuts?: unknown; breakdown?: unknown; audio?: unknown; vision?: unknown } | null | undefined, duration?: number): FootageInput {
   const b = a?.breakdown as Breakdown | null | undefined;
   return {
     videoId,
@@ -206,6 +239,8 @@ export function footageInputOf(videoId: string, a: { transcript?: unknown; silen
     loudnessDb: b?.audio?.loudnessDb,
     beats: b?.audio?.beat?.beats,
     dark: (b?.shots ?? []).filter((s) => s.light === "dark").map((s) => ({ start: s.start, end: s.end })),
+    audio: (a?.audio as DeepAudio | null | undefined) ?? null,
+    vision: (a?.vision as VisionSummary | null | undefined) ?? null,
   };
 }
 

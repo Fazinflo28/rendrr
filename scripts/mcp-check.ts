@@ -25,6 +25,11 @@ const footage = say("list_footage", await call("list_footage"));
 const vid = /^(\S+) \| .* \| ready \|/m.exec(footage)?.[1];
 if (!vid) { console.log("No ready footage: add sample footage first."); process.exit(0); }
 say("get_footage", await call("get_footage", { videoId: vid }));
+// Part 2: the deeper measurements (the first call on an older video starts measuring it and says how long).
+say("get_audio", await call("get_audio", { videoId: vid, from: 0, to: 10, step: 0.5 }));
+say("get_vision", await call("get_vision", { videoId: vid, from: 0, to: 5 }));
+say("get_waveform_image", await call("get_waveform_image", { videoId: vid, from: 0, to: 10, width: 800, height: 160 }));
+say("get_frames", await call("get_frames", { videoId: vid, times: [1.234] }));
 say("list_styles", await call("list_styles"));
 say("get_style s1", await call("get_style", { styleId: "s1" }));
 const created = say("create_project", await call("create_project", { videoId: vid, styleId: "s1", name: "MCP check" }));
@@ -41,6 +46,7 @@ say("apply_edits", await call("apply_edits", { projectId: pid, note: "First pass
   { op: "add_graphic", graphicId: "gt_lower_third", start: 1, end: 5, params: { name: "Ronnii K", role: "Founder" } },
 ] }));
 say("get_project", await call("get_project", { projectId: pid }));
+say("map_time", await call("map_time", { projectId: pid, editTimes: [0, 3], footage: [{ t: 1 }, { t: 5 }] }));
 say("undo", await call("undo", { projectId: pid }));
 say("bad input", await call("apply_edits", { projectId: pid, edits: [{ op: "set_captions", on: true }, { op: "trim_clip", track: "v1", clipId: "nope", start: 1, end: 2 }] }));
 say("list_graphics", await call("list_graphics"));

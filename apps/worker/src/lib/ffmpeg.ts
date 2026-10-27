@@ -20,7 +20,8 @@ export function filterThreads(): number {
 /** FFmpeg failed because the container could not start another thread. */
 export const outOfThreads = (e: unknown) => /Resource temporarily unavailable/.test(String((e as { stderr?: string })?.stderr ?? ""));
 
-export type RunOpts = { signal?: AbortSignal; onProgress?: (seconds: number) => void; cwd?: string; stdin?: "ignore" };
+/** onLine: each line the command writes to stderr (a Python script's "PROGRESS n"). */
+export type RunOpts = { signal?: AbortSignal; onProgress?: (seconds: number) => void; onLine?: (line: string) => void; cwd?: string; stdin?: "ignore" };
 
 /** Runs a command; kills it when the job's signal aborts. Never logs file contents. */
 export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<{ stdout: string; stderr: string }> {
@@ -36,7 +37,17 @@ export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<{ 
         for (const m of s.matchAll(/out_time_(?:us|ms)=(\d+)/g)) opts.onProgress(Number(m[1]) / 1e6);
       } else if (stdout.length < 2_000_000) stdout += s;
     });
-    p.stderr.on("data", (d: Buffer) => { if (stderr.length < 200_000) stderr += d.toString(); });
+    let partial = "";
+    p.stderr.on("data", (d: Buffer) => {
+      const s = d.toString();
+      if (opts.onLine) {
+        const parts = (partial + s).split("\n");
+        partial = parts.pop() ?? "";
+        for (const line of parts) opts.onLine(line);
+        // Progress lines are not kept: the error text keeps what explains a failure.
+        if (stderr.length < 200_000) stderr += parts.filter((l) => !l.startsWith("PROGRESS ")).join("\n") + (parts.length ? "\n" : "");
+      } else if (stderr.length < 200_000) stderr += s;
+    });
     p.on("error", (e) => { opts.signal?.removeEventListener("abort", kill); reject(e); });
     p.on("close", (code) => {
       opts.signal?.removeEventListener("abort", kill);
@@ -171,11 +182,14 @@ function runCapture(cmd: string, args: string[], signal?: AbortSignal): Promise<
   });
 }
 
-export async function frameAt(input: string, t: number, out: string, width = 640, signal?: AbortSignal, hdr = false) {
+/** stamp: text burned into the frame's bottom left (get_frames writes the time and frame number there). */
+export async function frameAt(input: string, t: number, out: string, width = 640, signal?: AbortSignal, hdr = false, stamp?: string) {
   // An HDR file's frame is tone-mapped like the preview copies, so the picture looks as it should on any screen.
   const tone = hdr ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "";
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", Math.max(0, t).toFixed(3), "-i", input, "-frames:v", "1", "-vf", `${tone}scale=${width}:-2`, "-q:v", "4", out], { signal });
+  const text = stamp ? `,drawtext=fontfile=${STAMP_FONT}:text='${stamp.replace(/[\\':%]/g, (c) => "\\" + c)}':x=12:y=h-th-12:fontsize=h/20:fontcolor=white:box=1:boxcolor=black@0.65:boxborderw=8` : "";
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", Math.max(0, t).toFixed(3), "-i", input, "-frames:v", "1", "-vf", `${tone}scale=${width}:-2${text}`, "-q:v", "4", out], { signal });
 }
+const STAMP_FONT = process.env.STAMP_FONT || "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
 /**
  * Phase 6: frames of a stretch of a video as RGB bytes, turned and fitted to w x h like the editor shows them

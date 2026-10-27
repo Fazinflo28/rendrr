@@ -39,6 +39,19 @@ export type FaceJob = ColorSampleJob;
  *  frame's, the median of the frames it was found on (found of `of`); null when no frame had a face. */
 export type FaceSamples = Record<string, { u: number; v: number; r: number; found: number; of: number } | null>;
 export type BreakdownJob = { videoId: string };
+/** The deeper measurements of a video (sound every 10 ms, word alignment, faces and picture). */
+export type DeepJob = { videoId: string };
+/** Where a video's deeper measurements are: the step, its percent and the time left (Redis, an hour). */
+export type DeepProgress = { step: string; percent: number; etaSec: number | null };
+const deepKey = (videoId: string) => `deep:${videoId}:progress`;
+export async function writeDeepProgress(videoId: string, p: DeepProgress | null) {
+  if (p) await redis().set(deepKey(videoId), JSON.stringify(p), "EX", 3600).catch(() => {});
+  else await redis().del(deepKey(videoId)).catch(() => {});
+}
+export async function readDeepProgress(videoId: string): Promise<DeepProgress | null> {
+  const s = await redis().get(deepKey(videoId)).catch(() => null);
+  return s ? (JSON.parse(s) as DeepProgress) : null;
+}
 
 export async function enqueue<T extends object>(name: QueueName, data: T, opts: JobsOptions = {}) {
   const def = QUEUES[name];

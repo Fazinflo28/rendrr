@@ -1,12 +1,13 @@
 import { env, newRedis, queue, type GraphicJob, type MaintenanceJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { processTimeoutMs, QUEUES, renderTimeoutMs } from "@rendrr/shared";
+import { deepTimeoutMs, processTimeoutMs, QUEUES, renderTimeoutMs } from "@rendrr/shared";
 import { Worker, type Job } from "bullmq";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { availableParallelism } from "node:os";
 import { analyzeJob } from "./jobs/analyze";
 import { breakdownJob, queueMissingBreakdowns } from "./jobs/breakdown";
+import { deepFailed, deepJob, queueMissingDeep } from "./jobs/deep";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
 import { framesJob } from "./jobs/frames";
 import { maintenanceJob } from "./jobs/maintenance";
@@ -29,6 +30,7 @@ const renderUser = async (job: Job) => (await prisma.render.findUnique({ where: 
 
 // Limits that grow with the footage (see renderTimeoutMs / processTimeoutMs).
 const videoLimit = async (job: Job) => processTimeoutMs((await prisma.video.findUnique({ where: { id: (job.data as { videoId: string }).videoId }, select: { seconds: true } }))?.seconds ?? 0);
+const deepLimit = async (job: Job) => deepTimeoutMs((await prisma.video.findUnique({ where: { id: (job.data as { videoId: string }).videoId }, select: { seconds: true } }))?.seconds ?? 0);
 const renderLimit = async (job: Job) => {
   const r = await prisma.render.findUnique({ where: { id: (job.data as { renderId: string }).renderId }, select: { kind: true, quality: true, project: { select: { video: { select: { seconds: true } } } } } });
   return renderTimeoutMs(r?.kind === "preview" ? "preview" : "final", r?.project.video.seconds ?? 0, r?.quality) + 60_000;
@@ -47,6 +49,7 @@ const workers = [
   new Worker(QUEUES.graphic.name, guarded("graphic", graphicLimit, "The graphic", graphicJob, (job, msg) => graphicFailed(job.data as GraphicJob, msg)), { connection: newRedis(), concurrency: conc("graphic", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.frames.name, guarded("frames", QUEUES.frames.timeoutMs, "Taking frames", framesJob, async () => {}), { connection: newRedis(), concurrency: conc("frames", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.breakdown.name, guarded("breakdown", videoLimit, "Reading the frames", breakdownJob, async () => {}), { connection: newRedis(), concurrency: conc("breakdown", 1), lockDuration: 60_000 }),
+  new Worker(QUEUES.deep.name, guarded("deep", deepLimit, "Measuring the footage", deepJob, (job, msg) => deepFailed((job.data as { videoId: string }).videoId, msg), videoUser), { connection: newRedis(), concurrency: conc("deep", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),
 ];
 for (const w of workers) w.on("error", (e) => console.error(`[${w.name}] worker error:`, e.message));
@@ -59,7 +62,11 @@ await queue("maintenance").add("maintenance", { task: "ensure-assets" } satisfie
 // The API applies database changes when it starts, which can be after this worker starts: keep trying for a while.
 void (async () => {
   for (let i = 0; i < 20; i++) {
-    try { const n = await queueMissingBreakdowns(); if (n) console.log(`[worker] breakdown queued for ${n} earlier videos`); return; }
+    try {
+      const n = await queueMissingBreakdowns(); if (n) console.log(`[worker] breakdown queued for ${n} earlier videos`);
+      const d = await queueMissingDeep(); if (d) console.log(`[worker] deeper measurements queued for ${d} earlier videos`);
+      return;
+    }
     catch { await new Promise((r) => setTimeout(r, 30_000)); }
   }
 })();
@@ -73,7 +80,8 @@ createServer(async (_req, res) => {
 }).listen(port, () => {
   // The CPUs FFmpeg sees and the container's thread limit, which a render's thread count has to stay under.
   const pids = (() => { try { return readFileSync("/sys/fs/cgroup/pids.max", "utf8").trim(); } catch { return "?"; } })();
-  console.log(`[worker] up, health on :${port}; cpus ${availableParallelism()}, pids.max ${pids}, filter threads ${filterThreads()}, graphics browsers ${GRAPHIC_WORKERS}`);
+  const align = existsSync(process.env.ALIGN_MODEL || "/opt/models/wav2vec2/model_quantized.onnx") ? "wav2vec2 ready" : "wav2vec2 MISSING (word edges from the sound only)";
+  console.log(`[worker] up, health on :${port}; cpus ${availableParallelism()}, pids.max ${pids}, filter threads ${filterThreads()}, graphics browsers ${GRAPHIC_WORKERS}, ${align}`);
 });
 
 const stop = async () => { await Promise.all(workers.map((w) => w.close())); await prisma.$disconnect(); process.exit(0); };

@@ -1,13 +1,13 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
 // Every response is small text; images only when asked for (images: true, get_frames, get_preview_frames).
 // Every write goes through applyTimelineChange.
-import { AppError, applyTimelineChange, enqueue, notFound, readGraphic, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
+import { AppError, applyTimelineChange, enqueue, notFound, putObject, readGraphic, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  AddFontInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
-  MARK_KINDS, MCP_TOOLS, styleGuidance, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
+  AddFontInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
+  MARK_KINDS, MCP_TOOLS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
-import { otherSources } from "./services/sequence";
+import { otherSources, otherVideoIds } from "./services/sequence";
 import { createProject, getOwnedProject, graphicPlacements } from "./services/projects";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { renderResult, renderStatus, startRender } from "./services/render";
@@ -16,6 +16,8 @@ import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
 import { lutsFor, withMeasurements } from "./services/color";
 import { allMarks, inRange, markScope, retakesOf } from "./services/marks";
+import { audioFramesOf, deepOf, visionDetailsOf } from "./services/deep";
+import { waveformPng } from "./services/waveform";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
 /** loginId: the Clerk user who called (a linked login opens its account's userId). */
@@ -36,6 +38,24 @@ async function ownedVideo(userId: string, id: string) {
 type OwnedVideo = Awaited<ReturnType<typeof ownedVideo>>;
 
 /** Which Rendrr account this connection uses, so a user with two logins can tell. */
+/** get_footage: the deeper measurements in a few lines (get_audio and get_vision have the rest), or when they are
+ *  not there yet, that they are being made and how long it takes. words: each word whose edges in the sound differ. */
+async function deepLines(userId: string, videoId: string, words: ReturnType<typeof allWords>, wordsDetail: boolean): Promise<string[]> {
+  const d = await deepOf(userId, videoId).catch(() => null);
+  if (!d) return [];
+  if (!d.ready) return [`DEEPER MEASUREMENTS: ${d.note}`];
+  const out: string[] = [];
+  const a = d.audio, v = d.vision, al = d.alignment;
+  if (a) out.push(`SOUND (get_audio): ${a.lufs != null ? `${a.lufs} LUFS, ` : ""}true peak ${a.truePeakDb ?? "?"} dBTP, room ${a.roomDb} dBFS, voice ${a.speechDb} dBFS, speech ${Math.round(a.speechShare * 100)}%; ${a.breaths.length} breaths, ${a.clicks.length} clicks, ${a.clipping.length} clipped stretches.`);
+  if (al) {
+    const diffs = alignmentDiffs(al, words);
+    out.push(`ALIGNMENT (${al.model ? "wav2vec2, then moved onto the sound" : "edges moved onto the sound"}${al.error ? `; ${al.error}` : ""}): ${al.words.length} of ${words.length} words placed in the sound; ${diffs.length} differ from the transcriber's times by more than 60 ms.${diffs.length && !wordsDetail ? ' detail "words" lists them.' : ""} Cut on the sound's times.`);
+    if (wordsDetail && diffs.length) out.push(`WORDS IN THE SOUND (id text start-end, transcriber's a-b): ${diffs.slice(0, 400).map((w) => `${w.id} ${w.text} ${w.s.toFixed(3)}-${w.e.toFixed(3)} (${w.t.toFixed(3)}-${w.end.toFixed(3)})`).join(", ")}${diffs.length > 400 ? `, …${diffs.length - 400} more` : ""}`);
+  }
+  if (v) out.push(`PICTURE (get_vision): face on screen ${Math.round(v.faces.present * 100)}%, lost ${v.faces.lost.length}x, looking away ${v.faces.offCamera.length}x, soft ${v.sharpness.soft.length}x, shaky ${v.shake.shaky.length}x, dark ${v.light.dark.length}x, blown out ${v.light.blown.length}x.`);
+  return out;
+}
+
 async function accountLine(userId: string) {
   const u = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   return `Account ${u?.email || "unknown"}.`;
@@ -263,6 +283,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       `SILENCES 0.4s+ (${sil.length}): ${sil.slice(0, 80).map((s) => `${s.start.toFixed(1)}-${s.end.toFixed(1)}`).join(", ") || "none"}${sil.length > 80 ? ", …" : ""}`,
       `FILLERS ${fillers.length}${fillers.length ? " (" + Object.entries(counts).map(([k, n]) => `${k} x${n}`).join(", ") + ")" : ""}${i.detail === "words" && fillers.length ? ". Ids: " + fillers.slice(0, 200).map((f) => f.id).join(" ") : ""}`,
       `SCENE CUTS (${cuts.length}): ${cuts.slice(0, 100).map((t) => t.toFixed(1)).join(", ") || "none"}`,
+      ...(await deepLines(c.userId, v.id, words, i.detail === "words")),
     ];
     return { text: clip(lines.join("\n")), images: code.images };
   },
@@ -275,12 +296,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       const from = Math.max(0, i.from ?? 0), to = Math.min(v.seconds, i.to ?? v.seconds), n = Math.min(8, i.count ?? 4);
       times = Array.from({ length: n }, (_, k) => (n === 1 ? (from + to) / 2 : from + ((to - from) * k) / (n - 1)));
     }
-    times = times.map((t) => Math.round(Math.min(Math.max(0, t), Math.max(0, v.seconds - 0.05)) * 100) / 100);
+    times = times.map((t) => Math.round(Math.min(Math.max(0, t), Math.max(0, v.seconds - 0.05)) * 1000) / 1000);
     const images = await videoFramesFor(v.id, times);
     if (!images.length) return { text: "No frames came back. Try again in a moment." };
     const b = breakdownOf(v);
     const where = (t: number) => b?.shots.find((s) => t >= s.start && t < s.end)?.id;
-    return { text: `Frames of "${v.name}" at ${times.map((t) => `${fmtT(t)}${where(t) ? ` (${where(t)})` : ""}`).join(", ")}, in that order.`, images };
+    return { text: `Frames of "${v.name}" at ${times.map((t) => `${t}s${where(t) ? ` (${where(t)})` : ""}`).join(", ")}, in that order. Each has its time (to the millisecond) and frame number written at the bottom left: the frame that plays at that moment.`, images };
   },
 
   async list_styles(c) {
@@ -314,9 +335,15 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const preview = await prisma.render.findFirst({ where: { projectId: p.id, status: "done", kind: "preview" }, orderBy: { createdAt: "desc" } });
     // Phase 6: the user's imported LUTs (for set_grade lut) and whether the footage is HDR, only when there are any.
     const luts = await prisma.lut.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, name: true } });
+    // Each V1 clip's sound at its edges, from where each word starts and ends in the sound (the alignment) when the
+    // video has one, else the transcriber's times.
+    const others = await prisma.video.findMany({ where: { id: { in: otherVideoIds(p.timeline as unknown as Timeline, p.videoId) }, userId: c.userId }, select: { id: true, analysis: { select: { transcript: true, alignment: true } } } });
+    const said = new Map([v, ...others].map((x) => [x.id, { words: allWords((x.analysis?.transcript as unknown as Transcript) || []), aligned: alignedMap(x.analysis?.alignment as Alignment | null) }]));
+    const clipNote = (cl: { sourceVideoId?: string; sourceIn: number; sourceOut: number }) => { const s = said.get(cl.sourceVideoId || p.videoId); return s?.words.length ? clipEdges(cl, s.words, s.aligned) : ""; };
+    const opts = { v1Offset: i.clipsFrom, v1Limit: i.clipsLimit ?? 100, clipNote };
     return { text: clip([`Edit "${p.name}" (${p.id}) on footage ${v.id} "${v.name}"${v.hdr ? ` (HDR ${v.hdr === "pq" ? "PQ" : "HLG"}: the final keeps it unless set_export hdr sdr)` : ""}. ${p.status}, v${p.currentVersion}, ${p.styleId ? `style ${style?.name ?? p.styleId} applied` : "no style applied"}.`,
       ...[referenceLine(p.reference as ReferenceRef | null)].filter((x): x is string => !!x),
-      summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || [], 60, p.videoId, (id) => luts.find((l) => l.id === id)?.name, footageOf(v)),
+      summarizeTimeline(snap, (v.analysis?.transcript as unknown as Transcript) || [], 60, p.videoId, (id) => luts.find((l) => l.id === id)?.name, footageOf(v), opts),
       ...(await placementLine(c.userId, p.timeline as unknown as Timeline)),
       marksLine(v, p.timeline as unknown as Timeline),
       ...(luts.length ? [`Your LUTs (set_grade lut id): ${luts.map((l) => `${l.id} "${l.name}"`).join(", ")}`] : []),
@@ -382,6 +409,67 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const out = pg.shown.map((g) => ({ groupId: g.groupId, ...(multi ? { videoId: g.videoId } : {}), takes: g.takes.map((t) => ({ ...t, text: t.text.length > 160 ? t.text.slice(0, 157) + "…" : t.text, ...(scope.view ? { edit: markInEdit(scope.view, g.videoId, t.start, t.end) } : {}) })) }));
     const head = `RETAKES in ${scope.title}: ${groups.length} ${groups.length === 1 ? "group" : "groups"} of lines said more than once. Footage seconds. confidence: how alike the take is to the others; score 0-1: 0.5 complete + 0.2 few fillers + 0.2 few stumbles + 0.1 ends a sentence. These are measurements: Rendrr never picks a take, you choose and cut the others.${scope.view ? " edit: where the take plays (null: cut already)." : ""}`;
     return { text: clip([head, JSON.stringify(out), pg.tail.trim()].filter(Boolean).join("\n")) };
+  },
+
+  // ---------------- the deeper measurements (Part 2) ----------------
+  async get_audio(c, i) {
+    const d = await deepOf(c.userId, i.videoId);
+    if (!d.ready) return { text: d.note! };
+    if (!d.audio) return { text: `"${d.name}" has no sound.` };
+    const from = Math.max(0, i.from ?? 0), to = Math.min(d.seconds, i.to ?? d.seconds);
+    if (!(to > from)) throw new AppError(`from must be before to, inside the video (0-${d.seconds.toFixed(2)}s).`, 400, "invalid-input");
+    const frames = await audioFramesOf(d.audio);
+    return { text: clip(deepAudioText(d.audio, { name: d.name, from, to, frames, step: i.step, peaks: i.peaks })) };
+  },
+
+  async get_waveform_image(c, i) {
+    const d = await deepOf(c.userId, i.videoId);
+    if (!d.ready) return { text: d.note! };
+    if (!d.audio) return { text: `"${d.name}" has no sound.` };
+    const from = Math.max(0, i.from ?? 0), to = Math.min(d.seconds, i.to ?? Math.min(d.seconds, from + 30));
+    if (!(to > from)) throw new AppError(`from must be before to, inside the video (0-${d.seconds.toFixed(2)}s).`, 400, "invalid-input");
+    const W = Math.round(i.width ?? 1200), H = Math.round(i.height ?? 240);
+    const frames = await audioFramesOf(d.audio);
+    if (!frames) return { text: "The sound's 10 ms frames are not in storage any more; ask again in a few minutes (they are measured again)." };
+    const v = await prisma.video.findUniqueOrThrow({ where: { id: d.id }, select: { userId: true, analysis: { select: { transcript: true } } } });
+    const al = alignedMap(d.alignment);
+    const words = allWords((v.analysis?.transcript as unknown as Transcript) || []).map((w) => ({ w, a: al.get(w.id) ?? { s: w.t, e: w.end } })).filter(({ a }) => a.e >= from && a.s <= to);
+    const key = `${PREFIX.frames}${v.userId}/${d.id}/wave-${Math.round(from * 1000)}-${Math.round(to * 1000)}-${W}x${H}.png`;
+    await putObject(key, waveformPng(frames, d.audio, { from, to, width: W, height: H, words: words.map(({ a }) => a) }), "image/png");
+    const pxs = W / (to - from);
+    return {
+      text: clip(`WAVEFORM "${d.name}" ${from}-${to}s as ${W}x${H}: x = ${from} + pixel x ${((to - from) / W).toFixed(5)}s (${pxs.toFixed(1)} px a second); y = the sample value, full scale at the top and bottom. Lime: the waveform; dark green band: speech; blue at the top: breaths; white ticks: clicks; orange: clipping; grey at the bottom: each word (its start ticked, in the sound); ticks every second, taller every 10 s${pxs >= 80 ? ", short ones every 0.1 s" : ""}.\nWORDS in range (id text start-end in the sound): ${words.slice(0, 80).map(({ w, a }) => `${w.id} ${w.text} ${a.s.toFixed(3)}-${a.e.toFixed(3)}`).join(", ") || "none"}${words.length > 80 ? ", …" : ""}`),
+      images: [await signGet(key, 900)],
+    };
+  },
+
+  async get_vision(c, i) {
+    const d = await deepOf(c.userId, i.videoId);
+    if (!d.ready) return { text: d.note! };
+    if (!d.vision) return { text: `"${d.name}" has no picture measurements.` };
+    const from = Math.max(0, i.from ?? 0), to = Math.min(d.seconds, i.to ?? d.seconds);
+    const details = await visionDetailsOf(d.vision);
+    return { text: clip(visionText(d.vision, { name: d.name, from, to, details, faces: i.faces === true })) };
+  },
+
+  async map_time(c, i) {
+    const scope = await markScope(c.userId, { projectId: i.projectId });
+    const view = scope.view!, main = view.mainVideoId;
+    const name = (vid: string) => scope.names[vid] ?? vid;
+    const lines: string[] = [`TIME in ${scope.title}: the edit is ${view.total.toFixed(3)}s long.`];
+    for (const t of (i.editTimes ?? []) as number[]) {
+      if (t > view.total + 1e-6) { lines.push(`edit ${t}s: after the end of the edit`); continue; }
+      const p = view.pieceAt(t);
+      lines.push(p ? `edit ${t}s = clip ${p.clipId}, video ${p.videoId === main ? "main" : p.videoId} "${name(p.videoId)}" at ${(Math.round(srcAt(p, t) * 1000) / 1000)}s` : `edit ${t}s: nothing plays`);
+    }
+    for (const q of (i.footage ?? []) as { t: number; videoId?: string }[]) {
+      const vid = q.videoId && q.videoId !== "main" ? q.videoId : main;
+      const hits = view.pieces.filter((p) => p.videoId === vid && q.t >= p.srcIn - 1e-6 && q.t <= p.srcOut + 1e-6);
+      if (hits.length) lines.push(`video ${vid === main ? "main" : vid} ${q.t}s plays at edit ${hits.map((p) => `${(Math.round(editOf(p, q.t) * 1000) / 1000)}s (clip ${p.clipId})`).join(", ")}`);
+      else { const next = view.videoToEdit(vid, q.t); lines.push(`video ${vid === main ? "main" : vid} ${q.t}s is not in the edit (cut)${next != null ? `; the next moment that plays is at edit ${next.toFixed(3)}s` : ""}`); }
+    }
+    if (lines.length === 1) lines.push("Send editTimes (edit seconds) or footage ([{t, videoId?}], footage seconds).");
+    return { text: lines.join("\n") };
   },
 
   async list_graphics(c) {

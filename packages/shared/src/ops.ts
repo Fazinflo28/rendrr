@@ -1205,7 +1205,10 @@ export function lookText(tl: Timeline): string {
   return out.join(", ");
 }
 
-export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60, mainVideoId?: string, lutName?: (id: string) => string | undefined, footage?: FootageInfo): string {
+/** v1Offset / v1Limit: a page of the V1 sequence (default the first maxPerTrack clips). clipNote: more to say about a
+ *  V1 clip (get_project: its sound at the edges and the pauses inside). */
+export type SummaryOpts = { v1Offset?: number; v1Limit?: number; clipNote?: (c: SeqClip) => string };
+export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60, mainVideoId?: string, lutName?: (id: string) => string | undefined, footage?: FootageInfo, opts: SummaryOpts = {}): string {
   const words = allWords(tr);
   const tl = layoutTimeline(asSequence(snap.timeline, words, mainVideoId), words);
   const view = sequenceView(tl, words);
@@ -1219,7 +1222,8 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
   lines.push("V1 plays in this order, back to back: id video footageIn-footageOut @editStart-editEnd. Ops on a V1 clip take its own footage seconds. Its dialogue (A1) follows it; J/L cuts and mutes are shown on it. Other tracks: id @editStart-editEnd on <V1 clip> at <its footage second>; they move with that clip. Their op times are main-footage seconds (where it first plays), or edit seconds with edit:true.");
   const v1 = tl.tracks.v1 as SeqClip[];
   const vName = (v: string) => (v === main ? "main" : v);
-  const shownV1 = v1.slice(0, maxPerTrack).map((c) => {
+  const v1From = Math.max(0, opts.v1Offset ?? 0), v1Count = opts.v1Limit ?? maxPerTrack;
+  const shownV1 = v1.slice(v1From, v1From + v1Count).map((c) => {
     const p = view.clip(c.id)!;
     const extra: string[] = [];
     if (p.pieces.length && p.soundStart < p.start - 0.005) extra.push(`J ${(p.soundStart - p.start).toFixed(2)}`);
@@ -1235,9 +1239,12 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
     if (lk) extra.push(lk);
     const ms = msText;
     const at = p.end > p.start ? ` @${ms(p.start)}-${ms(p.end)}` : " (all cut)";
-    return `  ${c.id} ${vName(c.sourceVideoId)} ${ms(c.sourceIn)}-${ms(c.sourceOut)}${at} "${c.label}"${extra.length ? " " + extra.join(" ") : ""}`;
+    const note = opts.clipNote?.(c);
+    return `  ${c.id} ${vName(c.sourceVideoId)} ${ms(c.sourceIn)}-${ms(c.sourceOut)}${at} "${c.label}"${extra.length ? " " + extra.join(" ") : ""}${note ? ` | ${note}` : ""}`;
   });
-  lines.push(`V1 sequence: ${v1.length ? "\n" + shownV1.join("\n") + (v1.length > maxPerTrack ? `\n  …and ${v1.length - maxPerTrack} more` : "") : "empty"}`);
+  const v1Rest = v1.length - v1From - shownV1.length;
+  const v1Page = v1From > 0 || v1Rest > 0 ? ` (clips ${v1From + 1}-${v1From + shownV1.length} of ${v1.length})` : "";
+  lines.push(`V1 sequence${v1Page}:${v1.length ? "\n" + shownV1.join("\n") + (v1Rest > 0 ? `\n  …${v1Rest} more: clipsFrom ${v1From + shownV1.length}` : "") : " empty"}`);
   const names: Partial<Record<TrackName, string>> = { v2: "V2 b-roll/zooms", v3: "V3 titles", a2: "A2 music", a3: "A3 sfx" };
   for (const k of Object.keys(names) as TrackName[]) {
     let clips = tl.tracks[k] as (Clip & Record<string, unknown>)[];

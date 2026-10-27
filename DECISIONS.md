@@ -311,3 +311,19 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Deleting a part | Treated like deleting the footage: the edits that play it on V1 are named first, and go with it only when the user confirms (found with `jsonb_path_exists` on the stored V1). |
 | Demo build | The design's fake backend makes an edit of one video, so the preview opens the first of them. |
 
+## Engine Part 2: deeper measurements (27 October)
+
+| Question | Decision |
+|---|---|
+| Where the measurements live | A summary per video in `FootageAnalysis` (`audio`, `alignment`, `vision`, `deepVersion`, `deepError`, `deepAt`: one migration, columns only) and the large parts in storage next to the frames: `audio.bin` (4 bytes per 10 ms: min, max, dBFS, speech chance) and `vision.json.gz` (faces at 10 fps, the picture every 0.5 s). The API keeps the last 6 read in memory. |
+| When they are made | A `deep` job after each analysis (concurrency 1, two tries). Older videos: on first use by a tool (queued once an hour, the tool says how long it takes) and by the worker's backfill at start (50 newest a day). `DEEP_VERSION` bumps measure everything again. |
+| Speech | Silero VAD v5 (ONNX, MIT) on 16 kHz sound, 0.5 / 0.35 hysteresis, speech at least 250 ms, gaps under 150 ms joined (D4). |
+| Word edges | wav2vec2-base-960h (ONNX, quantised, Apache-2.0) forced alignment per stretch of speech, then each edge moved onto the sound: a start to the nearest rise past the room + 10 dB (within -100/+50 ms), an end to the nearest fall under room + 6 dB (within 120 ms), two touching words split at the dip between them (D3). The model is downloaded at image build (too big for git); if it is missing the edges are only moved onto the sound and every tool says so. The model path could not be run here (Hugging Face is blocked in this sandbox): it is checked on the deployed worker. |
+| Faces | YuNet finds the faces in every frame at 10 fps (up to 3, tracked by overlap); MediaPipe Face Landmarker runs on a crop around each (it misses small faces in a full frame) for the mouth (`jawOpen`), blinks and head pose (D6). The rest of the picture every 0.5 s. |
+| Clipping | Flat tops near full scale (a 10 ms frame peaking at 0.89+ with a quarter of its samples within 3% of the peak), not samples at 32767: the preview copy is AAC, which rounds clipped tops down. |
+| Clicks | A sharp jump in the sound (1 ms peaks of the first difference) 20 dB over the sound around it, 30 dB inside speech (consonants are sharp too). |
+| A silence's level | The median of its 100 ms loudness values, so a click or a breath in a pause does not make the pause loud. Confidence 0.95 at the room, 0.8 well under the voice, 0.6 otherwise. |
+| Dark shots | The 0.5 s picture replaces the breakdown's dark shots once a video has it (one source, finer). |
+| Tool output | Text, short, ranges always; numbers series sized to about 300 values unless a step is given. The waveform is a PNG drawn on the server (no image library). get_project pages V1 at 100 clips (each clip now carries a note). |
+| Burned-in times | get_frames writes the time (ms) and the frame number on each frame (no colons: FFmpeg's text filter reads them as syntax). |
+

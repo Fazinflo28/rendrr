@@ -17,3 +17,4 @@ export * from "./captions";
 export * from "./motion";
 export * from "./look";
 export * from "./marks";
+export * from "./deep";

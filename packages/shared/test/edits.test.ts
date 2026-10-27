@@ -106,8 +106,9 @@ describe("overview sheet", () => {
 describe("connector tool list", () => {
   it("stays small", () => {
     // 23: add_font (a font file once, used by name in graphics); 24: get_graphic (long recordings are polled);
-    // 28: mark_silences, mark_fillers, list_marks, get_retakes (Rendrr measures, the AI cuts).
-    expect(MCP_TOOLS.length).toBeLessThanOrEqual(28);
+    // 28: mark_silences, mark_fillers, list_marks, get_retakes (Rendrr measures, the AI cuts);
+    // 32: get_audio, get_waveform_image, get_vision, map_time (the deeper measurements and time conversion).
+    expect(MCP_TOOLS.length).toBeLessThanOrEqual(32);
     const names = MCP_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
     for (const gone of ["cut_silences", "remove_fillers", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);

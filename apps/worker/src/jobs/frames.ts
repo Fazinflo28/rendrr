@@ -36,6 +36,13 @@ export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | Fac
   return out;
 }
 
+/** The time and frame number burned into a footage frame: "754.567s (12m 34.567s) · frame 22637 at 30 fps" (no
+ *  colons or quotes, which FFmpeg's text filter would read as its own syntax). */
+export function stampOf(t: number, fps: number | null): string {
+  const m = Math.floor(t / 60), s = t - m * 60;
+  return `${t.toFixed(3)}s${m ? ` (${m}m ${s.toFixed(3)}s)` : ""}${fps ? ` · frame ${Math.round(t * fps)} at ${+fps.toFixed(3)} fps` : ""}`;
+}
+
 async function videoFrames(ctx: Ctx, videoId: string, times: number[]): Promise<string[]> {
   const v = await prisma.video.findUnique({ where: { id: videoId } });
   if (!v?.proxyKey) return [];
@@ -43,10 +50,11 @@ async function videoFrames(ctx: Ctx, videoId: string, times: number[]): Promise<
   const out: string[] = [];
   for (const [i, t0] of times.slice(0, 8).entries()) {
     const t = Math.min(Math.max(0, t0), Math.max(0, v.seconds - 0.05));
-    const key = `${framesPrefix(v)}at-${Math.round(t * 100)}.jpg`;
+    // To the millisecond, with the time and frame number on the picture.
+    const key = `${framesPrefix(v)}at-${Math.round(t * 1000)}ms-tc.jpg`;
     if (await headObject(key)) { out.push(key); continue; } // asked before
     const p = join(ctx.dir, `v${i}.jpg`);
-    await frameAt(url, t, p, 960, ctx.signal).catch(() => {});
+    await frameAt(url, t, p, 960, ctx.signal, false, stampOf(t, v.fps)).catch(() => {});
     if (!(await stat(p).then((s) => s.size > 0).catch(() => false))) continue;
     await uploadFile(key, p, "image/jpeg");
     out.push(key);

@@ -117,6 +117,14 @@ model FootageAnalysis {
   faces       Json?
   ocrText     Json?
   breakdown   Json?    // the video as text + contact sheets for the AI (shared/breakdown.ts)
+  // The deeper measurements (shared/deep.ts): the sound every 10 ms (summary; frames in storage), where each word
+  // starts and ends in the sound, and faces / motion / sharpness (summary; details in storage).
+  audio       Json?
+  alignment   Json?
+  vision      Json?
+  deepVersion Int?
+  deepError   String?
+  deepAt      DateTime?
   createdAt   DateTime @default(now())
 }
 

@@ -32,7 +32,11 @@ export const QUEUES = {
   maintenance: { name: "maintenance", timeoutMs: 10 * 60_000, attempts: 1 },
   frames: { name: "frames", timeoutMs: 60_000, attempts: 1 },
   breakdown: { name: "breakdown", timeoutMs: 10 * 60_000, attempts: 1 },
+  deep: { name: "deep", timeoutMs: 10 * 60_000, attempts: 2 },
 } as const;
+/** The deeper measurements' limit grows with the footage: 0.6x its length (faces at 10 fps are most of it) plus a
+ *  fixed 5 minutes; a 22-minute video gets 18 minutes. */
+export const deepTimeoutMs = (seconds: number) => 5 * 60_000 + Math.round(seconds * 600);
 export const PREVIEW_TIMEOUT_MS = 3 * 60_000;
 export const FINAL_TIMEOUT_MS = 15 * 60_000;
 

@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 27 October 2026 (UTC). New: one edit from several videos (see "Several videos in one edit" below). Before that: Rendrr is the engine, the AI is the editor. Part 1: marks instead of automatic edits (see "Rendrr is the engine" below). Before that: long graphics, reusable graphics, fonts, quick tool calls, the graphic check and face framing (see "Faster graphics and framing" below). Before that: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
+Last updated: 27 October 2026 (UTC). New: Rendrr is the engine, Part 2: every video measured more deeply (the sound every 10 ms, where each word starts and ends in the sound, faces and the picture), with four new tools (see "Engine Part 2" below). Before that: one edit from several videos (see "Several videos in one edit" below). Before that: Rendrr is the engine, the AI is the editor. Part 1: marks instead of automatic edits (see "Rendrr is the engine" below). Before that: long graphics, reusable graphics, fonts, quick tool calls, the graphic check and face framing (see "Faster graphics and framing" below). Before that: Phases 6-8 of the editor plan. Phase 6: colour and compositing. Phase 7: export settings, the footage's frame rate kept, time left while rendering, and graphics as long as the video. Phase 8: a 20-minute talking head edited live through the connector only, in 8 calls with no images (see "Phase 8" below). Earlier phases are described in their own sections.
 
 ## 1. Links
 
@@ -20,6 +20,25 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
+
+## Engine Part 2: footage measured more deeply (27 October)
+
+Rendrr still decides nothing: these are measurements for the AI to cut on.
+
+| What | Where | Tests |
+|---|---|---|
+| The sound every 10 ms: peaks, loudness, speech (Silero VAD), onsets, breaths, clicks, clipping (flat tops, found after AAC too), room tone, voice level, LUFS and true peak. Kept as a summary in the database and the 10 ms frames in storage (4 bytes a frame: 22 min = 530 KB). | `worker/python/deep_audio.py`, `worker/src/jobs/deep.ts` | worker `deep.test.ts` (espeak voice + a breath, a click and clipping put in at known times) |
+| Where each word starts and ends in the sound: wav2vec2 (ONNX) forced alignment per stretch of speech, then each edge moved onto the sound (a rise past the room, a fall, or the dip between two touching words). Without the model, the edges are still moved onto the sound and the tools say so. | `worker/python/align.py` | worker `deep.test.ts` (alignment math, edge moves) |
+| Faces at 10 fps (YuNet boxes, tracked; MediaPipe on each face: mouth open, blinks, head turn), the picture every 0.5 s (brightness, sharpness, motion, shake, face exposure, main colours) and stretches: face lost, looking away, head turns, soft, shaky, dark, blown out, and where text can go. | `worker/python/vision.py` | worker `deep.test.ts` (a face that leaves, a shake, a dark end) |
+| A new queue, `deep`, after the analysis; old videos are measured on first use (the tool says so and how long) and by a backfill at worker start (50 a day). Each step reports percent and time left; the time limit grows with the video (5 min + 0.6 s a second); a failure is stored and named. | `worker/src/index.ts`, `api/src/services/deep.ts` | API `deep.test.ts` |
+| Tools: `get_audio` (numbers in a range, any step from 10 ms), `get_waveform_image` (a PNG drawn on the server: speech, breaths, clicks, clipping, word edges, ticks), `get_vision` (summary, rows every 0.5 s, faces at 10 fps on request), `map_time` (edit seconds to footage seconds and back). | `api/src/tools.ts`, `shared/src/deep.ts`, `api/src/services/waveform.ts` | API `deep.test.ts`, shared `deep.test.ts` |
+| `get_footage`: one line each for the sound, the alignment and the picture; detail "words" lists every word whose edges in the sound differ from the transcript by over 60 ms. `get_frames`: times to the millisecond, the time and frame number written on each frame. | `api/src/tools.ts`, `worker/src/jobs/frames.ts` | API `deep.test.ts` |
+| `get_project`: each V1 clip says what its sound does at the edges (time before the first word and after the last, a word the cut goes through and how much of it is lost, pauses inside), from the alignment. Long edits page their V1 clips (clipsFrom, clipsLimit, 100 by default). | `shared/src/ops.ts`, `api/src/tools.ts` | API `deep.test.ts` |
+| New marks from these: breath, click_pop, clipped_audio, out_of_focus, face_lost, off_camera, and low_light from the 0.5 s picture. Silence marks get their real level (median of the 100 ms values) instead of -35 / null. | `shared/src/marks.ts` | shared `deep.test.ts` |
+
+Speed measured here: 22 minutes of sound in 13 s; faces and picture at 0.3x real time (a 22-minute video about 7 minutes) on one core.
+
+Models: Silero VAD (MIT) and MediaPipe Face Landmarker (Apache-2.0) are in `apps/worker/models` with their licences and checksums. wav2vec2 (Apache-2.0, ~95 MB) is downloaded from Hugging Face when the worker image is built; the build log says "wav2vec2 ready" or prints a warning and the aligner falls back to moving the edges onto the sound.
 
 ## Several videos in one edit (27 October)
 

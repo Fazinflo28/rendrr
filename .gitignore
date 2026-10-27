@@ -18,3 +18,4 @@ assets-out/
 # agent worktrees
 .claude/worktrees/
 .mcp-token
+__pycache__/
