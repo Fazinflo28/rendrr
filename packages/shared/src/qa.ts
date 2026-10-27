@@ -136,13 +136,15 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
   const cut = new Set(tl.cut);
   const wordsOf = (vid: string) => (vid === main ? words : allWords(opts.transcripts?.[vid] ?? []));
   // What is said in the edit, in edit order: the words of every stretch of dialogue (muted ones are in the edit, silent).
-  const spoken: { w: Word; vid: string; at: number; end: number; muted: boolean }[] = [];
+  const spoken: { w: Word; vid: string; at: number; end: number; muted: boolean; sound: Range | null }[] = [];
   // A clip silent at its speed (reversed, frozen, too slow or fast) says nothing.
   for (const s of view.sound) {
     if (s.silent) continue;
     for (const w of wordsOf(s.videoId)) {
       if ((s.videoId === main && cut.has(w.id)) || w.t < s.srcIn || w.t >= s.srcOut) continue;
-      spoken.push({ w, vid: s.videoId, at: editOf(s, w.t), end: editOf(s, Math.min(w.end, s.srcOut)), muted: s.muted });
+      // Engine Part 3: where the word sounds (the alignment's edges) when the video has them, else the transcriber's.
+      const a = opts.aligned?.[s.videoId]?.get(w.id);
+      spoken.push({ w, vid: s.videoId, at: editOf(s, w.t), end: editOf(s, Math.min(w.end, s.srcOut)), muted: s.muted, sound: a ? { start: editOf(s, a.s), end: editOf(s, Math.min(a.e, s.srcOut)) } : null });
     }
   }
   spoken.sort((a, b) => a.at - b.at);
@@ -258,7 +260,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     for (const b of m.black) if (!asked.some((r) => b.start >= r.start && b.end <= r.end)) flags.push(`black ${(b.end - b.start).toFixed(2)}s at ${fmtT(b.start)}`);
     // Silent in the file while the edit has someone speaking: a lost stretch of dialogue (muted clips are flagged above,
     // and words inside a fade the edit asks for may go quiet on purpose).
-    const speech = minus(spoken.filter((x) => !x.muted).map((x) => ({ start: x.at, end: x.end })), faded);
+    const speech = minus(spoken.filter((x) => !x.muted).map((x) => x.sound ?? { start: x.at, end: x.end }), faded);
     for (const x of m.silences) {
       const hit = speech.reduce((acc, w) => acc + overlap(w, x), 0);
       if (hit >= 0.2) flags.push(`silent ${(x.end - x.start).toFixed(2)}s at ${fmtT(x.start)} where words should play`);
@@ -290,7 +292,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
   if (clipped?.words.length) flags.push(`${clipped.words.length} ${clipped.words.length === 1 ? "word" : "words"} cut through (see Clipped words)`);
   const h = opts.heard;
   let heardLine: string | null = null;
-  if (h?.status === "done" && h.words) { const ex = wordsAsPlayed(view, wordsOf, isCut); heardLine = heardDiffLine(heardDiff(ex, h.words), h.words.length, ex.length); }
+  if (h?.status === "done" && h.words) { const ex = wordsAsPlayed(view, wordsOf, isCut, (v) => opts.aligned?.[v]); heardLine = heardDiffLine(heardDiff(ex, h.words), h.words.length, ex.length); }
   else if (h?.status === "queued" || h?.status === "transcribing") heardLine = "Heard vs the edit's words: the preview's sound is being transcribed again (get_preview_frames shows what is heard once it is done)";
   else if (h?.status === "failed") heardLine = `Heard vs the edit's words: the preview's sound could not be transcribed again (${h.error ?? "unknown error"})`;
   const look = lookText(tl);
@@ -324,7 +326,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     `Sound: ${legacy ? "mixed before Phase 3 (limiter only)" : audioText(sound)}${clipSound ? `; ${clipSound} ${clipSound === 1 ? "clip has its" : "clips have their"} own gain or fades` : ""}`,
     `Cuts ${Math.max(0, segs.length - 1)}${total ? ` (${(((segs.length - 1) / total) * 60).toFixed(1)}/min)` : ""}, shortest clip ${segs.length ? Math.min(...segs.map((x) => x.len)).toFixed(1) + "s" : "-"}${short.length ? ` at ${list(short.map((x) => fmtT(x.at)), 4)}` : ""}`,
     ...(ld ? [`Loudness of the file: ${ld.lufs != null ? ld.lufs + " LUFS" : "unknown"}, true peak ${ld.peakDb != null ? ld.peakDb + " dBTP" : "unknown"}${sound.loudness != null ? ` (target ${sound.loudness} LUFS, ceiling ${sound.peak} dBTP)` : ""}`] : []),
-    ...(m && !m.error && m.momentary ? [noiseLine(noiseBetweenWords(m.momentary, spoken.map((x) => ({ start: x.at, end: x.end })), total), music.length > 0)] : []),
+    ...(m && !m.error && m.momentary ? [noiseLine(noiseBetweenWords(m.momentary, fileSound ? fileSound.speech.map(([a, b]) => ({ start: a, end: b })) : spoken.map((x) => x.sound ?? { start: x.at, end: x.end }), total), music.length > 0)] : []),
     `Flags: ${flags.length ? flags.join("; ") : "none"}`,
   ];
   return lines.join("\n");

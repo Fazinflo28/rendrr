@@ -15,8 +15,12 @@ import type { Word } from "./transcript";
 
 /** The preview file's sound, measured every 10 ms (edit seconds): speech (Silero VAD, its edges moved onto the
  *  level), the room's and the voice's level (dBFS), breaths, and clicks within 20 ms of a join of the edit's sound
- *  ([time, dB over the sound around it]). */
-export type FileSound = { speech: [number, number][]; roomDb: number; speechDb: number; breaths: [number, number][]; joinClicks: [number, number][]; error?: string };
+ *  ([time, dB over the sound around it, "cut" when the cut itself jumps the waveform, else "click"; older measurements
+ *  have no third value]). */
+export type FileSound = { speech: [number, number][]; roomDb: number; speechDb: number; breaths: [number, number][]; joinClicks: ([number, number] | [number, number, "cut" | "click"])[]; error?: string };
+/** A burst next to a join must be this loud over the sound around it: a word starting right at a cut is speech
+ *  (consonants are sharp), even where the speech detector has not caught up yet. */
+export const JOIN_CLICK_DB = 30;
 
 /** The preview's sound transcribed again (edit seconds), kept with the render. status: queued and transcribing (the
  *  job runs after the render), done, failed (error), off (no transcriber set up), skipped (a newer preview came). */
@@ -191,9 +195,10 @@ export function clippedLine(r: { words: ClippedWord[]; unmeasured: string[] }, m
 export function joinClicks(view: SequenceView, s: Pick<FileSound, "joinClicks">): string[] {
   const joins = soundJoins(view.sound);
   const out: string[] = [];
-  for (const [t, db] of s.joinClicks) {
+  for (const [t, db, kind] of s.joinClicks) {
+    if (kind !== "cut" && db < JOIN_CLICK_DB) continue;
     const j = joins.reduce<SoundJoin | null>((best, x) => (Math.abs(x.at - t) <= 0.025 && (!best || Math.abs(x.at - t) < Math.abs(best.at - t)) ? x : best), null);
-    if (j) out.push(`${fmtT2(t)} ${db}dB at the join ${joinName(view, j)}`);
+    if (j) out.push(`${fmtT2(t)} ${db}dB at the join ${joinName(view, j)}${kind === "cut" ? " (the cut jumps the waveform)" : ""}`);
   }
   return out;
 }
@@ -297,14 +302,17 @@ export function boxCover(map: Uint8Array, S: number, b: Box): number {
 // Heard: the preview transcribed again, against the edit's words
 // ---------------------------------------------------------------------------------------------
 /** The words the edit plays, in edit order (muted, silent and cut words left out), each at its edit time. */
-export function wordsAsPlayed(view: SequenceView, wordsOf: (videoId: string) => Word[], isCut: (videoId: string, wordId: string) => boolean): { text: string; at: number }[] {
+export function wordsAsPlayed(view: SequenceView, wordsOf: (videoId: string) => Word[], isCut: (videoId: string, wordId: string) => boolean, alignedOf?: (videoId: string) => Map<string, Aligned> | null | undefined): { text: string; at: number }[] {
   const out: { text: string; at: number }[] = [];
   for (const s of view.sound) {
     if (s.muted || s.silent) continue;
-    const r = rateOf(s);
+    const r = rateOf(s), al = alignedOf?.(s.videoId);
     for (const w of wordsOf(s.videoId)) {
-      if (isCut(s.videoId, w.id) || w.t < s.srcIn || w.t >= s.srcOut) continue;
-      out.push({ text: w.text, at: r > 0 ? s.start + (w.t - s.srcIn) / r : s.start + (s.srcOut - w.t) / -r });
+      // A word plays where the middle of its sound does (the alignment's edges when there are some).
+      const a = al?.get(w.id), st = a ? a.s : w.t, mid = a ? (a.s + a.e) / 2 : w.t;
+      if (isCut(s.videoId, w.id) || mid < s.srcIn || mid >= s.srcOut) continue;
+      const t = Math.max(st, s.srcIn);
+      out.push({ text: w.text, at: r > 0 ? s.start + (t - s.srcIn) / r : s.start + (s.srcOut - t) / -r });
     }
   }
   return out.sort((a, b) => a.at - b.at);

@@ -169,16 +169,16 @@ def main():
     clicks.sort(key=lambda c: -c[1])
     clicks = sorted(clicks[:500])
 
-    # At the joins of a rendered edit (--joins): the clicks above within 20 ms of a join (a lip smack or bump kept at a
-    # clip's edge), and the cut itself: the biggest sample-to-sample jump within 1 ms of the join, 20 dB or more over
-    # the usual jump around it (25 ms each side), is a cut that jumps the waveform. A word starting at the join is not
-    # (its voice is the same in the 25 ms after it).
+    # At the joins of a rendered edit (--joins): the clicks above within 20 ms of a join at the in-speech bar, 30 dB (a
+    # lip smack or bump kept at a clip's edge; a word starting right at the cut is speech, even where the detector has
+    # not caught up yet: its consonant is sharp too), and the cut itself: the biggest sample-to-sample jump within 1 ms
+    # of the join, 20 dB or more over the usual jump around it (25 ms each side), is a cut that jumps the waveform.
     join_clicks = {}
     if joins is not None:
         for c in clicks:
             k = int(np.argmin(np.abs(joins - c[0]))) if len(joins) else -1
-            if k >= 0 and abs(joins[k] - c[0]) <= 0.02 and (k not in join_clicks or c[1] > join_clicks[k][1]):
-                join_clicks[k] = list(c)
+            if k >= 0 and c[1] >= 30 and abs(joins[k] - c[0]) <= 0.02 and (k not in join_clicks or c[1] > join_clicks[k][1]):
+                join_clicks[k] = [c[0], c[1], "click"]
         for k, jt in enumerate(joins):
             i = int(round(jt * 48000))
             if i < 1250 or i > len(x48) - 1250:
@@ -188,7 +188,7 @@ def main():
             around = np.median(np.concatenate([d[:1200 - 96], d[1200 + 96:]]))
             ratio = float(20 * np.log10((near + 1e-6) / (around + 1e-4)))
             if near > 0.02 and ratio >= 20 and (k not in join_clicks or ratio > join_clicks[k][1]):
-                join_clicks[k] = [round(jt, 3), round(ratio, 1)]
+                join_clicks[k] = [round(jt, 3), round(ratio, 1), "cut"]
 
     speech_db = db[on] if on.any() else db
     level = float(np.median(speech_db)) if len(speech_db) else -100.0

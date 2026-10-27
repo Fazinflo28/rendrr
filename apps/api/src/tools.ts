@@ -548,7 +548,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     }
     let said: string;
     if (h?.status === "done" && h.words) {
-      const ex = wordsAsPlayed(view, wordsOf, isCut);
+      const al = new Map([[view.mainVideoId, alignedMap(v.analysis?.alignment as unknown as Alignment | null)], ...Object.entries(others).map(([id, o]) => [id, alignedMap(o.alignment)] as const)]);
+      const ex = wordsAsPlayed(view, wordsOf, isCut, (vid) => al.get(vid));
       said = `Transcript as it plays (the preview's sound transcribed again; output times):\n${(h.sentences ?? []).map(([t, x]) => `[${fmtT(t)}] ${x}`).join("\n")}\n${heardDiffLine(heardDiff(ex, h.words), h.words.length, ex.length)}`;
     } else if (h?.status === "queued" || h?.status === "transcribing") {
       const spent = h.startedAt ? (Date.now() - Date.parse(h.startedAt)) / 1000 : 0;

@@ -1,4 +1,4 @@
-import { downloadFile, enqueue, uploadFile, writeDeepProgress, type DeepJob } from "@rendrr/core";
+import { downloadFile, enqueue, queue, uploadFile, writeDeepProgress, type DeepJob } from "@rendrr/core";
 import { Prisma, prisma } from "@rendrr/db";
 import { allWords, DEEP_VERSION, type Alignment, type DeepAudio, type Transcript, type VisionSummary } from "@rendrr/shared";
 import { existsSync } from "node:fs";
@@ -129,6 +129,13 @@ export async function queueMissingDeep(): Promise<number> {
     select: { videoId: true }, take: 50, orderBy: { createdAt: "desc" },
   });
   const day = new Date().toISOString().slice(0, 10);
-  for (const r of rows) await enqueue<DeepJob>("deep", { videoId: r.videoId }, { jobId: `deep-${r.videoId}-v${DEEP_VERSION}-${day}`, priority: 10 }).catch(() => {});
+  for (const r of rows) {
+    const jobId = `deep-${r.videoId}-v${DEEP_VERSION}-${day}`;
+    // A job of the same day that failed (a deploy stops the worker mid-job: BullMQ then fails it as stalled) would
+    // block the id until tomorrow: it goes, and the video is queued again.
+    const old = await queue("deep").getJob(jobId).catch(() => null);
+    if (old && (await old.isFailed().catch(() => false))) await old.remove().catch(() => {});
+    await enqueue<DeepJob>("deep", { videoId: r.videoId }, { jobId, priority: 10 }).catch(() => {});
+  }
   return rows.length;
 }

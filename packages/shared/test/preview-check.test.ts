@@ -94,11 +94,15 @@ describe("words a cut goes through", () => {
 });
 
 describe("clicks at joins", () => {
-  it("a click within 25 ms of a join is listed with its join, others are not", () => {
+  it("a click within 25 ms of a join is listed with its join, others are not; a burst under 30 dB is a word starting there", () => {
     const s = edit(raw(), clips(["a", 0, 3], ["b", 5, 12]));
     const v = viewOf(s);
-    expect(joinClicks(v, { joinClicks: [[3.012, 24.5], [6, 30]] })).toEqual(["0:03.01 24.5dB at the join a|b"]);
-    const measured: FileMeasure = { videoSeconds: v.total, audioSeconds: v.total, black: [], silences: [], lufs: -14, peakDb: -2, graphics: [], sound: { speech: [[0, v.total]], roomDb: -70, speechDb: -20, breaths: [], joinClicks: [[3.012, 24.5]] } };
+    expect(joinClicks(v, { joinClicks: [[3.012, 34.5, "click"], [6, 40, "click"]] })).toEqual(["0:03.01 34.5dB at the join a|b"]);
+    // Found live: a "b" right after a cut measured 22.7 dB. Under the in-speech bar it is not a click; the cut's own
+    // jump in the waveform is one from 20 dB.
+    expect(joinClicks(v, { joinClicks: [[3.01, 22.7, "click"], [3.0, 22.7]] })).toEqual([]);
+    expect(joinClicks(v, { joinClicks: [[3.0, 22.7, "cut"]] })).toEqual(["0:03.00 22.7dB at the join a|b (the cut jumps the waveform)"]);
+    const measured: FileMeasure = { videoSeconds: v.total, audioSeconds: v.total, black: [], silences: [], lufs: -14, peakDb: -2, graphics: [], sound: { speech: [[0, v.total]], roomDb: -70, speechDb: -20, breaths: [], joinClicks: [[3.012, 34.5, "click"]] } };
     expect(editCheck(s, tr, { measured, videoId: "v" })).toMatch(/Flags: .*1 click at joins/);
   });
 });
@@ -167,8 +171,30 @@ describe("heard: the preview transcribed again", () => {
     const w = wordsAsPlayed(viewOf(s), () => words, isCut(s));
     expect(w.slice(0, 5).map((x) => x.text)).toEqual(["word0", "word1", "word2", "word3", "word11"]);
     expect(w.some((x) => x.text === "word13")).toBe(false);
+    // With the word edges: a word plays where the middle of its sound does. word4's sound (2.48-2.92) has its middle
+    // past clip a's end (2.45), so it is not one the edit plays, though it starts in it; word11 starts at 5.98 in the
+    // sound, so it is heard from b's start.
+    const late = new Map(aligned);
+    expect(wordsAsPlayed(viewOf(s), () => words, isCut(s), () => late).slice(3, 5).map((x) => [x.text, +x.at.toFixed(2)])).toEqual([["word3", 1.98], ["word11", 2.45]]);
     const text = editCheck(s, tr, { videoId: "v", heard: { status: "done", words: w.map((x) => [x.text, x.at, x.at + 0.3]) } });
     expect(text).toMatch(/^Heard vs the edit's words: the same \d+ words$/m);
     expect(editCheck(s, tr, { videoId: "v", heard: { status: "transcribing" } })).toMatch(/being transcribed again/);
+  });
+});
+
+describe("speech where words should play, from the word edges", () => {
+  it("a stretch the file has silent is flagged only where the words' sound (not the transcriber's times) says speech", () => {
+    // Clip a ends at 2.45, inside word4 (sound 2.48-2.92 in the alignment, so none of it plays); clip b from 6.
+    const s = edit(raw(), clips(["a", 0, 2.45], ["b", 6, 12]));
+    const v = viewOf(s);
+    // The file is silent from 2.40 to 2.70: the end of word3's sound (to 2.42) and the start of b (word11 from 5.98).
+    const measured: FileMeasure = { videoSeconds: v.total, audioSeconds: v.total, black: [], silences: [{ start: 2.4, end: 2.7 }], lufs: -14, peakDb: -2, graphics: [] };
+    // The transcriber says word11 starts at 6.0, at b's start (edit 2.45); the alignment says 5.98, also at the start: the
+    // 0.25 s silent from 2.45 is where words should play either way.
+    expect(editCheck(s, tr, { measured, videoId: "v" })).toMatch(/silent 0\.30s at 0:02\.4 where words should play/);
+    // Word edges where the sound really starts 0.3 s later (6.3): the silence is before the speech, not over it.
+    const later = new Map(aligned);
+    later.set(words[11].id, { s: 6.3, e: 6.42, c: 0.9 });
+    expect(editCheck(s, tr, { measured, videoId: "v", aligned: { v: later } })).not.toMatch(/where words should play/);
   });
 });

@@ -29,7 +29,7 @@ export async function measureSound(file: string, joins: number[], o: { dir: stri
     const { stdout } = await run(PYTHON, [PY, "--pcm48", p48, "--pcm16", p16, "--vad", VAD, "--out", dir, "--joins", pj, "--min-speech", "0.15", "--edges"], {
       signal, onLine: (line) => { const m = /^PROGRESS (\d+)/.exec(line); if (m) o.onProgress?.(Number(m[1]) / 100); },
     });
-    const j = JSON.parse(stdout.trim().split("\n").pop() || "{}") as { speech?: [number, number][]; roomDb?: number; speechDb?: number; breaths?: [number, number, number, number][]; joinClicks?: [number, number][] };
+    const j = JSON.parse(stdout.trim().split("\n").pop() || "{}") as { speech?: [number, number][]; roomDb?: number; speechDb?: number; breaths?: [number, number, number, number][]; joinClicks?: FileSound["joinClicks"] };
     return { speech: j.speech ?? [], roomDb: j.roomDb ?? -100, speechDb: j.speechDb ?? -100, breaths: (j.breaths ?? []).map(([a, b]) => [a, b]), joinClicks: j.joinClicks ?? [] };
   } catch (e) {
     if (o.signal?.aborted) throw e;

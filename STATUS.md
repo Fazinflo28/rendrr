@@ -37,6 +37,8 @@ Spec test (AI-style script, real render): clips cut at start_audio and end_audio
 
 Found while testing: cut_words still cuts by the transcriber's times (a word to the next word's start). On the test video that left 20 ms of a cut word and took 20 ms off the next one. The check now names both, so the AI can cut on the word edges instead (set_clips or cut_words from/to).
 
+Checked live on the 22-minute video's edit (289 s preview, rendered in 1 min 27 s, transcribed again within 4 minutes): 32 gaps at joins with both sides, 5 clipped words in ms, 54 heard differences. Three things from that run were fixed straight away: a word starting right at a cut ("But" after a006|a007, 22.7 dB) was counted as a click (bursts next to a join now need the in-speech 30 dB; the cut's own jump keeps 20 dB); a word whose transcriber time started a hair before its clip showed as "heard, not in the edit's words" (a word now plays where the middle of its sound is); "silent where words should play" and the noise between words used the transcriber's times (now the word edges and the file's own speech). Also: today's deploys stopped the 22-minute video's re-measurement mid-job, and the daily backfill would not retry it until the next day; a failed backfill job is now cleared and queued again at each start.
+
 Cost: each preview's sound goes to AssemblyAI once (the newest preview of an edit only), the same rate as transcribing footage.
 
 ## Reference edits: blockers fixed (27 October)
