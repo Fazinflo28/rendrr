@@ -451,8 +451,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const ref = referenceLine(p.reference as ReferenceRef | null);
     const parts = i.videoIds?.length > 1 ? (p.timeline as unknown as Timeline).tracks.v1 as { id: string; sourceVideoId?: string; sourceIn?: number; sourceOut?: number }[] : [];
     const more = parts.filter((x) => x.sourceVideoId !== p.videoId);
-    const what = more.length ? `${more.length + 1} videos as recorded, back to back (the first is the edit's footage; then ${more.map((x) => `clip ${x.id} = video ${x.sourceVideoId} 0-${x.sourceOut}s`).join(", ")})` : "the footage as recorded";
-    return { text: `Created edit "${p.name}" (${p.id}), v1 = ${what}: nothing cut, captions off, no style, ${p.aspect}.${ref ? " " + ref : ""} Next: apply_edits.`, data: { projectId: p.id } };
+    const what = more.length ? `${more.length + 1} videos as recorded, back to back: the first is the edit's footage, then ${more.map((x) => `clip ${x.id} = video ${x.sourceVideoId} 0-${x.sourceOut}s`).join(", ")}` : "the footage as recorded";
+    return { text: `Created edit "${p.name}" (${p.id}), v1 = ${what} (nothing cut, captions off, no style), ${p.aspect}.${ref ? " " + ref : ""} Next: apply_edits.`, data: { projectId: p.id } };
   },
   apply_edits: (c, i) => applyEdits(c, i.projectId, parseEdits(i.edits || []), i.note, i),
 

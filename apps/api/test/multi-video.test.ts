@@ -69,7 +69,7 @@ describe("an edit of several videos", { skip: !ready && "needs DATABASE_URL and 
 
   it("the connector: create_project with videoIds names the parts' clips; get_project shows the sequence", async () => {
     const r = await TOOL_HANDLERS.create_project(c(), { videoIds: [ids["Part 1"], ids["Part 2"]], name: "Two parts" });
-    assert.match(r.text, new RegExp(`Created edit "Two parts" \\(\\w+\\), v1 = 2 videos as recorded, back to back \\(the first is the edit's footage; then clip \\S+ = video ${ids["Part 2"]} 0-15s\\): nothing cut`));
+    assert.match(r.text, new RegExp(`Created edit "Two parts" \\(\\w+\\), v1 = 2 videos as recorded, back to back: the first is the edit's footage, then clip \\S+ = video ${ids["Part 2"]} 0-15s \\(nothing cut, captions off, no style\\)`));
     const pid = (r.data as { projectId: string }).projectId;
     const g = await TOOL_HANDLERS.get_project(c(), { projectId: pid });
     assert.match(g.text, new RegExp(`\\S+ ${ids["Part 2"]} 0\\.00-15\\.00 @20\\.00-35\\.00 "Part 2 ${run}"`));
