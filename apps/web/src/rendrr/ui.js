@@ -12,7 +12,8 @@ const h = (type, props, ...kids) => {
 };
 const html = htm.bind(h);
 
-const fmtTime = (s, frames = false) => { s = Math.max(0, s || 0); const m = Math.floor(s / 60); const sec = Math.floor(s % 60); const base = String(m).padStart(2, "0") + ":" + String(sec).padStart(2, "0"); return frames ? base + ":" + String(Math.floor((s % 1) * 24)).padStart(2, "0") : base; };
+// mm:ss, or with ms true mm:ss.mmm (cuts are kept to the millisecond, so the timeline shows them).
+const fmtTime = (s, ms = false) => { const t = Math.floor(Math.max(0, s || 0) * 1000 + 1e-6); const base = String(Math.floor(t / 60000)).padStart(2, "0") + ":" + String(Math.floor(t / 1000) % 60).padStart(2, "0"); return ms ? base + "." + String(t % 1000).padStart(3, "0") : base; };
 const fmtLen = (s) => { const m = Math.floor(s / 60), sec = Math.round(s % 60); return m ? m + "m " + String(sec).padStart(2, "0") + "s" : sec + "s"; };
 const fmtAgo = (t) => { const d = Math.max(0, Date.now() - t) / 60000; if (d < 1) return "Just now"; if (d < 60) return Math.round(d) + " min ago"; if (d < 60 * 24) return Math.round(d / 60) + " h ago"; return Math.round(d / 1440) + " d ago"; };
 const initials = (n) => (n || "?").split(" ").map((x) => x[0]).slice(0, 2).join("").toUpperCase();
