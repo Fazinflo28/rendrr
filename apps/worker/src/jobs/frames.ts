@@ -1,8 +1,8 @@
 import { headObject, signGet, uploadFile, type ColorSampleJob, type ColorSamples, type FaceJob, type FaceSamples, type FramesJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { stat } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { frameAt, JobError, rgbFrames } from "../lib/ffmpeg";
+import { frameAt, JobError, overlayPng, rgbFrames } from "../lib/ffmpeg";
 import { detectFaces, faceOf } from "../lib/faces";
 import type { Ctx } from "../lib/job";
 import { framesPrefix } from "./breakdown";
@@ -11,7 +11,7 @@ import { framesPrefix } from "./breakdown";
 // references (get_frames, original times). Render frames are kept next to the render and expire with it; footage
 // frames sit with the video's other frames and go when its preview copy goes.
 export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | FaceSamples> {
-  const { renderId, videoId, times, colorSamples: cs, faces } = ctx.job.data as FramesJob;
+  const { renderId, videoId, times, overlays, colorSamples: cs, faces } = ctx.job.data as FramesJob;
   if (cs) return colorSamples(ctx, cs);
   if (faces) return faceSamples(ctx, faces);
   if (videoId) return videoFrames(ctx, videoId, times);
@@ -20,11 +20,23 @@ export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | Fac
   const url = await signGet(r.outputKey, 600);
   const out: string[] = [];
   for (const [i, t] of times.slice(0, 5).entries()) {
+    const over = overlays?.[i];
+    // A comment's drawing goes on a bigger frame, so the AI sees what was drawn on what.
+    const key = over ? r.outputKey.replace(/\.mp4$/, `-at${Math.round(t * 1000)}ms-${over.slice(over.lastIndexOf("/") + 1).replace(/\.png$/, "")}.jpg`) : r.outputKey.replace(/\.mp4$/, `-at${Math.round(t * 100)}.jpg`);
+    if (over && (await headObject(key))) { out.push(key); continue; } // asked before
     const p = join(ctx.dir, `t${i}.jpg`);
-    await frameAt(url, t, p, 540, ctx.signal).catch(() => {});
+    await frameAt(url, t, p, over ? 960 : 540, ctx.signal).catch(() => {});
     if (!(await stat(p).then(() => true).catch(() => false))) continue;
-    const key = r.outputKey.replace(/\.mp4$/, `-at${Math.round(t * 100)}.jpg`);
-    await uploadFile(key, p, "image/jpeg");
+    let file = p;
+    if (over) {
+      const png = join(ctx.dir, `o${i}.png`), q = join(ctx.dir, `t${i}-drawn.jpg`);
+      const res = await fetch(await signGet(over, 600)).catch(() => null);
+      if (res?.ok) {
+        await writeFile(png, Buffer.from(await res.arrayBuffer()));
+        await overlayPng(p, png, q, ctx.signal).then(() => { file = q; }).catch((e) => console.warn(`[frames] the drawing ${over} could not go on the frame: ${(e as Error).message}`));
+      } else console.warn(`[frames] the drawing ${over} could not be read (${res?.status ?? "no answer"})`);
+    }
+    await uploadFile(key, file, "image/jpeg");
     out.push(key);
   }
   // Recorded with the render's other frames (after the first five check frames), so cleanup and deletes remove them.

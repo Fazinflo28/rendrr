@@ -3,6 +3,19 @@
 // edits, autosave conflicts, real undo/restore, the rendered preview plays in the player, real downloads.
 // Phase 2: the edit is a sequence (clips of any video, in any order, J/L cuts) with Premiere's tools.
 import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, turnedVideoStyle, Art, useNav, useApp } from "./ui";
+
+// Web addresses in a comment as links (they open in a new tab); the rest stays text.
+function linkified(text) {
+  const out = [], re = /\b(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+)/gi;
+  let last = 0, m;
+  while ((m = re.exec(text || ""))) {
+    const url = m[0].replace(/[.,;:!?)\]]+$/, ""), href = /^https?:/i.test(url) ? url : "https://" + url;
+    out.push(text.slice(last, m.index), html`<a href=${href} target="_blank" rel="noopener noreferrer">${url}</a>`);
+    last = m.index + url.length; re.lastIndex = last;
+  }
+  out.push((text || "").slice(last));
+  return out;
+}
 import { StyleArt, CreateLinkModal, ReferencePicker, VideoOrderPicker } from "./screens";
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
@@ -896,6 +909,17 @@ function EditorInner({ project, reload, ai, keep }) {
   const [draft, setDraft] = useState(""); const [posting, setPosting] = useState(false);
   const postComment = async () => { if (!draft.trim()) return; setPosting(true); try { const c = await api.addProjectComment(project.id, { time: pb.time, text: draft }); setComments((x) => [...x, c].sort((a, b) => a.time - b.time)); setDraft(""); toast("Comment added at " + fmtTime(c.time), { icon: "comment" }); } catch (e) { toast(e.message); } finally { setPosting(false); } };
   const resolve = async (c) => { try { const u = await api.resolveComment(c.id, !c.resolved); setComments((x) => x.map((i) => (i.id === c.id ? { ...i, resolved: u.resolved } : i))); } catch (e) { toast(e.message); } };
+  // Comments from the Rendrr app in Claude can carry a drawing and pictures; the user's own notes can be edited, any deleted.
+  const [cEdit, setCEdit] = useState(null); // { id, text }
+  const [cDel, setCDel] = useState(null);
+  const [ink, setInk] = useState(null); // { time, strokes }: a comment's drawing, shown on the picture at its moment
+  const saveCEdit = async () => { try { const u = await api.editComment(cEdit.id, cEdit.text); setComments((x) => x.map((i) => (i.id === u.id ? { ...i, ...u } : i))); setCEdit(null); } catch (e) { toast(e.message); } };
+  const delComment = async (c) => {
+    if (cDel !== c.id) { setCDel(c.id); setTimeout(() => setCDel((v) => (v === c.id ? null : v)), 3000); return; }
+    try { await api.deleteComment(c.id); setComments((x) => x.filter((i) => i.id !== c.id)); setCDel(null); toast("Comment deleted.", { icon: "trash" }); } catch (e) { toast(e.message); }
+  };
+  const showInk = (c) => { pb.setPlaying(false); pb.seek(c.time); setInk({ time: c.time, strokes: c.drawing.strokes }); };
+  const inkOverlay = ink && !pb.playing && Math.abs(pb.time - ink.time) < 0.06 ? html`<svg class="cmt-ink" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Drawing from a comment">${ink.strokes.map((st, i) => html`<polyline key=${i} points=${st.p.reduce((a, v, k) => (k % 2 ? a + "," + v : a + (k ? " " : "") + v), "")} fill="none" stroke=${st.c} stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />`)}</svg>` : null;
 
   return html`<div class="editor">
     <div class="ed-top">
@@ -922,8 +946,8 @@ function EditorInner({ project, reload, ai, keep }) {
         <div style="flex:1;min-height:0;display:flex;justify-content:center">${watch
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
-          : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} />${rtab === "color" && colorClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} />` : null}`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${inkOverlay} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} />${rtab === "color" && colorClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} />` : null}${inkOverlay}`} marks=${comments.filter((c) => c.time > 0)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">
@@ -991,8 +1015,13 @@ function EditorInner({ project, reload, ai, keep }) {
             ${comments.length === 0 ? html`<div class="state" style="padding:28px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="comment" /></div><b class="t-label">No comments yet</b><p class="t-small">Leave a note at any moment of the video. Clients can too, from a review link.</p></div>`
             : comments.map((c) => html`<div key=${c.id} class=${"cmt" + (c.resolved ? " done" : "")} data-comment=${c.id}>
                 <span class="gava" style="width:26px;height:26px;font-size:10px">${initials(c.author)}</span>
-                <div class="grow" style="min-width:0"><div class="row" style="gap:8px"><b class="t-label">${c.author}${c.mine ? " (you)" : ""}</b><span class="t-small muted">${fmtAgo(c.at)}</span><div class="grow" /><${Btn} kind="quiet" size="xs" class="act" icon=${c.resolved ? "refresh" : "check"} aria-label=${c.resolved ? "Reopen" : "Resolve"} onClick=${() => resolve(c)} /></div>
-                  <p class="t-small" style="margin-top:2px">${c.time > 0 && html`<button class="tc" onClick=${() => pb.seek(c.time)}>${fmtTime(c.time)}</button>`}${c.text}</p></div>
+                <div class="grow" style="min-width:0"><div class="row" style="gap:8px"><b class="t-label">${c.author}${c.mine ? " (you)" : ""}</b><span class="t-small muted">${fmtAgo(c.at)}${c.edited ? " · edited" : ""}</span><div class="grow" />
+                    ${c.mine && html`<button class="cmt-act" onClick=${() => setCEdit({ id: c.id, text: c.text })}>Edit</button>`}
+                    <button class=${"cmt-act" + (cDel === c.id ? " warn" : "")} aria-label="Delete comment" onClick=${() => delComment(c)}>${cDel === c.id ? "Delete?" : html`<${Icon} name="trash" />`}</button>
+                    <${Btn} kind="quiet" size="xs" class="act" icon=${c.resolved ? "refresh" : "check"} aria-label=${c.resolved ? "Reopen" : "Resolve"} onClick=${() => resolve(c)} /></div>
+                  ${cEdit?.id === c.id ? html`<form class="row" style="gap:6px;margin-top:4px" onSubmit=${(e) => { e.preventDefault(); saveCEdit(); }}><input class="input sm grow" aria-label="Edit comment" value=${cEdit.text} onInput=${(e) => setCEdit({ ...cEdit, text: e.target.value })} onKeyDown=${(e) => e.key === "Escape" && setCEdit(null)} autoFocus /><${Btn} size="sm" type="submit">Save<//><${Btn} size="sm" kind="quiet" type="button" onClick=${() => setCEdit(null)}>Cancel<//></form>`
+                  : html`<p class="t-small" style="margin-top:2px">${c.time > 0 && html`<button class="tc" onClick=${() => pb.seek(c.time)}>${fmtTime(c.time)}</button>`}${linkified(c.text)}</p>`}
+                  ${(c.drawing || c.images?.length) ? html`<div class="row cmt-media">${c.drawing && html`<button class="cmt-badge" onClick=${() => showInk(c)}>✎ Drawing</button>`}${(c.images || []).map((im) => html`<a key=${im.id} href=${im.url} target="_blank" rel="noopener noreferrer" title=${im.name || "Picture"}><img class="cmt-img" src=${im.url} alt=${im.name || "Picture"} /></a>`)}</div>` : null}</div>
               </div>`)}
           </div>
           <form class="cbox" onSubmit=${(e) => { e.preventDefault(); postComment(); }}>

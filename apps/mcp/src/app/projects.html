@@ -88,6 +88,46 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
 /* The player's own controls: the browser's show whole seconds, these show milliseconds (like the editor). The seek
    bar carries the comments as dots. */
 .stage video { cursor: pointer; }
+/* The drawing sits exactly on the picture (the player keeps the picture's shape inside its box). */
+.frame { position: relative; width: 100%; display: flex; justify-content: center; }
+.ink { position: absolute; pointer-events: none; }
+.ink.on { pointer-events: auto; cursor: crosshair; touch-action: none; outline: 2px solid var(--accent); outline-offset: -2px; }
+.pens { display: flex; gap: 4px; }
+.pen { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); padding: 0; }
+.pen.on { border-color: var(--ink); box-shadow: 0 0 0 2px var(--bg) inset; }
+.ibtn.on { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+/* Full screen the share panel floats over the page, so the comments keep their room. */
+html.fs .share { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: min(520px, calc(100% - 20px)); z-index: 6; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+.sm { display: none; }
+.shade { display: none; }
+html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; background: rgba(0,0,0,.25); }
+.share { border: 1px solid var(--accent); background: var(--panel); border-radius: var(--r-md); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.share input { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: var(--r-sm); padding: 8px 10px; font: 13px var(--mono); }
+/* Phones: one column, bigger targets, nothing wider than the screen. */
+@media (max-width: 560px) {
+  body { padding: 10px; }
+  h1 { font-size: 16px; }
+  .top { gap: 6px; }
+  .top .grow { flex-basis: calc(100% - 120px); }
+  .search { width: 100%; order: 5; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .stage video { max-height: 300px; }
+  .stage.tall video { height: 440px; }
+  .ctrl { flex-wrap: wrap; row-gap: 6px; gap: 4px; }
+  .tc { font-size: 13px; padding: 0 2px; }
+  .tc .tot { display: none; } /* the seek bar shows how far along it is */
+  .lg { display: none; } .sm { display: inline; }
+  .top .btn { padding: 6px 9px; }
+  .ibtn { width: 40px; height: 38px; }
+  .btn, .step { min-height: 36px; }
+  html .compose textarea { font-size: 16px; } /* 16 px or more: phones do not zoom in when it is tapped */
+  .cm .act { padding: 6px 8px; font-size: 13px; }
+  .cm .chk { width: 30px; height: 30px; }
+  .pen { width: 30px; height: 30px; }
+}
+@media (pointer: coarse) { .keyhint { display: none; } }
+.lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center; z-index: 10; cursor: zoom-out; padding: 20px; }
+.lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
 .seek { position: relative; height: 22px; margin: -2px 7px 0; cursor: pointer; flex: none; touch-action: none; }
 .seek .bar { position: absolute; left: 0; right: 0; top: 9px; height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; }
 .seek .fill { height: 100%; width: 0; background: var(--accent); }
@@ -107,6 +147,12 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
 .prog > div { height: 100%; background: var(--accent); transition: width .4s ease; }
 .compose { border: 1px solid var(--line); background: var(--panel); border-radius: var(--r-md); padding: 8px; }
 .compose textarea { width: 100%; resize: vertical; min-height: 54px; max-height: 200px; border: 0; background: transparent; color: var(--ink); font: inherit; padding: 2px 4px; }
+.compose.drop { outline: 2px dashed var(--accent); }
+.editing-bar { font-size: 12px; color: var(--accent-ink); padding: 0 4px 6px; }
+.atts { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 2px 6px; }
+.att { position: relative; }
+.att canvas, .att img { width: 64px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); display: block; background: var(--surface); }
+.att .x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; border: 0; background: var(--ink); color: var(--bg); font-size: 11px; line-height: 18px; padding: 0; }
 .at { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); border: 0; }
 .tabs { display: flex; gap: 4px; }
 .tab { border: 0; background: transparent; color: var(--muted); padding: 4px 8px; border-radius: var(--r-sm); font-size: 13px; }
@@ -120,6 +166,15 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
 .cm .t:hover { background: var(--accent-soft); color: var(--accent-ink); }
 .cm .who { font-size: 12px; color: var(--muted); }
 .cm .txt { grid-column: 1 / -1; white-space: pre-wrap; word-break: break-word; }
+.cm .acts { display: flex; gap: 2px; align-items: center; }
+.cm .act { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 2px 6px; border-radius: 6px; }
+.cm .act:hover { background: var(--surface); color: var(--ink); }
+.cm .act.warn { color: var(--danger); }
+.cm .txt a, .compose a { color: var(--accent-ink); text-decoration: underline; word-break: break-all; }
+.cm .media { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.thumbimg { width: 64px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); cursor: zoom-in; background: var(--surface); display: block; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.cm.editing { border-color: var(--accent); }
 .cm .chk { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line); background: transparent; display: inline-flex; align-items: center; justify-content: center; padding: 0; font-size: 13px; }
 .cm.done .chk { background: var(--accent); color: var(--on-accent); border-color: transparent; }
 .toast { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
@@ -195,8 +250,8 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
   const isFullscreen = () => host.ctx.displayMode === "fullscreen";
   const setDisplay = (mode) => request("ui/request-display-mode", { mode }).then((r) => { if (r && r.mode) applyContext({ displayMode: r.mode }); }).catch(() => {});
   const fsButton = () => !canFullscreen() ? null : isFullscreen()
-    ? h("button", { class: "btn ghost", onClick: () => setDisplay("inline") }, "Exit full screen")
-    : h("button", { class: "btn big", title: "Open the player and comments full screen", onClick: () => setDisplay("fullscreen") }, "⤢ Full screen");
+    ? h("button", { class: "btn ghost", "aria-label": "Exit full screen", onClick: () => setDisplay("inline") }, h("span", { class: "lg" }, "Exit full screen"), h("span", { class: "sm" }, "Exit"))
+    : h("button", { class: "btn big", title: "Open the player and comments full screen", onClick: () => setDisplay("fullscreen") }, "⤢ ", h("span", { class: "lg" }, "Full screen"), h("span", { class: "sm" }, "Full"));
 
   // Tell the host how tall the app is, whenever that changes.
   let lastH = 0;
@@ -205,7 +260,11 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
   new ResizeObserver(sizeNow).observe(document.documentElement);
 
   // ---------------- state ----------------
-  const state = { view: "list", page: null, query: "", loadingMore: false, project: null, filter: "open", draft: "", webUrl: null, err: null, pendingProject: null, busy: false };
+  const state = { view: "list", page: null, query: "", loadingMore: false, project: null, filter: "open", draft: "", webUrl: null, err: null, pendingProject: null, busy: false,
+    // The comment being written or edited: its moment (null: the player's), drawing, pictures; drawing on the player.
+    compose: null, drawMode: false, pen: "#ff3b30", viewDrawing: null, confirmDelete: null, lightbox: null, sending: false, share: null };
+  const freshCompose = () => ({ editingId: null, time: null, drawing: null, drawingChanged: false, images: [], removeImages: [] });
+  state.compose = freshCompose();
   // The player lives across redraws (a poll every few seconds must not reload it); views hook into its time.
   let player = null, polling = null, wantedId = null, timeHooks = [];
 
@@ -235,7 +294,7 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
     const prevRender = state.project && state.project.preview && state.project.preview.renderId;
     const sameProject = state.project && state.project.project.id === view.project.id;
     state.project = view; state.view = "project";
-    if (!sameProject) { state.filter = view.comments.some((c) => !c.resolved) || !view.comments.length ? "open" : "all"; state.draft = ""; }
+    if (!sameProject) { state.filter = view.comments.some((c) => !c.resolved) || !view.comments.length ? "open" : "all"; state.draft = ""; state.compose = freshCompose(); state.drawMode = false; state.viewDrawing = null; state.share = null; }
     const fresh = sameProject && view.preview && view.preview.renderId !== prevRender;
     render(fresh);
     schedulePoll();
@@ -333,13 +392,14 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
 
   function projectView(fresh) {
     const v = state.project;
-    const back = h("button", { class: "btn ghost", onClick: () => { stopPolling(); state.view = "list"; state.project = null; state.pendingProject = null; player = null; render(); if (!state.page) loadList(); } }, "← All projects");
+    const back = h("button", { class: "btn ghost", "aria-label": "All projects", onClick: () => { stopPolling(); state.view = "list"; state.project = null; state.pendingProject = null; state.share = null; player = null; render(); if (!state.page) loadList(); } }, "← ", h("span", { class: "lg" }, "All projects"));
     if (!v) return h("div", {}, h("div", { class: "row top" }, back), h("div", { class: "skel" }));
     const p = v.project;
     const top = h("div", { class: "row top" }, back,
       h("div", { class: "grow" }, h("h1", { title: p.name, style: "white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, p.name), h("div", { class: "muted small" }, [p.folder, "v" + p.version, p.status, p.aspect].filter(Boolean).join(" · "))),
       fsButton(),
-      p.editorUrl ? h("button", { class: "btn", onClick: () => openLink(p.editorUrl) }, "Open in Rendrr") : null);
+      h("button", { class: "btn", title: "A link to watch and comment on this video, no account needed", onClick: () => toggleShare(v) }, "Share"),
+      p.editorUrl ? h("button", { class: "btn", "aria-label": "Open in Rendrr", onClick: () => openLink(p.editorUrl) }, h("span", { class: "lg" }, "Open in Rendrr"), h("span", { class: "sm" }, "Rendrr ↗")) : null);
 
     // The player: the latest preview, or a note while there is none.
     const tall = p.aspect === "9:16";
@@ -353,10 +413,15 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
         // While it plays, the timecode moves every frame (timeupdate alone is 4 times a second).
         vid.addEventListener("play", () => { const tick = () => { emit(); if (!vid.paused && !vid.ended) requestAnimationFrame(tick); }; requestAnimationFrame(tick); });
         vid.addEventListener("click", () => togglePlay());
+        vid.addEventListener("loadedmetadata", () => placeInk());
+        vid.addEventListener("play", () => { if (state.drawMode) { state.drawMode = false; render(); } state.viewDrawing = null; });
+        new ResizeObserver(() => placeInk()).observe(vid);
         if (fresh) { vid.addEventListener("loadeddata", () => { vid.play().catch(() => {}); }, { once: true }); setTimeout(() => toast("Preview v" + v.preview.version + " is ready."), 50); }
         player = vid;
       }
-      stage = h("div", { class: "stage" + (tall ? " tall" : "") }, player);
+      const canvas = h("canvas", { class: "ink" + (state.drawMode ? " on" : ""), "aria-label": state.drawMode ? "Draw on the picture" : null });
+      inkCanvas(canvas);
+      stage = h("div", { class: "stage" + (tall ? " tall" : "") }, h("div", { class: "frame" }, player, canvas));
     } else {
       player = null;
       stage = h("div", { class: "stage" }, h("div", { class: "noprev" }, v.rendering ? "The first preview is rendering…" : "No preview yet."));
@@ -375,7 +440,9 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
       notes.push(h("div", { class: "note row" }, h("span", { class: "grow" }, v.preview ? "v" + p.version + " has changes this preview (v" + v.preview.version + ") does not show yet." : "This edit has no preview yet."),
         h("button", { class: "btn", disabled: state.busy, onClick: renderPreview }, state.busy ? "Starting…" : "Render preview")));
     }
-    return h("div", { class: "pv" }, top, stage, strip, ctrl, notes, commentsView(v));
+    requestAnimationFrame(placeInk);
+    return h("div", { class: "pv" }, top, state.share ? h("div", { class: "shade", onClick: () => { state.share = null; render(); } }) : null, state.share ? shareView(v) : null, stage, strip, state.drawMode ? drawBar() : ctrl, notes, commentsView(v),
+      state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
   }
 
   // The seek bar: drag or click to move, the comments as dots (click one to go to it).
@@ -414,12 +481,13 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
     if (!player) return null;
     const vid = player;
     const playBtn = h("button", { class: "ibtn", "aria-label": "Play", title: "Play or pause (space)", onClick: togglePlay });
-    const tc = h("span", { class: "mono tc", "aria-live": "off" });
+    const cur = h("span"), tot = h("span", { class: "tot" });
+    const tc = h("span", { class: "mono tc", "aria-live": "off" }, cur, tot);
     const muteBtn = h("button", { class: "ibtn", "aria-label": "Sound off", onClick: () => { vid.muted = !vid.muted; } });
     let shown = "";
     onTime((t) => {
       const total = isFinite(vid.duration) && vid.duration > 0 ? vid.duration : v.preview.seconds || 0;
-      tc.textContent = fmtTime(t) + " / " + fmtTime(total);
+      cur.textContent = fmtTime(t); tot.textContent = " / " + fmtTime(total);
       const now = (vid.paused ? "play" : "pause") + (vid.muted ? "muted" : "sound");
       if (now !== shown) {
         shown = now;
@@ -428,8 +496,9 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
       }
     });
     return h("div", { class: "ctrl" }, playBtn, tc, h("span", { class: "grow" }),
-      h("button", { class: "btn ghost step", title: "Back 0.1 s (←; Shift ← 1 s)", onClick: () => step(-0.1) }, "−0.1 s"),
-      h("button", { class: "btn ghost step", title: "On 0.1 s (→; Shift → 1 s)", onClick: () => step(0.1) }, "+0.1 s"),
+      h("button", { class: "btn ghost step", title: "Draw on the picture at this moment, for a comment", onClick: startDraw }, "✎ Draw"),
+      h("button", { class: "btn ghost step", title: "Back 0.1 s (←; Shift ← 1 s)", "aria-label": "Back 0.1 s", onClick: () => step(-0.1) }, "−0.1", h("span", { class: "lg" }, " s")),
+      h("button", { class: "btn ghost step", title: "On 0.1 s (→; Shift → 1 s)", "aria-label": "On 0.1 s", onClick: () => step(0.1) }, "+0.1", h("span", { class: "lg" }, " s")),
       muteBtn);
   }
 
@@ -439,32 +508,230 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
     if (player.readyState >= 1) go(); else player.addEventListener("loadedmetadata", go, { once: true });
   }
 
+  // ---------------- share ----------------
+  // The review link for the version being watched: anyone with it can watch and comment, no account needed.
+  async function toggleShare(v) {
+    if (state.share) { state.share = null; render(); return; }
+    state.share = { loading: true }; render();
+    try {
+      const d = await callTool("app_share_link", { projectId: v.project.id, ...(v.preview ? { version: v.preview.version } : {}) });
+      state.share = d || { error: "No link came back." };
+    } catch (e) { state.share = { error: e.message }; }
+    render();
+  }
+  async function copyText(text, input) {
+    // The clipboard only where the host allows it (else the browser logs an error), then the old way.
+    const pol = document.permissionsPolicy || document.featurePolicy;
+    const allowed = !pol || typeof pol.allowsFeature !== "function" || pol.allowsFeature("clipboard-write");
+    if (allowed && navigator.clipboard) try { await navigator.clipboard.writeText(text); return true; } catch {}
+    try { input.focus(); input.select(); return document.execCommand("copy"); } catch { return false; }
+  }
+  function shareView(v) {
+    const sh = state.share;
+    if (sh.loading) return h("div", { class: "share" }, h("span", { class: "muted small" }, "Making the link…"));
+    if (sh.error) return h("div", { class: "share" }, h("span", { class: "note err" }, sh.error));
+    const input = h("input", { value: sh.url, readonly: true, "aria-label": "Review link", onFocus: (e) => e.target.select() });
+    return h("div", { class: "share" },
+      h("div", { class: "row" }, h("b", { class: "grow" }, "Share v" + sh.version), h("button", { class: "act", "aria-label": "Close", onClick: () => { state.share = null; render(); } }, "×")),
+      h("span", { class: "muted small" }, "Anyone with this link can watch this version and leave comments, no account needed. Their comments come back here." + (sh.expires ? " It works until " + new Date(sh.expires).toLocaleDateString() + "." : "")),
+      input,
+      h("div", { class: "row" },
+        h("button", { class: "btn primary", onClick: async () => { toast((await copyText(sh.url, input)) ? "Link copied." : "Select the link and copy it."); } }, "Copy link"),
+        h("button", { class: "btn", onClick: () => openLink(sh.url) }, "Open"),
+        h("span", { class: "grow" })));
+  }
+
+  // ---------------- drawing on the picture ----------------
+  const PENS = ["#ff3b30", "#ffd60a", "#34c759", "#0a84ff", "#ffffff"];
+  let ink = null;
+  // Where the picture is inside the player's box (it keeps its shape, with bars on the sides or top).
+  function pictureRect() {
+    const vw = player.videoWidth || 16, vh = player.videoHeight || 9, ew = player.clientWidth, eh = player.clientHeight;
+    const k = Math.min(ew / vw, eh / vh), w = vw * k, hh = vh * k;
+    return { x: player.offsetLeft + (ew - w) / 2, y: player.offsetTop + (eh - hh) / 2, w, h: hh };
+  }
+  function placeInk() {
+    if (!ink || !player || !ink.isConnected) return;
+    const r = pictureRect(), dpr = window.devicePixelRatio || 1;
+    Object.assign(ink.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
+    ink.width = Math.max(1, Math.round(r.w * dpr)); ink.height = Math.max(1, Math.round(r.h * dpr));
+    drawInk();
+  }
+  const near = (t) => player && Math.abs(player.currentTime - t) < 0.06;
+  // What the picture shows: the drawing being made; else, paused at its moment, the comment's being written or looked at.
+  function shownStrokes() {
+    const c = state.compose;
+    if (state.drawMode) return (c.drawing && c.drawing.strokes) || [];
+    if (!player || !player.paused) return [];
+    if (c.drawing && c.time != null && near(c.time)) return c.drawing.strokes;
+    return state.viewDrawing && near(state.viewDrawing.time) ? state.viewDrawing.strokes : [];
+  }
+  function paint(g, strokes, W, H) {
+    g.lineCap = "round"; g.lineJoin = "round";
+    for (const st of strokes) {
+      g.strokeStyle = st.c; g.lineWidth = Math.max(1, st.w * W); g.beginPath();
+      for (let k = 0; k + 1 < st.p.length; k += 2) { const x = st.p[k] * W, y = st.p[k + 1] * H; k ? g.lineTo(x, y) : g.moveTo(x, y); }
+      if (st.p.length === 2) g.lineTo(st.p[0] * W + 0.1, st.p[1] * H);
+      g.stroke();
+    }
+  }
+  function drawInk() { if (!ink) return; const g = ink.getContext("2d"); g.clearRect(0, 0, ink.width, ink.height); paint(g, shownStrokes(), ink.width, ink.height); }
+  function inkCanvas(cv) {
+    ink = cv;
+    onTime(() => drawInk());
+    cv.addEventListener("pointerdown", (e) => {
+      if (!state.drawMode || !player) return;
+      e.preventDefault();
+      try { cv.setPointerCapture(e.pointerId); } catch {}
+      const c = state.compose;
+      c.drawing = c.drawing || { w: player.videoWidth || 1280, h: player.videoHeight || 720, strokes: [] };
+      if (c.drawing.strokes.length >= 80) { toast("That is a lot of drawing: Clear or Undo first."); return; }
+      // About 4 px on the screen, whatever the picture's size.
+      const st = { c: state.pen, w: Math.min(0.03, Math.max(0.003, 4 / Math.max(1, cv.getBoundingClientRect().width))), p: [] };
+      c.drawing.strokes.push(st); c.drawingChanged = true;
+      const add = (ev) => {
+        const r = cv.getBoundingClientRect();
+        const x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+        const n = st.p.length;
+        if (n >= 3998 || (n && Math.hypot(x - st.p[n - 2], y - st.p[n - 1]) < 0.002)) return;
+        st.p.push(Math.round(x * 1e4) / 1e4, Math.round(y * 1e4) / 1e4);
+        drawInk();
+      };
+      add(e);
+      cv.addEventListener("pointermove", add);
+      const end = () => { cv.removeEventListener("pointermove", add); cv.removeEventListener("pointerup", end); cv.removeEventListener("pointercancel", end); render(); };
+      cv.addEventListener("pointerup", end);
+      cv.addEventListener("pointercancel", end);
+    });
+  }
+  function startDraw() {
+    if (!player) return;
+    player.pause();
+    const c = state.compose;
+    if (c.time == null) c.time = Math.round(player.currentTime * 1000) / 1000; else seek(c.time);
+    state.drawMode = true; state.viewDrawing = null;
+    render();
+  }
+  function endDraw() {
+    const c = state.compose;
+    if (c.drawing && !c.drawing.strokes.length) c.drawing = null;
+    if (!c.drawing && !c.editingId && !c.images.length && !state.draft.trim()) c.time = null;
+    state.drawMode = false; render();
+    const ta = document.querySelector('[data-key="draft"]'); if (ta) ta.focus({ preventScroll: true });
+  }
+  function drawBar() {
+    const c = state.compose;
+    return h("div", { class: "ctrl" },
+      h("span", { class: "small", style: "color:var(--accent-ink)" }, "Drawing at " + fmtTime(c.time || 0)),
+      h("div", { class: "pens" }, PENS.map((col) => h("button", { class: "pen" + (state.pen === col ? " on" : ""), style: "background:" + col, "aria-label": "Pen colour " + col, onClick: () => { state.pen = col; render(); } }))),
+      h("span", { class: "grow" }),
+      h("button", { class: "btn ghost step", disabled: !(c.drawing && c.drawing.strokes.length), onClick: () => { c.drawing.strokes.pop(); c.drawingChanged = true; render(); } }, "Undo"),
+      h("button", { class: "btn ghost step", disabled: !(c.drawing && c.drawing.strokes.length), onClick: () => { c.drawing = null; c.drawingChanged = true; render(); } }, "Clear"),
+      h("button", { class: "btn primary", onClick: endDraw }, "Done"));
+  }
+  /** The drawing as a clear PNG the size of the picture (up to 1280 wide), so the AI can see it on the frame. */
+  function drawingPng(d) {
+    const W = Math.min(1280, d.w), H = Math.max(1, Math.round((W * d.h) / d.w));
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    paint(cv.getContext("2d"), d.strokes, W, H);
+    return cv.toDataURL("image/png").split(",")[1];
+  }
+
+  // ---------------- pictures ----------------
+  const readB64 = (blob) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = () => no(r.error); r.readAsDataURL(blob); });
+  // A picture as the comment keeps it: small files as they are, big ones made 1600 px or smaller (JPEG).
+  async function readImage(file) {
+    const bmp = await createImageBitmap(file);
+    let w = bmp.width, hh = bmp.height, type = file.type, data;
+    if (["image/jpeg", "image/png", "image/webp"].includes(file.type) && file.size <= 1_000_000 && Math.max(w, hh) <= 2400) data = await readB64(file);
+    else {
+      const k = Math.min(1, 1600 / Math.max(w, hh)), cv = document.createElement("canvas");
+      cv.width = Math.round(w * k); cv.height = Math.round(hh * k);
+      cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+      type = "image/jpeg"; w = cv.width; hh = cv.height;
+      data = cv.toDataURL("image/jpeg", 0.85).split(",")[1];
+      if (data.length > 1_400_000) data = cv.toDataURL("image/jpeg", 0.6).split(",")[1];
+    }
+    const thumb = document.createElement("canvas"); thumb.width = 128; thumb.height = 96;
+    const tk = Math.max(128 / bmp.width, 96 / bmp.height);
+    thumb.getContext("2d").drawImage(bmp, (128 - bmp.width * tk) / 2, (96 - bmp.height * tk) / 2, bmp.width * tk, bmp.height * tk);
+    return { local: Math.random().toString(36).slice(2), type, data, name: file.name || null, w, h: hh, thumb };
+  }
+  async function addImages(files) {
+    const c = state.compose;
+    const have = c.images.length;
+    const list = Array.from(files || []).filter((f) => /^image\//.test(f.type));
+    if (!list.length) return;
+    if (have + list.length > 4) toast("Up to 4 pictures on a comment.");
+    for (const f of list.slice(0, Math.max(0, 4 - have))) {
+      try { c.images.push(await readImage(f)); } catch { toast("Could not read " + (f.name || "that picture") + "."); }
+    }
+    if (c.time == null && player) c.time = Math.round(player.currentTime * 1000) / 1000;
+    render();
+  }
+
+  // ---------------- links ----------------
+  // Web addresses in a comment open in the browser (through the host); everything else stays plain text.
+  function linkify(text) {
+    const out = [], re = /\b(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+)/gi;
+    let last = 0, m;
+    while ((m = re.exec(text))) {
+      const url = m[0].replace(/[.,;:!?)\]]+$/, "");
+      const href = /^https?:/i.test(url) ? url : "https://" + url;
+      out.push(text.slice(last, m.index), h("a", { href, title: href, onClick: (e) => { e.preventDefault(); openLink(href); } }, url));
+      last = m.index + url.length; re.lastIndex = last;
+    }
+    out.push(text.slice(last));
+    return out;
+  }
+
   function commentsView(v) {
     const open = v.comments.filter((c) => !c.resolved);
     const shown = state.filter === "open" ? open : v.comments;
-    // The new comment goes at the player's moment; typing pauses the player so the moment holds.
-    const at = h("button", { class: "at mono", title: "Go to this moment" , onClick: () => seek(player ? player.currentTime : 0) }, "at " + fmtTime(player ? player.currentTime : 0));
-    onTime((t) => { at.textContent = "at " + fmtTime(t); });
-    const ta = h("textarea", { placeholder: v.preview ? "Add a comment at this moment…" : "Add a comment…", "aria-label": "Comment", maxlength: "2000", "data-key": "draft",
+    // The new comment goes at the player's moment (or the moment it was drawn on); typing pauses the player so it holds.
+    const c = state.compose;
+    const momentOf = () => (c.time != null ? c.time : player ? player.currentTime : 0);
+    const at = h("button", { class: "at mono", title: "Go to this moment", onClick: () => seek(momentOf()) }, "at " + fmtTime(momentOf()));
+    onTime(() => { at.textContent = "at " + fmtTime(momentOf()); });
+    const canSend = () => !state.sending && (state.draft.trim() || (c.drawing && c.drawing.strokes.length) || c.images.length);
+    const ta = h("textarea", { placeholder: v.preview ? "Write a comment at this moment, paste a link or a picture…" : "Write a comment, paste a link or a picture…", "aria-label": "Comment", maxlength: "2000", "data-key": "draft",
       onFocus: () => { if (player && !player.paused) player.pause(); },
-      onInput: (e) => { state.draft = e.target.value; add.disabled = !state.draft.trim(); },
-      onKeydown: (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } } });
+      onInput: (e) => { state.draft = e.target.value; add.disabled = !canSend(); },
+      onPaste: (e) => { const fs = Array.from((e.clipboardData && e.clipboardData.files) || []).filter((f) => /^image\//.test(f.type)); if (fs.length) { e.preventDefault(); addImages(fs); } },
+      onKeydown: (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } else if (e.key === "Escape" && c.editingId) cancelEdit(); } });
     ta.value = state.draft;
-    const add = h("button", { class: "btn primary", disabled: !state.draft.trim(), onClick: () => submit() }, "Comment");
+    const add = h("button", { class: "btn primary", disabled: !canSend(), onClick: () => submit() }, state.sending ? "Saving…" : c.editingId ? "Save" : "Comment");
+    const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", multiple: true, style: "display:none", onChange: (e) => { addImages(e.target.files); e.target.value = ""; } });
     async function submit() {
-      const text = state.draft.trim();
-      if (!text) return;
-      const time = player ? player.currentTime : 0;
-      add.disabled = true;
+      if (!canSend()) return;
+      const text = state.draft.trim(), time = Math.round(momentOf() * 1000) / 1000;
+      const fresh = c.images.filter((im) => !im.existing).map((im) => ({ type: im.type, data: im.data, name: im.name || undefined, w: im.w, h: im.h }));
+      const drawing = c.drawing && c.drawing.strokes.length ? { w: c.drawing.w, h: c.drawing.h, strokes: c.drawing.strokes, png: drawingPng(c.drawing) } : null;
+      state.sending = true; add.disabled = true; add.textContent = "Saving…";
       try {
-        const nv = await callTool("app_add_comment", { projectId: v.project.id, time: Math.round(time * 1000) / 1000, text });
-        state.draft = ""; state.filter = "open";
-        tellModel("In the Rendrr app the user added a comment on \"" + v.project.name + "\" (" + v.project.id + ") at " + fmtTime(time) + " of preview v" + (v.preview ? v.preview.version : "?") + ": " + text);
-        if (nv) showProject(nv);
-        toast("Comment added. It is in Rendrr too.");
-      } catch (e) { toast(e.message); add.disabled = false; }
+        const nv = c.editingId
+          ? await callTool("app_edit_comment", { projectId: v.project.id, commentId: c.editingId, text, ...(c.drawingChanged ? { drawing } : {}), ...(c.removeImages.length ? { removeImages: c.removeImages } : {}), ...(fresh.length ? { images: fresh } : {}) })
+          : await callTool("app_add_comment", { projectId: v.project.id, time, text, ...(v.preview ? { renderId: v.preview.renderId } : {}), ...(drawing ? { drawing } : {}), ...(fresh.length ? { images: fresh } : {}) });
+        const what = [drawing ? "a drawing" : "", c.images.length ? c.images.length + (c.images.length === 1 ? " picture" : " pictures") : ""].filter(Boolean).join(" and ");
+        tellModel("In the Rendrr app the user " + (c.editingId ? "changed their comment" : "added a comment") + " on \"" + v.project.name + "\" (" + v.project.id + ") at " + fmtTime(time) + (v.preview ? " of preview v" + v.preview.version : "") + ": " + (text || "(no words)") + (what ? " (with " + what + "; get_comments images true shows them)" : ""));
+        toast(c.editingId ? "Comment saved." : "Comment added. It is in Rendrr too.");
+        state.draft = ""; state.compose = freshCompose(); state.filter = "open"; state.sending = false;
+        if (nv) showProject(nv); else render();
+      } catch (e) { state.sending = false; toast(e.message); add.disabled = !canSend(); add.textContent = c.editingId ? "Save" : "Comment"; }
     }
-    const compose = h("div", { class: "compose" }, ta, h("div", { class: "row" }, at, h("span", { class: "grow muted small" }, navigator.platform.includes("Mac") ? "⌘ Enter" : "Ctrl Enter"), add));
+    const atts = [];
+    if (c.drawing && c.drawing.strokes.length) atts.push(h("span", { class: "badge", title: "Shown on the picture at " + fmtTime(c.time || 0) }, "✎ Drawing ", h("button", { class: "act", "aria-label": "Take the drawing off", onClick: () => { c.drawing = null; c.drawingChanged = true; render(); } }, "×")));
+    for (const im of c.images) atts.push(h("span", { class: "att" }, im.existing ? h("img", { src: im.url, alt: im.name || "Picture" }) : im.thumb,
+      h("button", { class: "x", "aria-label": "Take this picture off", onClick: () => { c.images = c.images.filter((x) => x !== im); if (im.existing) c.removeImages.push(im.id); render(); } }, "×")));
+    const compose = h("div", { class: "compose",
+      onDragover: (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files")) { e.preventDefault(); e.currentTarget.classList.add("drop"); } },
+      onDragleave: (e) => e.currentTarget.classList.remove("drop"),
+      onDrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove("drop"); addImages(e.dataTransfer && e.dataTransfer.files); } },
+      c.editingId ? h("div", { class: "row editing-bar" }, h("span", { class: "grow" }, "Editing your comment at " + fmtTime(c.time || 0)), h("button", { class: "act", onClick: cancelEdit }, "Cancel")) : null,
+      ta, atts.length ? h("div", { class: "atts" }, atts) : null,
+      h("div", { class: "row" }, at,
+        h("button", { class: "btn ghost step", title: "Add a picture (or paste or drop one)", disabled: c.images.length >= 4, onClick: () => file.click() }, "🖼 Picture"), file,
+        h("span", { class: "grow muted small keyhint" }, navigator.platform.includes("Mac") ? "⌘ Enter" : "Ctrl Enter"), h("span", { class: "grow" }), add));
 
     const tabs = h("div", { class: "row" },
       h("div", { class: "tabs grow" },
@@ -472,13 +739,42 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
         h("button", { class: "tab" + (state.filter === "all" ? " on" : ""), onClick: () => { state.filter = "all"; render(); } }, "All " + v.comments.length)),
       h("button", { class: "btn primary", disabled: !open.length, title: open.length ? "Ask your AI to work through the open comments" : "No open comments", onClick: () => sendToAi(v, open) }, "Send to Claude"));
 
-    const items = shown.map((c) => h("div", { class: "cm" + (c.resolved ? " done" : "") },
-      h("button", { class: "t mono", title: "Go to " + fmtTime(c.time), onClick: () => seek(c.time) }, fmtTime(c.time)),
-      h("span", { class: "who" }, (c.mine ? c.author || "You" : c.author + " (client)") + " · " + ago(c.at)),
-      h("button", { class: "chk", title: c.resolved ? "Open again" : "Resolve", "aria-label": c.resolved ? "Open again" : "Resolve", onClick: () => resolve(v, c) }, c.resolved ? "✓" : ""),
-      h("div", { class: "txt" }, c.text)));
+    const look = (x) => { seek(x.time); if (player) player.pause(); state.viewDrawing = x.drawing ? { time: x.time, strokes: x.drawing.strokes } : null; requestAnimationFrame(drawInk); };
+    const items = shown.map((x) => h("div", { class: "cm" + (x.resolved ? " done" : "") + (c.editingId === x.id ? " editing" : ""), "data-id": x.id },
+      h("button", { class: "t mono", title: "Go to " + fmtTime(x.time), onClick: () => look(x) }, fmtTime(x.time)),
+      h("span", { class: "who" }, (x.mine ? x.author || "You" : x.author + " (client)") + " · " + ago(x.at) + (x.edited ? " · edited" : "")),
+      h("span", { class: "acts" },
+        x.mine ? h("button", { class: "act", title: "Edit", onClick: () => startEdit(x) }, "Edit") : null,
+        h("button", { class: "act" + (state.confirmDelete === x.id ? " warn" : ""), title: "Delete", onClick: () => askDelete(v, x) }, state.confirmDelete === x.id ? "Delete?" : "Delete"),
+        h("button", { class: "chk", title: x.resolved ? "Open again" : "Resolve", "aria-label": x.resolved ? "Open again" : "Resolve", onClick: () => resolve(v, x) }, x.resolved ? "✓" : "")),
+      x.text ? h("div", { class: "txt" }, linkify(x.text)) : null,
+      x.drawing || (x.images && x.images.length) ? h("div", { class: "media" },
+        x.drawing ? h("button", { class: "badge", title: "Show the drawing on the picture", onClick: () => look(x) }, "✎ Drawing") : null,
+        (x.images || []).map((im) => h("img", { class: "thumbimg", src: im.url, alt: im.name || "Picture", title: im.name || "Picture", onClick: () => { state.lightbox = im.url; render(); } }))) : null));
     const list = items.length ? h("div", { class: "list", "data-key": "comments" }, items) : h("div", { class: "empty", style: "padding:18px" }, state.filter === "open" && v.comments.length ? "Every comment is resolved." : "No comments yet. Play the preview, pause where something should change, and write it here.");
     return h("div", { class: "side" }, tabs, list, compose);
+  }
+
+  function startEdit(x) {
+    state.compose = { editingId: x.id, time: x.time, drawing: x.drawing ? { w: x.drawing.w, h: x.drawing.h, strokes: x.drawing.strokes.map((st) => ({ c: st.c, w: st.w, p: st.p.slice() })) } : null, drawingChanged: false,
+      images: (x.images || []).map((im) => ({ existing: true, id: im.id, url: im.url, name: im.name })), removeImages: [] };
+    state.draft = x.text; state.drawMode = false; state.viewDrawing = null;
+    seek(x.time); if (player) player.pause();
+    render();
+    const ta = document.querySelector('[data-key="draft"]'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  }
+  function cancelEdit() { state.compose = freshCompose(); state.draft = ""; state.drawMode = false; render(); }
+  let deleteTimer = null;
+  async function askDelete(v, x) {
+    if (state.confirmDelete !== x.id) { state.confirmDelete = x.id; clearTimeout(deleteTimer); deleteTimer = setTimeout(() => { state.confirmDelete = null; render(); }, 3000); render(); return; }
+    state.confirmDelete = null; clearTimeout(deleteTimer);
+    try {
+      const nv = await callTool("app_delete_comment", { projectId: v.project.id, commentId: x.id });
+      if (state.compose.editingId === x.id) { state.compose = freshCompose(); state.draft = ""; }
+      tellModel("In the Rendrr app the user deleted the comment at " + fmtTime(x.time) + " on \"" + v.project.name + "\": " + (x.text || "(no words)"));
+      toast("Comment deleted.");
+      if (nv) showProject(nv);
+    } catch (e) { toast(e.message); }
   }
 
   async function resolve(v, c) {
@@ -494,15 +790,19 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
   }
 
   async function sendToAi(v, open) {
-    const lines = open.slice(0, 30).map((c) => "- " + fmtTime(c.time) + " " + c.text.replace(/\s+/g, " ").slice(0, 300));
+    const carries = (c) => { const w = [c.drawing ? "drawing" : "", c.images && c.images.length ? c.images.length + (c.images.length === 1 ? " picture" : " pictures") : ""].filter(Boolean); return w.length ? " (" + w.join(", ") + ")" : ""; };
+    const lines = open.slice(0, 30).map((c) => "- " + fmtTime(c.time) + " " + (c.text || "(no words)").replace(/\s+/g, " ").slice(0, 300) + carries(c));
+    const media = open.some((c) => c.drawing || (c.images && c.images.length));
     const text = "Please work through the " + open.length + " open " + (open.length === 1 ? "comment" : "comments") + " on my Rendrr edit \"" + v.project.name + "\" (project " + v.project.id + ")" + (v.preview ? ", made on preview v" + v.preview.version : "") + ":\n" + lines.join("\n") +
-      "\n\nRead them with get_comments, fix each one and the same kind of mistake everywhere in one apply_edits, check it with check_edit, render one preview, then resolve the comments you fixed.";
+      "\n\nRead them with get_comments" + (media ? " (images true shows the drawings and pictures)" : "") + ", fix each one and the same kind of mistake everywhere in one apply_edits, check it with check_edit, render one preview, then resolve the comments you fixed.";
     try { const r = await sendMessage(text); if (r && r.isError) throw new Error(); toast("Sent to Claude."); }
     catch { toast("Could not send it. Copy the comments into the chat instead."); }
   }
 
   document.addEventListener("keydown", (e) => {
     if (e.target && /^(TEXTAREA|INPUT)$/.test(e.target.tagName)) return;
+    if (e.key === "Escape" && state.lightbox) { state.lightbox = null; render(); return; }
+    if (e.key === "Escape" && state.drawMode) { endDraw(); return; }
     if (e.key === " " && e.target && e.target.tagName === "BUTTON") return; // the button's own click does it
     if (e.key === " " && player) { e.preventDefault(); togglePlay(); }
     else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && player) { e.preventDefault(); step((e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 1 : 0.1)); }

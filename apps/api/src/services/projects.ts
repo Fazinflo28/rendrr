@@ -1,4 +1,5 @@
 import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, signGet } from "@rendrr/core";
+import { deleteEditCommentFiles } from "./commentMedia";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
 import { allWords, asSequence, aspectFor, buildRawSequence, catalogMusic, catalogSfx, findTemplate, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { otherVideoIds, playerVideos } from "./sequence";
@@ -118,7 +119,7 @@ export async function projectFull(userId: string, id: string) {
   // Client comments and the user's own notes, in video order.
   const comments = [
     ...reviews.flatMap((r) => r.comments.filter((c) => !c.projectId || c.projectId === p.id)).map(commentOut),
-    ...notes.map((n) => noteOut(n, owner.name)),
+    ...(await Promise.all(notes.map((n) => noteOut(n, owner.name)))),
   ].sort((a, b) => a.time - b.time || a.at - b.at);
   const preview = await latestRender(p.id, "preview");
   const final = await latestRender(p.id, "final");
@@ -182,8 +183,11 @@ export async function graphicPlacements(userId: string, tl: Snapshot["timeline"]
 
 /** Deletes the stored files of these edits (renders, frames, raw originals) before their rows are removed. */
 export async function purgeProjectFiles(where: Prisma.ProjectWhereInput) {
-  const ids = (await prisma.project.findMany({ where, select: { id: true } })).map((p) => p.id);
+  const ps = await prisma.project.findMany({ where, select: { id: true, userId: true } });
+  const ids = ps.map((p) => p.id);
   if (!ids.length) return;
+  // Comments' drawings and pictures (the app in the chat).
+  for (const p of ps) await deleteEditCommentFiles(p.userId, p.id).catch(() => {});
   const renders = await prisma.render.findMany({ where: { projectId: { in: ids } }, select: { outputKey: true, framesKeys: true } });
   await deleteObjects(renders.flatMap((r) => [r.outputKey, ...((r.framesKeys as string[]) || [])]));
   const originals = await prisma.tempOriginal.findMany({ where: { projectId: { in: ids } } });

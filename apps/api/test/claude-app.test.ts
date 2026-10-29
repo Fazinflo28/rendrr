@@ -77,7 +77,7 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
     assert.equal(v.comments.length, 1);
     assert.deepEqual({ time: v.comments[0].time, text: v.comments[0].text, author: v.comments[0].author, mine: v.comments[0].mine, resolved: v.comments[0].resolved }, { time: 3.25, text: "Cut the pause here", author: "Ana", mine: true, resolved: false });
     assert.equal(await prisma.projectComment.count({ where: { projectId } }), 1);
-    assert.match((await tool("get_comments", { projectId })).text, / \| 0:03 \| Cut the pause here \| open/);
+    assert.match((await tool("get_comments", { projectId })).text, / \| 0:03\.250 \| Cut the pause here \| open/);
   });
 
   it("the app lists the edits with their preview, render and open comments", async () => {
@@ -144,6 +144,81 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
       assert.deepEqual(cfg.json().mediaOrigins, await appMediaOrigins());
       const none = await srv.inject({ method: "POST", url: "/internal/tools/app_nothing", headers, payload: {} });
       assert.equal(none.statusCode, 404);
+    } finally { await srv.close(); }
+  });
+
+  it("a comment can carry a drawing on the picture and pictures; Claude reads them in words, then sees them", async () => {
+    const { headObject } = await import("@rendrr/core");
+    const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    const JPG = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
+    const render1 = (await prisma.render.findFirstOrThrow({ where: { projectId, version: 1 } })).id;
+    const drawing = { w: 1080, h: 1920, strokes: [{ c: "#FF3B30", w: 0.006, p: [0.4, 0.2, 0.5, 0.25, 0.6123456, 0.3] }], png: PNG };
+    let v = (await app("app_add_comment", { projectId, time: 7.125, text: "Make the logo smaller, like https://example.com/ref", renderId: render1, drawing, images: [{ type: "image/jpeg", data: JPG, name: "ref.jpg", w: 1, h: 1 }, { type: "image/png", data: PNG }] })).data as any;
+    const n = v.comments.find((x: any) => x.time === 7.125);
+    assert.equal(n.renderId, render1);
+    assert.deepEqual(n.drawing, { w: 1080, h: 1920, strokes: [{ c: "#ff3b30", w: 0.006, p: [0.4, 0.2, 0.5, 0.25, 0.6123, 0.3] }] });
+    assert.equal(n.images.length, 2);
+    assert.match(n.images[0].url, /X-Amz-Signature=/);
+    assert.equal(n.images[0].name, "ref.jpg");
+    const row = await prisma.projectComment.findUniqueOrThrow({ where: { id: n.id } });
+    const keys = [(row.drawing as any).key, ...(row.images as any[]).map((i) => i.key)];
+    assert.equal(keys.length, 3);
+    for (const k of keys) { assert.ok(k.startsWith(`comments/${userId}/${projectId}/${n.id}/`), k); assert.ok(await headObject(k), `${k} is stored`); }
+    // Claude, in words: the time to the ms, the preview it was made on, the drawing, the pictures.
+    const words = (await tool("get_comments", { projectId })).text;
+    console.log(words);
+    assert.match(words, new RegExp(`${n.id} \\| 0:07\\.125 \\| Make the logo smaller, like https://example\\.com/ref \\| on preview v1 \\| a drawing in red: 1 stroke over x 40-61%, y 20-30% of the picture \\| 2 pictures \\| open`));
+    assert.match(words, /images true shows the open notes' pictures and drawings\./);
+    // A comment needs something: words, a drawing or a picture; pictures are checked by their bytes.
+    await assert.rejects(app("app_add_comment", { projectId, time: 1, text: "  " }), /Write a comment, draw on the picture or add a picture first/);
+    await assert.rejects(app("app_add_comment", { projectId, time: 1, text: "x", images: [{ type: "image/png", data: Buffer.from("<svg onload=alert(1)>").toString("base64") }] }), /must be a JPEG, PNG or WebP/);
+    assert.equal(await prisma.projectComment.count({ where: { projectId, text: "x" } }), 0, "nothing half made");
+    // Edit: new words, one picture off, the drawing off; its files go.
+    v = (await app("app_edit_comment", { projectId, commentId: n.id, text: "Logo smaller", removeImages: [n.images[1].id], drawing: null })).data as any;
+    const e = v.comments.find((x: any) => x.id === n.id);
+    assert.deepEqual({ text: e.text, edited: e.edited, drawing: e.drawing, images: e.images.length }, { text: "Logo smaller", edited: true, drawing: null, images: 1 });
+    assert.equal(await headObject(keys[0]), null, "the drawing's file is gone");
+    assert.equal(await headObject(keys[2]), null, "the picture's file is gone");
+    assert.ok(await headObject(keys[1]), "the kept picture stays");
+    // Pictures for Claude to look at (a note with only pictures: no frame needed).
+    const seen = await tool("get_comments", { projectId, images: true });
+    assert.equal(seen.images?.length, 1);
+    assert.match(seen.text, new RegExp(`Images, in order:\\n1\\. note ${n.id}: picture "ref\\.jpg"`));
+    // Only the user's own notes can be changed; a client's can be deleted.
+    const review = await prisma.review.create({ data: { token: `t_${run}`, userId, projectId } });
+    const cc = await prisma.reviewComment.create({ data: { reviewToken: review.token, projectId, time: 2, text: "Client says hi", author: "Dana" } });
+    await assert.rejects(app("app_edit_comment", { projectId, commentId: cc.id, text: "changed" }), /not yours to change|gone/);
+    v = (await app("app_delete_comment", { projectId, commentId: cc.id })).data as any;
+    assert.ok(!v.comments.some((x: any) => x.id === cc.id));
+    await assert.rejects(APP_HANDLERS.app_delete_comment(c(otherId), { projectId, commentId: n.id }), /could not find|gone/i);
+    // Delete: the note and every file it had.
+    v = (await app("app_delete_comment", { projectId, commentId: n.id })).data as any;
+    assert.ok(!v.comments.some((x: any) => x.id === n.id));
+    assert.equal(await headObject(keys[1]), null);
+  });
+
+  it("the editor can change a note's words and delete notes; deleting the edit takes its comments' files", async () => {
+    const { buildServer } = await import("../src/server");
+    const { headObject } = await import("@rendrr/core");
+    const { purgeProjectFiles } = await import("../src/services/projects");
+    const srv = await buildServer();
+    try {
+      const headers = { "x-internal-secret": process.env.INTERNAL_API_SECRET!, "x-rendrr-clerk-id": `app_${run}` };
+      const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+      const v = (await app("app_add_comment", { projectId, time: 9, text: "Old words", images: [{ type: "image/png", data: PNG }] })).data as any;
+      const id = v.comments.find((x: any) => x.time === 9).id;
+      const full = await srv.inject({ method: "GET", url: `/projects/${projectId}`, headers });
+      const shown = full.json().comments.find((x: any) => x.id === id);
+      assert.equal(shown.images.length, 1, "the editor gets the pictures");
+      const ed = await srv.inject({ method: "PATCH", url: `/comments/${id}`, headers, payload: { text: "New words" } });
+      assert.equal(ed.statusCode, 200, ed.body);
+      assert.deepEqual({ text: ed.json().text, edited: ed.json().edited }, { text: "New words", edited: true });
+      const key = ((await prisma.projectComment.findUniqueOrThrow({ where: { id } })).images as any[])[0].key;
+      await purgeProjectFiles({ id: projectId });
+      assert.equal(await headObject(key), null, "deleting the edit takes the comments' files");
+      const del = await srv.inject({ method: "DELETE", url: `/comments/${id}`, headers });
+      assert.equal(del.statusCode, 200, del.body);
+      assert.equal(await prisma.projectComment.count({ where: { id } }), 0);
     } finally { await srv.close(); }
   });
 

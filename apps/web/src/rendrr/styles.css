@@ -1006,3 +1006,14 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 /* Phase 5: transition marks on the cut, keyframe diamonds on clips */
 .tl-canvas .clip .trm { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(189, 232, 22, .55) 0 4px, rgba(189, 232, 22, .15) 4px 8px); border-left: 1px solid rgba(189, 232, 22, .9); border-right: 1px solid rgba(189, 232, 22, .9); pointer-events: none; z-index: 2; }
 .tl-canvas .clip .kf { position: absolute; bottom: 2px; width: 7px; height: 7px; margin-left: -3.5px; background: var(--accent); border: 1px solid rgba(0, 0, 0, .55); transform: rotate(45deg); pointer-events: none; z-index: 3; }
+
+/* Comments from the Rendrr app in Claude: a drawing on the picture, pictures; edit and delete. */
+.cmt-act { border: 0; background: transparent; color: var(--ink-faint); font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; }
+.cmt-act:hover { background: var(--raised); color: var(--ink); }
+.cmt-act.warn { color: #ff6b6b; }
+.cmt-act svg { width: 14px; height: 14px; }
+.cmt-media { gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.cmt-badge { font: inherit; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; }
+.cmt-img { width: 64px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); display: block; }
+.cmt a { color: var(--accent-ink); text-decoration: underline; word-break: break-all; }
+.cmt-ink { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; }

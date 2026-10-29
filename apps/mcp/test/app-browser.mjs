@@ -65,7 +65,18 @@ function tool(name, args) {
     if (r) { r.percent += 45; r.queued = false; r.step = "Encoding"; if (r.percent >= 100) { db.rendering[args.projectId] = null; db.preview[args.projectId] = { renderId: "r2", version: 2, url: `${M}/v2.webm?X-Amz-Signature=c`, seconds: 6, quality: "540p", at: Date.now() }; } }
     return view(args.projectId);
   }
-  if (name === "app_add_comment") { db.comments[args.projectId].push({ id: "c" + calls.length, time: args.time, text: args.text, author: "Ana", mine: true, resolved: false, at: Date.now() }); return view(args.projectId); }
+  // Pictures come back as data: links here (Rendrr gives signed storage links); drawings as their strokes.
+  const pics = (ims = []) => ims.map((im, i) => ({ id: "im" + calls.length + "-" + i, url: `data:${im.type};base64,${im.data}`, w: im.w ?? null, h: im.h ?? null, name: im.name ?? null }));
+  if (name === "app_add_comment") { db.comments[args.projectId].push({ id: "c" + calls.length, time: args.time, text: args.text, author: "Ana", mine: true, resolved: false, at: Date.now(), edited: false, renderId: args.renderId ?? null, drawing: args.drawing ? { w: args.drawing.w, h: args.drawing.h, strokes: args.drawing.strokes } : null, images: pics(args.images) }); return view(args.projectId); }
+  if (name === "app_edit_comment") {
+    const c = db.comments[args.projectId].find((x) => x.id === args.commentId);
+    if (args.text !== undefined) c.text = args.text;
+    if (args.drawing !== undefined) c.drawing = args.drawing && { w: args.drawing.w, h: args.drawing.h, strokes: args.drawing.strokes };
+    c.images = c.images.filter((im) => !(args.removeImages || []).includes(im.id)).concat(pics(args.images));
+    c.edited = true; return view(args.projectId);
+  }
+  if (name === "app_share_link") return { url: `https://app.rendrr.live/review/tok-${args.projectId}`, version: args.version ?? 2, created: true, expires: null, allowDownload: false };
+  if (name === "app_delete_comment") { db.comments[args.projectId] = db.comments[args.projectId].filter((x) => x.id !== args.commentId); return view(args.projectId); }
   if (name === "app_resolve_comment") { const c = db.comments[args.projectId].find((x) => x.id === args.commentId); c.resolved = args.resolved !== false; return view(args.projectId); }
   if (name === "app_render_preview") { db.rendering[args.projectId] = { renderId: "r2", version: 2, percent: 10, step: null, etaSec: 40, queued: true }; return view(args.projectId); }
   throw new Error("no tool " + name);
@@ -74,8 +85,10 @@ function tool(name, args) {
 // The host page: a sandboxed frame, the CSP built from the declared domains, the MCP Apps host side.
 const csp = `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src ${M} data:; media-src ${M}; font-src 'none'; connect-src 'none'; frame-src 'none'; base-uri 'none'`;
 const doc = APP.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="${csp}">`);
-const hostHtml = `<!doctype html><meta charset=utf8><body style="margin:0;background:#fff"><iframe id=app sandbox="allow-scripts" style="width:900px;border:0;height:600px"></iframe><script>
+const hostHtml = `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width, initial-scale=1"><body style="margin:0;background:#fff"><iframe id=app sandbox="allow-scripts" style="width:900px;border:0;height:600px"></iframe><script>
 const f = document.getElementById("app");
+const phone = location.search.includes("phone");
+if (phone) f.style.width = "100vw";
 window.log = [];
 window.addEventListener("message", async (e) => {
   if (e.source !== f.contentWindow) return;
@@ -93,7 +106,7 @@ window.addEventListener("message", async (e) => {
   // Full screen: a fixed panel, as a host gives it; inline: the frame follows the app's height.
   else if (m.method === "ui/request-display-mode") {
     window.fs = m.params.mode === "fullscreen";
-    f.style.width = window.fs ? "1200px" : "900px"; f.style.height = window.fs ? "1000px" : (window.inlineH || 600) + "px";
+    f.style.width = phone ? "100vw" : window.fs ? "1200px" : "900px"; f.style.height = window.fs ? (phone ? "100vh" : "1000px") : (window.inlineH || 600) + "px";
     reply({ mode: m.params.mode });
     f.contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { displayMode: m.params.mode } }, "*");
   }
@@ -114,6 +127,7 @@ await page.goto(`http://127.0.0.1:${host.address().port}/`);
 const app = page.frameLocator("#app");
 const frame = () => page.frame({ url: /about:srcdoc/ }) ?? page.frames()[1];
 const hostLog = () => page.evaluate(() => window.log.map((m) => ({ method: m.method, params: m.params })));
+const seekTo = (t) => frame().evaluate((x) => new Promise((ok) => { const v = document.querySelector("video"); v.pause(); v.addEventListener("seeked", () => ok(), { once: true }); v.currentTime = x; }), t);
 
 // 1. The grid of every edit, in the host's theme, sized to its content.
 await app.locator(".card").first().waitFor({ timeout: 10000 }).catch(async (e) => { console.log("LOG", JSON.stringify(await hostLog()).slice(0, 2000)); console.log("ERR", errors, violations); console.log("HTML", (await frame()?.content())?.slice(-1500)); throw e; });
@@ -210,6 +224,87 @@ const msg = (await hostLog()).find((m) => m.method === "ui/message");
 check(!!msg && msg.params.role === "user" && /Knee pain reel/.test(msg.params.content[0].text) && /00:01\.200 The client wants the logo smaller/.test(msg.params.content[0].text) && /get_comments/.test(msg.params.content[0].text) && /render one preview/.test(msg.params.content[0].text), "Send to Claude posts the open comments to the chat");
 await page.screenshot({ path: join(dir, "app-project.png") });
 
+// 6b. Draw on the picture, add a picture and a link, comment; the comment shows them all; edit it; delete it.
+const picFile = join(dir, "shot.png");
+ff("-f", "lavfi", "-i", "color=c=0x3366ff:s=200x120", "-frames:v", "1", picFile);
+await seekTo(3.5);
+await app.locator(".ctrl button", { hasText: "Draw" }).click(); await sleep(200);
+check(await frame().evaluate(() => document.querySelector(".ink").classList.contains("on") && document.querySelector("video").paused), "Draw pauses the player and turns on drawing over the picture");
+const inkBox = await app.locator(".ink").boundingBox(), vidBox = await frame().evaluate(() => { const v = document.querySelector("video"), r = v.getBoundingClientRect(), k = Math.min(r.width / v.videoWidth, r.height / v.videoHeight); return { w: v.videoWidth * k, h: v.videoHeight * k }; });
+check(Math.abs(inkBox.width - vidBox.w) < 2 && Math.abs(inkBox.height - vidBox.h) < 2, `the drawing area is exactly the picture (${Math.round(inkBox.width)}x${Math.round(inkBox.height)} for ${Math.round(vidBox.w)}x${Math.round(vidBox.h)})`);
+await app.locator(".pen").nth(1).click();
+const fBox = await page.locator("#app").boundingBox();
+const at = (fx, fy) => [fBox.x + inkBox.x + inkBox.width * fx, fBox.y + inkBox.y + inkBox.height * fy];
+await page.mouse.move(...at(0.3, 0.3)); await page.mouse.down();
+for (let k = 1; k <= 10; k++) await page.mouse.move(...at(0.3 + 0.03 * k, 0.3 + 0.02 * k));
+await page.mouse.up(); await sleep(150);
+const inked = await frame().evaluate(() => { const c = document.querySelector(".ink"), d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 100) n++; return n; });
+check(inked > 200, `the stroke shows on the picture (${inked} px)`);
+await app.locator(".ctrl button", { hasText: "Done" }).click(); await sleep(150);
+check((await app.locator(".compose .badge", { hasText: "Drawing" }).count()) === 1, "the comment box holds the drawing");
+const chooser = page.waitForEvent("filechooser");
+await app.locator(".compose button", { hasText: "Picture" }).click();
+await (await chooser).setFiles(picFile); await sleep(500);
+check((await app.locator(".compose .att canvas").count()) === 1, "a picture added from a file shows in the box");
+// A picture pasted into the box too, then taken off again.
+await app.locator("textarea").click();
+await frame().evaluate(async () => { const b = new Blob([Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="), (ch) => ch.charCodeAt(0))], { type: "image/png" }); const dt = new DataTransfer(); dt.items.add(new File([b], "pasted.png", { type: "image/png" })); document.querySelector("textarea").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })); });
+await sleep(400);
+check((await app.locator(".compose .att").count()) === 2, "a picture pasted into the box shows too");
+await app.locator(".compose .att .x").nth(1).click(); await sleep(150);
+check((await app.locator(".compose .att").count()) === 1, "and comes off with its ×");
+await app.locator("textarea").click();
+await app.locator("textarea").pressSequentially("Make the logo smaller like www.example.com/ref.", { delay: 5 });
+await app.locator("textarea").press("Control+Enter");
+await app.locator(".cm", { hasText: "Make the logo smaller" }).waitFor({ timeout: 5000 });
+const sent = calls.filter((c) => c.name === "app_add_comment").pop().args;
+const st = sent.drawing?.strokes?.[0];
+check(!!st && st.c === "#ffd60a" && sent.drawing.strokes.length === 1 && st.p.length >= 10 && Math.abs(st.p[0] - 0.3) < 0.02 && Math.abs(st.p[1] - 0.3) < 0.02 && Math.abs(sent.time - 3.5) < 0.05, `the drawing goes with the comment, at its moment, in picture terms (${st?.c}, ${st?.p.length / 2} points from ${st?.p.slice(0, 2)})`);
+check(/^iVBORw0KGgo/.test(sent.drawing.png || "") && sent.drawing.w === 320 && sent.drawing.h === 568, `with its clear PNG at the picture's size (${sent.drawing.w}x${sent.drawing.h})`);
+check(sent.images?.length === 1 && sent.images[0].type === "image/png" && sent.images[0].name === "shot.png" && sent.renderId === "r1", "the picture goes with it, and the preview it was made on");
+const cm = app.locator(".cm", { hasText: "Make the logo smaller" });
+check((await cm.locator("a").getAttribute("href")) === "https://www.example.com/ref", "a web address in a comment is a link");
+await cm.locator("a").click(); await sleep(200);
+check((await hostLog()).some((m) => m.method === "ui/open-link" && m.params.url === "https://www.example.com/ref"), "and opens through the host");
+await seekTo(0.5);
+await cm.locator(".badge", { hasText: "Drawing" }).click(); await sleep(300);
+const shown = await frame().evaluate(() => { const v = document.querySelector("video"), c = document.querySelector(".ink"), d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 100) n++; return { t: v.currentTime, n }; });
+check(Math.abs(shown.t - 3.5) < 0.05 && shown.n > 200, `its drawing shows on the picture at its moment (${shown.t.toFixed(3)} s, ${shown.n} px)`);
+await cm.locator(".thumbimg").click(); await sleep(200);
+check((await app.locator(".lightbox img").count()) === 1, "a picture opens big");
+await app.locator(".lightbox").click(); await sleep(150);
+check((await app.locator(".lightbox").count()) === 0, "and closes");
+await page.screenshot({ path: join(dir, "app-comments.png") });
+// Edit: new words, the picture off.
+await cm.locator(".act", { hasText: "Edit" }).click(); await sleep(200);
+check(/Editing your comment at 00:03\.5/.test(await app.locator(".compose").innerText()) && (await app.locator("textarea").inputValue()).startsWith("Make the logo smaller"), "Edit puts the comment in the box");
+await app.locator("textarea").fill("Logo 20% smaller");
+await app.locator(".compose .att .x").first().click();
+await app.locator(".compose button", { hasText: "Save" }).click();
+await app.locator(".cm", { hasText: "Logo 20% smaller" }).waitFor({ timeout: 5000 });
+const ed = calls.filter((c) => c.name === "app_edit_comment").pop().args;
+check(ed.text === "Logo 20% smaller" && ed.removeImages?.length === 1 && ed.drawing === undefined, "Save sends the new words and the picture to take off (the drawing stays)");
+check(/edited/.test(await app.locator(".cm", { hasText: "Logo 20% smaller" }).innerText()), "the comment says it was edited");
+// Delete asks once more.
+const del = app.locator(".cm", { hasText: "Logo 20% smaller" }).locator(".act", { hasText: "Delete" });
+await del.click(); await sleep(100);
+check((await del.innerText()) === "Delete?" && !calls.some((c) => c.name === "app_delete_comment"), "Delete asks again first");
+await del.click(); await sleep(300);
+check(calls.some((c) => c.name === "app_delete_comment") && (await app.locator(".cm", { hasText: "Logo 20% smaller" }).count()) === 0, "and then deletes it");
+
+// 6c. Share: a review link for the version being watched, to copy or open.
+await app.locator(".top button", { hasText: "Share" }).click();
+await app.locator(".share input").waitFor({ timeout: 5000 });
+const shareCall = calls.filter((c) => c.name === "app_share_link").pop();
+check(shareCall?.args.version === 1 && (await app.locator(".share input").inputValue()) === "https://app.rendrr.live/review/tok-p1", "Share makes the review link for the version being watched");
+check(/Share v1/.test(await app.locator(".share").innerText()) && /no account needed/.test(await app.locator(".share").innerText()), "and says who can use it");
+await app.locator(".share button", { hasText: "Copy link" }).click(); await sleep(200);
+check(/Link copied|Select the link/.test(await app.locator("#toast").innerText()), `Copy link copies it (${await app.locator("#toast").innerText()})`);
+await app.locator(".share button", { hasText: "Open" }).click(); await sleep(200);
+check((await hostLog()).some((m) => m.method === "ui/open-link" && m.params.url === "https://app.rendrr.live/review/tok-p1"), "Open opens it through the host");
+await app.locator(".share button", { hasText: "×" }).click(); await sleep(100);
+check((await app.locator(".share").count()) === 0, "the panel closes");
+
 // 7. Render the latest version: progress while it renders, typing survives the polls, then the new preview plays.
 await app.locator("button", { hasText: "Render preview" }).click();
 await app.locator(".prog").waitFor({ timeout: 5000 });
@@ -239,9 +334,61 @@ await sleep(200);
 check(await frame().evaluate(() => document.documentElement.dataset.theme === "dark" && getComputedStyle(document.body).backgroundColor === "rgb(31, 30, 29)"), "a theme change from the host is followed");
 await page.screenshot({ path: join(dir, "app-dark.png") });
 
+// 9. On a phone: nothing wider than the screen, full screen on open, comment, draw and share with the thumb.
+const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+const ph = await phoneCtx.newPage();
+ph.on("pageerror", (e) => errors.push("phone: " + e.message));
+await ph.exposeFunction("hostTool", (name, args) => (name === "open" ? { ...tool("app_list_projects", {}), open: null, webUrl: "https://app.rendrr.live" } : tool(name, args)));
+await ph.goto(`http://127.0.0.1:${host.address().port}/?phone`);
+const papp = ph.frameLocator("#app");
+const pframe = () => ph.frames().find((f) => f !== ph.mainFrame());
+await papp.locator(".card").first().waitFor({ timeout: 10000 });
+const fits = () => pframe().evaluate(() => { const d = document.documentElement; const wide = Array.from(document.querySelectorAll("button, input, textarea, video, .card")).filter((e) => { const r = e.getBoundingClientRect(); return r.width && (r.right > innerWidth + 1 || r.left < -1); }).map((e) => (e.textContent || e.tagName).trim().slice(0, 20)); return { over: d.scrollWidth - d.clientWidth, wide, w: innerWidth }; });
+let fit = await fits();
+check(fit.over <= 1 && !fit.wide.length, `phone, the grid fits the screen (${fit.w} px; ${fit.wide.join(", ") || "nothing sticks out"})`);
+check(await pframe().evaluate(() => { const cs = Array.from(document.querySelectorAll(".card")).map((c) => c.getBoundingClientRect().top); return cs.length === 2 && Math.abs(cs[0] - cs[1]) < 2; }), "two cards side by side");
+await papp.locator(".card").first().tap();
+await papp.locator("video").waitFor({ timeout: 10000 }); await sleep(400);
+fit = await fits();
+check(await pframe().evaluate(() => document.documentElement.classList.contains("fs")) && fit.over <= 1 && !fit.wide.length, `phone, the edit opens full screen and fits (${fit.wide.join(", ") || "nothing sticks out"})`);
+const pBox = await pframe().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); return { v: r("video"), c: r(".compose"), h: innerHeight }; });
+check(pBox.v.height >= 250 && pBox.c.bottom <= pBox.h + 1 && pBox.c.top > pBox.v.bottom, `phone: the player (${Math.round(pBox.v.height)} px tall), then the comments, the box at the bottom on screen`);
+await papp.locator("textarea").tap();
+await papp.locator("textarea").fill("From my phone");
+check(await pframe().evaluate(() => parseFloat(getComputedStyle(document.querySelector("textarea")).fontSize) >= 16), "the box's text is 16 px (phones do not zoom in)");
+await papp.locator(".compose button", { hasText: "Comment" }).tap();
+await papp.locator(".cm", { hasText: "From my phone" }).waitFor({ timeout: 5000 });
+check(calls.some((c) => c.name === "app_add_comment" && c.args.text === "From my phone"), "a comment from the phone is saved");
+await papp.locator(".ctrl button", { hasText: "Draw" }).tap(); await sleep(200);
+const pInk = await papp.locator(".ink").boundingBox();
+await ph.mouse.move(pInk.x + pInk.width * 0.2, pInk.y + pInk.height * 0.2); await ph.mouse.down();
+for (let k = 1; k <= 6; k++) await ph.mouse.move(pInk.x + pInk.width * (0.2 + k * 0.05), pInk.y + pInk.height * 0.3);
+await ph.mouse.up(); await sleep(150);
+fit = await fits();
+check((await papp.locator(".ctrl .pen").count()) === 5 && fit.over <= 1 && !fit.wide.length, `phone: the drawing tools fit (${fit.wide.join(", ") || "nothing sticks out"})`);
+await papp.locator(".ctrl button", { hasText: "Done" }).tap();
+await papp.locator(".compose button", { hasText: "Comment" }).tap();
+await sleep(400);
+check(calls.filter((c) => c.name === "app_add_comment").pop().args.drawing?.strokes?.length === 1, "a drawing from the phone is saved");
+await papp.locator(".top button", { hasText: "Share" }).tap();
+await papp.locator(".share input").waitFor({ timeout: 5000 });
+fit = await fits();
+check(fit.over <= 1 && !fit.wide.length, `phone: the share panel fits (${fit.wide.join(", ") || "nothing sticks out"})`);
+const pAfter = await pframe().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); return { c: r(".compose").bottom, h: innerHeight, ctrlRows: new Set(Array.from(document.querySelectorAll(".ctrl > *")).map((e) => e.getBoundingClientRect()).filter((r) => r.width && r.height).map((r) => Math.round((r.top + r.bottom) / 2 / 12))).size }; });
+check(pAfter.c <= pAfter.h + 1, "phone: with the share panel open the comment box is still on screen (the panel floats)");
+check(pAfter.ctrlRows === 1, `phone: the player controls fit on one line (${pAfter.ctrlRows})`);
+await ph.screenshot({ path: join(dir, "app-phone.png") });
+await papp.locator(".shade").tap({ position: { x: 20, y: 800 } }); await sleep(150);
+check((await papp.locator(".share").count()) === 0, "phone: a tap outside closes the share panel");
+await papp.locator("button", { hasText: "Exit" }).tap(); await sleep(400);
+fit = await fits();
+check(!(await pframe().evaluate(() => document.documentElement.classList.contains("fs"))) && fit.over <= 1 && !fit.wide.length, `phone, in the chat: it fits (${fit.wide.join(", ") || "nothing sticks out"})`);
+await sleep(500); await ph.screenshot({ path: join(dir, "app-phone-inline.png") });
+await phoneCtx.close();
+
 check(violations.length === 0, `nothing blocked by the content security policy${violations.length ? ": " + violations.join(" | ") : ""}`);
 check(errors.length === 0, `no errors${errors.length ? ": " + errors.join(" | ") : ""}`);
-console.log(`screenshots: ${join(dir, "app-list.png")} ${join(dir, "app-fullscreen.png")} ${join(dir, "app-project.png")} ${join(dir, "app-dark.png")}`);
+console.log(`screenshots: ${["app-list", "app-fullscreen", "app-project", "app-comments", "app-dark", "app-phone", "app-phone-inline"].map((n) => join(dir, n + ".png")).join(" ")}`);
 await browser.close(); host.close(); media.close();
 if (fails.length) { console.log(`\n${fails.length} failed`); process.exit(1); }
 console.log("\nall passed");

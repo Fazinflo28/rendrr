@@ -28,7 +28,8 @@ export type RenderJob = { renderId: string };
 export type GraphicJob = { graphicId: string; params?: Record<string, unknown> };
 export type MaintenanceJob = { task: "cleanup" | "ensure-assets" };
 /** Frames at given times: from a render (output times) or from footage / a reference (original times). */
-export type FramesJob = { renderId?: string; videoId?: string; times: number[]; colorSamples?: ColorSampleJob; faces?: FaceJob };
+/** overlays: a PNG (storage key) laid over the frame at the same index, the drawing on a comment (the app in the chat). */
+export type FramesJob = { renderId?: string; videoId?: string; times: number[]; overlays?: (string | null)[]; colorSamples?: ColorSampleJob; faces?: FaceJob };
 /** Phase 6: small frames of clips as the editor shows them (turned, fitted), for shot matching. fitY: 0.4 for V1
  *  (40% down, like the render's fit), 0.5 for b-roll. */
 export type ColorSampleJob = { w: number; h: number; clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number; fitY: number }[] };

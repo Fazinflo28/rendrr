@@ -21,7 +21,7 @@ export async function buildServer() {
   const e = env();
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL || "info", redact: ["req.headers.authorization", "req.headers['x-internal-secret']", "req.headers['x-review-key']"] },
-    bodyLimit: 6 * 1024 * 1024,
+    bodyLimit: 8 * 1024 * 1024,
     // Client IPs come from Railway's X-Real-IP (see clientIp); X-Forwarded-For is never trusted, so nobody can pick their own IP.
     trustProxy: false,
   });

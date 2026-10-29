@@ -10,21 +10,41 @@ export const APP_MIME_TYPE = "text/html;profile=mcp-app";
 
 const id = (what: string) => z.string().min(1).max(80).describe(`The ${what} id`);
 
+/** A drawing on the picture: strokes in 0-1 of the picture (x, y pairs), colour, width as a share of the picture's
+ *  width; png: the strokes on a clear picture (base64), so the AI can see them on the frame. */
+export const DrawingInput = z.object({
+  w: z.number().int().min(16).max(4096), h: z.number().int().min(16).max(4096),
+  strokes: z.array(z.object({ c: z.string().regex(/^#[0-9a-fA-F]{6}$/), w: z.number().min(0.001).max(0.05), p: z.array(z.number().min(0).max(1)).min(2).max(4000) })).min(1).max(80),
+  png: z.string().max(800_000).optional(),
+});
+/** A picture added to a comment: JPEG, PNG or WebP as base64 (the app makes it 1600 px or smaller). */
+export const CommentImageInput = z.object({ name: z.string().max(200).optional(), type: z.enum(["image/jpeg", "image/png", "image/webp"]), data: z.string().min(16).max(1_500_000), w: z.number().int().min(1).max(8192).optional(), h: z.number().int().min(1).max(8192).optional() });
+export const COMMENT_IMAGES_MAX = 4;
+
 export const APP_TOOLS: ToolDef[] = [
   { name: "app_list_projects", title: "Projects for the app", app: true, description: "The Rendrr app: a page of the user's edits, newest first.",
     input: z.object({ offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(60).optional(), query: z.string().max(100).optional() }) },
   { name: "app_get_project", title: "One project for the app", app: true, description: "The Rendrr app: one edit's latest preview, its render progress and its comments.",
     input: z.object({ projectId: id("project") }) },
-  { name: "app_add_comment", title: "Add a comment", app: true, write: true, description: "The Rendrr app: add the user's comment at a moment of the preview (seconds of the edited video).",
-    input: z.object({ projectId: id("project"), time: z.number().min(0).max(24 * 3600), text: z.string().trim().min(1).max(2000) }) },
+  { name: "app_add_comment", title: "Add a comment", app: true, write: true, description: "The Rendrr app: add the user's comment at a moment of the preview (seconds of the edited video), with a drawing on the picture and pictures if they made them.",
+    input: z.object({ projectId: id("project"), time: z.number().min(0).max(24 * 3600), text: z.string().trim().max(2000).default(""), renderId: id("render").optional(), drawing: DrawingInput.optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional() }) },
+  { name: "app_edit_comment", title: "Edit a comment", app: true, write: true, description: "The Rendrr app: change the user's own comment: its text, its drawing (null takes it off), pictures to take off (their ids) or to add.",
+    input: z.object({ projectId: id("project"), commentId: id("comment"), text: z.string().trim().max(2000).optional(), drawing: DrawingInput.nullable().optional(), removeImages: z.array(z.string().max(300)).max(COMMENT_IMAGES_MAX).optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional() }) },
+  { name: "app_delete_comment", title: "Delete a comment", app: true, write: true, description: "The Rendrr app: delete a comment (the user's own, or a client's on their edit) and its pictures.",
+    input: z.object({ projectId: id("project"), commentId: id("comment") }) },
   { name: "app_resolve_comment", title: "Resolve a comment", app: true, write: true, description: "The Rendrr app: mark a comment resolved, or open again with resolved false.",
     input: z.object({ projectId: id("project"), commentId: id("comment"), resolved: z.boolean().optional() }) },
+  { name: "app_share_link", title: "Share the video", app: true, write: true, description: "The Rendrr app: a review link for this version (watch and comment, no account needed): the one already made, or a new one.",
+    input: z.object({ projectId: id("project"), version: z.number().int().min(1).max(100_000).optional() }) },
   { name: "app_render_preview", title: "Render a preview", app: true, write: true, description: "The Rendrr app: render a preview of the latest version when it has none.",
     input: z.object({ projectId: id("project") }) },
 ];
 
 /** What the app shows for one edit (app_get_project, open_projects with a projectId). */
-export type AppComment = { id: string; time: number; text: string; author: string; mine: boolean; resolved: boolean; at: number };
+export type Stroke = { c: string; w: number; p: number[] };
+export type CommentDrawing = { w: number; h: number; strokes: Stroke[] };
+export type CommentImage = { id: string; url: string; w: number | null; h: number | null; name: string | null };
+export type AppComment = { id: string; time: number; text: string; author: string; mine: boolean; resolved: boolean; at: number; edited: boolean; renderId: string | null; drawing: CommentDrawing | null; images: CommentImage[] };
 export type AppProjectView = {
   project: { id: string; name: string; folder: string; aspect: string; status: string; version: number; updated: number; seconds: number | null; editorUrl: string | null };
   preview: { renderId: string; version: number; url: string; seconds: number; quality: string; at: number } | null;

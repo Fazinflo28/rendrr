@@ -88,6 +88,7 @@ export const PREFIX = {
   tempRaw: "temp-raw/",
   finals: "finals/",
   previews: "previews/",
+  comments: "comments/",
   graphics: "graphics/",
   references: "references/",
   brand: "brand/",

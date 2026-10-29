@@ -42,7 +42,7 @@ async function who(req: Request): Promise<Who> {
 // ---------------- HTTP ----------------
 const app = express();
 app.set("trust proxy", true);
-app.use(express.json({ limit: "4mb" })); // a create_graphic call carries up to 1 MB of code
+app.use(express.json({ limit: "8mb" })); // a create_graphic call carries up to 1 MB of code; a comment from the app up to 4 pictures
 app.use(clerkMiddleware());
 
 const prm = protectedResourceHandlerClerk({ scopes_supported: ["openid", "profile", "email"], resource_name: "Rendrr" });

@@ -167,6 +167,24 @@ Object.assign(api, {
   colorSamples: async () => { await wait(200); throw Object.assign(new Error("Matching measures frames on the server; the preview has no server."), { friendly: true }); },
 });
 
+// Comments: a note made in the Rendrr app in Claude (a drawing on the picture, a picture, a link) on the demo edit
+// p5; the user's own notes can be edited, any comment deleted.
+const demoPicture = (() => { try { const c = document.createElement("canvas"); c.width = 160; c.height = 90; const g = c.getContext("2d"); g.fillStyle = "#3366ff"; g.fillRect(0, 0, 160, 90); g.fillStyle = "#fff"; g.font = "20px sans-serif"; g.fillText("ref", 60, 52); return c.toDataURL("image/png"); } catch { return ""; } })();
+const fromClaude = { id: "cm_claude", time: 2.5, text: "Logo smaller, like https://example.com/ref", author: "You", mine: true, resolved: false, at: Date.now() - 600000, edited: false,
+  drawing: { w: 1920, h: 1080, strokes: [{ c: "#ffd60a", w: 0.004, p: [0.3, 0.3, 0.45, 0.32, 0.6, 0.5] }] }, images: [{ id: "im1", url: demoPicture, w: 160, h: 90, name: "ref.png" }] };
+const deleted = new Set(), edits = {};
+const getProjectBefore = api.getProject; // the wrapper above, kept
+Object.assign(api, {
+  getProject: async (id, ...rest) => {
+    const p = await getProjectBefore(id, ...rest);
+    if (!p || id !== "p5") return p;
+    const comments = [...(p.comments || []).filter((c) => c.id !== fromClaude.id), fromClaude].filter((c) => !deleted.has(c.id)).map((c) => (edits[c.id] ? { ...c, text: edits[c.id], edited: true } : c));
+    return { ...p, comments: comments.sort((a, b) => a.time - b.time) };
+  },
+  editComment: async (id, text) => { if (!text?.trim()) throw Object.assign(new Error("Write the comment first."), { friendly: true }); edits[id] = text.trim(); return { id, text: text.trim(), edited: true }; },
+  deleteComment: async (id) => { deleted.add(id); return { ok: true }; },
+});
+
 // Music and sound effect files for the live player, by catalog key (the real API sends signed URLs).
 const sounds = {};
 globalThis.__rendrrDemoSound = (key, f) => { if (f) sounds[key] = URL.createObjectURL(f); };

@@ -327,6 +327,11 @@ export const api: any = {
   },
   addReviewComment: (t: string, { time, text, projectId }: any) => post(`/public/reviews/${enc(t)}/comments`, { time, text, projectId }, { auth: false, headers: reviewHeaders(t) }),
   resolveComment: (commentId: string, resolved = true) => patch(`/comments/${enc(commentId)}`, { resolved }),
+  editComment: (commentId: string, text: string) => {
+    if (!text?.trim()) throw fail("Write the comment first.");
+    return patch(`/comments/${enc(commentId)}`, { text: text.trim() });
+  },
+  deleteComment: (commentId: string) => del(`/comments/${enc(commentId)}`),
   addProjectComment: (projectId: string, { time, text }: any) => {
     if (!text?.trim()) throw fail("Write a comment first.");
     return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: text.trim() });

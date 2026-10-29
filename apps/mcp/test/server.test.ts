@@ -81,8 +81,10 @@ describe("the connector", () => {
     assert.equal(c.mimeType, "text/html;profile=mcp-app");
     assert.match(c.text, /^<!doctype html>/);
     assert.match(c.text, /ui\/initialize/);
-    assert.doesNotMatch(c.text, /<script[^>]+src=|<link[^>]+href=|https?:\/\/(?!www\.w3\.org)/, "no outside scripts, styles or links in the page");
+    // Nothing loaded from elsewhere: no script or style files, no outside src, href or url(), no fetch or @import.
+    assert.doesNotMatch(c.text, /<script[^>]+src=|<link[^>]+href=|(?:src|href)=["']https?:|url\(["']?https?:|@import|\bfetch\(|XMLHttpRequest|new WebSocket/, "no outside scripts, styles or loads in the page");
     assert.deepEqual(c._meta.ui.csp, { resourceDomains: ["https://bucket.storage.example"], connectDomains: [] });
+    assert.deepEqual((c._meta.ui as any).permissions, { clipboardWrite: {} }, "it asks to copy (the Share link)");
   });
 
   it("open_projects and the app's tools give the app structured data, forwarded as the user", async () => {

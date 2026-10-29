@@ -8,6 +8,7 @@ import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } fro
 import { projectChat } from "../services/aiChat";
 import { editorMarks } from "../services/marks";
 import { createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference } from "../services/projects";
+import { deleteComment, editNote } from "../services/commentMedia";
 
 /** A picture of each edit for its card: a frame of its latest render (the edit as it looks), else its footage's
  *  thumbnail. Signed for an hour. */
@@ -189,14 +190,25 @@ export default async function projects(app: FastifyInstance) {
     return noteOut(n, req.user!.name);
   });
 
+  // Resolve or open again; the user's own note can also get new text (drawings and pictures come from the app in the chat).
   app.patch("/comments/:id", async (req) => {
     const id = (req.params as { id: string }).id;
-    const resolved = (req.body as { resolved?: boolean })?.resolved !== false;
+    const body = (req.body ?? {}) as { resolved?: boolean; text?: string };
+    if (typeof body.text === "string") {
+      const text = ProjectCommentInput.shape.text.parse(body.text);
+      return noteOut(await editNote(req.user!.id, id, { text }), req.user!.name);
+    }
+    const resolved = body.resolved !== false;
     const c = await prisma.reviewComment.findUnique({ where: { id }, include: { review: true } });
     if (c && c.review.userId === req.user!.id) return commentOut(await prisma.reviewComment.update({ where: { id: c.id }, data: { resolved } }));
     const n = await prisma.projectComment.findUnique({ where: { id } });
     if (!n || n.userId !== req.user!.id) throw notFound("That comment is gone.");
     return noteOut(await prisma.projectComment.update({ where: { id: n.id }, data: { resolved } }), req.user!.name);
+  });
+
+  app.delete("/comments/:id", async (req) => {
+    await deleteComment(req.user!.id, (req.params as { id: string }).id);
+    return { ok: true };
   });
 
   // ---------------- AI tab (read only: what a connected AI did, and its notes) ----------------

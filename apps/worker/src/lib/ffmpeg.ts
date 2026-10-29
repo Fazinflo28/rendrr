@@ -196,6 +196,15 @@ export async function frameAt(input: string, t: number, out: string, width = 640
 }
 const STAMP_FONT = process.env.STAMP_FONT || "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
+/** A clear PNG (a drawing on a comment) laid over a frame, stretched to the frame's size (read first: scale2ref
+ *  left the PNG at its own size in FFmpeg 7). */
+export async function overlayPng(frame: string, png: string, out: string, signal?: AbortSignal) {
+  const { stdout } = await run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", frame], { signal });
+  const [w, h] = String(stdout).trim().split(",").map(Number);
+  if (!(w > 0 && h > 0)) throw new Error(`could not read the frame's size (${String(stdout).trim()})`);
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", frame, "-i", png, "-filter_complex", `[1:v]scale=${w}:${h}[o];[0:v][o]overlay=0:0:format=auto`, "-frames:v", "1", "-q:v", "3", out], { signal });
+}
+
 /**
  * Phase 6: frames of a stretch of a video as RGB bytes, turned and fitted to w x h like the editor shows them
  * (cover, `fitY` down), `n` of them spread over [from, to]. For shot matching.

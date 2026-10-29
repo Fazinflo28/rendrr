@@ -6,6 +6,8 @@ import { prisma } from "@rendrr/db";
 import type { AppComment, AppOpen, AppProjectCard, AppProjectsPage, AppProjectView } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
 import { renderStatus, startRender } from "./render";
+import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
+import { createReviewLink } from "../routes/reviews";
 import type { ToolCtx, ToolOut } from "../tools";
 
 const WEB = () => (process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "") || null;
@@ -61,8 +63,8 @@ export async function appProject(userId: string, projectId: string): Promise<App
   const st = live ? await renderStatus(live) : null;
   const version = latest?.v ?? p.currentVersion;
   const comments: AppComment[] = [
-    ...notes.map((n) => ({ id: n.id, time: n.time, text: n.text, author: user?.name || "You", mine: true, resolved: n.resolved, at: n.createdAt.getTime() })),
-    ...client.map((c) => ({ id: c.id, time: c.time, text: c.text, author: c.author, mine: false, resolved: c.resolved, at: c.createdAt.getTime() })),
+    ...(await Promise.all(notes.map(async (n) => ({ id: n.id, time: n.time, text: n.text, author: user?.name || "You", mine: true, resolved: n.resolved, at: n.createdAt.getTime(), edited: !!n.editedAt, renderId: n.renderId, ...(await commentMedia(n)) })))),
+    ...client.map((c) => ({ id: c.id, time: c.time, text: c.text, author: c.author, mine: false, resolved: c.resolved, at: c.createdAt.getTime(), edited: false, renderId: null, drawing: null, images: [] })),
   ].sort((a, b) => a.time - b.time || a.at - b.at);
   return {
     project: { id: p.id, name: p.name, folder: folder?.name ?? "", aspect: p.aspect, status: p.status, version, updated: p.updatedAt.getTime(), seconds: p.outputSeconds || null, editorUrl: WEB() ? `${WEB()}/editor/${p.id}` : null },
@@ -108,13 +110,32 @@ export const APP_HANDLERS: Record<string, (c: ToolCtx, input: any) => Promise<To
   },
   async app_add_comment(c, i) {
     const p = await getOwnedProject(c.userId, i.projectId);
-    await prisma.projectComment.create({ data: { projectId: p.id, userId: c.userId, time: i.time, text: i.text } });
+    await addNote(c.userId, p.id, i);
     return { text: "Comment added.", data: await appProject(c.userId, p.id) };
+  },
+  async app_edit_comment(c, i) {
+    const p = await getOwnedProject(c.userId, i.projectId);
+    await editNote(c.userId, i.commentId, i);
+    return { text: "Comment changed.", data: await appProject(c.userId, p.id) };
+  },
+  async app_delete_comment(c, i) {
+    const p = await getOwnedProject(c.userId, i.projectId);
+    await deleteComment(c.userId, i.commentId);
+    return { text: "Comment deleted.", data: await appProject(c.userId, p.id) };
   },
   async app_resolve_comment(c, i) {
     const p = await getOwnedProject(c.userId, i.projectId);
     await setResolved(c.userId, i.commentId, i.resolved !== false);
     return { text: i.resolved === false ? "Comment opened again." : "Comment resolved.", data: await appProject(c.userId, p.id) };
+  },
+  // Share: the review link for the version being watched (one made before and still good, else a new one).
+  async app_share_link(c, i) {
+    const p = await getOwnedProject(c.userId, i.projectId);
+    const now = new Date();
+    const had = await prisma.review.findFirst({ where: { userId: c.userId, projectId: p.id, passwordHash: null, ...(i.version ? { version: i.version } : {}), OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }, orderBy: { createdAt: "desc" } });
+    const r = had ?? (await prisma.review.findUniqueOrThrow({ where: { token: (await createReviewLink(c.userId, { projectId: p.id, ...(i.version ? { version: i.version } : {}) })).token } }));
+    const url = `${WEB() ?? ""}/review/${r.token}`;
+    return { text: `Review link: ${url}`, data: { url, version: r.version, created: !had, expires: r.expiresAt ? r.expiresAt.getTime() : null, allowDownload: r.allowDownload } };
   },
   async app_render_preview(c, i) {
     await startRender(c.userId, i.projectId, "preview");

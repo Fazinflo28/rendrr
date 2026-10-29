@@ -23,6 +23,7 @@ import { testGraphic } from "./services/testGraphic";
 import { addLibraryItem, getLibraryItem, listLibrary, searchIcons, withIcons } from "./services/library";
 import { analyzeReference, styleFileLines, styleFileOut } from "./services/styleFiles";
 import { openProjects } from "./services/claudeApp";
+import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
 /** loginId: the Clerk user who called (a linked login opens its account's userId). */
@@ -238,6 +239,8 @@ function marksLine(v: { id: string; seconds: number; analysis: unknown }, tl: Ti
 const warningsText = (w: unknown) => (Array.isArray(w) && w.length ? ` Warning: ${w.join(" ")}` : "");
 /** A custom graphic's params and their default values, for list_graphics ("" when it has none). */
 const defaultsText = (schema: unknown) => { const d = graphicDefaults(schema); return Object.keys(d).length ? ` | ${JSON.stringify(d).slice(0, 300)}` : ""; };
+/** 1:02.345: comment times to the millisecond (the app in the chat places them that finely). */
+const fmtMs = (t: number) => { const ms = Math.round(Math.max(0, t) * 1000); return `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}.${String(ms % 1000).padStart(3, "0")}`; };
 const fmtLeft = (s: number) => (s < 60 ? `${Math.max(1, Math.round(s / 5) * 5)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h ${String(Math.round((s % 3600) / 60)).padStart(2, "0")} min`);
 
 /** The check of one version of an edit against its rendered file (pauses from 0.15 s, whatever the style says: the AI knows what it asked for). */
@@ -526,13 +529,38 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const p = await getOwnedProject(c.userId, i.projectId);
     const cs = await prisma.reviewComment.findMany({ where: { review: { OR: [{ projectId: p.id }, { folderId: p.folderId }] }, OR: [{ projectId: null }, { projectId: p.id }] }, orderBy: { createdAt: "asc" }, take: 200 });
     const notes = await prisma.projectComment.findMany({ where: { projectId: p.id }, orderBy: { createdAt: "asc" }, take: 200 });
+    const renders = await prisma.render.findMany({ where: { projectId: p.id, kind: "preview" }, select: { id: true, version: true, status: true, outputKey: true, createdAt: true }, orderBy: { createdAt: "desc" } });
     const short = (t: string) => (t.length > 600 ? t.slice(0, 600) + "…" : t).replace(/\s+/g, " ");
-    const row = (x: { id: string; time: number; text: string; resolved: boolean }) => `${x.id} | ${fmtClock(x.time)} | ${short(x.text)} | ${x.resolved ? "resolved" : "open"}`;
+    const row = (x: { id: string; time: number; text: string; resolved: boolean }, extra = "") => `${x.id} | ${fmtMs(x.time)} | ${short(x.text) || "(no words)"}${extra} | ${x.resolved ? "resolved" : "open"}`;
+    // The app in the chat: what a note carries besides words, said in words; the pictures themselves with images true.
+    const noteExtra = (n: (typeof notes)[number]) => {
+      const d = storedDrawing(n), ims = storedImages(n), on = renders.find((r) => r.id === n.renderId);
+      return [on ? `on preview v${on.version}` : "", d ? drawingText(d) : "", ims.length ? `${ims.length} ${ims.length === 1 ? "picture" : "pictures"}` : "", n.editedAt ? "edited" : ""].filter(Boolean).map((x) => " | " + x).join("");
+    };
     const parts = [
-      cs.length ? "Client comments (id | output time of the version they watched | text | state):\n" + cs.map(row).join("\n") : "No client comments.",
-      notes.length ? "The user's notes (id | time in the edited video | text | state):\n" + notes.map(row).join("\n") : "",
+      cs.length ? "Client comments (id | output time of the version they watched | text | state):\n" + cs.map((x) => row(x)).join("\n") : "No client comments.",
+      notes.length ? "The user's notes (id | time in the edited video | text | what it carries | state):\n" + notes.map((n) => row(n, noteExtra(n))).join("\n") : "",
     ];
-    return { text: parts.filter(Boolean).join("\n") };
+    if (!i.images) {
+      const has = notes.some((n) => !n.resolved && (storedDrawing(n) || storedImages(n).length));
+      return { text: parts.filter(Boolean).join("\n") + (has ? "\nimages true shows the open notes' pictures and drawings." : "") };
+    }
+    // Up to 8 pictures: each open note's drawing on the frame of the preview it was made on (else the latest), then its pictures.
+    const urls: string[] = [], said: string[] = [];
+    const latest = renders.find((r) => r.status === "done" && r.outputKey);
+    for (const n of notes.filter((x) => !x.resolved)) {
+      const d = storedDrawing(n);
+      if (d?.key && urls.length < 8) {
+        const r = renders.find((x) => x.id === n.renderId && x.status === "done" && x.outputKey) ?? latest;
+        const [u] = r ? await framesFor(r.id, [n.time], [d.key]) : [];
+        if (u) { urls.push(u); said.push(`${urls.length}. note ${n.id} at ${fmtMs(n.time)}: preview v${r!.version}'s frame with the drawing`); }
+      }
+      for (const im of storedImages(n)) {
+        if (urls.length >= 8) break;
+        urls.push(await signGet(im.key, 900)); said.push(`${urls.length}. note ${n.id}: picture${im.name ? ` "${im.name}"` : ""}`);
+      }
+    }
+    return { text: parts.filter(Boolean).join("\n") + (said.length ? `\nImages, in order:\n${said.join("\n")}` : "\nNo open note has a drawing or a picture."), images: urls };
   },
 
   async check_edit(c, i) {

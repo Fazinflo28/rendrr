@@ -88,7 +88,7 @@ export function buildServer(w: Who) {
 
   server.registerResource("projects-app", APP_RESOURCE_URI, { title: "Rendrr projects", description: "The user's edits, previews and comments, shown in the chat.", mimeType: APP_MIME_TYPE }, async (uri) => {
     const media = await mediaOrigins(w);
-    return { contents: [{ uri: uri.href, mimeType: APP_MIME_TYPE, text: APP_HTML, _meta: { ui: { csp: { resourceDomains: media, connectDomains: [] }, prefersBorder: true } } }] };
+    return { contents: [{ uri: uri.href, mimeType: APP_MIME_TYPE, text: APP_HTML, _meta: { ui: { csp: { resourceDomains: media, connectDomains: [] }, permissions: { clipboardWrite: {} }, prefersBorder: true } } }] };
   });
   server.registerResource("styles", "rendrr://styles", { title: "Style packs", description: "Every style pack with its rules, as text and machine rules.", mimeType: "text/markdown" }, async (uri) => {
     const r = await callApi(w, "/internal/resources/styles", undefined, "GET");

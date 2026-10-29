@@ -456,6 +456,12 @@ model ProjectComment {
   text      String
   resolved  Boolean  @default(false)
   createdAt DateTime @default(now())
+  // The Rendrr app in the chat: the preview it was made on, a drawing on the picture ({ w, h, strokes, key }: strokes
+  // in 0-1 of the picture, key a PNG of them), pictures added to it ([{ key, w, h, name }]), when its text was edited.
+  renderId  String?
+  drawing   Json?
+  images    Json?
+  editedAt  DateTime?
 
   @@index([projectId])
 }
