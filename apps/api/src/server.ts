@@ -10,6 +10,7 @@ import library from "./routes/library";
 import projects from "./routes/projects";
 import render from "./routes/render";
 import color from "./routes/color";
+import lutUpload from "./routes/lutUpload";
 import fonts from "./routes/fonts";
 import reviews from "./routes/reviews";
 import { backfillOutputSeconds, refreshFillerFlags } from "./services/projects";
@@ -107,6 +108,7 @@ export async function buildServer() {
   await app.register(projects);
   await app.register(render);
   await app.register(color);
+  await app.register(lutUpload);
   await app.register(fonts);
   await app.register(reviews);
   await app.register(internal);

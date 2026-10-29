@@ -1,4 +1,5 @@
-import { AppError, drive, features, putObject } from "@rendrr/core";
+import { randomBytes } from "node:crypto";
+import { AppError, drive, env, features, putObject, redis } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { parseCube, PREFIX } from "@rendrr/shared";
 import { fetchPublic } from "./fetchPublic";
@@ -37,7 +38,7 @@ const asText = (buf: Buffer, from: string) => {
   return t;
 };
 const nameFromUrl = (u: URL) => { try { return decodeURIComponent(u.pathname.split("/").pop() || "").replace(/\.cube$/i, ""); } catch { return ""; } };
-const titleOf = (text: string) => text.match(/^\s*TITLE\s+"?([^"\r\n]+)"?/m)?.[1]?.trim() || "";
+export const titleOf = (text: string) => text.match(/^\s*TITLE\s+"?([^"\r\n]+)"?/m)?.[1]?.trim() || "";
 
 /** The .cube text and a name for it, from a link, a Drive file or the text itself. */
 export async function lutSource(userId: string, i: { url?: string; driveFileId?: string; text?: string }): Promise<{ text: string; name: string }> {
@@ -72,4 +73,31 @@ export async function lutSource(userId: string, i: { url?: string; driveFileId?:
 export async function lutsText(userId: string) {
   const ls = await prisma.lut.findMany({ where: { userId }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, name: true, kind: true, size: true } });
   return ls.length ? ls.map((l) => `${l.id} "${l.name}" (${l.kind.toUpperCase()}, ${l.size} points)`).join("; ") : "none";
+}
+
+// ---------------- upload links ----------------
+// For a LUT the AI made in its own code workspace: a .cube of 33 points is about 1 MB of text, too much to send as a
+// tool's input, so add_lut upload gives a one-time link the workspace sends the file to (curl). 30 minutes, one user.
+const UPLOAD_SECONDS = 30 * 60;
+const uploadKey = (token: string) => `lut-upload:${token}`;
+
+export async function lutUploadLink(userId: string, name?: string) {
+  const token = randomBytes(24).toString("base64url");
+  await redis().set(uploadKey(token), JSON.stringify({ userId, name: name || null }), "EX", UPLOAD_SECONDS);
+  const url = `${env().PUBLIC_API_URL.replace(/\/$/, "")}/luts/upload/${token}`;
+  return { url, host: new URL(url).host, expiresAt: Date.now() + UPLOAD_SECONDS * 1000 };
+}
+
+/** A file sent to an upload link: checked and kept like any LUT; the link works until a file is saved through it. */
+export async function saveUpload(token: string, body: Buffer, name?: string) {
+  const raw = await redis().get(uploadKey(token));
+  if (!raw) throw new AppError("This upload link has expired or was used already. Call add_lut with upload: true for a new one.", 404, "lut-upload");
+  const u = JSON.parse(raw) as { userId: string; name: string | null };
+  if (!body.length) throw err("Nothing came with the upload. Send the .cube file as the body: curl -X PUT --data-binary @look.cube '<link>'.");
+  if (body.length > LUT_MAX) throw err("LUT files are 19 MB at most.");
+  const text = body.toString("utf8");
+  if (/^--/.test(text) || /^\s*</.test(text)) throw err("Send the .cube file itself as the body (curl --data-binary @look.cube), not a form or a web page.");
+  const l = await saveLut(u.userId, name || u.name || titleOf(text) || "LUT", text);
+  await redis().del(uploadKey(token));
+  return { ...l, userId: u.userId };
 }

@@ -11,7 +11,7 @@ import {
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { createProject, getOwnedProject, graphicPlacements } from "./services/projects";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
-import { lutSource, lutsText, saveLut } from "./services/luts";
+import { lutSource, lutsText, lutUploadLink, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
@@ -695,6 +695,10 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async add_lut(c, i) {
     const l = AddLutInput.safeParse(i);
     if (!l.success) throw new AppError(l.error.issues[0].message, 400, "bad-lut");
+    if (l.data.upload) {
+      const u = await lutUploadLink(c.userId, l.data.name);
+      return { text: `Upload link for one .cube file, for 30 minutes: ${u.url}\nSend the file from your code workspace:\n  curl -sS -X PUT --data-binary @"<file>.cube" "${u.url}"${l.data.name ? "" : "\n(add ?name=<LUT name> to the link to name it; else the file's TITLE)"}\nThe reply is JSON with the LUT's id; then apply_edits set_grade{all: true, lut: {id, amount: 1}}. If the workspace cannot reach ${u.host}, the user allows that host in their AI's settings (Claude: Settings > Capabilities, code execution, allowed domains), or use url or driveFileId instead.`, data: { uploadUrl: u.url } };
+    }
     const src = await lutSource(c.userId, l.data);
     const r = await saveLut(c.userId, l.data.name || src.name || "LUT", src.text);
     return { text: `${r.replaced ? "Replaced" : "Added"} LUT "${r.name}" ${r.id} (${r.kind.toUpperCase()}, ${r.size} points). Put it on an edit: apply_edits set_grade{all: true, lut: {id: "${r.id}", amount: 1}} (amount under 1 mixes it in; other set_grade fields go on top). Your LUTs: ${await lutsText(c.userId)}.`, data: { lutId: r.id } };

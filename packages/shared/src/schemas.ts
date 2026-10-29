@@ -114,13 +114,14 @@ export const AddFontInput = z.object({
   data: z.string().max(3_000_000, "Font files are 2 MB at most.").optional(),
 }).refine((f) => !!f.url !== !!f.data, "Send the font as url (https) or as data (base64), one of the two.");
 
-/** add_lut: a .cube LUT by link, a file in the user's Google Drive, or its text (one of the three). */
+/** add_lut: a .cube LUT by link, a file in the user's Google Drive, its text, or an upload link (one of the four). */
 export const AddLutInput = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   url: z.string().url().max(2000).optional(),
   driveFileId: z.string().trim().regex(/^[\w-]{10,200}$/, "That is not a Google Drive file id.").optional(),
   text: z.string().min(10).max(19 * 1024 * 1024, "LUT files are 19 MB at most.").optional(),
-}).refine((l) => [l.url, l.driveFileId, l.text].filter(Boolean).length === 1, "Send the LUT as url, driveFileId or text, one of the three.");
+  upload: z.boolean().optional(),
+}).refine((l) => [l.url, l.driveFileId, l.text, l.upload].filter(Boolean).length === 1, "Send the LUT as url, driveFileId, text or upload: true, one of the four.");
 
 export const LoginInput = z.object({ email: z.string().trim().min(1, "Enter your email to continue.").max(200), password: z.string().min(1, "Enter your password.").max(200) });
 export const SignupInput = z.object({ name: z.string().max(120).optional().nullable(), email: z.string().trim().min(1, "Enter your email to continue.").email("That email does not look right.").max(200), password: z.string().min(8, "Use at least 8 characters for your password.").max(200) });
