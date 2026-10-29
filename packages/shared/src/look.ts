@@ -23,6 +23,13 @@ export type Curves = z.infer<typeof CurvesSchema>;
 /** An imported LUT: its id, how much of it (0-1), input: applied first (a technical LUT for log footage), else last (a look). */
 export const LutRefSchema = z.object({ id: z.string().min(1).max(80), amount: unit.optional(), input: z.boolean().optional() });
 export type LutRef = z.infer<typeof LutRefSchema>;
+/** What set_grade's lut takes: an imported LUT by id or name, or the .cube file's own text (the server imports it
+ *  first, so an AI can apply a LUT from its workspace in the same call). Only the id is kept in the grade. */
+export const LutInputSchema = z.object({
+  id: z.string().min(1).max(80).optional(), name: z.string().trim().min(1).max(120).optional(), cube: z.string().min(10).max(20 * 1024 * 1024).optional(),
+  amount: unit.optional(), input: z.boolean().optional(),
+}).refine((l) => !!(l.id || l.name || l.cube), "lut needs its id, its name, or the .cube text (cube)");
+export type LutInput = z.infer<typeof LutInputSchema>;
 /**
  * A clip's grade. exposure: stops (+1 = twice the light); contrast -100..100 (0 = as is); temperature -100 (cooler,
  * blue) .. 100 (warmer, orange); tint -100 (green) .. 100 (magenta); saturation % (100 = as is, 0 = grey).

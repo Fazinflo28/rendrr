@@ -16,7 +16,7 @@ import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDL
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { libraryItem, libraryParams } from "./library";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
-import { ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutRefSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, type ChromaKey, type ClipLook, type Grade, type Lut } from "./look";
+import { ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, type ChromaKey, type ClipLook, type Grade, type Lut } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
@@ -131,10 +131,11 @@ const EDIT_OPS = [
   // ---- colour and compositing (Phase 6) ----
   // Which clips: clipIds (V1 or b-roll), all: every V1 clip, video: every V1 clip of that video.
   // A grade: fields left out keep their value, null removes one, reset: start from no grade. curves: channels to set
-  // (master, r, g, b: points [in, out] 0-1; null removes that channel). lut: an imported LUT {id, amount 0-1, input}.
+  // (master, r, g, b: points [in, out] 0-1; null removes that channel). lut: an imported LUT {id, amount 0-1, input};
+  // by name, or with the .cube text, the server imports it and sends the id (applyOp only takes ids).
   z.object({ op: z.literal("set_grade"), ...lookTargets, reset: z.boolean().optional(),
     exposure: z.number().min(-4).max(4).nullable().optional(), contrast: z.number().min(-100).max(100).nullable().optional(), temperature: z.number().min(-100).max(100).nullable().optional(), tint: z.number().min(-100).max(100).nullable().optional(), saturation: z.number().min(0).max(200).nullable().optional(),
-    curves: z.object({ master: CurveSchema.nullable().optional(), r: CurveSchema.nullable().optional(), g: CurveSchema.nullable().optional(), b: CurveSchema.nullable().optional() }).nullable().optional(), lut: LutRefSchema.nullable().optional() }),
+    curves: z.object({ master: CurveSchema.nullable().optional(), r: CurveSchema.nullable().optional(), g: CurveSchema.nullable().optional(), b: CurveSchema.nullable().optional() }).nullable().optional(), lut: LutInputSchema.nullable().optional() }),
   // A clip's grade onto other clips (with: also its key, masks, blur/pixelate).
   z.object({ op: z.literal("copy_grade"), from: clipId, to: z.array(clipId).max(2000).optional(), all: z.boolean().optional(), video: z.string().max(80).optional(), with: z.array(z.enum(["grade", "key", "masks", "effects"])).max(4).optional() }),
   // Clips' colour matched to a reference clip from measured frames (the server measures them; the result is a grade).
@@ -930,7 +931,9 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     // ---- colour and compositing (Phase 6) ----
     case "set_grade": {
       const ids = lookIds(tl, op);
-      if (op.lut && ctx.getLut && !ctx.getLut(op.lut.id)) throw new EditError(`There is no LUT "${op.lut.id}" in your LUTs. Import the .cube file in the editor's Color tab; get_project lists your LUTs.`);
+      if (op.lut && !op.lut.id) throw new EditError(`The LUT "${op.lut.name ?? "from its text"}" has to be imported first: send this edit through Rendrr's server (apply_edits), which imports it.`);
+      if (op.lut) op.lut = { id: op.lut.id!, ...(op.lut.amount != null ? { amount: op.lut.amount } : {}), ...(op.lut.input != null ? { input: op.lut.input } : {}) };
+      if (op.lut && ctx.getLut && !ctx.getLut(op.lut.id!)) throw new EditError(`There is no LUT "${op.lut.id}" in your LUTs. Import the .cube file in the editor's Color tab; get_project lists your LUTs.`);
       const fields = ["exposure", "contrast", "temperature", "tint", "saturation", "lut"] as const;
       const next = mapLook(tl, ids, (c) => {
         const g: Grade = op.reset ? {} : { ...(c.grade ?? {}) };

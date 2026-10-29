@@ -11,7 +11,7 @@ import {
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { createProject, getOwnedProject, graphicPlacements } from "./services/projects";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
-import { lutSource, lutsText, lutUploadLink, saveLut } from "./services/luts";
+import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
@@ -171,9 +171,9 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
     return { text: "Note posted in Rendrr's AI tab.", data: { version: p0.currentVersion } };
   }
   // The activity log keeps the edits, but long lists (clips, word ids) only as counts.
-  const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e)) };
+  const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e.op === "set_grade" && e.lut?.cube ? { ...e, lut: { ...e.lut, cube: `${e.lut.cube.length} characters` } } : e)) };
   // Phase 6: match_color gets the clips' measured frames (the worker reads them; a failure stops here, loudly).
-  const ready = await withMeasurements(projectId, withIcons(edits));
+  const ready = await withMeasurements(projectId, withIcons(await resolveLutRefs(c.userId, edits)));
   const luts = ready.some((e) => e.op === "match_color") ? await lutsFor(c.userId, p0.timeline as unknown as Timeline) : undefined;
   const r = await applyTimelineChange(projectId, ready.length === 1 ? ready[0] : { op: "batch", ops: ready }, actorFor(c, "apply_edits", logged), { luts });
   const v = await prisma.video.findUniqueOrThrow({ where: { id: p0.videoId }, include: { analysis: true } });

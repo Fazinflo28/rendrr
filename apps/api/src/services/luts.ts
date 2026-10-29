@@ -101,3 +101,23 @@ export async function saveUpload(token: string, body: Buffer, name?: string) {
   await redis().del(uploadKey(token));
   return { ...l, userId: u.userId };
 }
+
+/** set_grade lut by name or with the .cube text: imported (the text) or looked up (the name), so the edit carries its
+ *  id. An AI can apply a LUT from its own workspace in one apply_edits this way, with no other tool. */
+export async function resolveLutRefs<T extends { op: string }>(userId: string, edits: T[]): Promise<T[]> {
+  const out: T[] = [];
+  for (const e of edits) {
+    const lut = (e as { lut?: { id?: string; name?: string; cube?: string; amount?: number; input?: boolean } | null }).lut;
+    if (e.op !== "set_grade" || !lut || lut.id) { out.push(e); continue; }
+    const { cube, name, ...rest } = lut;
+    let id: string;
+    if (cube) id = (await saveLut(userId, name || titleOf(cube) || "LUT", cube)).id;
+    else {
+      const l = await prisma.lut.findFirst({ where: { userId, name: { equals: name!, mode: "insensitive" } }, orderBy: { createdAt: "desc" } });
+      if (!l) throw new AppError(`There is no LUT named "${name}" in Rendrr. Yours: ${await lutsText(userId)}. Send the file itself as lut.cube (its text), or add_lut.`, 400, "bad-lut");
+      id = l.id;
+    }
+    out.push({ ...e, lut: { ...rest, id } });
+  }
+  return out;
+}

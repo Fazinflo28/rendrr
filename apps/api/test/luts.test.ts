@@ -120,6 +120,27 @@ describe("add_lut", { skip: !ready && "needs DATABASE_URL, REDIS_URL and storage
     } finally { await app.close(); }
   });
 
+  it("apply_edits set_grade takes the LUT's own text or its name, so any chat can apply a LUT from its workspace", async () => {
+    const file = (await import("node:fs")).readFileSync(new URL("./fixtures/ronnii-6k-daydream.cube", import.meta.url), "utf8");
+    const out = await tool("apply_edits", { projectId, edits: [{ op: "set_grade", all: true, reset: true, lut: { cube: file, amount: 1 } }, { op: "set_effects", all: true, effects: [{ type: "sharpen", amount: 25 }] }] });
+    console.log(out.text.split("\n")[0]);
+    assert.match(out.text, /^Done \(v\d+,.*LUT "Ronnii 6K Daydream"/);
+    const l = await prisma.lut.findFirstOrThrow({ where: { userId, name: "Ronnii 6K Daydream" } });
+    assert.equal(l.size, 9);
+    const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+    const v1 = (p.timeline as { tracks: { v1: { grade?: { lut?: { id: string; cube?: string } }; effects?: unknown[] }[] } }).tracks.v1;
+    assert.ok(v1.every((c) => c.grade?.lut?.id === l.id && !("cube" in (c.grade?.lut ?? {}))), "every clip keeps the LUT's id, not its text");
+    assert.ok(v1.every((c) => JSON.stringify(c.effects) === JSON.stringify([{ type: "sharpen", amount: 25 }])));
+    // The activity log keeps how long the file was, not the file.
+    const acts = await prisma.aiAction.findMany({ where: { projectId } });
+    assert.ok(acts.length > 0 && !acts.some((a) => /LUT_3D_SIZE 9/.test(JSON.stringify(a))), "the log has no LUT file in it");
+    // By name (any case), and a name Rendrr does not have.
+    const byName = await tool("apply_edits", { projectId, edits: [{ op: "set_grade", all: true, lut: { name: "ronnii 6k daydream", amount: 0.8 } }] });
+    assert.match(byName.text, /LUT "Ronnii 6K Daydream" 80%/);
+    await assert.rejects(tool("apply_edits", { projectId, edits: [{ op: "set_grade", all: true, lut: { name: "Nope" } }] }), /There is no LUT named "Nope" in Rendrr\. Yours: .*Ronnii 6K Daydream/);
+    await assert.rejects(tool("apply_edits", { projectId, edits: [{ op: "set_grade", all: true, lut: { amount: 1 } }] }), /lut needs its id, its name, or the \.cube text/);
+  });
+
   it("reads the file id out of Google Drive share links", () => {
     assert.equal(driveIdOf("https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQ/view?usp=sharing"), "1AbCdEfGhIjKlMnOpQ");
     assert.equal(driveIdOf("https://drive.google.com/open?id=1AbCdEfGhIjKlMnOpQ"), "1AbCdEfGhIjKlMnOpQ");
