@@ -28,8 +28,10 @@ ff("-f", "lavfi", "-i", "testsrc2=s=320x568:r=25:d=8", "-f", "lavfi", "-i", "sin
 ff("-f", "lavfi", "-i", "smptebars=s=320x568:r=25:d=6", "-f", "lavfi", "-i", "sine=f=660:d=6", "-c:v", "libvpx-vp9", "-b:v", "300k", "-c:a", "libopus", "-shortest", join(dir, "v2.webm"));
 ff("-f", "lavfi", "-i", "testsrc2=s=320x180", "-frames:v", "1", join(dir, "thumb.jpg"));
 
-// The storage: files with ranges, like signed links.
+// The storage: files with ranges, like signed links. A link changed on the way (its %2F turned into %252F) fails its
+// signature, as on the real storage.
 const media = createServer((req, res) => {
+  if (/%25/.test(req.url) || (req.url.includes("X-Amz-Credential") && !req.url.includes("X-Amz-Credential=tid%2F20261029%2Fiad"))) { res.statusCode = 403; return res.end(); }
   const f = join(dir, new URL(req.url, "http://x").pathname.slice(1));
   let size; try { size = statSync(f).size; } catch { res.statusCode = 404; return res.end(); }
   const type = f.endsWith(".jpg") ? "image/jpeg" : "video/webm";
@@ -44,7 +46,7 @@ const M = `http://127.0.0.1:${media.address().port}`;
 const now = Date.now();
 const db = {
   projects: [
-    { id: "p1", name: "Knee pain reel", folder: "Spine clinic", aspect: "9:16", status: "In review", version: 2, updated: now - 3600e3, seconds: 8, thumb: `${M}/thumb.jpg?X-Amz-Signature=a`, previewVersion: 1, rendering: false, openComments: 1 },
+    { id: "p1", name: "Knee pain reel", folder: "Spine clinic", aspect: "9:16", status: "In review", version: 2, updated: now - 3600e3, seconds: 8, thumb: `${M}/thumb.jpg?X-Amz-Credential=tid%2F20261029%2Fiad&X-Amz-Signature=a`, previewVersion: 1, rendering: false, openComments: 1 },
     { id: "p2", name: "Founder story", folder: "Brand", aspect: "16:9", status: "Draft", version: 1, updated: now - 86400e3 * 2, seconds: null, thumb: null, previewVersion: null, rendering: false, openComments: 0 },
   ],
   comments: { p1: [{ id: "c0", time: 1.2, text: "The client wants the logo smaller", author: "Dana", mine: false, resolved: false, at: now - 7200e3 }], p2: [] },
@@ -139,8 +141,9 @@ check(/No preview/.test(await app.locator(".card").nth(1).innerText()), "an edit
 check(await frame().evaluate(() => getComputedStyle(document.body).backgroundColor === "rgb(15, 17, 19)" && !document.documentElement.style.getPropertyValue("--color-background-primary")), "the Rendrr web app's own dark look, though the host is light");
 check(await frame().evaluate(() => { const t = getComputedStyle(document.querySelector("h1")); return /Space Grotesk/.test(t.fontFamily) && t.textTransform === "uppercase" && t.fontWeight === "700"; }), "titles in the web app's Space Grotesk, bold, upper case");
 check(await frame().evaluate(() => { const c = document.querySelector(".card"); const o = c.querySelector(".thumb .over .name"); return getComputedStyle(c).backgroundColor === "rgb(28, 30, 33)" && !!o && o.textContent.length > 0; }), "project cards as in the web app (surface colour, the name over the picture)");
-const thumbOk = await frame().evaluate(() => new Promise((r) => { const i = new Image(); i.onload = () => r(true); i.onerror = () => r(false); i.src = getComputedStyle(document.querySelector(".thumb")).backgroundImage.slice(5, -2); }));
-check(thumbOk, "thumbnails load from the storage origin");
+const thumbOk = await frame().evaluate(() => new Promise((r) => { const i = document.querySelector(".thumb img"); if (!i) return r("no picture"); const done = () => r(i.complete && i.naturalWidth > 0 ? true : "not loaded"); i.complete ? done() : (i.onload = done, i.onerror = done); }));
+check(thumbOk === true, `thumbnails load from the storage origin, their signed links as given (${thumbOk})`);
+check(await frame().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); const h1 = r("h1"); return h1.height < 40 && r(".top .btn.big").top < h1.bottom + 20; }), "the header fits: the title on one line, the buttons beside it");
 const sized = (await hostLog()).filter((m) => m.method === "ui/notifications/size-changed");
 check(sized.length >= 1 && sized[sized.length - 1].params.height > 200, `the app tells the host its height (${sized.map((s) => s.params.height).join(", ")})`);
 check((await app.locator(".btn.big", { hasText: "Full screen" }).count()) === 1, "the grid offers full screen");
