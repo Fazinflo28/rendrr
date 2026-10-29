@@ -76,7 +76,7 @@ describe("the connector", () => {
     assert.equal(tools.find((t) => t.name === "apply_edits")!._meta, undefined);
   });
 
-  it("the app is an MCP Apps page whose video and pictures may come from the storage the API names, nothing else", async () => {
+  it("the app is an MCP Apps page whose video and pictures may come from the storage the API names, its fonts from Google Fonts, nothing else", async () => {
     const { resources } = await client.listResources();
     const { APP_URI } = await import("../src/build");
     const res = resources.find((x) => x.uri === APP_URI)!;
@@ -89,9 +89,12 @@ describe("the connector", () => {
     assert.equal(c.mimeType, "text/html;profile=mcp-app");
     assert.match(c.text, /^<!doctype html>/);
     assert.match(c.text, /ui\/initialize/);
-    // Nothing loaded from elsewhere: no script or style files, no outside src, href or url(), no fetch or @import.
-    assert.doesNotMatch(c.text, /<script[^>]+src=|<link[^>]+href=|(?:src|href)=["']https?:|url\(["']?https?:|@import|\bfetch\(|XMLHttpRequest|new WebSocket/, "no outside scripts, styles or loads in the page");
-    assert.deepEqual(c._meta.ui.csp, { resourceDomains: ["https://bucket.storage.example"], connectDomains: [] });
+    // Nothing loaded from elsewhere but the web app's fonts: no script files, no other style file, no outside src,
+    // href or url(), no fetch or @import.
+    assert.equal((c.text.match(/<link[^>]+href=/g) || []).length, 1);
+    assert.match(c.text, /<link rel="stylesheet" href="https:\/\/fonts\.googleapis\.com\/css2\?family=Inter:[^"]+&family=Space\+Grotesk:wght@700&display=swap">/);
+    assert.doesNotMatch(c.text.replace(/<link rel="stylesheet" href="https:\/\/fonts\.googleapis\.com\/[^"]+">/, ""), /<script[^>]+src=|<link[^>]+href=|(?:src|href)=["']https?:|url\(["']?https?:|@import|\bfetch\(|XMLHttpRequest|new WebSocket/, "no outside scripts, styles or loads in the page");
+    assert.deepEqual(c._meta.ui.csp, { resourceDomains: ["https://bucket.storage.example", "https://fonts.googleapis.com", "https://fonts.gstatic.com"], connectDomains: [] });
     assert.deepEqual((c._meta.ui as any).permissions, { clipboardWrite: {} }, "it asks to copy (the Share link)");
   });
 

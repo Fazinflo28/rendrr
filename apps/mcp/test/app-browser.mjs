@@ -2,7 +2,7 @@
 // a host builds from its declared domains, talking MCP Apps (JSON-RPC over postMessage) to a stand-in host whose tools
 // answer like Rendrr's. Checks: the projects grid; opening an edit plays its preview (from the storage origin only);
 // comments at the player's moment, markers, jump, resolve; Send to Claude; a render's progress, then the new preview
-// playing on its own; typing survives the polls; search; theme; size. Real Chromium (Playwright), real video files.
+// playing on its own; typing survives the polls; search; the web app's look; size. Real Chromium (Playwright), real video files.
 //   node test/app-browser.mjs   (from apps/mcp; needs ffmpeg)
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, statSync, createReadStream } from "node:fs";
@@ -83,7 +83,8 @@ function tool(name, args) {
 }
 
 // The host page: a sandboxed frame, the CSP built from the declared domains, the MCP Apps host side.
-const csp = `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src ${M} data:; media-src ${M}; font-src 'none'; connect-src 'none'; frame-src 'none'; base-uri 'none'`;
+const FONTS = "https://fonts.googleapis.com https://fonts.gstatic.com";
+const csp = `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' ${FONTS}; img-src ${M} data:; media-src ${M}; font-src ${FONTS}; connect-src 'none'; frame-src 'none'; base-uri 'none'`;
 const doc = APP.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="${csp}">`);
 const hostHtml = `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width, initial-scale=1"><body style="margin:0;background:#fff"><iframe id=app sandbox="allow-scripts" style="width:900px;border:0;height:600px"></iframe><script>
 const f = document.getElementById("app");
@@ -130,12 +131,14 @@ const frame = () => page.frame({ url: /about:srcdoc/ }) ?? page.frames()[1];
 const hostLog = () => page.evaluate(() => window.log.map((m) => ({ method: m.method, params: m.params })));
 const seekTo = (t) => frame().evaluate((x) => new Promise((ok) => { const v = document.querySelector("video"); v.pause(); v.addEventListener("seeked", () => ok(), { once: true }); v.currentTime = x; }), t);
 
-// 1. The grid of every edit, in the host's theme, sized to its content.
+// 1. The grid of every edit, in the Rendrr web app's look, sized to its content.
 await app.locator(".card").first().waitFor({ timeout: 10000 }).catch(async (e) => { console.log("LOG", JSON.stringify(await hostLog()).slice(0, 2000)); console.log("ERR", errors, violations); console.log("HTML", (await frame()?.content())?.slice(-1500)); throw e; });
 check((await app.locator(".card").count()) === 2, "All projects shows both edits");
 check(/Knee pain reel/.test(await app.locator(".card").first().innerText()) && /Preview v1/.test(await app.locator(".card").first().innerText()) && /1 open comment/.test(await app.locator(".card").first().innerText()), "a card says its preview and open comments");
 check(/No preview/.test(await app.locator(".card").nth(1).innerText()), "an edit without a preview says so");
-check(await frame().evaluate(() => document.documentElement.dataset.theme === "light" && getComputedStyle(document.body).backgroundColor === "rgb(250, 249, 245)"), "the host's theme and colours are used");
+check(await frame().evaluate(() => getComputedStyle(document.body).backgroundColor === "rgb(15, 17, 19)" && !document.documentElement.style.getPropertyValue("--color-background-primary")), "the Rendrr web app's own dark look, though the host is light");
+check(await frame().evaluate(() => { const t = getComputedStyle(document.querySelector("h1")); return /Space Grotesk/.test(t.fontFamily) && t.textTransform === "uppercase" && t.fontWeight === "700"; }), "titles in the web app's Space Grotesk, bold, upper case");
+check(await frame().evaluate(() => { const c = document.querySelector(".card"); const o = c.querySelector(".thumb .over .name"); return getComputedStyle(c).backgroundColor === "rgb(28, 30, 33)" && !!o && o.textContent.length > 0; }), "project cards as in the web app (surface colour, the name over the picture)");
 const thumbOk = await frame().evaluate(() => new Promise((r) => { const i = new Image(); i.onload = () => r(true); i.onerror = () => r(false); i.src = getComputedStyle(document.querySelector(".thumb")).backgroundImage.slice(5, -2); }));
 check(thumbOk, "thumbnails load from the storage origin");
 const sized = (await hostLog()).filter((m) => m.method === "ui/notifications/size-changed");
@@ -338,10 +341,10 @@ await app.locator(".card", { hasText: "Founder story" }).click(); await sleep(80
 check(renders() === 1, "opening it again does not start another");
 await app.locator("button", { hasText: "All projects" }).click(); await app.locator(".card").first().waitFor();
 
-// The host switches to dark: the app follows.
+// The host switches theme: the app keeps Rendrr's look.
 await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark", styles: { variables: { "--color-background-primary": "rgb(31, 30, 29)" } } } }, "*"));
 await sleep(200);
-check(await frame().evaluate(() => document.documentElement.dataset.theme === "dark" && getComputedStyle(document.body).backgroundColor === "rgb(31, 30, 29)"), "a theme change from the host is followed");
+check(await frame().evaluate(() => getComputedStyle(document.body).backgroundColor === "rgb(15, 17, 19)"), "a theme change from the host leaves the Rendrr look as it is");
 await page.screenshot({ path: join(dir, "app-dark.png") });
 
 // 9. On a phone: nothing wider than the screen, full screen on open, comment, draw and share with the thumb.

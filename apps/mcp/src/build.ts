@@ -17,6 +17,8 @@ export const APP_HTML = readFileSync(new URL("./app/projects.html", import.meta.
  *  after the page changed), so a changed page gets a new address and is fetched again. */
 export const APP_URI = APP_RESOURCE_URI.replace(/\.html$/, `-${createHash("sha256").update(APP_HTML).digest("hex").slice(0, 12)}.html`);
 export const SKILL_URI = "skill://rendrr/editing-skill/SKILL.md";
+/** Where the app's fonts come from: the web app's own Google Fonts stylesheet and its font files. */
+export const FONT_ORIGINS = ["https://fonts.googleapis.com", "https://fonts.gstatic.com"];
 
 // ---------------- forwarding to the API ----------------
 type ToolOut = { text: string; images?: string[]; data?: unknown };
@@ -92,7 +94,8 @@ export function buildServer(w: Who) {
 
   const appPage = async (uri: URL) => {
     const media = await mediaOrigins(w);
-    return { contents: [{ uri: uri.href, mimeType: APP_MIME_TYPE, text: APP_HTML, _meta: { ui: { csp: { resourceDomains: media, connectDomains: [] }, permissions: { clipboardWrite: {} }, prefersBorder: true } } }] };
+    // The video and pictures from Rendrr's storage; the web app's fonts (Inter, Space Grotesk) from Google Fonts.
+    return { contents: [{ uri: uri.href, mimeType: APP_MIME_TYPE, text: APP_HTML, _meta: { ui: { csp: { resourceDomains: [...media, ...FONT_ORIGINS], connectDomains: [] }, permissions: { clipboardWrite: {} }, prefersBorder: true } } }] };
   };
   server.registerResource("projects-app", APP_URI, { title: "Rendrr projects", description: "The user's edits, previews and comments, shown in the chat.", mimeType: APP_MIME_TYPE }, appPage);
   // The first address, for a host still holding a tool list that names it: the newest page there too.
