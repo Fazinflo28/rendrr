@@ -62,7 +62,11 @@ describe("the connector", () => {
   it("open_projects opens the Rendrr app; the app's tools are hidden from the AI", async () => {
     const { tools } = await client.listTools();
     const open = tools.find((t) => t.name === "open_projects")!;
-    assert.deepEqual(open._meta, { ui: { resourceUri: "ui://rendrr/projects.html" }, "ui/resourceUri": "ui://rendrr/projects.html" });
+    // The page's address carries a hash of the page, so a host that keeps pages by address fetches a changed one.
+    const { APP_URI, APP_HTML } = await import("../src/build");
+    const { createHash } = await import("node:crypto");
+    assert.equal(APP_URI, `ui://rendrr/projects-${createHash("sha256").update(APP_HTML).digest("hex").slice(0, 12)}.html`);
+    assert.deepEqual(open._meta, { ui: { resourceUri: APP_URI }, "ui/resourceUri": APP_URI });
     for (const name of ["app_list_projects", "app_get_project", "app_add_comment", "app_resolve_comment", "app_render_preview"]) {
       const t = tools.find((x) => x.name === name);
       assert.ok(t, name);
@@ -74,9 +78,13 @@ describe("the connector", () => {
 
   it("the app is an MCP Apps page whose video and pictures may come from the storage the API names, nothing else", async () => {
     const { resources } = await client.listResources();
-    const res = resources.find((x) => x.uri === "ui://rendrr/projects.html")!;
+    const { APP_URI } = await import("../src/build");
+    const res = resources.find((x) => x.uri === APP_URI)!;
     assert.equal(res.mimeType, "text/html;profile=mcp-app");
-    const read = await client.readResource({ uri: "ui://rendrr/projects.html" });
+    const read = await client.readResource({ uri: APP_URI });
+    // The first address still answers, with the same (newest) page.
+    const first = await client.readResource({ uri: "ui://rendrr/projects.html" });
+    assert.equal((first.contents[0] as { text: string }).text, (read.contents[0] as { text: string }).text);
     const c = read.contents[0] as { mimeType: string; text: string; _meta: { ui: { csp: { resourceDomains: string[]; connectDomains: string[] }; prefersBorder: boolean } } };
     assert.equal(c.mimeType, "text/html;profile=mcp-app");
     assert.match(c.text, /^<!doctype html>/);

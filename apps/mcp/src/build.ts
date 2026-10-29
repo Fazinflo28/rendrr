@@ -1,5 +1,6 @@
 // The MCP server one request gets: the tools (forwarded to the API as the user), the guide, the editing skill, and the
 // Rendrr app in the chat (an MCP App: open_projects shows it, its own tools are hidden from the AI).
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { APP_MIME_TYPE, APP_RESOURCE_URI, APP_TOOLS, EDITING_SKILL, HOW_TO_EDIT, MCP_INSTRUCTIONS, MCP_TOOLS, type ToolDef } from "@rendrr/shared";
@@ -12,6 +13,9 @@ const SECRET = () => process.env.INTERNAL_API_SECRET || "";
 
 /** The app's page: one file, no network of its own (it plays the signed preview links the API gives it). */
 export const APP_HTML = readFileSync(new URL("./app/projects.html", import.meta.url), "utf8");
+/** The page's address carries a hash of the page: hosts keep app pages by address (Claude showed the first version
+ *  after the page changed), so a changed page gets a new address and is fetched again. */
+export const APP_URI = APP_RESOURCE_URI.replace(/\.html$/, `-${createHash("sha256").update(APP_HTML).digest("hex").slice(0, 12)}.html`);
 export const SKILL_URI = "skill://rendrr/editing-skill/SKILL.md";
 
 // ---------------- forwarding to the API ----------------
@@ -52,8 +56,8 @@ async function mediaOrigins(w: Who): Promise<string[]> {
 
 /** A tool's _meta: the app it opens (both spellings hosts read), or that only the app may call it. */
 function metaOf(def: ToolDef): Record<string, unknown> | undefined {
-  if (def.ui) return { ui: { resourceUri: APP_RESOURCE_URI }, "ui/resourceUri": APP_RESOURCE_URI };
-  if (def.app) return { ui: { resourceUri: APP_RESOURCE_URI, visibility: ["app"] } };
+  if (def.ui) return { ui: { resourceUri: APP_URI }, "ui/resourceUri": APP_URI };
+  if (def.app) return { ui: { resourceUri: APP_URI, visibility: ["app"] } };
   return undefined;
 }
 
@@ -86,10 +90,13 @@ export function buildServer(w: Who) {
     });
   }
 
-  server.registerResource("projects-app", APP_RESOURCE_URI, { title: "Rendrr projects", description: "The user's edits, previews and comments, shown in the chat.", mimeType: APP_MIME_TYPE }, async (uri) => {
+  const appPage = async (uri: URL) => {
     const media = await mediaOrigins(w);
     return { contents: [{ uri: uri.href, mimeType: APP_MIME_TYPE, text: APP_HTML, _meta: { ui: { csp: { resourceDomains: media, connectDomains: [] }, permissions: { clipboardWrite: {} }, prefersBorder: true } } }] };
-  });
+  };
+  server.registerResource("projects-app", APP_URI, { title: "Rendrr projects", description: "The user's edits, previews and comments, shown in the chat.", mimeType: APP_MIME_TYPE }, appPage);
+  // The first address, for a host still holding a tool list that names it: the newest page there too.
+  server.registerResource("projects-app-first", APP_RESOURCE_URI, { title: "Rendrr projects", description: "The same page at its first address.", mimeType: APP_MIME_TYPE }, appPage);
   server.registerResource("styles", "rendrr://styles", { title: "Style packs", description: "Every style pack with its rules, as text and machine rules.", mimeType: "text/markdown" }, async (uri) => {
     const r = await callApi(w, "/internal/resources/styles", undefined, "GET");
     return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: r.ok ? r.json.text : "Could not load the styles right now." }] };

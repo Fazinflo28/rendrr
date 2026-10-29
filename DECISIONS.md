@@ -368,6 +368,7 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Editing and deleting | The user's own notes: words, pictures and drawing. Client comments (from review links) can be deleted and resolved, not reworded. |
 | Share | The review link Rendrr already has (watch, comment, approve, no account), for the version being watched; one made before (no password, not expired) is reused. Sharing marks the edit "In review", as sharing from the editor does. |
 
+| The page's address | Claude kept showing the first version of the page after it changed: hosts keep app pages by their address. The address now carries a hash of the page (ui://rendrr/projects-<hash>.html), so every change is a new address and is fetched again; the first address still answers with the newest page. |
 | What was taken out of the skill | Names of people and clients, the review site, client delivery, Drive downloads, local transcription and FFmpeg steps: private, or done by Rendrr itself. Its rules, mistakes table and QA gate are kept, each pointed at the Rendrr tool that catches it. |
 
 ## Engine Part 6: the user interface (28 October)
