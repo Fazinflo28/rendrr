@@ -1,8 +1,7 @@
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import { AppError, deleteObject, putObject } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { GRAPHIC_FONTS, PREFIX } from "@rendrr/shared";
+import { fetchPublic } from "./fetchPublic";
 
 // Fonts the user adds once (add_font, Settings) and graphics use by family name. The worker loads the ones a
 // graphic's code names as @font-face data URLs.
@@ -21,43 +20,10 @@ export function fontFormat(b: Buffer): FontFormat | null {
   return null;
 }
 
-/** Loopback, private, link-local and other non-public addresses (a font url must not reach Rendrr's own network). */
-export function privateAddress(ip: string): boolean {
-  const v4 = ip.startsWith("::ffff:") ? ip.slice(7) : ip;
-  if (isIP(v4) === 4) {
-    const [a, b] = v4.split(".").map(Number);
-    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b < 128) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || a >= 224;
-  }
-  const x = ip.toLowerCase();
-  return x === "::" || x === "::1" || /^f[cd]/.test(x) || /^fe[89ab]/.test(x) || x.startsWith("ff");
-}
+export { privateAddress } from "./fetchPublic";
 
-/** A font from a public https url: every hop's address checked (redirects too), 2 MB at most, 20 s. */
-export async function fetchFont(url: string): Promise<Buffer> {
-  let u: URL;
-  try { u = new URL(url); } catch { throw new AppError("That font url is not a url.", 400, "bad-font"); }
-  for (let hop = 0; hop < 4; hop++) {
-    if (u.protocol !== "https:") throw new AppError("Font urls must start with https://.", 400, "bad-font");
-    const host = u.hostname.replace(/^\[|\]$/g, "");
-    const addrs = isIP(host) ? [host] : (await lookup(host, { all: true }).catch(() => [])).map((a) => a.address);
-    if (!addrs.length) throw new AppError(`Could not find ${host}.`, 400, "bad-font");
-    if (addrs.some(privateAddress)) throw new AppError("That font url is not on the public internet.", 400, "bad-font");
-    const r = await fetch(u, { redirect: "manual", signal: AbortSignal.timeout(20_000) }).catch((e) => { throw new AppError(`Could not download the font: ${(e as Error).message}.`, 400, "bad-font"); });
-    const to = r.headers.get("location");
-    if (r.status >= 300 && r.status < 400 && to) { u = new URL(to, u); continue; }
-    if (!r.ok || !r.body) throw new AppError(`The font url answered ${r.status}.`, 400, "bad-font");
-    if (Number(r.headers.get("content-length") || 0) > FONT_MAX) throw new AppError("Font files are 2 MB at most.", 400, "bad-font");
-    const parts: Buffer[] = [];
-    let n = 0;
-    for await (const c of r.body as unknown as AsyncIterable<Uint8Array>) {
-      n += c.length;
-      if (n > FONT_MAX) throw new AppError("Font files are 2 MB at most.", 400, "bad-font");
-      parts.push(Buffer.from(c));
-    }
-    return Buffer.concat(parts);
-  }
-  throw new AppError("The font url redirects too many times.", 400, "bad-font");
-}
+/** A font from a public https url (fetchPublic: every hop checked), 2 MB at most. */
+export const fetchFont = async (url: string): Promise<Buffer> => (await fetchPublic(url, { max: FONT_MAX, what: "font", code: "bad-font" })).buf;
 
 /** Keeps a font file under its family, weight and style (the same three again replace the file). */
 export async function addFont(userId: string, f: { family: string; weight: number; style: string }, buf: Buffer) {

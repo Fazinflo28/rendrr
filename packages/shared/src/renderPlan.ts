@@ -13,7 +13,7 @@ import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr,
 import { audioSettings, type AudioMixSettings } from "./timeline";
 import { buildStyledAss, captionStyleOf, layoutCaptions, styleText, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
-import { areaPicture, blurSigma, buildLut, chromaKeyText, cubeText, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, pixelBlock, sdrToHdr, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
+import { areaPicture, buildLut, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean; transfer?: HdrTransfer };
@@ -494,7 +494,7 @@ export function planRender(input: PlanInput): RenderPlan {
       ...(g ? { grade: g, lut: file({ kind: "lut", grade: g }), ...(hdr ? { lutHdr: file({ kind: "lut", grade: g, hdr: hdr.transfer }) } : {}) } : {}),
       ...(c.key ? { key: c.key } : {}),
       ...(masks?.length ? { masks, mask: file({ kind: "mask", masks }) } : {}),
-      ...(c.effects?.length ? { effects: c.effects.map((e) => ({ ...e, px: e.type === "blur" ? blurSigma(e.amount, width, height) : pixelBlock(e.amount, width, height), ...(e.area ? { file: file({ kind: "area", area: e.area }) } : {}) })) } : {}),
+      ...(c.effects?.length ? { effects: c.effects.map((e) => ({ ...e, px: effectPx(e, width, height), ...(e.area ? { file: file({ kind: "area", area: e.area }) } : {}) })) } : {}),
       alpha: !!c.key || !!masks?.length,
     };
   };
@@ -594,7 +594,7 @@ function colorLines(looks: Record<string, LookOp>, under: OverlayOp[], missingLu
   if (missingLuts.size) out.push(`Color: LUT ${Array.from(missingLuts).join(", ")} is not in your LUTs any more: left out`);
   if (keyed.length) out.push(`Key: ${list(keyed, chromaKeyText)}`);
   if (masked.length) out.push(`Masks: ${list(masked, masksText)}`);
-  if (fx.length) out.push(`Blur/pixelate: ${list(fx, effectsText)}`);
+  if (fx.length) out.push(`Effects: ${list(fx, effectsText)}`);
   if (under.length) out.push(`Under V1: ${under.length} b-roll ${under.length === 1 ? "clip" : "clips"} (${under.slice(0, 4).map((u) => u.clipId).join(", ")})`);
   const sdrGraded = hdrClips.filter((id) => looks[id]?.grade || looks[id]?.key);
   const gradedNote = sdrGraded.length ? `; ${sdrGraded.slice(0, 6).join(", ")} graded or keyed in SDR (as the editor shows them): no highlights above SDR white there` : "";
@@ -808,7 +808,8 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     if (lut) { g.push(`[${rgb}]format=${rgbF},lut3d=file=${q(lookPath(lut))}:interp=trilinear[ll${tag}]`); rgb = `ll${tag}`; }
     else if (dom === "sdr") { g.push(`[${rgb}]format=${rgbF}[ll${tag}]`); rgb = `ll${tag}`; }
     (look?.effects ?? []).forEach((e, j) => {
-      const fx = e.type === "blur" ? `gblur=sigma=${e.px}:steps=4` : `pixelize=width=${e.px}:height=${e.px}:mode=avg`, t2 = `${tag}_${j}`;
+      const sk = e.type === "sharpen" ? sharpenKernel(e.amount, e.px) : null, km = sk ? `'${sk.m.join(" ")}'` : "";
+      const fx = e.type === "blur" ? `gblur=sigma=${e.px}:steps=4` : e.type === "pixelate" ? `pixelize=width=${e.px}:height=${e.px}:mode=avg` : `convolution=0m=${km}:1m=${km}:2m=${km}:0rdiv=1/${sk!.div}:1rdiv=1/${sk!.div}:2rdiv=1/${sk!.div}`, t2 = `${tag}_${j}`;
       if (!e.file) { g.push(`[${rgb}]${fx},format=${rgbF}[le${t2}]`); rgb = `le${t2}`; return; }
       g.push(`[${rgb}]split[la${t2}][lb${t2}]`);
       g.push(`[lb${t2}]${fx},format=${rgbF}[lf${t2}]`);

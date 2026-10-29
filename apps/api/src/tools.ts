@@ -4,13 +4,14 @@
 import { AppError, applyTimelineChange, enqueue, notFound, putObject, readGraphic, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import {
-  AddFontInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
+  AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
   MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { createProject, getOwnedProject, graphicPlacements } from "./services/projects";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
+import { lutSource, lutsText, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
@@ -689,6 +690,14 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const r = await addFont(c.userId, f.data, buf);
     const css = `font-family: "${r.family}"${r.weight !== 400 ? `; font-weight: ${r.weight}` : ""}${r.style === "italic" ? "; font-style: italic" : ""}`;
     return { text: `${r.replaced ? "Replaced" : "Added"} font "${r.family}" ${r.weight}${r.style === "italic" ? " italic" : ""} (${r.format}, ${Math.round(r.size / 1024)} KB).${r.installed ? ` ${r.family} is also installed: graphics that name it now draw with this file.` : ""} Use it in create_graphic code by name: ${css}, or ctx.font = "${r.style === "italic" ? "italic " : ""}${r.weight} 48px '${r.family}'".`, data: { fontId: r.id } };
+  },
+
+  async add_lut(c, i) {
+    const l = AddLutInput.safeParse(i);
+    if (!l.success) throw new AppError(l.error.issues[0].message, 400, "bad-lut");
+    const src = await lutSource(c.userId, l.data);
+    const r = await saveLut(c.userId, l.data.name || src.name || "LUT", src.text);
+    return { text: `${r.replaced ? "Replaced" : "Added"} LUT "${r.name}" ${r.id} (${r.kind.toUpperCase()}, ${r.size} points). Put it on an edit: apply_edits set_grade{all: true, lut: {id: "${r.id}", amount: 1}} (amount under 1 mixes it in; other set_grade fields go on top). Your LUTs: ${await lutsText(c.userId)}.`, data: { lutId: r.id } };
   },
 
   async get_graphic(c, i) {

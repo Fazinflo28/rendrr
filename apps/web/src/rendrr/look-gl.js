@@ -1,6 +1,6 @@
 // The player's look (Phase 6): a clip's picture drawn through WebGL2 with the render's own numbers, in the render's
 // order: the fit (cover, `fitY` down, turned), the key's alpha (FFmpeg's colorkey) and despill, the grade (the shared
-// 3D LUT, trilinear like lut3d), blur and pixelate mixed in by their areas, the masks into the alpha. The canvas is the
+// 3D LUT, trilinear like lut3d), blur, pixelate and sharpen mixed in by their areas, the masks into the alpha. The canvas is the
 // plan's size, so block sizes, blur sigmas and mask pictures are the render's pixels.
 
 const VS = `#version 300 es
@@ -61,6 +61,21 @@ void main() {
     acc += texture(pic, fboUV(clamp(q + dir * float(i), vec2(0.5), size - 0.5))).rgb * w; ws += w;
   }
   o = vec4(acc / ws, texture(pic, fboUV(q)).a);
+}`,
+  // Sharpen: x + k (x - blur(x)), the blur the render's binomial kernel (n 3 or 5, sharpenKernel), edges clamped.
+  sharp: `uniform sampler2D pic; uniform float k; uniform float n;
+void main() {
+  vec2 q = img();
+  vec4 c = texture(pic, fboUV(q));
+  float r = floor(n / 2.0);
+  vec3 acc = vec3(0.0); float ws = 0.0;
+  for (float y = -2.0; y <= 2.0; y += 1.0) for (float x = -2.0; x <= 2.0; x += 1.0) {
+    if (abs(x) > r || abs(y) > r) continue;
+    float wx = r < 1.5 ? 2.0 - abs(x) : (abs(x) < 0.5 ? 6.0 : abs(x) < 1.5 ? 4.0 : 1.0);
+    float wy = r < 1.5 ? 2.0 - abs(y) : (abs(y) < 0.5 ? 6.0 : abs(y) < 1.5 ? 4.0 : 1.0);
+    acc += texture(pic, fboUV(clamp(q + vec2(x, y), vec2(0.5), size - 0.5))).rgb * wx * wy; ws += wx * wy;
+  }
+  o = vec4(clamp(c.rgb + k * (c.rgb - acc / ws), 0.0, 1.0), c.a);
 }`,
   // Pixelate, step 1: each fragment of a small target is the mean of its block (the grid starts top left, like pixelize).
   pxavg: `uniform sampler2D pic; uniform float B; uniform vec2 blocks;
@@ -150,7 +165,7 @@ export function createLookRenderer(canvas) {
   return {
     /**
      * Draws the video's current frame. spec: { W, H, rotate, fitY, lut: {id, n, data} | null, key: {rgb, sim, blend,
-     * spill, blue} | null, mask: {key, px} | null, effects: [{type, px, area: {key, px} | null}] }.
+     * spill, blue} | null, mask: {key, px} | null, effects: [{type, px, amount, area: {key, px} | null}] }.
      */
     draw(video, spec) {
       if (spec.W !== W || spec.H !== H) {
@@ -180,6 +195,8 @@ export function createLookRenderer(canvas) {
           const radius = Math.min(200, Math.ceil(e.px * 3));
           use("blur", { dir: [1, 0], sigma: e.px, radius }, [["pic", buf[cur].t]]); run(buf[a]);
           use("blur", { dir: [0, 1], sigma: e.px, radius }, [["pic", buf[a].t]]); run(buf[b]);
+        } else if (e.type === "sharpen") {
+          use("sharp", { k: Math.round(e.amount * 2) / 100, n: e.px }, [["pic", buf[cur].t]]); run(buf[b]);
         } else {
           const B = e.px, blocks = [Math.ceil(W / B), Math.ceil(H / B)];
           if (!small || smallB !== B) { small = target(blocks[0], blocks[1]); smallB = B; }

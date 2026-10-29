@@ -1,5 +1,5 @@
 // Checks that the editor's player shows the colour the render draws (Phase 6): a grade with curves, an imported LUT,
-// a mask, pixelate with a blurred area, a green screen keyed over b-roll laid under V1. One edit is made with the shared
+// a mask, pixelate with a blurred area, sharpen, a green screen keyed over b-roll laid under V1. One edit is made with the shared
 // ops; FFmpeg renders it; the editor's own SeqMedia and LiveOverlays (the WebGL look canvas) show the same moments in a
 // browser; the pictures are compared. A plain clip gives the baseline (two decoders, two scalers, the encoder).
 // Needs ffmpeg and Playwright's Chromium.   node demo/color-match.mjs   (from apps/web)
@@ -30,6 +30,8 @@ ff("-f", "lavfi", "-i", `color=black:s=640x360:r=30:d=${SEC},format=gbrp,geq=r='
 ff("-f", "lavfi", "-i", "color=0x00B140:s=640x360:r=30:d=2", "-f", "lavfi", "-i", "color=0xE6782A:s=200x200:r=30:d=2", "-filter_complex", `[0][1]overlay=220:80,${to709}`, ...vp9, join(tmp, "gs.webm"));
 ff("-f", "lavfi", "-i", `color=black:s=640x360:r=30:d=2,format=gray,geq=lum='if(mod(floor(X/8)+floor(Y/8),2),235,16)',${to709}`, ...vp9, join(tmp, "pat.webm"));
 const CUBE = ["LUT_3D_SIZE 2", ...[0, 1].flatMap((b) => [0, 1].flatMap((g) => [0, 1].map((r) => `${(1 - r).toFixed(3)} ${(0.2 + 0.6 * g).toFixed(3)} ${(0.5 * b + 0.25).toFixed(3)}`)))].join("\n");
+// A soft checkerboard (blurred edges) for sharpen.
+ff("-f", "lavfi", "-i", `color=black:s=640x360:r=30:d=2,format=gray,geq=lum='if(mod(floor(X/16)+floor(Y/16),2),190,70)',gblur=sigma=2,${to709}`, ...vp9, join(tmp, "soft.webm"));
 writeFileSync(join(tmp, "lut.cube"), CUBE);
 
 // 2. The edit and its plan, made by the shared code.
@@ -39,39 +41,40 @@ import { planRender, ffmpegArgs, lookFileData } from "@rendrr/shared/renderPlan"
 export { ffmpegArgs, lookFileData };
 export const source = { width: 640, height: 360, fps: 30, seconds: ${SEC}, hasAudio: false };
 export const luts = { mylut: parseCube(${JSON.stringify(CUBE)}) };
-const vids = { gs: { id: "gs", name: "green screen", seconds: 2, ready: true }, pt: { id: "pt", name: "checkerboard", seconds: 2, ready: true }, br: { id: "br", name: "ramps", seconds: ${SEC}, ready: true } };
+const vids = { gs: { id: "gs", name: "green screen", seconds: 2, ready: true }, pt: { id: "pt", name: "checkerboard", seconds: 2, ready: true }, sf: { id: "sf", name: "soft checkerboard", seconds: 2, ready: true }, br: { id: "br", name: "ramps", seconds: ${SEC}, ready: true } };
 const ctx = { videoId: "v", transcript: [], silences: [], sceneCuts: [], duration: ${SEC}, getStyle: () => undefined, getVideo: (id) => vids[id], getLut: (id) => (id === "mylut" ? { id, name: "My LUT" } : undefined) };
 export function makePlan() {
   let s = { timeline: buildInitialTimeline([], ${SEC}, "clean", [], "v"), name: "c", aspect: "16:9", styleId: "s2" };
   s = applyOp(s, { op: "batch", ops: [
     { op: "set_captions", on: false }, { op: "set_audio", loudness: null },
     { op: "set_clips", track: "v1", clips: [{ id: "plain", start: 0, end: 1, label: "" }, { id: "graded", start: 1, end: 2, label: "" }, { id: "lut", start: 2, end: 3, label: "" }, { id: "masked", start: 0.5, end: 1.5, label: "" }] },
-    { op: "add_clip", videoId: "pt", from: 0, to: 1, index: 4 }, { op: "add_clip", videoId: "gs", from: 0.5, to: 1.5, index: 5 },
+    { op: "add_clip", videoId: "pt", from: 0, to: 1, index: 4 }, { op: "add_clip", videoId: "gs", from: 0.5, to: 1.5, index: 5 }, { op: "add_clip", videoId: "sf", from: 0, to: 1, index: 6 },
     { op: "set_grade", clipId: "graded", exposure: 0.6, contrast: 25, temperature: 35, tint: -10, saturation: 140, curves: { master: [[0.25, 0.18], [0.75, 0.85]], b: [[0.5, 0.42]] } },
     { op: "set_grade", clipId: "lut", lut: { id: "mylut", amount: 0.8 }, exposure: -0.3 },
     { op: "set_masks", clipId: "masked", masks: [{ shape: "ellipse", x: 0.2, y: 0.15, w: 0.6, h: 0.7, feather: 0.06 }, { shape: "rect", x: 0.45, y: 0.4, w: 0.1, h: 0.2, mode: "subtract" }] },
   ] }, ctx).snap;
-  const v1 = s.timeline.tracks.v1, pt = v1.find((c) => c.sourceVideoId === "pt").id, gs = v1.find((c) => c.sourceVideoId === "gs").id;
+  const v1 = s.timeline.tracks.v1, pt = v1.find((c) => c.sourceVideoId === "pt").id, gs = v1.find((c) => c.sourceVideoId === "gs").id, sf = v1.find((c) => c.sourceVideoId === "sf").id;
   s = applyOp(s, { op: "batch", ops: [
     { op: "set_effects", clipId: pt, effects: [{ type: "pixelate", amount: 20 }, { type: "blur", amount: 30, area: { shape: "rect", x: 0, y: 0, w: 0.5, h: 1, feather: 0.05 } }] },
+    { op: "set_effects", clipId: sf, effects: [{ type: "sharpen", amount: 60 }] },
     { op: "set_key", clipId: gs, color: "#00B140", similarity: 0.25, blend: 0.1, spill: 0.6 },
     { op: "add_broll", videoId: "br", start: 5, end: 6, sourceStart: 1, edit: true },
   ] }, ctx).snap;
   s = applyOp(s, { op: "set_under", clipId: s.timeline.tracks.v2[0].id, under: true }, ctx).snap;
-  const plan = planRender({ kind: "preview", snapshot: s, transcript: [], source, videoId: "v", sources: { gs: { ...source, seconds: 2 }, pt: { ...source, seconds: 2 } }, brollSeconds: { br: ${SEC} }, luts });
+  const plan = planRender({ kind: "preview", snapshot: s, transcript: [], source, videoId: "v", sources: { gs: { ...source, seconds: 2 }, pt: { ...source, seconds: 2 }, sf: { ...source, seconds: 2 } }, brollSeconds: { br: ${SEC} }, luts });
   return { plan, ids: { pt, gs } };
 }`);
 await build({ entryPoints: [join(tmp, "plan.ts")], bundle: true, platform: "node", format: "esm", outfile: join(tmp, "plan.mjs"), nodePaths: [join(web, "node_modules")], logLevel: "warning" });
 const { makePlan, ffmpegArgs, lookFileData, source, luts } = await import(pathToFileURL(join(tmp, "plan.mjs")).href);
 const { plan } = makePlan();
 const W = plan.width, H = plan.height;
-console.log(plan.operations.filter((l) => /^(Color|Key|Masks|Blur|Under)/.test(l)).join("\n"));
+console.log(plan.operations.filter((l) => /^(Color|Key|Masks|Effects|Under)/.test(l)).join("\n"));
 
 // 3. The render, with its look files.
 const looks = {};
 for (const [n, spec] of Object.entries(plan.lookFiles)) { looks[n] = join(tmp, n); writeFileSync(looks[n], lookFileData(spec, plan, luts)); }
 const out = join(tmp, "out.mp4"), graph = join(tmp, "g.txt");
-const { args, filterGraph } = ffmpegArgs(plan, { source: join(tmp, "main.webm"), videos: { gs: join(tmp, "gs.webm"), pt: join(tmp, "pat.webm") }, output: out, looks, under: { [plan.under[0].clipId]: join(tmp, "main.webm") } }, source, { loudnessGainDb: 0 });
+const { args, filterGraph } = ffmpegArgs(plan, { source: join(tmp, "main.webm"), videos: { gs: join(tmp, "gs.webm"), pt: join(tmp, "pat.webm"), sf: join(tmp, "soft.webm") }, output: out, looks, under: { [plan.under[0].clipId]: join(tmp, "main.webm") } }, source, { loudnessGainDb: 0 });
 writeFileSync(graph, filterGraph);
 execFileSync("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? graph : a)));
 
@@ -90,14 +93,14 @@ function App() {
   const broll = { br: { url: "/main.webm" } };
   return h("div", { id: "stage", style: { position: "relative", width: plan.width + "px", height: plan.height + "px", overflow: "hidden", background: "#000" } },
     h("div", { style: { position: "absolute", inset: 0, overflow: "hidden", background: "#000" } },
-      h(SeqMedia, { plan, clock, time: t, playing: false, urls: { v: "/main.webm", gs: "/gs.webm", pt: "/pat.webm" }, sounds: {}, aspect: plan.aspect, pb, broll, luts })),
+      h(SeqMedia, { plan, clock, time: t, playing: false, urls: { v: "/main.webm", gs: "/gs.webm", pt: "/pat.webm", sf: "/soft.webm" }, sounds: {}, aspect: plan.aspect, pb, broll, luts })),
     h(LiveOverlays, { frame: f, clips: [], media: { broll, graphicClips: {} }, aspect: plan.aspect, playing: false, plan, luts }));
 }
 createRoot(document.getElementById("root")).render(h(App));
 window.__seek = (t) => setT(t);`);
 await build({ entryPoints: [join(tmp, "page.js")], bundle: true, platform: "browser", format: "iife", outfile: join(tmp, "page.bundle.js"), nodePaths: [join(web, "node_modules")], define: { "process.env.NODE_ENV": '"production"', "process.env.NEXT_PUBLIC_API_URL": '""' }, plugins: [stub], logLevel: "warning" });
 const css = readFileSync(join(web, "src/rendrr/styles.css"), "utf8");
-const files = { "/main.webm": "main.webm", "/gs.webm": "gs.webm", "/pat.webm": "pat.webm", "/page.bundle.js": "page.bundle.js" };
+const files = { "/main.webm": "main.webm", "/gs.webm": "gs.webm", "/pat.webm": "pat.webm", "/soft.webm": "soft.webm", "/page.bundle.js": "page.bundle.js" };
 const server = createServer((req, res) => {
   const u = decodeURIComponent(req.url.split("?")[0]);
   const file = files[u];
@@ -124,10 +127,16 @@ const SW = 192, SH = 108;
 const small = (png) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-vf", `scale=${SW}:${SH}:flags=area,format=rgb24`, "-f", "rawvideo", "pipe:1"], { input: png, maxBuffer: 64 << 20 });
 const fileFrame = (k) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", out, "-vf", `select=eq(n\\,${k}),scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrp,scale=${SW}:${SH}:flags=area,format=rgb24`, "-frames:v", "1", "-f", "rawvideo", "pipe:1"], { maxBuffer: 64 << 20 });
 const diff = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
+// Sharpen is checked at full size (scaling down would hide it): how much edge there is (mean |Laplacian| of the green
+// channel, away from the frame's edges), in the file, the editor and the footage unsharpened.
+const full = (png) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-vf", "format=rgb24", "-f", "rawvideo", "pipe:1"], { input: png, maxBuffer: 64 << 20 });
+const fileFull = (k) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", out, "-vf", `select=eq(n\\,${k}),scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=rgb24`, "-frames:v", "1", "-f", "rawvideo", "pipe:1"], { maxBuffer: 64 << 20 });
+const softFull = () => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", join(tmp, "soft.webm"), "-vf", `scale=${W}:${H}:in_color_matrix=bt709:in_range=tv:flags=bicubic+accurate_rnd,format=rgb24`, "-frames:v", "1", "-f", "rawvideo", "pipe:1"], { maxBuffer: 64 << 20 });
+const edge = (px) => { let s = 0, n = 0; for (let y = 8; y < H - 8; y++) for (let x = 8; x < W - 8; x++) { const g = (xx, yy) => px[(yy * W + xx) * 3 + 1]; s += Math.abs(4 * g(x, y) - g(x - 1, y) - g(x + 1, y) - g(x, y - 1) - g(x, y + 1)); n++; } return s / n; };
 
 // One moment in the middle of each clip.
 const kinds = { plain: "plain (baseline)", graded: "grade + curves", lut: "imported LUT", masked: "masks (ellipse minus rectangle, feathered)" };
-const moments = plan.parts.map((p) => ({ k: Math.floor(((p.start + p.end) / 2) * 30), kind: kinds[p.clipIds[0]] || (p.videoId === "pt" ? "pixelate + blurred area" : "key + despill over b-roll under V1") }));
+const moments = plan.parts.map((p) => ({ k: Math.floor(((p.start + p.end) / 2) * 30), kind: kinds[p.clipIds[0]] || (p.videoId === "pt" ? "pixelate + blurred area" : p.videoId === "sf" ? "sharpen" : "key + despill over b-roll under V1") }));
 let fails = 0; const rows = [];
 const limit = (kind) => (kind.startsWith("pixelate") ? 7 : 4);
 let base = 0;
@@ -140,6 +149,11 @@ for (const m of moments) {
   }
   const shot = await page.locator("#stage").screenshot();
   const d = diff(fileFrame(m.k), small(shot));
+  if (m.kind === "sharpen") {
+    const ef = edge(fileFull(m.k)), ee = edge(full(shot)), es = edge(softFull()), fd = diff(fileFull(m.k), full(shot));
+    rows.push(`${t.toFixed(2)}s sharpen at full size: edge ${es.toFixed(2)} unsharpened, ${ef.toFixed(2)} in the file, ${ee.toFixed(2)} in the editor; mean difference ${fd.toFixed(2)} / 255`);
+    if (ef < es * 1.25 || Math.abs(ee - ef) > ef * 0.15 || fd > 4) fails++;
+  }
   if (m.kind.startsWith("plain")) base = d;
   rows.push(`${t.toFixed(2)}s ${m.kind}: mean difference ${d.toFixed(2)} / 255`);
   if (process.env.DUMP) {

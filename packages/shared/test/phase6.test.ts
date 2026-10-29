@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyOp, buildInitialTimeline, buildLut, buildTranscript, colorStats, cubeText, curveFn, despillPx, editCheck, gradeFn, hdrLut, keyAlpha, liveFrame, maskPicture,
-  matchGrade, parseCube, sampleLut, sdrToHdr, summarizeTimeline, type EditContext, type Grade, type Lut, type Op, type SeqClip, type Snapshot,
+  matchGrade, parseCube, sampleLut, sdrToHdr, sharpenKernel, summarizeTimeline, type EditContext, type Grade, type Lut, type Op, type SeqClip, type Snapshot,
 } from "../src/index";
 import { ffmpegArgs, hdrAss, lookFileData, planRender, type PlanFiles } from "../src/renderPlan";
 
@@ -192,6 +192,25 @@ describe("render plan and FFmpeg graph", () => {
     expect(cube).toMatch(/^TITLE .*\nLUT_3D_SIZE 33\n/);
     const pgmData = lookFileData(p.lookFiles![p.looks!.b.mask!], p) as Uint8Array;
     expect(new TextDecoder().decode(pgmData.slice(0, 15))).toBe("P5\n960 540\n255\n");
+  });
+  it("sharpen is an unsharp mask by convolution on 16-bit RGB (3x3 up to 720p, 5x5 above), keeping flat areas as they are", () => {
+    for (const size of [3, 5]) for (const amount of [1, 25, 100]) {
+      const k = sharpenKernel(amount, size);
+      expect(k.m.length).toBe(size * size);
+      expect(k.m.reduce((a, b) => a + b, 0)).toBe(k.div); // gain 1: a flat area stays as it is
+      expect(k.m.filter((v, i) => i !== (size * size - 1) / 2).every((v) => v < 0)).toBe(true);
+    }
+    expect(sharpenKernel(50, 3)).toEqual({ m: [-100, -200, -100, -200, 2000, -200, -100, -200, -100].map((v, i) => (i === 4 ? 1600 + 1200 : v)), div: 1600 });
+    const s = edit(three(), { op: "set_effects", clipId: "a", effects: [{ type: "sharpen", amount: 50 }] } as Op, { op: "set_effects", clipId: "b", effects: [{ type: "sharpen", amount: 30, area: { shape: "ellipse", x: 0.2, y: 0.1, w: 0.6, h: 0.8 } }] } as Op).snap;
+    const p = plan(s);
+    expect(p.looks!.a.effects![0].px).toBe(3); // 540p preview
+    expect(plan(s, { kind: "final" }).looks!.a.effects![0].px).toBe(5); // the final at 1080p
+    expect(p.operations.join("\n")).toMatch(/Effects: a sharpen 50; b sharpen 30 in ellipse/);
+    const { filterGraph: g } = graph(p);
+    const k = sharpenKernel(50, 3).m.join(" ");
+    expect(g).toContain(`convolution=0m='${k}':1m='${k}':2m='${k}':0rdiv=1/1600:1rdiv=1/1600:2rdiv=1/1600`);
+    expect(g).toMatch(/maskedmerge/); // the area
+    expect(g).not.toMatch(/unsharp/); // unsharp does nothing at 16 bits
   });
   it("an edit without looks draws exactly as before", () => {
     const p = plan(three());

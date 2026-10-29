@@ -69,9 +69,10 @@ export type Area = z.infer<typeof AreaSchema>;
  *  only the overlap. */
 export const MaskSchema = AreaSchema.and(z.object({ mode: z.enum(MASK_MODES).optional() }));
 export type Mask = Area & { mode?: (typeof MASK_MODES)[number] };
-export const EFFECTS = ["blur", "pixelate"] as const;
-/** Blur (amount 1-100: 100 = a Gaussian of 5% of the short side) or pixelate (amount 1-100: blocks of amount/10 % of the
- *  short side), over the whole picture or inside an area. */
+export const EFFECTS = ["blur", "pixelate", "sharpen"] as const;
+/** Blur (amount 1-100: 100 = a Gaussian of 5% of the short side), pixelate (amount 1-100: blocks of amount/10 % of the
+ *  short side) or sharpen (an unsharp mask, amount 1-100: 100 adds twice the detail, 20 is a light touch), over the
+ *  whole picture or inside an area. */
 export const EffectSchema = z.object({ type: z.enum(EFFECTS), amount: z.number().min(1).max(100), area: AreaSchema.optional() });
 export type Effect = z.infer<typeof EffectSchema>;
 
@@ -311,6 +312,20 @@ export function pgm(px: Uint8Array, W: number, H: number): Uint8Array {
 export const blurSigma = (amount: number, W: number, H: number) => Math.max(0.5, Math.round((amount / 100) * 0.05 * Math.min(W, H) * 100) / 100);
 /** Pixelate block size in pixels at W x H (amount 100 = 10% of the short side). */
 export const pixelBlock = (amount: number, W: number, H: number) => Math.max(2, Math.round((amount / 1000) * Math.min(W, H)));
+/** Sharpen's kernel at W x H: a 3x3 binomial blur (sigma 0.71 px) up to 720p, 5x5 (sigma 1 px) above. */
+export const sharpenSize = (W: number, H: number) => (Math.min(W, H) <= 720 ? 3 : 5);
+/** Sharpen as integer convolution weights (rows top down) and their divisor: out = x + k (x - blur(x)), k = amount / 50,
+ *  blur a binomial kernel of `size`. FFmpeg's convolution runs it on 16-bit RGB (unsharp does nothing at 16 bits); the
+ *  player's shader uses the same weights. */
+export function sharpenKernel(amount: number, size: number): { m: number[]; div: number } {
+  const row = size === 3 ? [1, 2, 1] : [1, 4, 6, 4, 1];
+  const d = row.reduce((a, b) => a + b, 0) ** 2, div = d * 100, a = Math.round(amount * 2), c = (size * size - 1) / 2;
+  const m = row.flatMap((y) => row.map((x) => -a * x * y));
+  m[c] += div + a * d;
+  return { m, div };
+}
+/** The effect's size in pixels at W x H: blur sigma, block size, or sharpen's kernel. */
+export const effectPx = (e: Effect, W: number, H: number) => (e.type === "blur" ? blurSigma(e.amount, W, H) : e.type === "pixelate" ? pixelBlock(e.amount, W, H) : sharpenSize(W, H));
 
 // ---------------------------------------------------------------------------------------------
 // Key: FFmpeg's colorkey and despill (the player's shader repeats these)

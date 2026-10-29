@@ -1,11 +1,12 @@
-import { AppError, deleteObject, getText, notFound, putObject } from "@rendrr/core";
+import { AppError, deleteObject, getText, notFound } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { parseCube, PREFIX, type Timeline } from "@rendrr/shared";
+import type { Timeline } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { authenticate } from "../auth";
 import { getOwnedProject } from "../services/projects";
 import { colorSamples } from "../services/color";
+import { saveLut } from "../services/luts";
 
 // Phase 6: imported LUTs (.cube files) and the measured frames the editor's Match button needs.
 export default async function color(app: FastifyInstance) {
@@ -20,16 +21,8 @@ export default async function color(app: FastifyInstance) {
   app.post("/luts", { bodyLimit: 20 * 1024 * 1024, config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => {
     const body = z.object({ name: z.string().min(1).max(120), text: z.string().min(10).max(19 * 1024 * 1024) }).safeParse(req.body);
     if (!body.success) throw new AppError("Send the LUT's name and the text of its .cube file.", 400);
-    let lut;
-    try { lut = parseCube(body.data.text); } catch (e) { throw new AppError(`${(e as Error).message} Nothing was saved.`, 400, "bad-lut"); }
-    const userId = req.user!.id;
-    const count = await prisma.lut.count({ where: { userId } });
-    if (count >= 200) throw new AppError("You have 200 LUTs. Delete some first.", 409);
-    const row = await prisma.lut.create({ data: { userId, name: body.data.name.replace(/\.cube$/i, "").slice(0, 120), key: "pending", kind: lut.kind, size: lut.size } });
-    const key = `${PREFIX.luts}${userId}/${row.id}.cube`;
-    await putObject(key, body.data.text, "text/plain");
-    await prisma.lut.update({ where: { id: row.id }, data: { key } });
-    return { id: row.id, name: row.name, kind: lut.kind, size: lut.size };
+    const l = await saveLut(req.user!.id, body.data.name, body.data.text);
+    return { id: l.id, name: l.name, kind: l.kind, size: l.size };
   });
 
   async function ownedLut(userId: string, id: string) {

@@ -39,7 +39,7 @@ export function lookSpec(look, W, H, luts = {}) {
     lut: g ? { id: hashOf([g, lutReady]), n: LUT_SIZE, data: buildLut(g, g.lut ? luts[g.lut.id] : null) } : null,
     key: look?.key ? { rgb: hexRgb(look.key.color).map((v) => v / 255), sim: look.key.similarity, blend: look.key.blend, spill: look.key.spill, blue: spillType(look.key) === "blue" } : null,
     mask: look?.masks?.length ? { key: hashOf([look.masks, W, H]), px: maskPicture(look.masks, W, H) } : null,
-    effects: (look?.effects || []).map((e) => ({ type: e.type, px: e.px, area: e.area ? { key: hashOf([e.area, W, H]), px: areaPicture(e.area, W, H) } : null })),
+    effects: (look?.effects || []).map((e) => ({ type: e.type, px: e.px, amount: e.amount, area: e.area ? { key: hashOf([e.area, W, H]), px: areaPicture(e.area, W, H) } : null })),
   };
   specs.set(id, spec);
   if (specs.size > 40) specs.delete(specs.keys().next().value);
@@ -202,6 +202,7 @@ export function ColorTab({ clip, track, projectId, clips, lutList, reloadLuts, t
       const text = await file.text();
       parseCube(text); // a broken file is refused here, with the reason
       const l = await api.uploadLut(file.name, text);
+      delete lutData[l.id]; delete lutLoading[l.id]; // the same name replaces that LUT's file
       await reloadLuts();
       doOp(gop({ lut: { id: l.id, amount: 1 } }));
     } catch (e) { toast(e.message); } finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
@@ -275,11 +276,12 @@ export function ColorTab({ clip, track, projectId, clips, lutList, reloadLuts, t
     </div>
 
     <div class="col" style="gap:8px" id="effects-panel">
-      <div class="row between"><b class="t-label">Blur and pixelate</b><span class="row" style="gap:4px">
+      <div class="row between"><b class="t-label">Blur, pixelate, sharpen</b><span class="row" style="gap:4px">
         <${Btn} kind="ghost" size="xs" id="fx-add-blur" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "blur", amount: 30 }]))}>+ Blur<//>
-        <${Btn} kind="ghost" size="xs" id="fx-add-pixelate" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "pixelate", amount: 20 }]))}>+ Pixelate<//></span></div>
+        <${Btn} kind="ghost" size="xs" id="fx-add-pixelate" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "pixelate", amount: 20 }]))}>+ Pixelate<//>
+        <${Btn} kind="ghost" size="xs" id="fx-add-sharpen" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "sharpen", amount: 25 }]))}>+ Sharpen<//></span></div>
       ${effects.map((e, i) => html`<div key=${i} class="col card flat" style="gap:6px;padding:10px" data-effect=${i}>
-        <div class="row between"><span class="t-small">${e.type === "blur" ? "Blur" : "Pixelate"}</span>
+        <div class="row between"><span class="t-small">${{ blur: "Blur", pixelate: "Pixelate", sharpen: "Sharpen" }[e.type]}</span>
           <span class="row" style="gap:6px"><select class="input sm" id=${"fx-area-" + i} value=${e.area?.shape || "all"} onChange=${(ev) => setEffect(i)({ ...e, area: ev.target.value === "all" ? undefined : { ...BOX(ev.target.value), w: 0.3, h: 0.3, x: 0.35, y: 0.25 } }, true)}><option value="all">Whole picture</option><option value="rect">Rectangle</option><option value="ellipse">Ellipse</option></select>
           <button class="btn icon sm quiet" aria-label="Remove" id=${"fx-del-" + i} onClick=${() => doOp(eop(effects.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
         <${OpSlider} id=${"fx-amount-" + i} label="Amount" value=${e.amount} min=${1} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => setEffect(i)({ ...e, amount: v })} ...${sl} />
@@ -289,7 +291,7 @@ export function ColorTab({ clip, track, projectId, clips, lutList, reloadLuts, t
 
     ${track === "v2" && html`<label class="t-small row" style="gap:6px" id="under-row"><input type="checkbox" id="under-v1" checked=${!!clip.under} onChange=${(e) => doOp({ op: "set_under", clipId: clip.id, under: e.target.checked })} />Behind the main picture (shows where V1 is keyed, masked or framed smaller)</label>`}
     ${hdrRow(timeline, doOp)}
-    <p class="t-small muted" id="color-note">The picture here is drawn with the render's own numbers: the same LUT, key, masks and blur.</p>
+    <p class="t-small muted" id="color-note">The picture here is drawn with the render's own numbers: the same LUT, key, masks, blur and sharpen.</p>
   </div></div>`;
 }
 

@@ -988,7 +988,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     case "set_effects": {
       const ids = lookIds(tl, op);
       const next = mapLook(tl, ids, (c) => { const { effects: _e, ...rest } = c; return (op.effects.length ? { ...rest, effects: op.effects } : rest) as typeof c; });
-      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.effects.length ? effectsText(op.effects) : "no blur or pixelate"}` };
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.effects.length ? effectsText(op.effects) : "no effects"}` };
     }
     case "set_under": {
       const c = findClip(tl, "v2", op.clipId) as V2Clip & { under?: boolean };
