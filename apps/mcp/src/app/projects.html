@@ -107,8 +107,8 @@ html.fs .pv .side > .list, html.fs .pv .side > .empty { flex: 1; min-height: 0; 
 .stage video { display: block; width: 100%; max-height: 480px; background: #000; cursor: pointer; }
 .stage.tall video { width: auto; max-width: 100%; height: 540px; max-height: none; }
 /* Full screen the player gets what the panel can spare while the comments keep at least about 160 px. */
-html.fs .stage video { max-height: max(220px, min(62vh, calc(100vh - 560px))); }
-html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); }
+html.fs .stage video { max-height: max(220px, min(60vh, calc(100vh - 600px))); }
+html.fs .stage.tall video { height: max(220px, min(60vh, calc(100vh - 600px))); }
 .noprev { color: var(--dim); padding: 64px 16px; text-align: center; }
 /* The drawing sits exactly on the picture (the player keeps the picture's shape inside its box). */
 .frame { position: relative; width: 100%; display: flex; justify-content: center; }
@@ -132,14 +132,29 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center; z-index: 10; cursor: zoom-out; padding: 20px; }
 .lightbox img { max-width: 100%; max-height: 100%; border-radius: var(--r-md); }
 
-/* The seek bar (the editor's scrub): the comments sit on it as dots. */
-.seek { position: relative; height: 22px; margin: 0 8px; cursor: pointer; flex: none; touch-action: none; }
-.seek .bar { position: absolute; left: 0; right: 0; top: 8px; height: 6px; background: var(--raised); box-shadow: inset 0 0 0 1px var(--hair); border-radius: 3px; overflow: hidden; }
+/* The seek bar, big enough to hold and drag: a tall strip to grab, the track in it (thicker under the pointer), the
+   time under the pointer above it, and the comments as pins under it, like Frame.io: each one its author's initial,
+   pointing up at its moment; the comment being written gets a lime pin that follows it. */
+.seek { position: relative; height: 64px; margin: 0 14px; flex: none; touch-action: none; user-select: none; -webkit-user-select: none; }
+.seek .hit { position: absolute; left: -14px; right: -14px; top: 0; height: 36px; cursor: pointer; }
+.seek .bar { position: absolute; left: 0; right: 0; top: 15px; height: 8px; background: var(--raised-strong); box-shadow: inset 0 0 0 1px var(--hair); border-radius: 4px; overflow: hidden; pointer-events: none; transition: top .12s var(--ease), height .12s var(--ease); }
+.seek:hover .bar, .seek.drag .bar { top: 13px; height: 12px; border-radius: 6px; }
 .seek .fill { height: 100%; width: 0; background: var(--ink); }
-.seek .head { position: absolute; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 2px var(--bg); transform: translateX(-8px); pointer-events: none; z-index: 1; }
-.seek .mk { position: absolute; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg); transform: translateX(-5px); padding: 0; transition: transform .15s var(--ease); }
-.seek .mk:hover { transform: translateX(-5px) scale(1.3); }
-.seek .mk.done { background: var(--muted); }
+.seek .head { position: absolute; top: 9px; width: 20px; height: 20px; margin-left: -10px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 3px var(--bg), 0 2px 8px rgba(0,0,0,.5); pointer-events: none; z-index: 4; transition: transform .12s var(--ease); }
+.seek.drag .head { transform: scale(1.25); }
+.seek .tick { position: absolute; top: 15px; width: 2px; height: 8px; margin-left: -1px; background: var(--accent); pointer-events: none; z-index: 1; border-radius: 1px; }
+.seek .tick.done { background: var(--muted); }
+.seek .tip { position: absolute; top: -18px; transform: translateX(-50%); padding: 1px 7px; border-radius: var(--r-xs); background: var(--surface); box-shadow: var(--shadow-pop); font-size: 11.5px; line-height: 18px; font-variant-numeric: tabular-nums; pointer-events: none; display: none; z-index: 5; white-space: nowrap; }
+.seek:hover .tip, .seek.drag .tip { display: block; }
+.seek .pin { --pin: var(--accent); position: absolute; top: 36px; width: 26px; height: 26px; margin-left: -13px; border-radius: 50%; background: var(--pin); color: var(--on-accent); font-size: 11px; font-weight: 700; line-height: 26px; text-align: center; padding: 0; box-shadow: 0 0 0 2px var(--bg); z-index: 2; transition: transform .15s var(--ease); }
+.seek .pin::before { content: ""; position: absolute; left: 50%; top: -7px; margin-left: -5px; border: 5px solid transparent; border-bottom: 6px solid var(--pin); border-top: 0; }
+.seek .pin:hover, .seek .pin.on { transform: translateY(-2px) scale(1.1); z-index: 3; }
+.seek .pin.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-ring); }
+.seek .mk.client { --pin: var(--ink); color: var(--bg); }
+.seek .mk.done { --pin: #4a4d52; color: var(--dim); }
+.seek .pin.draft { --pin: var(--accent); background: var(--bg); color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); font-size: 15px; display: none; z-index: 3; pointer-events: none; }
+.seek .pin.draft.show { display: block; }
+.cm.flash { box-shadow: 0 0 0 2px var(--accent-ring); transition: box-shadow .3s; }
 /* The transport row, as in the editor: play, the time to the ms, steps, sound. */
 .ctrl { display: flex; align-items: center; gap: 6px; flex: none; padding: 6px; background: var(--panel); border-radius: var(--r-md); box-shadow: var(--shadow-card); }
 .ibtn { width: 36px; height: 36px; border-radius: var(--r-btn); background: var(--raised); box-shadow: var(--shadow-quiet); display: inline-flex; align-items: center; justify-content: center; padding: 0; flex: none; }
@@ -217,10 +232,21 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
   .search { max-width: none; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
   .thumb .name { font-size: 13.5px; }
-  .stage video { max-height: 300px; }
+  .stage video, html.fs .stage video { max-height: 256px; }
+  html.fs .stage.tall video { height: 360px; }
   .stage.tall video { height: 440px; }
   .pv, .pv .side { gap: 8px; }
   .ctrl { flex-wrap: wrap; row-gap: 4px; gap: 4px; padding: 4px; }
+  .seek { height: 70px; }
+  .seek .hit { height: 40px; }
+  .seek .bar { top: 17px; height: 10px; } .seek:hover .bar, .seek.drag .bar { top: 15px; height: 14px; }
+  .seek .head { top: 10px; width: 24px; height: 24px; margin-left: -12px; }
+  .seek .tick { top: 17px; height: 10px; }
+  .seek .pin { top: 40px; width: 28px; height: 28px; margin-left: -14px; line-height: 28px; font-size: 12px; }
+  /* The edit's header on one row: the name shrinks, Open in Rendrr is an arrow. */
+  .pv .top { flex-wrap: nowrap; gap: 4px; }
+  .pv .top .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pv .top .btn { padding: 0 9px; }
   .tc { font-size: 13px; padding: 0 2px; }
   .tc .tot { display: none; } /* the seek bar shows how far along it is */
   .lg { display: none; } .sm { display: inline; }
@@ -466,7 +492,7 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
       h("div", { class: "grow" }, h("h1", { title: p.name, style: "white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, p.name), h("div", { class: "meta" }, [p.folder, "v" + p.version, p.status, p.aspect].filter(Boolean).join(" · "))),
       fsButton(),
       h("button", { class: "btn", title: "A link to watch and comment on this video, no account needed", onClick: () => toggleShare(v) }, "Share"),
-      p.editorUrl ? h("button", { class: "btn", "aria-label": "Open in Rendrr", onClick: () => openLink(p.editorUrl) }, h("span", { class: "lg" }, "Open in Rendrr"), h("span", { class: "sm" }, "Rendrr ↗")) : null);
+      p.editorUrl ? h("button", { class: "btn", "aria-label": "Open in Rendrr", onClick: () => openLink(p.editorUrl) }, h("span", { class: "lg" }, "Open in Rendrr"), h("span", { class: "sm" }, "↗")) : null);
 
     // The player: the latest preview, or a note while there is none.
     const tall = p.aspect === "9:16";
@@ -516,24 +542,50 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
       state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
   }
 
-  // The seek bar: drag or click to move, the comments as dots (click one to go to it).
+  // The seek bar: press anywhere on the strip and drag (the picture follows as you go), the time under the pointer
+  // shown above it; the comments as pins under it (click one to go to it), the comment being written as a lime pin.
+  let draftPin = null, draftDur = () => 1;
+  function syncDraftPin() {
+    if (!draftPin || !draftPin.isConnected) return;
+    const c = state.compose, on = !!(state.draft.trim() || c.time != null || c.editingId || c.images.length || (c.drawing && c.drawing.strokes.length));
+    draftPin.classList.toggle("show", on);
+    if (on) draftPin.style.left = Math.min(100, (momentOf() / draftDur()) * 100) + "%";
+  }
   function seekView(v) {
     const total = (v.preview && v.preview.seconds) || v.project.seconds || 0;
     if (!total) return null;
     const dur = () => (player && isFinite(player.duration) && player.duration > 0 ? player.duration : total);
-    const fill = h("div", { class: "fill" }), head = h("div", { class: "head", style: "left:0%" });
-    const marks = v.comments.map((c) => h("button", { class: "mk" + (c.resolved ? " done" : "") + (c.mine ? "" : " client"), style: "left:" + Math.min(100, (c.time / total) * 100) + "%", title: fmtTime(c.time) + " · " + c.text.slice(0, 80), "aria-label": "Go to the comment at " + fmtTime(c.time), onClick: (e) => { e.stopPropagation(); seek(c.time); } }));
-    const el = h("div", { class: "seek", title: "Comments on this preview" }, h("div", { class: "bar" }, fill), marks, head);
-    const at = (e) => { const r = el.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * dur(); };
+    const pct = (t) => Math.min(100, Math.max(0, (t / dur()) * 100)) + "%";
+    const bar = h("div", { class: "bar" }, h("div", { class: "fill" }));
+    const fill = bar.firstChild, head = h("div", { class: "head", style: "left:0%" }), tip = h("div", { class: "tip" });
+    const initial = (n) => ((n || "?").trim()[0] || "?").toUpperCase();
+    const ticks = v.comments.map((c) => h("span", { class: "tick" + (c.resolved ? " done" : ""), style: "left:" + pct(c.time) }));
+    const pins = v.comments.slice().sort((a, b) => a.time - b.time).map((c) => h("button", {
+      class: "pin mk" + (c.resolved ? " done" : "") + (c.mine ? "" : " client"), "data-id": c.id, style: "left:" + pct(c.time),
+      title: (c.mine ? c.author || "You" : c.author + " (client)") + " · " + fmtTime(c.time) + (c.text ? " · " + c.text.slice(0, 80) : ""),
+      "aria-label": "Go to the comment at " + fmtTime(c.time), onClick: (e) => { e.stopPropagation(); look(c, true); } }, initial(c.author || "You")));
+    draftPin = h("span", { class: "pin draft", "aria-hidden": "true" }, "+"); draftDur = dur;
+    const el = h("div", { class: "seek", title: "Drag to move through the preview" }, h("div", { class: "hit" }), bar, ticks, pins, draftPin, head, tip);
+    const at = (e) => { const r = bar.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * dur(); };
+    const show = (t) => { const p = pct(t); fill.style.width = p; head.style.left = p; };
+    const showTip = (t) => { tip.style.left = pct(t); tip.textContent = fmtTime(t); };
+    // While dragging, the bar shows where the finger is at once, and the player follows once a frame.
+    let dragging = false, want = null, queued = false;
+    const follow = () => { queued = false; if (want != null) { seek(want); want = null; } };
+    const to = (t) => { show(t); showTip(t); want = t; if (!queued) { queued = true; requestAnimationFrame(follow); } };
     el.addEventListener("pointerdown", (e) => {
-      if (e.target.classList.contains("mk")) return;
+      if (e.target.closest(".pin") || e.button > 0) return;
+      e.preventDefault();
       try { el.setPointerCapture(e.pointerId); } catch {}
-      seek(at(e));
-      const move = (ev) => seek(at(ev));
+      dragging = true; el.classList.add("drag"); to(at(e));
+      const move = (ev) => to(at(ev));
+      const end = () => { dragging = false; el.classList.remove("drag"); el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", end); el.removeEventListener("pointercancel", end); follow(); };
       el.addEventListener("pointermove", move);
-      el.addEventListener("pointerup", () => el.removeEventListener("pointermove", move), { once: true });
+      el.addEventListener("pointerup", end);
+      el.addEventListener("pointercancel", end);
     });
-    onTime((t) => { const pct = Math.min(100, (t / dur()) * 100) + "%"; fill.style.width = pct; head.style.left = pct; });
+    el.addEventListener("pointermove", (e) => { if (!dragging && !e.target.closest(".pin")) showTip(at(e)); });
+    onTime((t) => { if (!dragging) show(t); syncDraftPin(); });
     return el;
   }
 
@@ -571,6 +623,18 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
       h("button", { class: "btn ghost step", title: "Back 0.1 s (←; Shift ← 1 s)", "aria-label": "Back 0.1 s", onClick: () => step(-0.1) }, "−0.1", h("span", { class: "lg" }, " s")),
       h("button", { class: "btn ghost step", title: "On 0.1 s (→; Shift → 1 s)", "aria-label": "On 0.1 s", onClick: () => step(0.1) }, "+0.1", h("span", { class: "lg" }, " s")),
       muteBtn);
+  }
+
+  // The new comment's moment: the one it was drawn on or is being edited at, else the player's.
+  const momentOf = () => (state.compose.time != null ? state.compose.time : player ? player.currentTime : 0);
+  // Go to a comment: its moment, paused, its drawing on the picture, and the comment shown in the list.
+  function look(x, fromPin) {
+    seek(x.time); if (player) player.pause();
+    state.viewDrawing = x.drawing ? { time: x.time, strokes: x.drawing.strokes } : null;
+    requestAnimationFrame(drawInk);
+    document.querySelectorAll(".seek .pin.on").forEach((el) => el.classList.remove("on"));
+    const pin = document.querySelector('.seek .mk[data-id="' + x.id + '"]'); if (pin) pin.classList.add("on");
+    if (fromPin) { const el = document.querySelector('.cm[data-id="' + x.id + '"]'); if (el) { el.scrollIntoView({ block: "nearest", behavior: "smooth" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1200); } }
   }
 
   function seek(t) {
@@ -761,13 +825,12 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
     const shown = state.filter === "open" ? open : v.comments;
     // The new comment goes at the player's moment (or the moment it was drawn on); typing pauses the player so it holds.
     const c = state.compose;
-    const momentOf = () => (c.time != null ? c.time : player ? player.currentTime : 0);
     const at = h("button", { class: "at mono", title: "Go to this moment", onClick: () => seek(momentOf()) }, "at " + fmtTime(momentOf()));
     onTime(() => { at.textContent = "at " + fmtTime(momentOf()); });
     const canSend = () => !state.sending && (state.draft.trim() || (c.drawing && c.drawing.strokes.length) || c.images.length);
     const ta = h("textarea", { placeholder: v.preview ? "Write a comment at this moment, paste a link or a picture…" : "Write a comment, paste a link or a picture…", "aria-label": "Comment", maxlength: "2000", "data-key": "draft",
       onFocus: () => { if (player && !player.paused) player.pause(); },
-      onInput: (e) => { state.draft = e.target.value; add.disabled = !canSend(); },
+      onInput: (e) => { state.draft = e.target.value; add.disabled = !canSend(); syncDraftPin(); },
       onPaste: (e) => { const fs = Array.from((e.clipboardData && e.clipboardData.files) || []).filter((f) => /^image\//.test(f.type)); if (fs.length) { e.preventDefault(); addImages(fs); } },
       onKeydown: (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } else if (e.key === "Escape" && c.editingId) cancelEdit(); } });
     ta.value = state.draft;
@@ -810,7 +873,6 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
         h("button", { class: "tab" + (state.filter === "all" ? " on" : ""), onClick: () => { state.filter = "all"; render(); } }, "All " + v.comments.length)),
       h("button", { class: "btn primary", disabled: !open.length, title: open.length ? "Ask your AI to work through the open comments" : "No open comments", onClick: () => sendToAi(v, open) }, "Send to Claude"));
 
-    const look = (x) => { seek(x.time); if (player) player.pause(); state.viewDrawing = x.drawing ? { time: x.time, strokes: x.drawing.strokes } : null; requestAnimationFrame(drawInk); };
     const initial = (n) => ((n || "?").trim()[0] || "?").toUpperCase();
     const items = shown.map((x) => h("div", { class: "cm" + (x.resolved ? " done" : "") + (c.editingId === x.id ? " editing" : ""), "data-id": x.id },
       h("span", { class: "av" + (x.mine ? "" : " client"), "aria-hidden": "true" }, initial(x.author || "You")),

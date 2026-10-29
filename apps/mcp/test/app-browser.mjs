@@ -196,7 +196,25 @@ check(Math.abs(t - afterKeys - 0.1) < 0.02, `the +0.1 s button steps on (${t.toF
 check((await app.locator(".tc").innerText()).startsWith(await frame().evaluate(() => { const x = Math.floor(document.querySelector("video").currentTime * 1000 + 1e-6); return "00:0" + Math.floor(x / 1000) + "." + String(x % 1000).padStart(3, "0"); })), `the time shows the exact moment (${await app.locator(".tc").innerText()})`);
 check(/^at 00:0\d\.\d{3}$/.test(await app.locator(".at").innerText()), `the new comment's moment follows the player (${await app.locator(".at").innerText()})`);
 check(/v2 has changes this preview \(v1\) does not show yet/.test(await app.locator("body").innerText()), "it says the latest version has no preview yet");
-check((await app.locator(".seek .mk").count()) === 1, "the client's comment is a dot on the seek bar");
+check((await app.locator(".seek .mk").count()) === 1, "the client's comment is a pin under the seek bar");
+// The seek bar is big enough to hold: a tall strip to press, dragged with the picture following.
+const sb = await app.locator(".seek .hit").boundingBox(), bar = await app.locator(".seek .bar").boundingBox();
+check(sb.height >= 36 && (await app.locator(".seek").boundingBox()).height >= 60, `the seek bar is a tall strip to grab (${Math.round((await app.locator(".seek").boundingBox()).height)} px, was 22)`);
+await page.mouse.move(bar.x + bar.width * 0.2, sb.y + 4); await page.mouse.down();
+for (let k = 1; k <= 10; k++) { await page.mouse.move(bar.x + bar.width * (0.2 + k * 0.04), sb.y + 30); await sleep(15); }
+check(await frame().evaluate(() => document.querySelector(".seek").classList.contains("drag") && /^00:0\d\.\d{3}$/.test(document.querySelector(".seek .tip").textContent)), "dragging shows the time under the finger");
+await page.mouse.up(); await sleep(300);
+const dragged = await frame().evaluate(() => document.querySelector("video").currentTime / document.querySelector("video").duration);
+check(Math.abs(dragged - 0.6) < 0.04, `dragging along it moves the player with it, even below the strip (${(dragged * 100).toFixed(1)}%)`);
+// The pin: its author's initial, pointing at its moment; pressing it goes there, paused, and shows the comment.
+const pin = app.locator(".seek .mk").first();
+check((await pin.innerText()) === "D" && await pin.evaluate((e) => e.classList.contains("client")), "the pin shows its author's initial (Dana, a client)");
+const pinX = await pin.evaluate((e) => { const r = e.getBoundingClientRect(), b = document.querySelector(".seek .bar").getBoundingClientRect(); return (r.left + r.width / 2 - b.left) / b.width; });
+const want = await frame().evaluate(() => 1.2 / document.querySelector("video").duration);
+check(Math.abs(pinX - want) < 0.01, `it sits under its moment (${(pinX * 100).toFixed(1)}% for ${(want * 100).toFixed(1)}%)`);
+await pin.click(); await sleep(400);
+check(await frame().evaluate(() => Math.abs(document.querySelector("video").currentTime - 1.2) < 0.05 && document.querySelector("video").paused && document.querySelector(".seek .mk.on") !== null), "pressing it goes to the comment's moment, paused");
+await frame().evaluate((x) => { document.querySelector("video").currentTime = x; }, t); await sleep(200); // back where the steps left it
 check((await hostLog()).filter((m) => m.method === "ui/notifications/size-changed").length === fsSizes, "full screen, the app does not resize the host's panel");
 // Back in the chat: the same order, the frame as tall as the app.
 await app.locator("button", { hasText: "Exit full screen" }).click(); await sleep(400);
@@ -206,12 +224,14 @@ check(await frame().evaluate(() => document.querySelector("video").currentTime >
 
 // 4. A comment at this moment: saved with the player's time, listed, marked, and the AI is told.
 await app.locator("textarea").click();
+check(!(await app.locator(".seek .pin.draft.show").count()), "no lime pin before anything is written");
 await app.locator("textarea").pressSequentially("Cut the pause before this line", { delay: 10 });
+check((await app.locator(".seek .pin.draft.show").count()) === 1, "the comment being written has a lime pin at its moment");
 await app.locator("textarea").press("Control+Enter");
 await app.locator(".cm", { hasText: "Cut the pause before this line" }).waitFor({ timeout: 5000 });
 const added = calls.find((c) => c.name === "app_add_comment");
 check(!!added && Math.abs(added.args.time - t) < 0.01 && added.args.projectId === "p1", `the comment is saved at the player's moment (${added?.args.time})`);
-check((await app.locator(".seek .mk").count()) === 2, "it gets a dot too");
+check((await app.locator(".seek .mk").count()) === 2, "it gets a pin too");
 check((await hostLog()).some((m) => m.method === "ui/update-model-context" && /Cut the pause before this line/.test(m.params.content[0].text)), "the AI's context hears about the new comment");
 check((await app.locator("textarea").inputValue()) === "", "the box is empty again");
 
