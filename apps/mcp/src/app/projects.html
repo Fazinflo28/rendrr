@@ -65,27 +65,46 @@ h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; }
 .more { margin: 12px auto 0; display: flex; }
 
 /* One project */
-.layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(250px, 1fr); gap: 14px; align-items: start; }
-@media (max-width: 680px) { .layout { grid-template-columns: 1fr; } }
+/* One edit, top to bottom: the player, the comments, the box to write one. Full screen it fills the host's panel:
+   the player on top, the comments scroll in the middle, the box stays at the bottom. */
+.pv { display: flex; flex-direction: column; gap: 10px; }
+.pv .side { display: flex; flex-direction: column; gap: 10px; }
+html.fs, html.fs body { height: 100%; }
+html.fs body { padding: 14px 18px; overflow: hidden; }
+html.fs #root { height: 100%; overflow: auto; }
+html.fs .pv { height: 100%; }
+html.fs .pv .side { flex: 1; min-height: 0; }
+html.fs .pv .side > .list, html.fs .pv .side > .empty { flex: 1; min-height: 0; max-height: none; }
+.pv .top { margin-bottom: 0; }
 .stage { background: #000; border-radius: var(--r-md); overflow: hidden; display: flex; justify-content: center; align-items: center; }
 /* Inline, the frame grows to fit the app, so sizes are fixed (vh would follow the frame and shrink it); full screen
    has the window's height. */
 .stage video { display: block; width: 100%; max-height: 480px; background: #000; }
 .stage.tall video { width: auto; max-width: 100%; height: 540px; max-height: none; }
-html.fs .stage video { max-height: calc(100vh - 230px); }
-html.fs .stage.tall video { height: calc(100vh - 230px); }
+/* Full screen the player gets what the panel can spare while the comments keep at least about 160 px. */
+html.fs .stage video { max-height: max(220px, min(62vh, calc(100vh - 560px))); }
+html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); }
 .noprev { color: #aaa; padding: 60px 16px; text-align: center; }
-.strip { position: relative; height: 18px; margin: 6px 2px 0; cursor: pointer; }
-.strip .bar { position: absolute; left: 0; right: 0; top: 8px; height: 2px; background: var(--line); border-radius: 2px; }
-.strip .head { position: absolute; top: 3px; width: 2px; height: 12px; background: var(--ink); border-radius: 1px; transform: translateX(-1px); pointer-events: none; }
-.strip .mk { position: absolute; top: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); transform: translateX(-5px); padding: 0; }
-.strip .mk.done { background: var(--faint); }
-.strip .mk.client { background: #6ea8ff; }
-.note { margin-top: 10px; padding: 9px 11px; border-radius: var(--r-sm); background: var(--panel); border: 1px solid var(--hair); font-size: 13px; }
+/* The player's own controls: the browser's show whole seconds, these show milliseconds (like the editor). The seek
+   bar carries the comments as dots. */
+.stage video { cursor: pointer; }
+.seek { position: relative; height: 22px; margin: -2px 7px 0; cursor: pointer; flex: none; touch-action: none; }
+.seek .bar { position: absolute; left: 0; right: 0; top: 9px; height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.seek .fill { height: 100%; width: 0; background: var(--accent); }
+.seek .head { position: absolute; top: 4px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 2px var(--bg); transform: translateX(-7px); pointer-events: none; }
+.seek .mk { position: absolute; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); transform: translateX(-5px); padding: 0; }
+.seek .mk.done { background: var(--faint); }
+.seek .mk.client { background: #6ea8ff; }
+.ctrl { display: flex; align-items: center; gap: 6px; flex: none; }
+.ibtn { width: 34px; height: 32px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--panel); display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.ibtn:hover { background: var(--surface); }
+.ibtn svg { width: 16px; height: 16px; fill: currentColor; }
+.tc { font-size: 14px; padding: 0 6px; }
+.step { font-size: 12px; padding: 5px 8px; }
+.note { padding: 9px 11px; border-radius: var(--r-sm); background: var(--panel); border: 1px solid var(--hair); font-size: 13px; }
 .note.err { color: var(--danger); }
 .prog { height: 4px; background: var(--surface); border-radius: 4px; overflow: hidden; margin-top: 7px; }
 .prog > div { height: 100%; background: var(--accent); transition: width .4s ease; }
-.side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .compose { border: 1px solid var(--line); background: var(--panel); border-radius: var(--r-md); padding: 8px; }
 .compose textarea { width: 100%; resize: vertical; min-height: 54px; max-height: 200px; border: 0; background: transparent; color: var(--ink); font: inherit; padding: 2px 4px; }
 .at { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); border: 0; }
@@ -93,7 +112,8 @@ html.fs .stage.tall video { height: calc(100vh - 230px); }
 .tab { border: 0; background: transparent; color: var(--muted); padding: 4px 8px; border-radius: var(--r-sm); font-size: 13px; }
 .tab.on { background: var(--panel); color: var(--ink); }
 .list { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; }
-html.fs .list { max-height: calc(100vh - 330px); }
+.btn.big { padding: 7px 13px; font-weight: 600; border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); }
+.btn.big:hover:not(:disabled) { background: var(--accent-soft); filter: brightness(1.1); }
 .cm { border: 1px solid var(--hair); background: var(--panel); border-radius: var(--r-md); padding: 8px 10px; display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: start; }
 .cm.done { opacity: .6; }
 .cm .t { font-size: 12px; padding: 1px 7px; border-radius: 999px; background: var(--surface); border: 0; }
@@ -167,12 +187,21 @@ html.fs .list { max-height: calc(100vh - 330px); }
     if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
     const vars = ctx.styles && ctx.styles.variables;
     if (vars) for (const k in vars) if (vars[k] != null) document.documentElement.style.setProperty(k, vars[k]);
-    if (ctx.displayMode) { document.documentElement.classList.toggle("fs", ctx.displayMode === "fullscreen"); if (state.view === "project") render(); }
+    if (ctx.displayMode) { document.documentElement.classList.toggle("fs", ctx.displayMode === "fullscreen"); lastH = 0; if (state.page || state.project) render(); }
   }
+
+  // Full screen is the host's own panel (like a media viewer): asked for when the user opens an edit, or with the button.
+  const canFullscreen = () => (host.ctx.availableDisplayModes || []).includes("fullscreen");
+  const isFullscreen = () => host.ctx.displayMode === "fullscreen";
+  const setDisplay = (mode) => request("ui/request-display-mode", { mode }).then((r) => { if (r && r.mode) applyContext({ displayMode: r.mode }); }).catch(() => {});
+  const fsButton = () => !canFullscreen() ? null : isFullscreen()
+    ? h("button", { class: "btn ghost", onClick: () => setDisplay("inline") }, "Exit full screen")
+    : h("button", { class: "btn big", title: "Open the player and comments full screen", onClick: () => setDisplay("fullscreen") }, "⤢ Full screen");
 
   // Tell the host how tall the app is, whenever that changes.
   let lastH = 0;
-  const sizeNow = () => { const h = Math.ceil(document.documentElement.getBoundingClientRect().height); if (Math.abs(h - lastH) > 1) { lastH = h; notify("ui/notifications/size-changed", { height: h }); } };
+  // Inline only: full screen, the host gives the app its whole panel.
+  const sizeNow = () => { if (host.ctx.displayMode === "fullscreen") return; const h = Math.ceil(document.documentElement.getBoundingClientRect().height); if (Math.abs(h - lastH) > 1) { lastH = h; notify("ui/notifications/size-changed", { height: h }); } };
   new ResizeObserver(sizeNow).observe(document.documentElement);
 
   // ---------------- state ----------------
@@ -186,7 +215,8 @@ html.fs .list { max-height: calc(100vh - 330px); }
     if (res.isError || !d) { state.err = ((res.content || [])[0] || {}).text || null; if (!state.page) loadList(); return; }
     state.page = { projects: d.projects || [], total: d.total || 0, offset: 0 };
     state.webUrl = d.webUrl || null;
-    if (d.open) showProject(d.open); else { state.view = "list"; render(); }
+    const again = !d.open && isFullscreen() ? remembered() : null;
+    if (d.open) showProject(d.open); else if (again) openProject(again); else { state.view = "list"; render(); }
   }
 
   async function loadList(more) {
@@ -211,7 +241,12 @@ html.fs .list { max-height: calc(100vh - 330px); }
     schedulePoll();
   }
 
+  // If the host starts the app again when it goes full screen, the edit the user just opened opens again.
+  const remember = (id) => { try { sessionStorage.setItem("rendrr-open", JSON.stringify({ id, at: Date.now() })); } catch {} };
+  const remembered = () => { try { const r = JSON.parse(sessionStorage.getItem("rendrr-open") || "null"); return r && Date.now() - r.at < 30000 ? r.id : null; } catch { return null; } };
+
   async function openProject(id) {
+    remember(id);
     state.view = "project"; state.project = null; state.pendingProject = id; render();
     try { const v = await callTool("app_get_project", { projectId: id }); if (v && state.pendingProject === id) showProject(v); }
     catch (e) { state.err = e.message; state.view = "list"; render(); }
@@ -276,7 +311,8 @@ html.fs .list { max-height: calc(100vh - 330px); }
     const top = h("div", { class: "row top" },
       h("span", { class: "brand" }, h("i"), "Rendrr"), h("h1", { class: "grow" }, "All projects", pg ? h("span", { class: "muted small", style: "font-weight:400;margin-left:8px" }, pg.total + (pg.total === 1 ? " edit" : " edits")) : null),
       search,
-      state.webUrl ? h("button", { class: "btn ghost", onClick: () => openLink(state.webUrl + "/projects") }, "Open Rendrr") : null);
+      state.webUrl ? h("button", { class: "btn ghost", onClick: () => openLink(state.webUrl + "/projects") }, "Open Rendrr") : null,
+      fsButton());
     if (!pg) return h("div", {}, top, state.err ? h("div", { class: "note err" }, state.err) : h("div", { class: "skel" }));
     const cards = pg.projects.map((p) => {
       const chips = [
@@ -284,7 +320,7 @@ html.fs .list { max-height: calc(100vh - 330px); }
         p.previewVersion ? h("span", { class: "chip ok" }, "Preview v" + p.previewVersion) : h("span", { class: "chip" }, "No preview"),
         p.openComments ? h("span", { class: "chip" }, p.openComments + (p.openComments === 1 ? " open comment" : " open comments")) : null,
       ];
-      return h("button", { class: "card", onClick: () => openProject(p.id), "aria-label": "Open " + p.name },
+      return h("button", { class: "card", onClick: () => { if (canFullscreen() && !isFullscreen()) setDisplay("fullscreen"); openProject(p.id); }, "aria-label": "Open " + p.name },
         h("div", { class: "thumb", style: p.thumb ? "background-image:url(\"" + encodeURI(p.thumb).replace(/"/g, "%22") + "\")" : "" },
           h("span", { class: "shape" }, p.aspect), p.seconds ? h("span", { class: "dur mono" }, fmtTime(p.seconds, false)) : null),
         h("div", { class: "body" }, h("div", { class: "name", title: p.name }, p.name), h("div", { class: "muted small" }, p.folder + " · v" + p.version + " · " + ago(p.updated)), h("div", { class: "chips" }, chips)));
@@ -300,11 +336,9 @@ html.fs .list { max-height: calc(100vh - 330px); }
     const back = h("button", { class: "btn ghost", onClick: () => { stopPolling(); state.view = "list"; state.project = null; state.pendingProject = null; player = null; render(); if (!state.page) loadList(); } }, "← All projects");
     if (!v) return h("div", {}, h("div", { class: "row top" }, back), h("div", { class: "skel" }));
     const p = v.project;
-    const canFs = (host.ctx.availableDisplayModes || []).includes("fullscreen");
-    const isFs = host.ctx.displayMode === "fullscreen";
     const top = h("div", { class: "row top" }, back,
       h("div", { class: "grow" }, h("h1", { title: p.name, style: "white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, p.name), h("div", { class: "muted small" }, [p.folder, "v" + p.version, p.status, p.aspect].filter(Boolean).join(" · "))),
-      canFs ? h("button", { class: "btn ghost", onClick: () => request("ui/request-display-mode", { mode: isFs ? "inline" : "fullscreen" }).then((r) => applyContext({ displayMode: r && r.mode })).catch(() => {}) }, isFs ? "Exit full screen" : "Full screen") : null,
+      fsButton(),
       p.editorUrl ? h("button", { class: "btn", onClick: () => openLink(p.editorUrl) }, "Open in Rendrr") : null);
 
     // The player: the latest preview, or a note while there is none.
@@ -313,17 +347,22 @@ html.fs .list { max-height: calc(100vh - 330px); }
     if (v.preview) {
       // The same preview keeps its player (and where it is); a new preview gets a new one and plays.
       if (!player || player.dataset.rid !== v.preview.renderId) {
-        player = h("video", { controls: true, playsinline: true, preload: "metadata", src: v.preview.url, "data-rid": v.preview.renderId });
-        player.addEventListener("timeupdate", () => { for (const fn of timeHooks) fn(player.currentTime); });
-        player.addEventListener("seeked", () => { for (const fn of timeHooks) fn(player.currentTime); });
-        if (fresh) { player.addEventListener("loadeddata", () => { player.play().catch(() => {}); }, { once: true }); setTimeout(() => toast("Preview v" + v.preview.version + " is ready."), 50); }
+        const vid = h("video", { playsinline: true, preload: "metadata", src: v.preview.url, "data-rid": v.preview.renderId, title: "Play or pause (space)" });
+        const emit = () => { for (const fn of timeHooks) fn(vid.currentTime); };
+        for (const ev of ["timeupdate", "seeked", "pause", "ended", "loadedmetadata", "volumechange"]) vid.addEventListener(ev, emit);
+        // While it plays, the timecode moves every frame (timeupdate alone is 4 times a second).
+        vid.addEventListener("play", () => { const tick = () => { emit(); if (!vid.paused && !vid.ended) requestAnimationFrame(tick); }; requestAnimationFrame(tick); });
+        vid.addEventListener("click", () => togglePlay());
+        if (fresh) { vid.addEventListener("loadeddata", () => { vid.play().catch(() => {}); }, { once: true }); setTimeout(() => toast("Preview v" + v.preview.version + " is ready."), 50); }
+        player = vid;
       }
       stage = h("div", { class: "stage" + (tall ? " tall" : "") }, player);
     } else {
       player = null;
       stage = h("div", { class: "stage" }, h("div", { class: "noprev" }, v.rendering ? "The first preview is rendering…" : "No preview yet."));
     }
-    const strip = stripView(v);
+    const strip = seekView(v);
+    const ctrl = controlsView(v);
 
     const notes = [];
     if (v.rendering) {
@@ -336,17 +375,62 @@ html.fs .list { max-height: calc(100vh - 330px); }
       notes.push(h("div", { class: "note row" }, h("span", { class: "grow" }, v.preview ? "v" + p.version + " has changes this preview (v" + v.preview.version + ") does not show yet." : "This edit has no preview yet."),
         h("button", { class: "btn", disabled: state.busy, onClick: renderPreview }, state.busy ? "Starting…" : "Render preview")));
     }
-    return h("div", {}, top, h("div", { class: "layout" }, h("div", {}, stage, strip, notes), commentsView(v)));
+    return h("div", { class: "pv" }, top, stage, strip, ctrl, notes, commentsView(v));
   }
 
-  function stripView(v) {
+  // The seek bar: drag or click to move, the comments as dots (click one to go to it).
+  function seekView(v) {
     const total = (v.preview && v.preview.seconds) || v.project.seconds || 0;
     if (!total) return null;
-    const head = h("div", { class: "head", style: "left:0%" });
+    const dur = () => (player && isFinite(player.duration) && player.duration > 0 ? player.duration : total);
+    const fill = h("div", { class: "fill" }), head = h("div", { class: "head", style: "left:0%" });
     const marks = v.comments.map((c) => h("button", { class: "mk" + (c.resolved ? " done" : "") + (c.mine ? "" : " client"), style: "left:" + Math.min(100, (c.time / total) * 100) + "%", title: fmtTime(c.time) + " · " + c.text.slice(0, 80), "aria-label": "Go to the comment at " + fmtTime(c.time), onClick: (e) => { e.stopPropagation(); seek(c.time); } }));
-    const el = h("div", { class: "strip", title: "Comments on this preview", onClick: (e) => { const r = el.getBoundingClientRect(); seek(((e.clientX - r.left) / r.width) * total); } }, h("div", { class: "bar" }), head, marks);
-    onTime((t) => { head.style.left = Math.min(100, (t / total) * 100) + "%"; });
+    const el = h("div", { class: "seek", title: "Comments on this preview" }, h("div", { class: "bar" }, fill), marks, head);
+    const at = (e) => { const r = el.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * dur(); };
+    el.addEventListener("pointerdown", (e) => {
+      if (e.target.classList.contains("mk")) return;
+      try { el.setPointerCapture(e.pointerId); } catch {}
+      seek(at(e));
+      const move = (ev) => seek(at(ev));
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", () => el.removeEventListener("pointermove", move), { once: true });
+    });
+    onTime((t) => { const pct = Math.min(100, (t / dur()) * 100) + "%"; fill.style.width = pct; head.style.left = pct; });
     return el;
+  }
+
+  const ICONS = {
+    play: '<svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z"/></svg>',
+    pause: '<svg viewBox="0 0 16 16"><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z"/></svg>',
+    sound: '<svg viewBox="0 0 16 16"><path d="M2 6h3l4-3.5v11L5 10H2z"/><path d="M11 5.2a3.6 3.6 0 0 1 0 5.6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+    muted: '<svg viewBox="0 0 16 16"><path d="M2 6h3l4-3.5v11L5 10H2z"/><path d="M11 6l4 4M15 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+  };
+  const icon = (name) => { const t = document.createElement("template"); t.innerHTML = ICONS[name]; return t.content.firstChild; };
+  function togglePlay() { if (player) player.paused ? player.play().catch(() => {}) : player.pause(); }
+  function step(d) { if (player) seek(Math.min(isFinite(player.duration) ? player.duration : Infinity, Math.max(0, player.currentTime + d))); }
+
+  // Play, the time in mm:ss.mmm, steps of 0.1 s for exact moments, sound on or off.
+  function controlsView(v) {
+    if (!player) return null;
+    const vid = player;
+    const playBtn = h("button", { class: "ibtn", "aria-label": "Play", title: "Play or pause (space)", onClick: togglePlay });
+    const tc = h("span", { class: "mono tc", "aria-live": "off" });
+    const muteBtn = h("button", { class: "ibtn", "aria-label": "Sound off", onClick: () => { vid.muted = !vid.muted; } });
+    let shown = "";
+    onTime((t) => {
+      const total = isFinite(vid.duration) && vid.duration > 0 ? vid.duration : v.preview.seconds || 0;
+      tc.textContent = fmtTime(t) + " / " + fmtTime(total);
+      const now = (vid.paused ? "play" : "pause") + (vid.muted ? "muted" : "sound");
+      if (now !== shown) {
+        shown = now;
+        playBtn.replaceChildren(icon(vid.paused ? "play" : "pause")); playBtn.setAttribute("aria-label", vid.paused ? "Play" : "Pause");
+        muteBtn.replaceChildren(icon(vid.muted ? "muted" : "sound")); muteBtn.setAttribute("aria-label", vid.muted ? "Sound on" : "Sound off");
+      }
+    });
+    return h("div", { class: "ctrl" }, playBtn, tc, h("span", { class: "grow" }),
+      h("button", { class: "btn ghost step", title: "Back 0.1 s (←; Shift ← 1 s)", onClick: () => step(-0.1) }, "−0.1 s"),
+      h("button", { class: "btn ghost step", title: "On 0.1 s (→; Shift → 1 s)", onClick: () => step(0.1) }, "+0.1 s"),
+      muteBtn);
   }
 
   function seek(t) {
@@ -394,7 +478,7 @@ html.fs .list { max-height: calc(100vh - 330px); }
       h("button", { class: "chk", title: c.resolved ? "Open again" : "Resolve", "aria-label": c.resolved ? "Open again" : "Resolve", onClick: () => resolve(v, c) }, c.resolved ? "✓" : ""),
       h("div", { class: "txt" }, c.text)));
     const list = items.length ? h("div", { class: "list", "data-key": "comments" }, items) : h("div", { class: "empty", style: "padding:18px" }, state.filter === "open" && v.comments.length ? "Every comment is resolved." : "No comments yet. Play the preview, pause where something should change, and write it here.");
-    return h("div", { class: "side" }, compose, tabs, list);
+    return h("div", { class: "side" }, tabs, list, compose);
   }
 
   async function resolve(v, c) {
@@ -419,7 +503,9 @@ html.fs .list { max-height: calc(100vh - 330px); }
 
   document.addEventListener("keydown", (e) => {
     if (e.target && /^(TEXTAREA|INPUT)$/.test(e.target.tagName)) return;
-    if (e.key === " " && player) { e.preventDefault(); player.paused ? player.play().catch(() => {}) : player.pause(); }
+    if (e.key === " " && e.target && e.target.tagName === "BUTTON") return; // the button's own click does it
+    if (e.key === " " && player) { e.preventDefault(); togglePlay(); }
+    else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && player) { e.preventDefault(); step((e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 1 : 0.1)); }
   });
 
   // ---------------- start ----------------

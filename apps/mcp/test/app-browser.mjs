@@ -90,8 +90,14 @@ window.addEventListener("message", async (e) => {
   }
   else if (m.method === "tools/call") { try { const d = await window.hostTool(m.params.name, m.params.arguments); reply({ content: [{ type: "text", text: "ok" }], structuredContent: d }); } catch (err) { reply({ content: [{ type: "text", text: String(err.message || err) }], isError: true }); } }
   else if (m.method === "ui/message" || m.method === "ui/open-link" || m.method === "ui/update-model-context") reply({});
-  else if (m.method === "ui/request-display-mode") reply({ mode: m.params.mode });
-  else if (m.method === "ui/notifications/size-changed") f.style.height = Math.min(1400, m.params.height) + "px";
+  // Full screen: a fixed panel, as a host gives it; inline: the frame follows the app's height.
+  else if (m.method === "ui/request-display-mode") {
+    window.fs = m.params.mode === "fullscreen";
+    f.style.width = window.fs ? "1200px" : "900px"; f.style.height = window.fs ? "1000px" : (window.inlineH || 600) + "px";
+    reply({ mode: m.params.mode });
+    f.contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { displayMode: m.params.mode } }, "*");
+  }
+  else if (m.method === "ui/notifications/size-changed") { window.inlineH = Math.min(1400, m.params.height); if (!window.fs) f.style.height = window.inlineH + "px"; }
 });
 f.srcdoc = ${JSON.stringify(doc).replace(/<\//g, "<\\/")};
 </script>`;
@@ -99,7 +105,7 @@ const host = createServer((_req, res) => { res.setHeader("content-type", "text/h
 await new Promise((r) => host.on("listening", r));
 
 const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome", args: ["--autoplay-policy=no-user-gesture-required"] }).catch(() => chromium.launch());
-const page = await browser.newPage({ viewport: { width: 940, height: 1100 } });
+const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
 const errors = [], violations = [];
 page.on("pageerror", (e) => errors.push(e.message));
 page.on("console", (m) => { if (/Content Security Policy|Refused to/i.test(m.text())) violations.push(m.text()); if (m.type() === "error") errors.push(m.text()); });
@@ -119,6 +125,7 @@ const thumbOk = await frame().evaluate(() => new Promise((r) => { const i = new 
 check(thumbOk, "thumbnails load from the storage origin");
 const sized = (await hostLog()).filter((m) => m.method === "ui/notifications/size-changed");
 check(sized.length >= 1 && sized[sized.length - 1].params.height > 200, `the app tells the host its height (${sized.map((s) => s.params.height).join(", ")})`);
+check((await app.locator(".btn.big", { hasText: "Full screen" }).count()) === 1, "the grid offers full screen");
 await page.screenshot({ path: join(dir, "app-list.png") });
 
 // 2. Search keeps the field focused while results come back.
@@ -127,22 +134,54 @@ check(calls.some((c) => c.name === "app_list_projects" && c.args.query === "knee
 check(await frame().evaluate(() => document.activeElement?.classList.contains("search") && document.activeElement.value === "knee"), "the search field keeps focus and text");
 await app.locator(".search").fill(""); await sleep(600);
 
-// 3. Open an edit: its preview plays, from the storage origin, under the policy.
+// 3. Open an edit: it opens full screen (the host's panel): the player on top, the comments in the middle, the box to
+// write one at the bottom. Its preview plays, from the storage origin, under the policy, with Rendrr's own controls
+// (the time in milliseconds, a seek bar with the comments on it, steps of 0.1 s).
 await app.locator(".card").first().click();
 await app.locator("video").waitFor({ timeout: 10000 });
+await sleep(300);
+check((await hostLog()).some((m) => m.method === "ui/request-display-mode" && m.params.mode === "fullscreen") && await frame().evaluate(() => document.documentElement.classList.contains("fs")), "opening an edit asks the host for full screen");
+const boxes = () => frame().evaluate(() => {
+  const r = (q) => document.querySelector(q).getBoundingClientRect();
+  const v = r(".stage"), l = r(".side > .list, .side > .empty"), c = r(".compose");
+  return { vh: document.querySelector("video").getBoundingClientRect().height, listH: l.height, order: v.bottom <= l.top && l.bottom <= c.top, gapBelow: Math.round(innerHeight - c.bottom), h: innerHeight, fs: document.documentElement.classList.contains("fs") };
+});
+const fsBox = await boxes();
+check(fsBox.order && fsBox.gapBelow <= 30 && fsBox.vh >= 400 && fsBox.listH >= 140, `full screen: the player on top (${Math.round(fsBox.vh)} of ${fsBox.h} px), the comments in the middle (${Math.round(fsBox.listH)} px), the box at the bottom (${fsBox.gapBelow} px from the edge)`);
+const fsSizes = (await hostLog()).filter((m) => m.method === "ui/notifications/size-changed").length;
 check(calls.some((c) => c.name === "app_get_project" && c.args.projectId === "p1"), "opening an edit asks Rendrr for it");
 await frame().waitForFunction(() => document.querySelector("video").readyState >= 2, null, { timeout: 10000 }).catch(() => {});
 check(await frame().evaluate(() => document.querySelector("video").readyState >= 2), "the preview loads in the player");
-await frame().evaluate(() => document.querySelector("video").play());
+check(await frame().evaluate(() => !document.querySelector("video").controls), "the player has Rendrr's controls, not the browser's (they show whole seconds)");
+await app.locator(".ctrl .ibtn").first().click();
 await frame().waitForFunction(() => document.querySelector("video").currentTime > 1.6, null, { timeout: 10000 }).catch(() => {});
-await frame().evaluate(() => document.querySelector("video").pause());
+const tcPlaying = await app.locator(".tc").innerText();
+check(/^00:0[1-9]\.\d{3} \/ 00:08\.\d{3}$/.test(tcPlaying) && await frame().evaluate(() => !document.querySelector("video").paused), `the play button plays; the time shows milliseconds (${tcPlaying})`);
+await page.screenshot({ path: join(dir, "app-fullscreen.png") });
+await app.locator(".ctrl .ibtn").first().click(); await sleep(150);
+check(await frame().evaluate(() => document.querySelector("video").paused), "and pauses");
+const seekW = await app.locator(".seek").evaluate((e) => e.getBoundingClientRect().width);
+await app.locator(".seek").click({ position: { x: seekW * 0.75, y: 11 } }); await sleep(250);
+const afterSeek = await frame().evaluate(() => document.querySelector("video").currentTime);
+check(Math.abs(afterSeek - 6) < 0.25, `the seek bar moves the player (to ${afterSeek.toFixed(3)} s)`);
+await app.locator("h1").click();
+await page.keyboard.press("ArrowLeft"); await sleep(150);
+await page.keyboard.press("Shift+ArrowLeft"); await sleep(150);
+const afterKeys = await frame().evaluate(() => document.querySelector("video").currentTime);
+check(Math.abs(afterSeek - 1.1 - afterKeys) < 0.02, `arrow keys step 0.1 s, with Shift 1 s (${afterSeek.toFixed(3)} to ${afterKeys.toFixed(3)})`);
+await app.locator(".ctrl .step", { hasText: "+0.1" }).click(); await sleep(150);
 const t = await frame().evaluate(() => document.querySelector("video").currentTime);
-check(t > 1.6, `the preview plays (at ${t.toFixed(2)} s)`);
+check(Math.abs(t - afterKeys - 0.1) < 0.02, `the +0.1 s button steps on (${t.toFixed(3)})`);
+check((await app.locator(".tc").innerText()).startsWith(await frame().evaluate(() => { const x = Math.floor(document.querySelector("video").currentTime * 1000 + 1e-6); return "00:0" + Math.floor(x / 1000) + "." + String(x % 1000).padStart(3, "0"); })), `the time shows the exact moment (${await app.locator(".tc").innerText()})`);
 check(/^at 00:0\d\.\d{3}$/.test(await app.locator(".at").innerText()), `the new comment's moment follows the player (${await app.locator(".at").innerText()})`);
 check(/v2 has changes this preview \(v1\) does not show yet/.test(await app.locator("body").innerText()), "it says the latest version has no preview yet");
-check((await app.locator(".strip .mk").count()) === 1, "the client's comment is a marker under the player");
-const ph = await frame().evaluate(() => document.querySelector("video").getBoundingClientRect().height);
-check(ph >= 500, `a tall preview gets a tall player inline (${Math.round(ph)} px; the frame grows to fit, so no vh)`);
+check((await app.locator(".seek .mk").count()) === 1, "the client's comment is a dot on the seek bar");
+check((await hostLog()).filter((m) => m.method === "ui/notifications/size-changed").length === fsSizes, "full screen, the app does not resize the host's panel");
+// Back in the chat: the same order, the frame as tall as the app.
+await app.locator("button", { hasText: "Exit full screen" }).click(); await sleep(400);
+const inBox = await boxes();
+check(!inBox.fs && inBox.order && inBox.vh >= 500, `in the chat: the same order, a tall player (${Math.round(inBox.vh)} px; the frame grows to fit, so no vh)`);
+check(await frame().evaluate(() => document.querySelector("video").currentTime > 1.6), "the player keeps its place when the view changes");
 
 // 4. A comment at this moment: saved with the player's time, listed, marked, and the AI is told.
 await app.locator("textarea").click();
@@ -151,7 +190,7 @@ await app.locator("textarea").press("Control+Enter");
 await app.locator(".cm", { hasText: "Cut the pause before this line" }).waitFor({ timeout: 5000 });
 const added = calls.find((c) => c.name === "app_add_comment");
 check(!!added && Math.abs(added.args.time - t) < 0.01 && added.args.projectId === "p1", `the comment is saved at the player's moment (${added?.args.time})`);
-check((await app.locator(".strip .mk").count()) === 2, "it gets a marker too");
+check((await app.locator(".seek .mk").count()) === 2, "it gets a dot too");
 check((await hostLog()).some((m) => m.method === "ui/update-model-context" && /Cut the pause before this line/.test(m.params.content[0].text)), "the AI's context hears about the new comment");
 check((await app.locator("textarea").inputValue()) === "", "the box is empty again");
 
@@ -185,7 +224,7 @@ await frame().waitForFunction(() => { const v = document.querySelector("video");
 check(await frame().evaluate(() => { const v = document.querySelector("video"); return !v.paused && v.currentTime > 0.3; }), "and plays on its own");
 check(!/has changes this preview/.test(await app.locator("body").innerText()), "the note about missing changes is gone");
 
-// 8. Full screen, Open in Rendrr, back to every edit.
+// 8. Full screen with the button, Open in Rendrr, back to every edit.
 await app.locator("button", { hasText: "Full screen" }).click(); await sleep(200);
 check((await hostLog()).some((m) => m.method === "ui/request-display-mode" && m.params.mode === "fullscreen") && await frame().evaluate(() => document.documentElement.classList.contains("fs")), "full screen asks the host and lays out for it");
 await app.locator("button", { hasText: "Open in Rendrr" }).click(); await sleep(200);
@@ -202,7 +241,7 @@ await page.screenshot({ path: join(dir, "app-dark.png") });
 
 check(violations.length === 0, `nothing blocked by the content security policy${violations.length ? ": " + violations.join(" | ") : ""}`);
 check(errors.length === 0, `no errors${errors.length ? ": " + errors.join(" | ") : ""}`);
-console.log(`screenshots: ${join(dir, "app-list.png")} ${join(dir, "app-project.png")} ${join(dir, "app-dark.png")}`);
+console.log(`screenshots: ${join(dir, "app-list.png")} ${join(dir, "app-fullscreen.png")} ${join(dir, "app-project.png")} ${join(dir, "app-dark.png")}`);
 await browser.close(); host.close(); media.close();
 if (fails.length) { console.log(`\n${fails.length} failed`); process.exit(1); }
 console.log("\nall passed");
