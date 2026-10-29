@@ -116,12 +116,20 @@ describe("the graph", () => {
     expect(g(off)).not.toMatch(/afade=t=in:d=0\.020000/);
   });
   it("the cleanup presets are their numbers; hand-set values change the chain; null goes back to the preset", () => {
-    expect(CLEANUP_CHAINS).toEqual({
+    expect(CLEANUP_CHAINS).toMatchObject({
       none: "",
       light: "highpass=f=80,acompressor=threshold=-20dB:ratio=2:attack=10:release=150",
       voice: "highpass=f=80,afftdn=nr=10:nf=-40:tn=1,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1:g=3,deesser=i=0.4,acompressor=threshold=-18dB:ratio=3:attack=8:release=120",
       noisy: "highpass=f=100,afftdn=nr=20:nf=-35:tn=1,agate=threshold=0.01:ratio=2:attack=5:release=200,equalizer=f=3500:t=q:w=1:g=3,deesser=i=0.5,acompressor=threshold=-18dB:ratio=4:attack=5:release=100",
     });
+    // The voice presets (Premiere's Essential Sound ones): each its own chain.
+    expect(CLEANUP_CHAINS.podcast).toBe("highpass=f=90,afftdn=nr=8:nf=-42:tn=1,equalizer=f=250:t=q:w=1:g=-3,equalizer=f=4000:t=q:w=1:g=5,treble=g=3:f=10000:t=q:w=0.7,deesser=i=0.5,acompressor=threshold=-22dB:ratio=4:attack=5:release=100");
+    expect(CLEANUP_CHAINS.phone).toBe("highpass=f=400,lowpass=f=3400,equalizer=f=1500:t=q:w=1:g=6,acompressor=threshold=-20dB:ratio=4:attack=5:release=100");
+    expect(CLEANUP_CHAINS.warm).toMatch(/^highpass=f=70,equalizer=f=180:t=q:w=0.9:g=3,equalizer=f=3500:t=q:w=1:g=1.5,treble=g=-2:/);
+    expect(new Set(Object.values(CLEANUP_CHAINS)).size).toBe(Object.keys(CLEANUP_CHAINS).length); // no two the same
+    const pod = edit(snap(), { op: "set_audio", cleanup: "podcast" });
+    expect(pod.summary).toMatch(/cleanup podcast/);
+    expect(ffmpegArgs(plan(pod.snap), files(plan(pod.snap)), source, { loudnessGainDb: 0 }).filterGraph).toContain(CLEANUP_CHAINS.podcast);
     const r = edit(snap(), { op: "set_audio", cleanup: "voice", denoise: 15, presence: 5, highpass: 0 });
     expect(r.summary).toMatch(/cleanup voice, no high-pass, denoise 15 dB, presence \+5 dB/);
     const g = ffmpegArgs(plan(r.snap), files(plan(r.snap)), source, { loudnessGainDb: 0 }).filterGraph;

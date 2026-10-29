@@ -19,26 +19,54 @@ export const DECLICK = 0.02;
  * so no make-up gain here.
  */
 export type CleanupParams = {
-  /** High-pass cut-off in Hz (0 = off): removes rumble. */
-  highpass: number;
+  /** High-pass cut-off in Hz (0 = off): removes rumble. Low-pass in Hz (0 = off): phone and radio voices. */
+  highpass: number; lowpass: number;
   /** Noise reduction in dB (0 = off), and the noise floor it assumes (dBFS). */
   denoise: number; noiseFloor: number;
-  /** A soft gate between words (noisy rooms). */
+  /** A soft gate between words (noisy rooms, roomy voices). */
   gate: boolean;
-  /** dB at 250 Hz (mud) and at 3.5 kHz (presence, the 3-5 kHz lift). */
-  mud: number; presence: number;
+  /** dB at 180 Hz (warmth), at 250 Hz (mud), at presenceHz (presence, the 1.5-5 kHz lift; default 3.5 kHz) and a high
+   *  shelf from 10 kHz (air). */
+  warmth: number; mud: number; presence: number; presenceHz: number; air: number;
   /** De-esser intensity 0-1 (0 = off). */
   deess: number;
   /** Compression ratio (1 = off), threshold (dBFS), attack and release (ms). */
   compress: number; threshold: number; attack: number; release: number;
 };
-const OFF: CleanupParams = { highpass: 0, denoise: 0, noiseFloor: -40, gate: false, mud: 0, presence: 0, deess: 0, compress: 1, threshold: -18, attack: 8, release: 120 };
+const OFF: CleanupParams = { highpass: 0, lowpass: 0, denoise: 0, noiseFloor: -40, gate: false, warmth: 0, mud: 0, presence: 0, presenceHz: 3500, air: 0, deess: 0, compress: 1, threshold: -18, attack: 8, release: 120 };
+/** Each preset as numbers. The voice presets follow Premiere's Essential Sound ones (Balanced Voice, Podcast Voice,
+ *  Dry Up a Roomy Voice, Phone Call, Radio Announcer, ...) with FFmpeg's filters. */
 export const CLEANUP_PRESETS: Record<Cleanup, CleanupParams> = {
   none: OFF,
   light: { ...OFF, highpass: 80, compress: 2, threshold: -20, attack: 10, release: 150 },
   voice: { ...OFF, highpass: 80, denoise: 10, noiseFloor: -40, mud: -2, presence: 3, deess: 0.4, compress: 3, threshold: -18, attack: 8, release: 120 },
   noisy: { ...OFF, highpass: 100, denoise: 20, noiseFloor: -35, gate: true, presence: 3, deess: 0.5, compress: 4, threshold: -18, attack: 5, release: 100 },
+  balanced: { ...OFF, highpass: 80, mud: -2, presence: 3, presenceHz: 3000, air: 2, deess: 0.3, compress: 3, threshold: -20, attack: 8, release: 120 },
+  podcast: { ...OFF, highpass: 90, denoise: 8, noiseFloor: -42, mud: -3, presence: 5, presenceHz: 4000, air: 3, deess: 0.5, compress: 4, threshold: -22, attack: 5, release: 100 },
+  roomy: { ...OFF, highpass: 100, denoise: 14, noiseFloor: -38, gate: true, mud: -6, presence: 2, deess: 0.3, compress: 2.5, threshold: -20, attack: 8, release: 120 },
+  warm: { ...OFF, highpass: 70, warmth: 3, presence: 1.5, air: -2, deess: 0.3, compress: 3, threshold: -20, attack: 10, release: 150 },
+  bright: { ...OFF, highpass: 90, mud: -2, presence: 4, air: 5, deess: 0.5, compress: 3, threshold: -20, attack: 8, release: 120 },
+  radio: { ...OFF, highpass: 150, mud: -4, presence: 6, presenceHz: 2500, air: -4, deess: 0.5, compress: 6, threshold: -24, attack: 4, release: 90 },
+  phone: { ...OFF, highpass: 400, lowpass: 3400, presence: 6, presenceHz: 1500, compress: 4, threshold: -20, attack: 5, release: 100 },
+  soft: { ...OFF, highpass: 80, presence: -4, presenceHz: 3200, air: -2, deess: 0.6, compress: 2, threshold: -20, attack: 10, release: 150 },
+  punchy: { ...OFF, highpass: 90, mud: -2, presence: 4, air: 2, deess: 0.4, compress: 6, threshold: -26, attack: 3, release: 80 },
 };
+/** The presets as the editor and the AI see them: a name and what it does. */
+export const VOICE_PRESETS: { id: Cleanup; name: string; what: string }[] = [
+  { id: "none", name: "Off", what: "the voice as recorded" },
+  { id: "light", name: "Light touch", what: "rumble out, gentle compression" },
+  { id: "balanced", name: "Balanced voice", what: "even and clear: less mud, a little presence and air" },
+  { id: "podcast", name: "Podcast voice", what: "close and present: light denoise, presence lift, air, de-esser, firm compression" },
+  { id: "voice", name: "Clean voice", what: "light denoise, de-esser, presence, compression" },
+  { id: "noisy", name: "Clean up noisy dialogue", what: "strong denoise and a gate between words" },
+  { id: "roomy", name: "Dry up a roomy voice", what: "less room: denoise, a gate between words, mud cut" },
+  { id: "warm", name: "Warm voice", what: "fuller lows, softer highs" },
+  { id: "bright", name: "Bright and crisp", what: "more presence and air, de-essed" },
+  { id: "soft", name: "Soften a harsh voice", what: "harsh 3 kHz down, strong de-esser" },
+  { id: "punchy", name: "Loud and punchy", what: "heavy compression for social video" },
+  { id: "radio", name: "Radio announcer", what: "thin lows, forward mids, heavy compression" },
+  { id: "phone", name: "Phone call", what: "a voice through a phone (300-3400 Hz)" },
+];
 /** The values set_audio can change by hand, on top of the preset. */
 export const CLEANUP_KNOBS = ["highpass", "denoise", "presence", "deess", "compress"] as const;
 export type CleanupKnob = (typeof CLEANUP_KNOBS)[number];
@@ -53,22 +81,20 @@ export function cleanupParams(a: { cleanup: Cleanup } & Partial<Record<CleanupKn
 export function cleanupChain(p: CleanupParams): string {
   const f: string[] = [];
   if (p.highpass > 0) f.push(`highpass=f=${p.highpass}`);
+  if (p.lowpass > 0) f.push(`lowpass=f=${p.lowpass}`);
   if (p.denoise > 0) f.push(`afftdn=nr=${p.denoise}:nf=${p.noiseFloor}:tn=1`);
   if (p.gate) f.push("agate=threshold=0.01:ratio=2:attack=5:release=200");
+  if (p.warmth) f.push(`equalizer=f=180:t=q:w=0.9:g=${p.warmth}`);
   if (p.mud) f.push(`equalizer=f=250:t=q:w=1:g=${p.mud}`);
-  if (p.presence) f.push(`equalizer=f=3500:t=q:w=1:g=${p.presence}`);
+  if (p.presence) f.push(`equalizer=f=${p.presenceHz}:t=q:w=1:g=${p.presence}`);
+  if (p.air) f.push(`treble=g=${p.air}:f=10000:t=q:w=0.7`);
   if (p.deess > 0) f.push(`deesser=i=${p.deess}`);
   if (p.compress > 1) f.push(`acompressor=threshold=${p.threshold}dB:ratio=${p.compress}:attack=${p.attack}:release=${p.release}`);
   return f.join(",");
 }
 /** The preset chains (what each preset alone does). */
 export const CLEANUP_CHAINS: Record<Cleanup, string> = Object.fromEntries(Object.entries(CLEANUP_PRESETS).map(([k, p]) => [k, cleanupChain(p)])) as Record<Cleanup, string>;
-export const CLEANUP_TEXT: Record<Cleanup, string> = {
-  none: "none",
-  light: "light (high-pass, gentle compression)",
-  voice: "voice (high-pass, light denoise, de-esser, presence, compression)",
-  noisy: "noisy room (high-pass, strong denoise, gate, de-esser, compression)",
-};
+export const CLEANUP_TEXT: Record<Cleanup, string> = Object.fromEntries(VOICE_PRESETS.map((v) => [v.id, v.id === "none" ? "none" : `${v.id} (${v.what})`])) as Record<Cleanup, string>;
 
 /** "voice (high-pass, ...)" or, with hand-set values, "voice, denoise 15 dB, presence +4 dB"; "none" when nothing runs. */
 export function cleanupText(a: { cleanup: Cleanup } & Partial<Record<CleanupKnob, number | undefined>>): string {

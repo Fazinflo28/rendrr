@@ -93,8 +93,9 @@ export type Rotation = z.infer<typeof RotationSchema>;
 export const FramingSchema = z.object({ scale: z.number().min(0.25).max(4), x: z.number().min(-1).max(1), y: z.number().min(-1).max(1) });
 export type Framing = z.infer<typeof FramingSchema>;
 
-/** Dialogue cleanup presets (see audio.ts CLEANUP_PRESETS); set_audio can change their main numbers by hand. */
-export const CLEANUPS = ["none", "light", "voice", "noisy"] as const;
+/** Dialogue cleanup and voice presets, like Premiere's Essential Sound (see audio.ts CLEANUP_PRESETS); set_audio can
+ *  change their main numbers by hand. */
+export const CLEANUPS = ["none", "light", "voice", "noisy", "balanced", "podcast", "roomy", "warm", "bright", "radio", "phone", "soft", "punchy"] as const;
 export type Cleanup = (typeof CLEANUPS)[number];
 /**
  * The edit's sound. Left out = the defaults: no cleanup, loudness -14 LUFS with a -1 dBTP ceiling, music 12 dB down

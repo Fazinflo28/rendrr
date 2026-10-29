@@ -41,7 +41,7 @@ export function ExportModal({ snap, video, doOp, onRender, onClose }) {
       ${hdrFootage && row("HDR", html`<${Seg} id="export-hdr" value=${ex.hdr || "keep"} options=${[["keep", "Keep HDR"], ["sdr", "Convert to SDR"]]} onPick=${(v) => doOp({ op: "set_export", hdr: v })} />`)}
       <p class="t-small muted" id="export-summary">${exportSummary(snap, video)}</p>
       <p class="t-small muted">${(ex.resolution === "4k" || ex.codec === "hevc") ? "4K and HEVC take longer to render; the window shows the time left." : "Frame rate: the final keeps your footage's. Previews are 30 fps."}</p>
-      <div class="row"><${Btn} icon="film" id="export-render" onClick=${onRender}>Render final<//><${Btn} kind="ghost" onClick=${onClose}>Cancel<//></div>
+      <div class="row"><${Btn} icon="film" id="export-render" onClick=${onRender}>Export final<//><${Btn} kind="ghost" onClick=${onClose}>Cancel<//></div>
     </div>
   <//>`;
 }

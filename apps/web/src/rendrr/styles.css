@@ -266,9 +266,10 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .player .cap.outline { background: transparent; text-shadow: 0 2px 0 #000, 0 0 12px rgba(0,0,0,.9); font-size: 24px; }
 .player .zoomed .scene, .player .zoomed .subject, .player .zoomed .head { transform-origin: 50% 40%; }
 .player .big { position: absolute; inset: 0; display: grid; place-items: center; }
-.player .big button { width: 72px; height: 72px; border-radius: 50%; background: rgba(255,255,255,.9); color: #0a0a0a; display: grid; place-items: center; transition: transform .15s var(--ease); }
-.player .big button:hover { transform: scale(1.06); }
-.player .big svg { width: 28px; height: 28px; }
+/* The big play: just the triangle, white with a soft shadow so it reads on any picture. */
+.player .big button { width: 88px; height: 88px; background: none; color: #fff; display: grid; place-items: center; filter: drop-shadow(0 2px 10px rgba(0,0,0,.55)); opacity: .92; transition: transform .15s var(--ease), opacity .15s var(--ease); }
+.player .big button:hover { transform: scale(1.08); opacity: 1; }
+.player .big svg { width: 56px; height: 56px; }
 .player .tc { position: absolute; left: 14px; top: 12px; font-size: 12px; color: rgba(255,255,255,.8); background: rgba(0,0,0,.45); padding: 2px 10px; border-radius: var(--pill); }
 .controls { display: flex; align-items: center; gap: var(--s3); height: 44px; padding: 0 var(--s2) 0 var(--s2); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-card); width: 100%; flex: none; }
 .pwrap.fit .controls { width: 100%; max-width: 100%; }

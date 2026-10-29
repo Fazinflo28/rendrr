@@ -932,8 +932,8 @@ function EditorInner({ project, reload, ai, keep }) {
       <span class="t-small muted" id="saved" title=${saved} style="display:inline-flex;align-items:center;gap:4px;opacity:.7">${saved === "Saved" ? "" : saved}</span>
       <div class="grow" />
       <span class="t-small muted" id="auto-preview" title=${fresh ? "The player plays the rendered preview file of this version." : "The player plays the edit as it will render: every clip and video in order, J/L cuts, captions, zooms, b-roll, graphics, music and sound effects at their levels. Dialogue cleanup and loudness are heard in the rendered preview."}>${fresh ? `Playing the rendered preview (V${project.version})` : "Live edit"}</span>
-      ${!fresh && html`<${Btn} kind="ghost" size="sm" id="render-preview" icon="play" disabled=${saved !== "Saved" || !plan} onClick=${() => startRender("preview")}>Render preview<//>`}
-      <${Btn} kind="secondary" size="sm" id="render-final" icon="film" onClick=${() => setExportOpen(true)}>Render final<//>
+      ${!fresh && html`<${Btn} kind="ghost" size="sm" id="render-preview" icon="play" disabled=${saved !== "Saved" || !plan} onClick=${() => startRender("preview")}>Export preview<//>`}
+      <${Btn} kind="secondary" size="sm" id="render-final" icon="film" onClick=${() => setExportOpen(true)}>Export final<//>
       <${Btn} size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share for review<//>
     </div>
 
@@ -1045,7 +1045,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
     </div>
 
-    ${render && html`<${Modal} title=${render.kind === "preview" ? "Rendering preview" : "Rendering final"} sub=${render.status === "running" && render.kind === "preview" ? "540p, everything burned in." : render.status === "running" ? (project.video?.source === "drive" ? `Full quality${render.progress.quality ? ` (${render.progress.quality})` : ""}. We fetch the raw file from your Drive, then delete it.` : `Full quality${render.progress.quality ? ` (${render.progress.quality})` : ""}. This one takes a little longer.`) : null} onClose=${render.status !== "running" ? () => setRender(null) : undefined}>
+    ${render && html`<${Modal} title=${render.kind === "preview" ? "Exporting preview" : "Exporting final"} sub=${render.status === "running" && render.kind === "preview" ? "540p, everything burned in." : render.status === "running" ? (project.video?.source === "drive" ? `Full quality${render.progress.quality ? ` (${render.progress.quality})` : ""}. We fetch the raw file from your Drive, then delete it.` : `Full quality${render.progress.quality ? ` (${render.progress.quality})` : ""}. This one takes a little longer.`) : null} onClose=${render.status !== "running" ? () => setRender(null) : undefined}>
       ${render.status === "running" && html`<div class="col" style="gap:16px"><div class="bar big"><i style=${{ width: render.progress.percent + "%" }} /></div><div class="row between"><span class="t-small muted" id="render-step">${render.progress.steps[render.progress.step] || "Starting…"}</span><span class="t-small mono muted"><span id="render-eta">${timeLeft(render.progress.etaSec)}</span> · ${render.progress.percent}%</span></div>
         <div class="steps">${render.progress.steps.map((s, i) => html`<div key=${s} class=${"step" + (i < render.progress.step ? " done" : i === render.progress.step ? " now" : "")}><span class="ck">${i < render.progress.step && html`<${Icon} name="check" />`}</span>${s}</div>`)}</div></div>`}
       ${render.status === "done" && html`<div class="state" style="padding:24px 0;box-shadow:none;background:none"><div class="ico"><${Icon} name="check" /></div><h3 class="t-heading" id="render-done">Final is ready</h3><p id="render-note">${render.result.note + " · " + (render.result.quality || "1080p") + " · " + render.result.size}</p>
