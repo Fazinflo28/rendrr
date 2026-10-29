@@ -244,6 +244,8 @@ export const api: any = {
     return r;
   },
   restoreVersion: (projectId: string, v: number) => post(`/projects/${enc(projectId)}/versions/${v}/restore`),
+  /** Auto reframe: where the speaker's face is in these clips (shares of the picture as turned), null where none. */
+  speakerCentres: (projectId: string, clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number }[]) => post(`/projects/${enc(projectId)}/speaker`, { clips }) as Promise<{ centers: Record<string, { x: number; y: number } | null> }>,
   /** Live changes to a project (AI edits). Returns a function that stops listening. */
   watchProject: (projectId: string, onChange: (msg: any) => void) => {
     const ctl = new AbortController();

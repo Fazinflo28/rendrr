@@ -6,7 +6,7 @@ import { AppError, enqueue, headObject, newRedis, notFound, signGet, type Snapsh
 import { prisma } from "@rendrr/db";
 import {
   CAPTION_FONTS, faceOnScreenAt, GRAPHIC_FONT_ALIASES, GRAPHIC_FONTS, LIBRARY_ITEMS, LIBRARY_KINDS, libraryItem, libraryLine, libraryParams, libraryParamsText, PREFIX, QUEUES, templateHtml,
-  type EditOp, type LibraryItem, type SeqClip, type VisionSummary,
+  type Aspect, type EditOp, type LibraryItem, type SeqClip, type VisionSummary,
 } from "@rendrr/shared";
 import { outputSize } from "@rendrr/shared/renderPlan";
 import { QueueEvents } from "bullmq";
@@ -169,7 +169,7 @@ type Box = [number, number, number, number];
 async function faceIn(userId: string, projectId: string, a: number, b: number) {
   const scope = await markScope(userId, { projectId });
   const p = await getOwnedProject(userId, projectId);
-  const { width: W, height: H } = outputSize(p.aspect as "16:9" | "9:16" | "1:1", "preview");
+  const { width: W, height: H } = outputSize(p.aspect as Aspect, "preview");
   const view = scope.view!, tl = scope.timeline!;
   const clips = new Map((tl.tracks.v1 as SeqClip[]).map((c) => [c.id, c]));
   const ids = Array.from(new Set(view.pieces.map((x) => x.videoId)));

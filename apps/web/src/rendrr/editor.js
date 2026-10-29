@@ -2,7 +2,7 @@
 // Ported from ui/rendrr-ui.html (editor script). Changes: real footage in the player, live reload when an AI
 // edits, autosave conflicts, real undo/restore, the rendered preview plays in the player, real downloads.
 // Phase 2: the edit is a sequence (clips of any video, in any order, J/L cuts) with Premiere's tools.
-import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, turnedVideoStyle, Art, useNav, useApp } from "./ui";
+import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, turnedVideoStyle, fitVideoStyle, Art, useNav, useApp } from "./ui";
 
 // Web addresses in a comment as links (they open in a new tab); the rest stays text.
 function linkified(text) {
@@ -25,7 +25,7 @@ import { ExportModal, timeLeft } from "./export";
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
-import { VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { ASPECT_RATIO, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -334,14 +334,19 @@ const repaint = (el) => { if (el.paused) { try { el.currentTime = el.currentTime
 // Phase 6: with `gl` (the clip, or another part of this video, has a look) the picture is drawn through the look canvas
 // with the render's numbers; the <video> stays as the clock, hidden. `look` null there draws it plain.
 function Footage({ id, url, rotate, framing, motion, aspect, refFn, on = true, gl = false, look = null, plan = null, luts, card = null }) {
-  const turn = turnedVideoStyle(rotate || 0, aspect);
   const vEl = useRef(null); const [noGl, setNoGl] = useState(false);
+  // Reframed (the framing's focus): the fit cuts around that point, which needs the video's own size.
+  const [nat, setNat] = useState(null);
+  const focus = framing?.focus || null, side = rotate === 90 || rotate === 270;
+  const crop = focus && nat ? fitCrop(focus, side ? nat[1] : nat[0], side ? nat[0] : nat[1], ASPECT_RATIO[aspect] || 16 / 9, 1) : null;
+  const sized = (el) => { if (el?.videoWidth && (!nat || nat[0] !== el.videoWidth || nat[1] !== el.videoHeight)) setNat([el.videoWidth, el.videoHeight]); };
   const drawn = gl && !!plan && !noGl;
   // A card: its shadow under it, its border over it (crop and corners are in its look's mask).
   const layer = (x) => x && plan?.lookFiles?.[x.file] && html`<${CardLayer} spec=${plan.lookFiles[x.file]} color=${x.color} W=${plan.width} H=${plan.height} />`;
-  return html`<div style=${{ position: "absolute", inset: 0, ...motionCss(motion) }}>${layer(card?.shadow)}<div style=${{ position: "absolute", inset: 0, transform: framing ? `translate(${framing.x * 100}%, ${framing.y * 100}%) scale(${framing.scale})` : "none" }}>
-    <video ref=${(el) => { vEl.current = el; refFn?.(el); }} data-on=${on ? "1" : "0"} data-video=${id} src=${url} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ objectFit: "cover", background: drawn ? "transparent" : "#000", ...(turn || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: "50% 40%" }), ...(drawn ? { opacity: 0 } : {}) }} />
-    ${drawn && html`<${LookCanvas} videoRef=${vEl} look=${look} W=${plan.width} H=${plan.height} rotate=${rotate || 0} fitY=${0.4} luts=${luts} onFail=${() => setNoGl(true)} />`}
+  const moved = framing && (framing.scale !== 1 || framing.x || framing.y);
+  return html`<div style=${{ position: "absolute", inset: 0, ...motionCss(motion) }}>${layer(card?.shadow)}<div style=${{ position: "absolute", inset: 0, transform: moved ? `translate(${framing.x * 100}%, ${framing.y * 100}%) scale(${framing.scale})` : "none" }}>
+    <video ref=${(el) => { vEl.current = el; refFn?.(el); if (focus) sized(el); }} onLoadedMetadata=${(e) => focus && sized(e.currentTarget)} data-on=${on ? "1" : "0"} data-video=${id} src=${url} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ objectFit: "cover", background: drawn ? "transparent" : "#000", ...fitVideoStyle(rotate || 0, aspect, crop), ...(drawn ? { opacity: 0 } : {}) }} />
+    ${drawn && html`<${LookCanvas} videoRef=${vEl} look=${look} W=${plan.width} H=${plan.height} rotate=${rotate || 0} fitY=${0.4} focus=${focus} luts=${luts} onFail=${() => setNoGl(true)} />`}
   </div>${layer(card?.border)}</div>`;
 }
 function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, broll = {}, luts }) {
@@ -706,7 +711,7 @@ function EditorInner({ project, reload, ai, keep }) {
     if (colorMode === "path") { setPathDraft((d) => [...d, pt]); return; }
     if (colorMode !== "pick" || !colorClip || !plan) return;
     const el = colorClip.sourceVideoId ? document.querySelector(`video[data-video="${colorClip.sourceVideoId}"][data-on="1"]`) : media.broll[colorClip.videoId] && document.querySelector(`video[src="${media.broll[colorClip.videoId].url}"]`);
-    let c = null; try { c = el && pickColor(el, plan.width, plan.height, colorClip.rotate || 0, colorClip.sourceVideoId ? 0.4 : 0.5, pt[0], pt[1]); } catch (e) { toast("Could not read the picture here: " + e.message); }
+    let c = null; try { c = el && pickColor(el, plan.width, plan.height, colorClip.rotate || 0, colorClip.sourceVideoId ? 0.4 : 0.5, pt[0], pt[1], colorClip.sourceVideoId ? colorClip.framing?.focus : null); } catch (e) { toast("Could not read the picture here: " + e.message); }
     if (c) { doOp({ op: "set_key", clipId: colorClip.id, color: c }); setColorMode(null); }
   };
   const toggleMute = () => selV1 && doOp({ op: "set_audio_offset", clipId: selV1.id, muted: !selV1.audioMuted });
@@ -718,6 +723,20 @@ function EditorInner({ project, reload, ai, keep }) {
   const sideways = Object.entries(project.sideways || {}).map(([vid, turn]) => ({ vid, turn, clips: S.tracks.v1.filter((c) => (c.sourceVideoId || main) === vid && (c.rotate || 0) !== turn) })).filter((x) => x.clips.length);
   const lookClip = selV1 || lay.tracks.v1.find((c) => c.sourceVideoId === main) || null;
   const rotNow = lookClip?.rotate || 0; const frNow = lookClip?.framing || { scale: 1, x: 0, y: 0 };
+  // Auto reframe: the speaker's face in each clip (from the faces Rendrr measured), kept in the frame's shape.
+  const [reframing, setReframing] = useState(false);
+  const reframeFace = async () => {
+    const ids = lookIds || S.tracks.v1.filter((c) => (c.sourceVideoId || main) === main).map((c) => c.id);
+    const clips = S.tracks.v1.filter((c) => ids.includes(c.id)).map((c) => ({ id: c.id, videoId: c.sourceVideoId || main, srcIn: c.sourceIn, srcOut: c.freeze ? c.sourceIn + 0.04 : c.sourceOut, rotate: c.rotate || 0 }));
+    if (!clips.length) return;
+    setReframing(true);
+    try {
+      const { centers } = await api.speakerCentres(project.id, clips);
+      const found = Object.values(centers).filter(Boolean).length;
+      if (!found) toast("No face found here yet. Rendrr measures faces when a video comes in; try again once it is ready.");
+      else { doOp({ op: "set_framing", focus: "face", centers, clipIds: ids }); if (found < clips.length) toast(`Reframed ${found} of ${clips.length} clips: no face in the others.`); }
+    } catch (e) { toast(e.message); } finally { setReframing(false); }
+  };
   const onDelete = () => { const ids = selWords(); if (ids.length) { cutWords(ids); setWsel(null); } else if (sel) removeSel(); };
   const fit = () => setZoom(Math.max(ZMIN, Math.min(ZMAX, Math.floor(((canvasRef.current?.parentElement?.clientWidth || 900) - 40) / Math.max(1, dur)))));
   // Clips of other videos: their preview copies, so they play here at once. Several go in one after another, from the
@@ -974,7 +993,10 @@ function EditorInner({ project, reload, ai, keep }) {
           <button class="tool icon" id="add-clip" data-tip="Add videos to the sequence" aria-label="Add videos" onClick=${() => setAddOpen(true)}><${Icon} name="plus" size="16" /></button>
           <button class="tool icon" id="rotate" data-tip=${"Turn " + (selV1 ? "this clip" : "the footage") + " 90° clockwise" + (rotNow ? " (now " + rotNow + "°)" : "")} aria-label="Rotate" onClick=${() => doOp({ op: "set_rotation", degrees: (rotNow + 90) % 360, clipIds: lookIds })}><${Icon} name="refresh" size="16" /></button>
           <span style="position:relative"><button class="tool icon" id="frame-btn" data-tip=${"Position and scale of " + (selV1 ? "this clip" : "the footage")} aria-label="Frame" onClick=${() => setFrameOpen((o) => !o)}><${Icon} name="image" size="16" /></button>
-            ${frameOpen && html`<div class="menu" id="frame-pop" style="left:0;right:auto;top:36px;min-width:240px;padding:12px;display:grid;gap:8px"><span class="t-small muted">${selV1 ? "This clip" : "Every clip of the footage"}</span>${[["scale", "Scale", 0.5, 2, 0.01], ["x", "Left / right", -0.5, 0.5, 0.01], ["y", "Up / down", -0.5, 0.5, 0.01]].map(([k, l, lo, hi, st]) => html`<label key=${k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${frNow[k]}</span><input type="range" data-frame=${k} min=${lo} max=${hi} step=${st} value=${frNow[k]} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => liveOp(H.state, { op: "set_framing", [k]: +e.target.value, clipIds: lookIds })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}<${Btn} kind="ghost" size="xs" onClick=${() => doOp({ op: "set_framing", scale: 1, x: 0, y: 0, clipIds: lookIds }, false)}>Reset<//></div>`}</span>
+            ${frameOpen && html`<div class="menu" id="frame-pop" style="left:0;right:auto;top:36px;min-width:240px;padding:12px;display:grid;gap:8px"><span class="t-small muted">${selV1 ? "This clip" : "Every clip of the footage"}</span>${[["scale", "Scale", 0.5, 2, 0.01], ["x", "Left / right", -0.5, 0.5, 0.01], ["y", "Up / down", -0.5, 0.5, 0.01]].map(([k, l, lo, hi, st]) => html`<label key=${k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${frNow[k]}</span><input type="range" data-frame=${k} min=${lo} max=${hi} step=${st} value=${frNow[k]} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => liveOp(H.state, { op: "set_framing", [k]: +e.target.value, clipIds: lookIds })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}<${Btn} kind="ghost" size="xs" onClick=${() => doOp({ op: "set_framing", scale: 1, x: 0, y: 0, focus: null, clipIds: lookIds }, false)}>Reset<//>
+              <span class="t-small muted" style="margin-top:6px">Reframe: what the ${S.aspect} frame keeps of the footage</span>
+              <${Btn} kind="secondary" size="xs" icon="spark" id="reframe-face" disabled=${reframing} onClick=${reframeFace}>${reframing ? "Finding the speaker…" : "Follow the speaker"}<//>
+              ${[["x", "Pan across", 0.5], ["y", "Pan up / down", 0.4]].map(([k, l, d]) => html`<label key=${"f" + k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${frNow.focus ? frNow.focus[k] : "middle"}</span><input type="range" data-focus=${k} min="0" max="1" step="0.01" value=${frNow.focus ? frNow.focus[k] : d} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => liveOp(H.state, { op: "set_framing", focus: { x: frNow.focus?.x ?? 0.5, y: frNow.focus?.y ?? 0.4, [k]: +e.target.value }, clipIds: lookIds })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}</div>`}</span>
           <button class="tool icon" id="delete-clip" data-tip="Delete the selected clip (⌫)" aria-label="Delete" disabled=${!sel} onClick=${removeSel}><${Icon} name="trash" size="16" /></button>
           ${selV1 && html`<button class="tool icon" id="mute-clip" data-tip=${selV1.audioMuted ? "Bring this clip's dialogue back" : "Silence this clip's dialogue"} aria-label=${selV1.audioMuted ? "Unmute" : "Mute"} onClick=${toggleMute}><${Icon} name="mic" size="16" /></button>`}
           ${selClip && html`<span class="t-small muted ell" style="margin-left:6px;max-width:220px">${selClip.label}</span>`}

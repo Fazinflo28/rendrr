@@ -84,7 +84,7 @@ async function colorSamples(ctx: Ctx, cs: ColorSampleJob): Promise<ColorSamples>
     const v = videos.find((x) => x.id === c.videoId);
     if (!v?.proxyKey) throw new JobError(`The preview copy of a video in this edit is gone${v ? ` ("${v.name}")` : ""}. Rebuild it from your Library, then match again.`, "expired", false);
     const url = await signGet(v.proxyKey, 600);
-    const rgb = await rgbFrames(url, c.srcIn, c.srcOut, { w, h, rotate: c.rotate, fitY: c.fitY, n: 4, dir: ctx.dir, signal: ctx.signal });
+    const rgb = await rgbFrames(url, c.srcIn, c.srcOut, { w, h, rotate: c.rotate, fitY: c.fitY, focus: c.focus, n: 4, dir: ctx.dir, signal: ctx.signal });
     if (!rgb.length) throw new JobError(`Could not read frames of clip ${c.id}.`, "frames", false);
     out[c.id] = { w, h, rgb: rgb.toString("base64") };
   }
@@ -101,7 +101,7 @@ async function faceSamples(ctx: Ctx, fj: FaceJob): Promise<FaceSamples> {
   for (const c of clips) {
     const v = videos.find((x) => x.id === c.videoId);
     if (!v?.proxyKey) throw new JobError(`The preview copy of a video in this edit is gone${v ? ` ("${v.name}")` : ""}. Rebuild it from your Library, then try again.`, "expired", false);
-    const rgb = await rgbFrames(await signGet(v.proxyKey, 600), c.srcIn, c.srcOut, { w: fj.w, h: fj.h, rotate: c.rotate, fitY: c.fitY, n: 3, dir: ctx.dir, signal: ctx.signal });
+    const rgb = await rgbFrames(await signGet(v.proxyKey, 600), c.srcIn, c.srcOut, { w: fj.w, h: fj.h, rotate: c.rotate, fitY: c.fitY, focus: c.focus, n: 3, dir: ctx.dir, signal: ctx.signal });
     frames.push(rgb); counts.push(rgb.length / size);
   }
   const boxes = await detectFaces(Buffer.concat(frames), fj.w, fj.h, ctx.dir, ctx.signal);

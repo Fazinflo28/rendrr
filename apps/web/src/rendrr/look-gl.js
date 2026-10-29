@@ -18,13 +18,14 @@ vec2 fboUV(vec2 q) { return vec2(q.x / size.x, 1.0 - q.y / size.y); }
 vec2 picUV(vec2 q) { return q / size; }
 `;
 const FS = {
-  // The video turned and fitted like the render's fit: scale to cover, crop centred across and fitY down.
-  fit: `uniform sampler2D src; uniform vec2 vsize; uniform int rot; uniform float fitY;
+  // The video turned and fitted like the render's fit: scale to cover, crop at fit (shares of the spare width and
+  // height: centred across and fitY down, or around the framing's focus, fitCrop).
+  fit: `uniform sampler2D src; uniform vec2 vsize; uniform int rot; uniform vec2 fit;
 void main() {
   vec2 q = img();
   vec2 t = (rot == 90 || rot == 270) ? vec2(vsize.y, vsize.x) : vsize;
   float s = max(size.x / t.x, size.y / t.y);
-  vec2 off = vec2((t.x * s - size.x) * 0.5, (t.y * s - size.y) * fitY);
+  vec2 off = vec2((t.x * s - size.x) * fit.x, (t.y * s - size.y) * fit.y);
   vec2 u = (q + off) / s;
   vec2 v = rot == 90 ? vec2(u.y, vsize.y - u.x) : rot == 270 ? vec2(vsize.x - u.y, u.x) : rot == 180 ? vsize - u : u;
   o = vec4(texture(src, v / vsize).rgb, 1.0);
@@ -164,7 +165,7 @@ export function createLookRenderer(canvas) {
 
   return {
     /**
-     * Draws the video's current frame. spec: { W, H, rotate, fitY, lut: {id, n, data} | null, key: {rgb, sim, blend,
+     * Draws the video's current frame. spec: { W, H, rotate, fitY, focus (a framing's, fitCrop), lut: {id, n, data} | null, key: {rgb, sim, blend,
      * spill, blue} | null, mask: {key, px} | null, effects: [{type, px, amount, area: {key, px} | null}] }.
      */
     draw(video, spec) {
@@ -176,7 +177,9 @@ export function createLookRenderer(canvas) {
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
       gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-      use("fit", { vsize: [video.videoWidth || W, video.videoHeight || H], rot: spec.rotate || 0, fitY: spec.fitY ?? 0.4 }, [["src", src]]);
+      const vw = video.videoWidth || W, vh = video.videoHeight || H, side = spec.rotate === 90 || spec.rotate === 270;
+      const crop = spec.focus ? fitCrop(spec.focus, side ? vh : vw, side ? vw : vh, W, H) : { cx: 0.5, cy: spec.fitY ?? 0.4 };
+      use("fit", { vsize: [vw, vh], rot: spec.rotate || 0, fit: [crop.cx, crop.cy] }, [["src", src]]);
       run(fit);
       if (spec.lut && spec.lut.id !== lutId) {
         gl.bindTexture(gl.TEXTURE_3D, lut3);

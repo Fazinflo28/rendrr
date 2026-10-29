@@ -14,6 +14,6 @@ export function orientationOf(width: number, height: number): "Landscape" | "Por
   if (r < 0.9) return "Portrait";
   return "Square";
 }
-export function aspectFor(orientation: string): "16:9" | "9:16" | "1:1" {
+export function aspectFor(orientation: string): "16:9" | "9:16" | "1:1" { // a new edit takes the footage's own shape
   return orientation === "Portrait" ? "9:16" : orientation === "Square" ? "1:1" : "16:9";
 }

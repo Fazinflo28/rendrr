@@ -4,7 +4,7 @@
 import { html, Btn, Modal } from "./ui";
 import { outputRate, outputSize, rateText } from "@rendrr/shared/renderPlan";
 
-const SHAPES = [["9:16", "9:16"], ["16:9", "16:9"], ["1:1", "1:1"]];
+const SHAPES = [["9:16", "9:16"], ["16:9", "16:9"], ["1:1", "1:1"], ["4:5", "4:5"]];
 const SIZES = [["720p", "720p"], ["1080p", "1080p"], ["4k", "4K"]];
 const CODECS = [["h264", "H.264"], ["hevc", "HEVC"]];
 

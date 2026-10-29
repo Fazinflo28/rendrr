@@ -6,17 +6,17 @@ import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
-  MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
+  ASPECT_RATIO, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
-import { createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
+import { copyProject, createFolder, createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
-import { lutsFor, withMeasurements } from "./services/color";
+import { lutsFor, speakerCentres, withMeasurements } from "./services/color";
 import { allMarks, inRange, markScope, retakesOf } from "./services/marks";
 import { audioFramesOf, deepOf, visionDetailsOf } from "./services/deep";
 import { waveformPng } from "./services/waveform";
@@ -202,6 +202,70 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   const flags = (await checkOf(projectId, r.version, null, null).catch(() => "")).split("\n").find((l) => l.startsWith("Flags:"));
   return { text: `${refText ? refText + "\n" : ""}Done (v${r.version}, ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s): ${r.summary}.${flags ? `\nEdit check (nothing rendered): ${flags}${flags === "Flags: none" ? "" : " (check_edit lists where)"}.` : ""}`, data: { version: r.version } };
 }
+
+type Stretch = { from: number; to: number; videoId?: string };
+type V1Row = { id: string; sourceVideoId?: string; sourceIn: number; sourceOut: number; freeze?: number; rotate?: 0 | 90 | 180 | 270; framing?: { scale: number; x: number; y: number; focus?: { x: number; y: number } }; grade?: unknown; effects?: { area?: unknown }[] };
+
+/** Stretches of footage checked before anything is made: each in its video (the user's, ready), at least 0.1 s long. */
+async function checkStretches(userId: string, mainId: string, mainSeconds: number, clips: Stretch[], what = "Stretch"): Promise<void> {
+  const others = new Map<string, number>();
+  for (const vid of new Set(clips.map((c) => c.videoId).filter((v): v is string => !!v && v !== mainId))) {
+    const v = await ownedVideo(userId, vid);
+    if (v.status !== "ready" || !v.analysis) throw new AppError(`"${v.name}" is not ready yet. Wait until it finishes processing.`, 409, "not-ready");
+    others.set(vid, v.seconds);
+  }
+  clips.forEach((c, k) => {
+    const len = !c.videoId || c.videoId === mainId ? mainSeconds : others.get(c.videoId)!;
+    if (c.to <= c.from + 0.1) throw new AppError(`${what} ${k + 1} (${fmtClock(c.from)}-${fmtClock(c.to)}) ends before it starts: from and to are seconds in the original footage, to after from.`, 400, "invalid-input");
+    if (c.from >= len - 0.05 || c.to > len + 0.05) throw new AppError(`${what} ${k + 1} (${fmtClock(c.from)}-${fmtClock(c.to)}) runs past the end of the footage (${fmtClock(len)}).`, 400, "invalid-input");
+  });
+}
+
+/**
+ * The edits that start an edit (create_project clips/reframe, create_shorts): V1 made of the stretches in order, each
+ * carrying the look of the first edit's clip it comes from (turn, grade, whole-picture effects); the shape; reframed on
+ * the speaker where the footage's shape is not the frame's (from the faces measured at 10 fps); captions.
+ */
+async function startEdits(p: { videoId: string; aspect: string; timeline: unknown }, o: { clips?: Stretch[]; aspect?: Aspect; reframe?: boolean; captions?: CaptionLook | "off" }): Promise<{ edits: EditOp[]; reframed: number; of: number; seconds: number }> {
+  const tl = p.timeline as Timeline, main = p.videoId;
+  const seq = tl.tracks.v1 as unknown as V1Row[];
+  const aspect = (o.aspect ?? p.aspect) as Aspect;
+  const edits: EditOp[] = [];
+  if (aspect !== p.aspect) edits.push({ op: "set_aspect", aspect } as EditOp);
+  const tag = Math.random().toString(36).slice(2, 6);
+  const rows: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: 0 | 90 | 180 | 270; fresh?: Record<string, unknown> }[] = o.clips?.length
+    ? o.clips.map((c, k) => {
+      const vid = c.videoId || main;
+      const near = seq.find((x) => (x.sourceVideoId || main) === vid && x.sourceIn <= c.from + 1e-3 && c.from < x.sourceOut) ?? seq.find((x) => (x.sourceVideoId || main) === vid);
+      const fx = (near?.effects ?? []).filter((e) => !e.area);
+      const rotate = near?.rotate ?? 0;
+      return { id: `sc${tag}${k + 1}`, videoId: vid, srcIn: c.from, srcOut: c.to, rotate, fresh: { start: c.from, end: c.to, ...(vid !== main ? { videoId: vid } : {}), ...(rotate ? { rotate } : {}), ...(near?.grade ? { grade: near.grade } : {}), ...(fx.length ? { effects: fx } : {}) } };
+    })
+    : seq.map((x) => ({ id: x.id, videoId: x.sourceVideoId || main, srcIn: x.sourceIn, srcOut: x.freeze ? x.sourceIn + 0.04 : x.sourceOut, rotate: x.rotate ?? 0 }));
+  // Reframe only where the footage (as turned) is another shape than the frame.
+  let centers: Record<string, { x: number; y: number } | null> = {};
+  if (o.reframe) {
+    const vids = await prisma.video.findMany({ where: { id: { in: Array.from(new Set(rows.map((r) => r.videoId))) } }, select: { id: true, width: true, height: true } });
+    const dims = new Map(vids.map((v) => [v.id, [v.width || 0, v.height || 0]]));
+    const other = rows.filter((r) => {
+      const [w, h] = dims.get(r.videoId) ?? [0, 0];
+      const side = r.rotate === 90 || r.rotate === 270;
+      return w > 0 && h > 0 && Math.abs(Math.log((side ? h / w : w / h) / ASPECT_RATIO[aspect])) > 0.05;
+    });
+    if (other.length) centers = await speakerCentres(other);
+  }
+  const reframed = Object.values(centers).filter(Boolean).length;
+  if (o.clips?.length) {
+    edits.push({ op: "set_clips", track: "v1", clips: rows.map((r) => ({ id: r.id, ...r.fresh, ...(centers[r.id] ? { framing: { scale: 1, x: 0, y: 0, focus: centers[r.id] } } : {}) })) } as unknown as EditOp);
+  } else if (reframed) {
+    edits.push({ op: "set_framing", focus: "face", centers, clipIds: Object.keys(centers).filter((id) => centers[id]) } as EditOp);
+  }
+  if (o.captions === "off") edits.push({ op: "set_captions", on: false } as EditOp);
+  else if (o.captions) edits.push({ op: "set_captions", on: true, look: o.captions } as EditOp);
+  const seconds = o.clips?.reduce((a, c) => a + c.to - c.from, 0) ?? 0;
+  return { edits, reframed, of: Object.keys(centers).length, seconds };
+}
+const flagsOf = (text: string) => text.match(/Edit check \(nothing rendered\): (Flags: [^\n]*)/)?.[1] ?? "";
 
 /** The longest a tool call waits for a job: clients drop calls after about a minute (some sooner), so a longer
  *  recording or render answers with its id and is polled (get_graphic, get_render). */
@@ -634,9 +698,36 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   // ---------------- write ----------------
+  async create_folder(c, i) {
+    const f = await createFolder(c.userId, i.name);
+    return { text: `Created folder "${f.name}" (${f.id}). Put edits in it with folderId on create_project or create_shorts.`, data: { folderId: f.id } };
+  },
+
   async create_project(c, i) {
-    if (!i.videoId && !i.videoIds?.length) throw new AppError("Send videoId, or videoIds for several videos in order.", 400, "invalid-input");
-    const p = await createProject(c.userId, i, { actorKind: c.ai === "chatgpt" ? "chatgpt" : "claude" });
+    const actor = { actorKind: c.ai === "chatgpt" ? "chatgpt" as const : "claude" as const };
+    if (i.fromProjectId) {
+      if (i.videoId || i.videoIds?.length) throw new AppError("Send fromProjectId (a copy of an edit) or videoId / videoIds (a new edit from footage), not both.", 400, "invalid-input");
+      const src = await getOwnedProject(c.userId, i.fromProjectId);
+      if (i.clips?.length) { const v = await ownedVideo(c.userId, src.videoId); await checkStretches(c.userId, v.id, v.seconds, i.clips, "Clip"); }
+      const p = await copyProject(c.userId, src.id, { name: i.name, folderId: i.folderId, bare: !!i.clips?.length }, actor);
+      const st = await startEdits(p, { clips: i.clips, aspect: i.aspect, reframe: i.reframe });
+      const r = st.edits.length ? await applyEdits(c, p.id, st.edits, i.aspect && i.aspect !== src.aspect ? `A ${i.aspect} version of "${src.name}".` : undefined, { projectId: p.id }) : null;
+      const what = i.clips?.length ? `its look (grade, sound, captions, cut words) on ${i.clips.length} ${i.clips.length === 1 ? "stretch" : "stretches"} of footage` : "every change kept";
+      return { text: `Created edit "${p.name}" (${p.id}): a copy of "${src.name}" v${src.currentVersion}, ${what}. ${r ? r.text : `${p.aspect}.`} The first edit is untouched. Next: apply_edits.`, data: { projectId: p.id } };
+    }
+    if (!i.videoId && !i.videoIds?.length) throw new AppError("Send videoId, or videoIds for several videos in order (or fromProjectId to copy an edit).", 400, "invalid-input");
+    if (i.clips?.length) {
+      const v = await ownedVideo(c.userId, i.videoId || i.videoIds[0]);
+      await checkStretches(c.userId, v.id, v.seconds, i.clips, "Clip");
+    }
+    const p = await createProject(c.userId, i, actor);
+    if (i.clips?.length || i.reframe) {
+      const st = await startEdits(p, { clips: i.clips, reframe: i.reframe });
+      if (st.edits.length) {
+        const r = await applyEdits(c, p.id, st.edits, undefined, { projectId: p.id });
+        return { text: `Created edit "${p.name}" (${p.id}), ${p.aspect}${i.clips?.length ? `, made of ${i.clips.length} ${i.clips.length === 1 ? "stretch" : "stretches"} of footage (${st.seconds.toFixed(1)}s)` : ""}${st.of ? `, reframed on the speaker in ${st.reframed} of ${st.of} clips` : ""}. ${r.text} Next: apply_edits.`, data: { projectId: p.id } };
+      }
+    }
     const ref = referenceLine(p.reference as ReferenceRef | null);
     const parts = i.videoIds?.length > 1 ? (p.timeline as unknown as Timeline).tracks.v1 as { id: string; sourceVideoId?: string; sourceIn?: number; sourceOut?: number }[] : [];
     const more = parts.filter((x) => x.sourceVideoId !== p.videoId);
@@ -649,6 +740,41 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: `Created edit "${p.name}" (${p.id}), v1 = ${what} (nothing cut, captions off, no style), ${p.aspect}.${ref ? " " + ref : ""}${sideways} Next: apply_edits.`, data: { projectId: p.id } };
   },
   apply_edits: async (c, i) => applyEdits(c, i.projectId, parseEdits(i.edits || []), i.note, i),
+
+  async create_shorts(c, i) {
+    if (!i.videoId === !i.fromProjectId) throw new AppError("Send videoId (the long video) or fromProjectId (an edit of it, whose look the shorts take): one of them.", 400, "invalid-input");
+    const actor = { actorKind: c.ai === "chatgpt" ? "chatgpt" as const : "claude" as const };
+    const src = i.fromProjectId ? await getOwnedProject(c.userId, i.fromProjectId) : null;
+    const video = await ownedVideo(c.userId, src?.videoId ?? i.videoId);
+    if (!src && (video.status !== "ready" || !video.analysis)) throw new AppError(`"${video.name}" is not ready yet. Wait until it finishes processing.`, 409, "not-ready");
+    // Every stretch is checked before anything is made.
+    for (const [k, sh] of (i.shorts as { name?: string; clips: Stretch[] }[]).entries()) await checkStretches(c.userId, video.id, video.seconds, sh.clips, `Short ${k + 1}, stretch`);
+    const folder = i.folderName ? await createFolder(c.userId, i.folderName) : null;
+    const folderId: string | null = folder?.id ?? i.folderId ?? src?.folderId ?? null;
+    const aspect = (i.aspect ?? "9:16") as Aspect;
+    const base = (src?.name ?? video.name).replace(/\s+edit$/i, "");
+    const lines: string[] = [], ids: string[] = [];
+    for (const [k, sh] of (i.shorts as { name?: string; clips: Stretch[] }[]).entries()) {
+      const name = sh.name?.trim() || `${base} short ${k + 1}`;
+      const p = src ? await copyProject(c.userId, src.id, { name, folderId, bare: true }, actor) : await createProject(c.userId, { videoId: video.id, name, folderId, aspect }, actor);
+      try {
+        const st = await startEdits(p, { clips: sh.clips, aspect, reframe: i.reframe !== false, captions: i.captions ?? (src ? undefined : "bold") });
+        const r = await applyEdits(c, p.id, st.edits, `Short ${k + 1} of ${i.shorts.length}: ${sh.clips.map((x) => `${fmtClock(x.from)}-${fmtClock(x.to)}`).join(", ")} of the footage.`, { projectId: p.id });
+        ids.push(p.id);
+        lines.push(`${k + 1}. "${name}" (${p.id}): ${st.seconds.toFixed(1)}s from ${sh.clips.map((x) => `${fmtClock(x.from)}-${fmtClock(x.to)}`).join(", ")}${st.of ? `, reframed on the speaker in ${st.reframed} of ${st.of} ${st.of === 1 ? "clip" : "clips"}` : ""}${st.seconds > 180 ? " (over 3 minutes: long for a short)" : ""}. ${flagsOf(r.text) || ""}`.trim());
+      } catch (e) {
+        // A short that cannot be made is taken back; the others stay.
+        await prisma.project.update({ where: { id: p.id }, data: { deletedAt: new Date() } });
+        lines.push(`${k + 1}. "${name}": not made: ${(e as Error).message}`);
+      }
+    }
+    const f = folderId ? await prisma.folder.findUnique({ where: { id: folderId }, select: { name: true } }) : null;
+    return {
+      text: [`Made ${ids.length} of ${i.shorts.length} shorts, ${aspect}${i.reframe === false ? "" : ", reframed on the speaker"}${src ? `, with the look of "${src.name}"` : ""}${f ? `, in folder "${f.name}"${folder ? " (new)" : ""}` : ""}:`, ...lines,
+        "Next: polish each with apply_edits (tight cuts inside: fillers, pauses, false starts), check_edit, then render_preview once each. open_projects shows them to the user."].join("\n"),
+      data: { projectIds: ids, folderId },
+    };
+  },
 
   async save_style(c, i) {
     let base = PLAIN_RULES;

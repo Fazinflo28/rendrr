@@ -15,8 +15,18 @@ export const BUSY_STATUSES: VideoStatus[] = ["linking", "preview", "previewing",
 export const PROJECT_STATUSES = ["Draft", "Rendering", "Preview ready", "In review", "Changes requested", "Approved", "Final ready"] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
-export const ASPECTS = ["16:9", "9:16", "1:1"] as const;
+export const ASPECTS = ["16:9", "9:16", "1:1", "4:5"] as const;
 export type Aspect = (typeof ASPECTS)[number];
+/** Width over height of each shape (4:5 is Instagram's tall feed post). */
+export const ASPECT_RATIO: Record<Aspect, number> = { "16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1, "4:5": 4 / 5 };
+/** The shape's name for people. */
+export const ASPECT_NAME: Record<Aspect, string> = { "16:9": "Horizontal", "9:16": "Vertical", "1:1": "Square", "4:5": "Portrait" };
+const evenPx = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+/** A frame of this shape whose short side is `short` pixels (even sizes, as encoders want). */
+export function aspectSize(aspect: string, short: number): { width: number; height: number } {
+  const r = ASPECT_RATIO[aspect as Aspect] ?? 16 / 9;
+  return r >= 1 ? { width: evenPx(short * r), height: evenPx(short) } : { width: evenPx(short), height: evenPx(short / r) };
+}
 export const CAPTION_LOOKS = ["clean", "bold", "outline"] as const;
 export type CaptionLook = (typeof CAPTION_LOOKS)[number];
 

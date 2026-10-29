@@ -90,8 +90,23 @@ export const RotationSchema = z.union([z.literal(0), z.literal(90), z.literal(18
 export type Rotation = z.infer<typeof RotationSchema>;
 /** Position and scale of the footage in the frame (after the fit): scale 1 = fills it; x, y = offset as a share of
  *  the frame's width and height (0.3 = moved down by 30% of the height). Uncovered parts are black. */
-export const FramingSchema = z.object({ scale: z.number().min(0.25).max(4), x: z.number().min(-1).max(1), y: z.number().min(-1).max(1) });
+/** Where the fit cuts the footage when its shape is not the frame's (reframing, like Premiere's Auto Reframe): the point
+ *  of the footage (shares of the picture as turned, 0,0 top left) kept at the frame's centre across and 40% down, as
+ *  near as the picture's edges allow. Without one the fit keeps the middle across and cuts 40% down (0.5, 0.4). */
+export const FocusSchema = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) });
+export type Focus = z.infer<typeof FocusSchema>;
+export const FramingSchema = z.object({ scale: z.number().min(0.25).max(4), x: z.number().min(-1).max(1), y: z.number().min(-1).max(1), focus: FocusSchema.optional() });
 export type Framing = z.infer<typeof FramingSchema>;
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+/**
+ * Where the fit cuts a pw x ph picture (as turned) to fill W x H: the share of the spare width and height left of and
+ * above what shows (CSS object-position, FFmpeg crop (iw-ow)*cx). The middle across and 40% down, or around the focus.
+ */
+export function fitCrop(focus: Focus | null | undefined, pw: number, ph: number, W: number, H: number): { cx: number; cy: number } {
+  if (!focus || !(pw > 0 && ph > 0)) return { cx: 0.5, cy: 0.4 };
+  const s = Math.max(W / pw, H / ph), sw = pw * s, sh = ph * s;
+  return { cx: sw - W > 0.5 ? clamp01((focus.x * sw - W / 2) / (sw - W)) : 0.5, cy: sh - H > 0.5 ? clamp01((focus.y * sh - H * 0.4) / (sh - H)) : 0.4 };
+}
 
 /** Dialogue cleanup and voice presets, like Premiere's Essential Sound (see audio.ts CLEANUP_PRESETS); set_audio can
  *  change their main numbers by hand. */

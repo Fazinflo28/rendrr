@@ -3,6 +3,7 @@
 // live here, the Player can play a real video (`src`), and Thumb shows a real frame when there is one.
 import React, { useState, useEffect, useRef, useMemo, useCallback, useContext, createContext } from "react";
 import htm from "htm";
+import { ASPECT_RATIO, aspectSize } from "@rendrr/shared";
 // htm gives us HTML-style props; turn string styles into objects and plain attribute names into React's.
 const parseStyle = (s) => Object.fromEntries(s.split(";").filter((d) => d.includes(":")).map((d) => { const i = d.indexOf(":"); return [d.slice(0, i).trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase()), d.slice(i + 1).trim()]; }));
 const PROP_MAP = { class: "className", for: "htmlFor", tabindex: "tabIndex", novalidate: "noValidate", autofocus: "autoFocus", readonly: "readOnly", autocomplete: "autoComplete" };
@@ -94,7 +95,7 @@ function Icon({ name, size }) {
 const Btn = ({ kind = "primary", size = "", icon, children, className = "", ...rest }) => html`<button class=${["btn", kind, size, icon && !children ? "icon" : "", className].join(" ")} ...${rest}>${icon && html`<${Icon} name=${icon} />`}${children}</button>`;
 const Toggle = ({ on, onChange, id, label }) => html`<button id=${id} role="switch" aria-checked=${!!on} aria-label=${label} class=${"toggle" + (on ? " on" : "")} onClick=${() => onChange(!on)} />`;
 // JS masonry: fills every column edge to edge (shortest column first), unlike CSS columns which leave trailing columns empty.
-const ORI_H = { "9:16": 16 / 9, "16:9": 9 / 16, "1:1": 1 };
+const ORI_H = { "9:16": 16 / 9, "16:9": 9 / 16, "1:1": 1, "4:5": 5 / 4 };
 function Masonry({ items, render, oriOf, colWidth = 230, gap = 6 }) {
   const ref = useRef(); const [cols, setCols] = useState(5);
   useEffect(() => { const el = ref.current; if (!el) return; const calc = () => setCols(Math.max(2, Math.floor((el.clientWidth + gap) / (colWidth + gap)))); calc(); const ro = new ResizeObserver(calc); ro.observe(el); return () => ro.disconnect(); }, [colWidth, gap]);
@@ -227,7 +228,7 @@ function usePlayback(duration, { cuts = [], clock = null, seq = false } = {}) {
 const QUALITIES = ["Auto", "720p", "480p"];
 // Draws the current fake frame to a canvas so a snapshot is a real image.
 function drawFrame({ aspect, time, caption, captionLook, zoom }) {
-  const W = aspect === "9:16" ? 720 : 1280, H = aspect === "9:16" ? 1280 : aspect === "1:1" ? 1280 : 720;
+  const { width: W, height: H } = aspectSize(aspect, aspect === "1:1" ? 1280 : 720);
   const c = document.createElement("canvas"); c.width = W; c.height = H; const g = c.getContext("2d");
   g.save(); g.translate(W / 2, H * .4); g.scale(zoom, zoom); g.translate(-W / 2, -H * .4);
   const bg = g.createRadialGradient(W * .35, H * .4, 0, W * .35, H * .4, Math.max(W, H) * .75); bg.addColorStop(0, "#2a2a2a"); bg.addColorStop(1, "#0a0a0a"); g.fillStyle = bg; g.fillRect(-W, -H, W * 3, H * 3);
@@ -241,7 +242,7 @@ function drawFrame({ aspect, time, caption, captionLook, zoom }) {
   return c.toDataURL("image/png");
 }
 function drawVideoFrame(video, { caption, captionLook, zoom = 1, aspect }) {
-  const W = aspect === "9:16" ? 720 : 1280, H = aspect === "9:16" ? 1280 : aspect === "1:1" ? 1280 : 720;
+  const { width: W, height: H } = aspectSize(aspect, aspect === "1:1" ? 1280 : 720);
   const c = document.createElement("canvas"); c.width = W; c.height = H; const g = c.getContext("2d");
   g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
   const vw = video.videoWidth || W, vh = video.videoHeight || H; const k = Math.max(W / vw, H / vh) * zoom;
@@ -252,14 +253,22 @@ function drawVideoFrame(video, { caption, captionLook, zoom = 1, aspect }) {
 // framing (position and scale, after the fit) moves and scales the fitted picture like the render's overlay.
 // The footage turned clockwise like the render (transpose before the fit): the element is rotated and, for a quarter
 // turn, given the swapped size so "cover" fills the frame; the 40%-down framing follows the turn.
-function turnedVideoStyle(rotate, aspect) {
+// crop: where the fit cuts the turned picture (fitCrop; default the middle across, 40% down), mapped to the element's
+// own axes when it is turned.
+function turnedVideoStyle(rotate, aspect, crop = null) {
   if (!rotate) return null;
-  const ar = { "9:16": 9 / 16, "1:1": 1 }[aspect] || 16 / 9;
-  if (rotate === 180) return { position: "absolute", inset: 0, width: "100%", height: "100%", transform: "rotate(180deg)", objectPosition: "50% 60%" };
-  return { position: "absolute", left: "50%", top: "50%", width: `${100 / ar}%`, height: `${100 * ar}%`, transform: `translate(-50%, -50%) rotate(${rotate}deg)`, objectPosition: rotate === 90 ? "40% 50%" : "60% 50%" };
+  const { cx, cy } = crop || { cx: 0.5, cy: 0.4 };
+  const pos = (a, b) => `${Math.round(a * 1000) / 10}% ${Math.round(b * 1000) / 10}%`;
+  const ar = ASPECT_RATIO[aspect] || 16 / 9;
+  if (rotate === 180) return { position: "absolute", inset: 0, width: "100%", height: "100%", transform: "rotate(180deg)", objectPosition: pos(1 - cx, 1 - cy) };
+  return { position: "absolute", left: "50%", top: "50%", width: `${100 / ar}%`, height: `${100 * ar}%`, transform: `translate(-50%, -50%) rotate(${rotate}deg)`, objectPosition: rotate === 90 ? pos(cy, 1 - cx) : pos(1 - cy, cx) };
+}
+/** The <video> style that fits it like the render: turned, covering the frame, cut where `crop` says. */
+function fitVideoStyle(rotate, aspect, crop = null) {
+  return turnedVideoStyle(rotate, aspect, crop) || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: crop ? `${Math.round(crop.cx * 1000) / 10}% ${Math.round(crop.cy * 1000) / 10}%` : "50% 40%" };
 }
 function Player({ pb, duration, caption, captionDrawn = false, captionLook = "clean", zoom = 1, aspect = "16:9", marks = [], onMark, onClickVideo, showControls = true, style = {}, onSnapshot, children, src, videoFit = "contain", onVideoError, muted = false, overlay = null, zoomTransition = true, rotate = 0, framing = null, media = null }) {
-  const ar = { "16:9": "16 / 9", "9:16": "9 / 16", "1:1": "1 / 1" }[aspect] || "16 / 9";
+  const ar = ASPECT_RATIO[aspect] ? aspect.replace(":", " / ") : "16 / 9";
   const toast = useToast();
   // Real footage: the <video> follows the playback state; pb uses it as its clock.
   const videoRef = useRef(null);
@@ -334,6 +343,6 @@ export {
   React, useState, useEffect, useRef, useMemo, useCallback, useContext, createContext,
   h, html, fmtTime, fmtLen, fmtAgo, initials, Icon, ICONS, Btn, Toggle, Seg, Chip, Field, StatusChip,
   ToastCtx, ToastHost, useToast, Modal, useAsync, Skeleton, GridSkeleton, EmptyState, ErrorState, Async,
-  usePlayback, QUALITIES, drawFrame, Player, turnedVideoStyle, Art, Thumb, OriIcon, readTheme, applyTheme, ThemeBtn, copyText,
+  usePlayback, QUALITIES, drawFrame, Player, turnedVideoStyle, fitVideoStyle, Art, Thumb, OriIcon, readTheme, applyTheme, ThemeBtn, copyText,
   Masonry, Dropdown, NavCtx, useNav, AppCtx, useApp,
 };

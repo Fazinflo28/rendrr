@@ -9,6 +9,7 @@ export const MCP_INSTRUCTIONS = [
   "Core rules: read the whole video first; keep the best take (usually the last complete one); remove fillers, stutters, false starts and look-downs; tight, but never cut a word; no grading, audio processing, text animation, b-roll or graphics unless asked; one caption system, big and centred.",
   "Render once per revision: put every change in one apply_edits, run check_edit (no render) and fix what it shows in one more apply_edits, then render_preview ONCE. Every render is a version the user sees: never render after each small fix or to compare options.",
   "Comments: get_comments, fix each spot and the same kind of mistake everywhere, one render, then resolve_comment.",
+  "Shorts from a long video: create_shorts (one edit per short, cut, 9:16, reframed on the speaker, captioned). Another shape of an edit: create_project fromProjectId with aspect and reframe. New client or series: create_folder.",
   "open_projects shows the user's edits, previews and comments inside the chat. Guide: rendrr://how-to-edit.",
 ].join(" ");
 
@@ -92,6 +93,12 @@ Every render_preview makes a version the user sees. Six previews for one request
 6. **Render once.** render_preview, and read its check: clipped words, gaps at joins, clicks, fillers left, words heard against the edit (extra words mean a hidden retake or a leftover), loudness, graphics over the face. get_preview_frames to look at the picture and read what a viewer hears.
 7. **QA gate** (below). Any fail: fix all of them in one apply_edits, check_edit, render once more. Up to 3 rounds, then list what is left.
 8. **Tell the user** in 2 or 3 lines: length before and after, fillers and takes removed, look-downs removed, editor notes followed, anything uncertain (a line never said cleanly, a mixed-up take). Ask before render_final.
+
+## Shorts, other shapes and new edits
+
+- **Shorts from a long video.** Read the whole transcript first (get_footage). Pick moments that stand alone: one complete idea each, a hook in the first 2 seconds (a strong line from later in the clip can open it), 15 to 60 s, ending on a full stop, not mid-thought. Then create_shorts with every short at once (stretches in footage seconds, edges on the sound as in rule 2). It makes one edit per short: cut, 9:16 (or the shape asked), reframed on the speaker, captioned. From a finished long edit use fromProjectId: the shorts keep its grade, LUT, sound and the words it cut. folderName keeps a batch together. Then polish each short with the same rules as any edit (fillers, pauses, look-downs inside the stretches), check_edit, and render_preview once per short.
+- **Another shape of an edit** (a 9:16 or 4:5 cut of a 16:9 video): create_project fromProjectId with aspect and reframe true, so the first edit stays as it is. To reshape the same edit: set_aspect, then set_framing focus "face" (the speaker kept in view in every clip). Look at a few frames of the preview: a two-person shot may need focus {x, y} by hand on some clips.
+- **Folders.** create_folder for a new client or series; list_folders shows them. Every new edit takes folderId.
 
 ## Comments loop
 

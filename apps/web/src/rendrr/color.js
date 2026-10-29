@@ -6,7 +6,7 @@ import { useState, useEffect, useRef, useMemo, html, Btn, Icon } from "./ui";
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
 import { createLookRenderer } from "./look-gl";
-import { areaPicture, buildLut, CURVE_CHANNELS, curveFn, gradeText, hashOf, hexRgb, LUT_SIZE, maskPicture, parseCube, spillType } from "@rendrr/shared";
+import { areaPicture, buildLut, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, LUT_SIZE, maskPicture, parseCube, spillType } from "@rendrr/shared";
 
 // ---------------------------------------------------------------------------------------------
 // Imported LUTs: their numbers, loaded once per page.
@@ -50,11 +50,11 @@ export function lookSpec(look, W, H, luts = {}) {
  * The picture of one video element drawn through its look, the size of the plan. The video stays the clock (hidden);
  * the canvas redraws on every new frame, seek and look change. onFail: no WebGL2 here (the video then shows plain).
  */
-export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, luts, onFail }) {
+export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, focus = null, luts, onFail }) {
   const cv = useRef(null);
   const spec = lookSpec(look, W, H, luts);
   const cur = useRef(null);
-  cur.current = { ...spec, rotate, fitY };
+  cur.current = { ...spec, rotate, fitY, focus };
   useEffect(() => {
     let r = null;
     try { r = createLookRenderer(cv.current); } catch (e) { console.warn(e); }
@@ -71,7 +71,7 @@ export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, luts,
       }
       const s = cur.current;
       if (el && s && el.readyState >= 2 && el.videoWidth) {
-        const k = `${el.currentTime.toFixed(4)}|${s.id}|${s.rotate}|${s.fitY}`;
+        const k = `${el.currentTime.toFixed(4)}|${s.id}|${s.rotate}|${s.fitY}|${s.focus ? s.focus.x + "," + s.focus.y : ""}`;
         if (dirty || k !== last || !el.paused) {
           try { r.draw(el, s); cv.current.dataset.drawn = String((+cv.current.dataset.drawn || 0) + 1); } catch (e) { console.warn(e); }
           last = k; dirty = false;
@@ -86,13 +86,14 @@ export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, luts,
 }
 
 /** The colour at (fx, fy) (shares of the frame) of a video's current frame as the render fits it (for the key). */
-export function pickColor(video, W, H, rotate, fitY, fx, fy) {
+export function pickColor(video, W, H, rotate, fitY, fx, fy, focus = null) {
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw) return null;
   const turned = rotate === 90 || rotate === 270;
   const tw = turned ? vh : vw, th = turned ? vw : vh;
   const s = Math.max(W / tw, H / th);
-  const u = [(fx * W + (tw * s - W) / 2) / s, (fy * H + (th * s - H) * fitY) / s];
+  const crop = focus ? fitCrop(focus, tw, th, W, H) : { cx: 0.5, cy: fitY };
+  const u = [(fx * W + (tw * s - W) * crop.cx) / s, (fy * H + (th * s - H) * crop.cy) / s];
   const v = rotate === 90 ? [u[1], vh - u[0]] : rotate === 270 ? [vw - u[1], u[0]] : rotate === 180 ? [vw - u[0], vh - u[1]] : u;
   const c = document.createElement("canvas"); c.width = 3; c.height = 3;
   const g = c.getContext("2d", { willReadFrequently: true });

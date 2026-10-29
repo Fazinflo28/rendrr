@@ -2,7 +2,7 @@
 // the tool waits under 10 s for it. The same test asked again within a day answers from the kept result.
 import { AppError, enqueue, getBytes, newRedis, notFound, signGet, type TestGraphicJob, type TestGraphicResult } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { findTemplate, PREFIX, QUEUES } from "@rendrr/shared";
+import { findTemplate, PREFIX, QUEUES, type Aspect } from "@rendrr/shared";
 import { QueueEvents } from "bullmq";
 import { createHash } from "node:crypto";
 
@@ -12,8 +12,8 @@ const VERSION = "t1";
 export const TEST_WAIT_MS = 9_500;
 let events: QueueEvents | null = null;
 
-type Input = { graphicId: string; params?: Record<string, unknown>; at?: number; seconds?: number; length?: number; over?: { videoId: string; time: number }; aspect?: "16:9" | "9:16" | "1:1" };
-const shape = (w?: number | null, h?: number | null): "16:9" | "9:16" | "1:1" | undefined => (w && h ? (w < h ? "9:16" : w === h ? "1:1" : "16:9") : undefined);
+type Input = { graphicId: string; params?: Record<string, unknown>; at?: number; seconds?: number; length?: number; over?: { videoId: string; time: number }; aspect?: Aspect };
+const shape = (w?: number | null, h?: number | null): Aspect | undefined => (w && h ? (w < h ? "9:16" : w === h ? "1:1" : "16:9") : undefined);
 const pc = (x: number) => (x === 0 ? "0" : x < 1 ? x.toFixed(1) : String(Math.round(x)));
 
 export async function testGraphic(userId: string, i: Input): Promise<{ text: string; images: string[] }> {

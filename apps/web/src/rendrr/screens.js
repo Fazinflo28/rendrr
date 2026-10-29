@@ -518,7 +518,7 @@ const RAW_LOOK = { ori: ["16:9", "9:16", "1:1"], type: "raw", captionLook: "clea
 function StyleVideo({ s: given, ori, className = "", style }) {
   const s = given || RAW_LOOK;
   const o = ori && s.ori.includes(ori) ? ori : (ori === "All" || !ori ? s.ori[0] : ori);
-  const ar = { "9:16": "9 / 16", "16:9": "16 / 9", "1:1": "1 / 1" }[o];
+  const ar = { "9:16": "9 / 16", "16:9": "16 / 9", "1:1": "1 / 1", "4:5": "4 / 5" }[o];
   const person = (extra = "") => html`<div class=${"sv-person " + extra}><i class="sv-head" /><i class="sv-body" /></div>`;
   const cap = (words, look = s.captionLook) => html`<div class=${"sv-cap " + look}>${words.map((w, i) => html`<span key=${i} style=${{ animationDelay: (i * 1) + "s" }}>${w}</span>`)}</div>`;
   const scene = {
@@ -544,7 +544,7 @@ function StyleVideo({ s: given, ori, className = "", style }) {
   return html`<div class=${"sv " + className} style=${{ ...(className.includes("fill") ? { aspectRatio: ar } : {}), ...style }} aria-hidden="true"><div class=${"sv-fr " + s.type} style=${{ aspectRatio: ar }}>${(scene[s.type] || scene["talking-head"])()}</div></div>`;
 }
 const StyleArt = ({ s }) => html`<div class="style-art"><${StyleVideo} s=${s} /></div>`;
-const ORI_LABEL = { "9:16": "Vertical", "16:9": "Horizontal", "1:1": "Square" };
+const ORI_LABEL = { "9:16": "Vertical", "16:9": "Horizontal", "1:1": "Square", "4:5": "Portrait" };
 function StylesPage() { return html`<${CreatePage} cat="clipping" />`; }
 /* ---------- /create/:cat: a full-width wall of community videos in that category (like, recreate) ---------- */
 function CreatePage({ cat }) {

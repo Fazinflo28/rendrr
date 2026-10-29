@@ -1,6 +1,6 @@
 import { Queue, type JobsOptions } from "bullmq";
 import { Redis } from "ioredis";
-import { QUEUES } from "@rendrr/shared";
+import { QUEUES, type Aspect } from "@rendrr/shared";
 import { env } from "./env";
 
 // BullMQ needs its own connections; pub/sub needs dedicated ones too.
@@ -31,8 +31,8 @@ export type MaintenanceJob = { task: "cleanup" | "ensure-assets" };
 /** overlays: a PNG (storage key) laid over the frame at the same index, the drawing on a comment (the app in the chat). */
 export type FramesJob = { renderId?: string; videoId?: string; times: number[]; overlays?: (string | null)[]; colorSamples?: ColorSampleJob; faces?: FaceJob };
 /** Phase 6: small frames of clips as the editor shows them (turned, fitted), for shot matching. fitY: 0.4 for V1
- *  (40% down, like the render's fit), 0.5 for b-roll. */
-export type ColorSampleJob = { w: number; h: number; clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number; fitY: number }[] };
+ *  (40% down, like the render's fit), 0.5 for b-roll; focus: a reframed V1 clip's (the fit cuts around it). */
+export type ColorSampleJob = { w: number; h: number; clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number; fitY: number; focus?: { x: number; y: number } }[] };
 export type ColorSamples = Record<string, { w: number; h: number; rgb: string }>;
 /** Where the face is in V1 clips (set_framing fitFaceTo), found on 3 frames per clip turned and fitted at w x h. */
 export type FaceJob = ColorSampleJob;
@@ -51,7 +51,7 @@ export type DeepJob = { videoId: string; force?: boolean };
 export type StyleJob = { styleFileId: string };
 export type SnapshotJob = { kind: "snapshot"; userId: string; key: string; html: string; width: number; height: number; at: number };
 export type SnapshotResult = { image: string; width: number; height: number; errors: string[]; ms: number };
-export type TestGraphicJob = { userId: string; key: string; graphicId: string; params?: Record<string, unknown>; at: number; seconds: number; length?: number; aspect: "16:9" | "9:16" | "1:1"; over?: { videoId: string; time: number } };
+export type TestGraphicJob = { userId: string; key: string; graphicId: string; params?: Record<string, unknown>; at: number; seconds: number; length?: number; aspect: Aspect; over?: { videoId: string; time: number } };
 /** Storage keys of the clip and its frames (at `times`, test seconds); how long the graphic took to record (0: it had
  *  a recording) and the whole test; what of the frame and of the face it covers (Engine Part 3's measures). */
 export type TestGraphicResult = {

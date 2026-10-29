@@ -86,7 +86,7 @@ export type Card = z.infer<typeof CardSchema>;
 export const CaptionStylePatchSchema = CaptionStyleSchema.partial();
 export const TextStylePatchSchema = TextStyleSchema.partial();
 
-const shapeOf = (aspect: Aspect) => (aspect === "9:16" ? 0 : aspect === "1:1" ? 1 : 2);
+const shapeOf = (aspect: Aspect) => (aspect === "9:16" ? 0 : aspect === "1:1" || aspect === "4:5" ? 1 : 2); // 4:5 sizes as square: its short side is the width too
 /** The three looks as caption styles (the sizes depend on the frame's shape, as before Phase 4). */
 export function presetStyle(lookName: CaptionLook, aspect: Aspect): CaptionStyle {
   const sh = shapeOf(aspect);

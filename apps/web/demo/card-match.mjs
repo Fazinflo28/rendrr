@@ -1,6 +1,7 @@
 // Checks that the editor's player shows the card and the background the render draws: a talking head shrunk and placed
 // (set_framing), drawn as a card (set_card: rounded corners, drop shadow, border) on a gradient, then on the footage
-// itself blurred, then cropped on a library video (set_background). Each edit is made with the shared ops; FFmpeg
+// itself blurred, then cropped on a library video (set_background); and reframed footage (set_framing focus: where
+// the fit cuts it, in 9:16, 4:5 and turned in 16:9). Each edit is made with the shared ops; FFmpeg
 // renders it; the editor's own SeqMedia shows the same moment in a browser; the pictures are compared.
 // Needs ffmpeg and Playwright's Chromium.   node demo/card-match.mjs   (from apps/web)
 import { build } from "esbuild";
@@ -43,6 +44,10 @@ export function makePlans() {
     gradient: one([{ op: "set_framing", scale: 0.62, y: 0.16 }, { op: "set_card", radius: 0.1, shadow: { opacity: 0.55, blur: 0.03, y: 0.02 }, border: { color: "#FFFFFF", width: 0.012 } }, { op: "set_background", gradient: { from: "#FF5FA2", to: "#FFE4F1", angle: 165 } }]),
     blur: one([{ op: "set_framing", scale: 0.7, y: -0.05 }, { op: "set_card", radius: 0.06, shadow: {} }, { op: "set_background", blur: 50 }]),
     video: one([{ op: "set_card", crop: { left: 0.15, right: 0.15, top: 0.05, bottom: 0.3 }, radius: 0.2 }, { op: "set_framing", scale: 0.8 }, { op: "set_background", videoId: "bg" }]),
+    // Reframing: the fit cuts the footage around a point (16:9 into 9:16 and 4:5; turned footage into 16:9).
+    reframe: one([{ op: "set_framing", focus: { x: 0.25, y: 0.4 } }]),
+    reframe45: one([{ op: "set_aspect", aspect: "4:5" }, { op: "set_framing", focus: { x: 0.8, y: 0.4 } }]),
+    turned: one([{ op: "set_aspect", aspect: "16:9" }, { op: "set_rotation", degrees: 90 }, { op: "set_framing", focus: { x: 0.5, y: 0.75 }, scale: 1.1 }]),
   };
 }`);
 await build({ entryPoints: [join(tmp, "plan.ts")], bundle: true, platform: "node", format: "esm", outfile: join(tmp, "plan.mjs"), nodePaths: [join(web, "node_modules")], logLevel: "warning" });
@@ -97,7 +102,7 @@ const require = (await import("node:module")).createRequire(join(web, "package.j
 const { chromium } = require(require.resolve("playwright-core", { paths: [web, ...(process.env.NODE_PATH || "").split(":").filter(Boolean)] }));
 const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] }).catch(() => chromium.launch());
 const { width: W, height: H } = plans.gradient;
-const page = await browser.newPage({ viewport: { width: W, height: H } });
+const page = await browser.newPage({ viewport: { width: Math.max(W, H), height: Math.max(W, H) } });
 const errs = []; page.on("pageerror", (e) => errs.push(e.message)); page.on("console", (m) => { if (m.type() === "warning" || m.type() === "error") errs.push(m.text()); });
 await page.goto(`http://localhost:${server.address().port}/`);
 
@@ -106,8 +111,8 @@ const small = (png) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "err
 const fileFrame = (file, k) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", file, "-vf", `select=eq(n\\,${k}),scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrp,scale=${SW}:${SH}:flags=area,format=rgb24`, "-frames:v", "1", "-f", "rawvideo", "pipe:1"], { maxBuffer: 64 << 20 });
 const diff = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s / a.length; };
 
-const LIMIT = { gradient: 4, blur: 6, video: 4 };
-const kinds = { gradient: "card with shadow and border on a gradient", blur: "card on the footage blurred", video: "cropped rounded card on a library video" };
+const LIMIT = { gradient: 4, blur: 6, video: 4, reframe: 4, reframe45: 4, turned: 4 };
+const kinds = { gradient: "card with shadow and border on a gradient", blur: "card on the footage blurred", video: "cropped rounded card on a library video", reframe: "9:16 reframed left of centre", reframe45: "4:5 reframed right", turned: "turned footage reframed low in 16:9, scaled" };
 let fails = 0; const rows = [];
 for (const name of Object.keys(plans)) {
   const k = 45, t = (k + 0.5) / 30;

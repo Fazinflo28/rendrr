@@ -207,15 +207,17 @@ export async function overlayPng(frame: string, png: string, out: string, signal
 
 /**
  * Phase 6: frames of a stretch of a video as RGB bytes, turned and fitted to w x h like the editor shows them
- * (cover, `fitY` down), `n` of them spread over [from, to]. For shot matching.
+ * (cover, `fitY` down, or around a reframed clip's focus), `n` of them spread over [from, to]. For shot matching.
  */
-export async function rgbFrames(input: string, from: number, to: number, o: { w: number; h: number; rotate: number; fitY: number; n: number; dir: string; signal?: AbortSignal }): Promise<Buffer> {
+export async function rgbFrames(input: string, from: number, to: number, o: { w: number; h: number; rotate: number; fitY: number; focus?: { x: number; y: number }; n: number; dir: string; signal?: AbortSignal }): Promise<Buffer> {
   const turn = o.rotate === 90 ? "transpose=1," : o.rotate === 270 ? "transpose=2," : o.rotate === 180 ? "hflip,vflip," : "";
+  // Reframed: the fit cuts around the focus, as the render does (fitCrop).
+  const cut = o.focus ? `x='clip(${o.focus.x}*iw-ow/2,0,iw-ow)':y='clip(${o.focus.y}*ih-oh*0.4,0,ih-oh)'` : `(iw-ow)/2:(ih-oh)*${o.fitY}`;
   const parts: Buffer[] = [];
   for (let k = 0; k < o.n; k++) {
     const t = from + ((k + 0.5) / o.n) * Math.max(0, to - from);
     const out = join(o.dir, `rgb-${Math.random().toString(36).slice(2)}.raw`);
-    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", Math.max(0, t).toFixed(3), "-i", input, "-frames:v", "1", "-vf", `${turn}scale=${o.w}:${o.h}:force_original_aspect_ratio=increase,crop=${o.w}:${o.h}:(iw-ow)/2:(ih-oh)*${o.fitY},format=rgb24`, "-f", "rawvideo", out], { signal: o.signal });
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", Math.max(0, t).toFixed(3), "-i", input, "-frames:v", "1", "-vf", `${turn}scale=${o.w}:${o.h}:force_original_aspect_ratio=increase,crop=${o.w}:${o.h}:${cut},format=rgb24`, "-f", "rawvideo", out], { signal: o.signal });
     const b = await readFile(out).catch(() => null);
     if (b && b.length === o.w * o.h * 3) parts.push(b);
   }

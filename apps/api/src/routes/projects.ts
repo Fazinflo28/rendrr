@@ -2,12 +2,14 @@ import { AppError, applyTimelineChange, notFound, projectChannel, restoreVersion
 import { prisma, Prisma } from "@rendrr/db";
 import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { speakerCentres } from "../services/color";
 import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
 import { projectChat } from "../services/aiChat";
 import { editorMarks } from "../services/marks";
-import { createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference } from "../services/projects";
+import { createFolder, createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference } from "../services/projects";
 import { deleteComment, editNote } from "../services/commentMedia";
 
 /** A picture of each edit for its card: a frame of its latest render (the edit as it looks), else its footage's
@@ -26,6 +28,8 @@ async function editThumbs(ps: { id: string; videoId: string }[]): Promise<Map<st
 }
 
 /** Server-sent events on a raw response. Keeps CORS headers that Fastify already set. */
+const SpeakerInput = z.object({ clips: z.array(z.object({ id: z.string().min(1).max(80), videoId: z.string().min(1).max(80), srcIn: z.number().min(0), srcOut: z.number().min(0), rotate: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).default(0) })).min(1).max(400) });
+
 export default async function projects(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
 
@@ -60,10 +64,7 @@ export default async function projects(app: FastifyInstance) {
 
   app.post("/folders", async (req) => {
     const { name } = CreateFolderInput.parse(req.body);
-    const count = await prisma.folder.count({ where: { userId: req.user!.id } });
-    const first = (req.user!.name || "My").split(" ")[0];
-    const f = await prisma.folder.create({ data: { userId: req.user!.id, name, workspace: `${first}'s Workspace`, cover: 1 + (count % 6) } });
-    return folderOut(f);
+    return folderOut(await createFolder(req.user!.id, name));
   });
 
   app.patch("/folders/:id", async (req) => {
@@ -131,6 +132,15 @@ export default async function projects(app: FastifyInstance) {
     const p = await prisma.project.findUnique({ where: { id: (req.params as { id: string }).id } });
     if (!p || p.userId !== req.user!.id) throw notFound("That edit is gone for good.");
     return projectOut(await prisma.project.update({ where: { id: p.id }, data: { deletedAt: null } }));
+  });
+
+  // Auto reframe in the editor: where the speaker's face is in these clips (the editor's own clips, saved or not).
+  app.post("/projects/:id/speaker", async (req) => {
+    await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    const { clips } = SpeakerInput.parse(req.body);
+    const mine = await prisma.video.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.videoId))) }, userId: req.user!.id }, select: { id: true } });
+    const ok = new Set(mine.map((v) => v.id));
+    return { centers: await speakerCentres(clips.filter((c) => ok.has(c.videoId))) };
   });
 
   app.get("/projects/:id/versions", async (req) => {

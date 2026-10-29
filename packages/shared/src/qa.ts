@@ -2,6 +2,7 @@
 // lengths, black and silent stretches, loudness, graphics on screen) next to what the edit says, and every place
 // they disagree. Facts and fixed thresholds only, no judgement.
 import { fmtT } from "./breakdown";
+import { aspectSize } from "./constants";
 import { audioText, colorSummary, lookText, speedText } from "./ops";
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import type { Key } from "./motion";
@@ -218,7 +219,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
   if (ld?.lufs != null && ld.lufs < -40) flags.push("sound is almost silent");
 
   // Text layers (Phase 4): where they sit at the preview size; one that does not fit or covers the captions is flagged.
-  const [W, H] = snap.aspect === "9:16" ? [540, 960] : snap.aspect === "1:1" ? [540, 540] : [960, 540];
+  const { width: W, height: H } = aspectSize(snap.aspect, 540);
   const texts = (tl.tracks.v3 as (Clip & { kind?: string; text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim })[])
     .filter((c) => c.kind === "text" && c.text?.trim() && c.end - c.start >= 0.05)
     .map((c) => ({ c, lines: c.text!.split("\n"), style: c.style ?? textPreset("plain").style, card: c.card ?? null, anim: c.anim ?? "fade" }));

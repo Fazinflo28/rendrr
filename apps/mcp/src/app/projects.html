@@ -495,7 +495,7 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
       p.editorUrl ? h("button", { class: "btn", "aria-label": "Open in Rendrr", onClick: () => openLink(p.editorUrl) }, h("span", { class: "lg" }, "Open in Rendrr"), h("span", { class: "sm" }, "↗")) : null);
 
     // The player: the latest preview, or a note while there is none.
-    const tall = p.aspect === "9:16";
+    const tall = p.aspect === "9:16" || p.aspect === "4:5";
     let stage;
     if (v.preview) {
       // The same preview keeps its player (and where it is); a new preview gets a new one and plays.

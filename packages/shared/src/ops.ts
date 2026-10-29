@@ -3,7 +3,7 @@ import { findMusic, MUSIC_TRACKS, placementParams } from "./catalog";
 import type { Aspect } from "./constants";
 import { mergeRules, StyleRulesPatchSchema, type StyleRules } from "./styles";
 import {
-  AspectSchema, audioSettings, CaptionLookSchema, CLEANUPS, ClipSchema, FramingSchema, isCaptionMarker, RotationSchema, SnapshotSchema, TimelineSchema, TrackNameSchema,
+  AspectSchema, audioSettings, CaptionLookSchema, CLEANUPS, ClipSchema, FocusSchema, FramingSchema, isCaptionMarker, RotationSchema, SnapshotSchema, TimelineSchema, TrackNameSchema,
   normalizeTimeline, timelineProblems, RESOLUTIONS, CODECS,
   type AudioSettings, type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
 } from "./timeline";
@@ -69,7 +69,11 @@ const EDIT_OPS = [
   // clipIds: those V1 clips (default every clip of the main footage).
   // fitFaceTo: the face in each clip at x, y of the frame (0-1 from the top left), r = half the face's height as a share
   // of the frame's (scale and offset worked out per clip). faces: the measured faces, filled in by Rendrr.
+  // focus: where the fit cuts the footage when its shape is not the frame's (reframing for 9:16, 1:1, 4:5): a point of
+  // the footage kept in view, "face" (the speaker's face in each clip, measured by Rendrr into `centers`), null = the
+  // middle again.
   z.object({ op: z.literal("set_framing"), scale: z.number().min(0.25).max(4).optional(), x: z.number().min(-1).max(1).optional(), y: z.number().min(-1).max(1).optional(), clipIds: z.array(clipId).max(2000).optional(),
+    focus: z.union([FocusSchema, z.literal("face"), z.null()]).optional(), centers: z.record(FocusSchema.nullable()).optional(),
     fitFaceTo: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), r: z.number().min(0.02).max(0.5) }).optional(),
     faces: z.record(z.object({ u: z.number(), v: z.number(), r: z.number().positive(), found: z.number().optional(), of: z.number().optional() }).nullable()).optional() }),
   // Turn the footage clockwise (footage filmed sideways); 0 puts it back.
@@ -660,19 +664,25 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "set_framing": {
       const ids = targets(tl, op.clipIds);
+      if (op.fitFaceTo && op.focus !== undefined) throw new EditError("Send focus and fitFaceTo in two apply_edits: fitFaceTo measures the face where the reframed fit puts it.");
       if (op.fitFaceTo) return fitFaces(snap, op.fitFaceTo, op, ids);
+      if (op.focus === "face" && !op.centers) throw new EditError("focus \"face\" needs the faces measured: send it through apply_edits, which measures them.");
       let shown: Framing | null = null;
+      const none: string[] = [];
       const next = setSeq(tl, seqClips(tl).map((c) => {
         if (!ids.has(c.id)) return c;
         const cur = c.framing ?? { scale: 1, x: 0, y: 0 };
-        const f = FramingSchema.parse({ scale: r2(op.scale ?? cur.scale), x: r2(op.x ?? cur.x), y: r2(op.y ?? cur.y) });
+        const fc = op.focus === undefined ? cur.focus : op.focus === "face" ? op.centers![c.id] ?? (none.push(c.id), cur.focus) : op.focus ?? undefined;
+        const f = FramingSchema.parse({ scale: r2(op.scale ?? cur.scale), x: r2(op.x ?? cur.x), y: r2(op.y ?? cur.y), ...(fc ? { focus: { x: rT(fc.x), y: rT(fc.y) } } : {}) });
         shown = f;
         const { framing: _f, ...rest } = c;
         return (plainFraming(f) ? { ...rest, framing: f } : rest) as SeqClip;
       }));
       const f = shown as Framing | null;
       const what = op.clipIds ? `${ids.size} ${ids.size === 1 ? "clip" : "clips"}` : "the footage";
-      return { snap: { ...snap, timeline: next }, summary: !f || !plainFraming(f) ? `${what} back to filling the frame` : `framed ${what}: ${framingText(f)}` };
+      const noFace = none.length ? `; no face found in ${none.slice(0, 12).join(", ")}${none.length > 12 ? ` and ${none.length - 12} more` : ""}: ${none.length === 1 ? "its" : "their"} fit stays as it was` : "";
+      if (op.focus === "face") return { snap: { ...snap, timeline: next }, summary: `reframed ${what} on the speaker's face (${ids.size - none.length} of ${ids.size})${noFace}` };
+      return { snap: { ...snap, timeline: next }, summary: (!f || !plainFraming(f) ? `${what} back to filling the frame` : `framed ${what}: ${framingText(f)}`) + noFace };
     }
     case "set_card": {
       const ids = targets(tl, op.clipIds);
@@ -1211,7 +1221,7 @@ function fitFaces(snap: Snapshot, to: { x: number; y: number; r: number }, op: {
     if (!f) { none.push(c.id); return c; }
     const s0 = to.r / f.r, sc = clamp(s0, 0.25, 4);
     const x0 = to.x - (1 - sc) / 2 - f.u * sc, y0 = to.y - (1 - sc) / 2 - f.v * sc;
-    const fr = FramingSchema.parse({ scale: rT(sc), x: rT(clamp(x0, -1, 1)), y: rT(clamp(y0, -1, 1)) });
+    const fr = FramingSchema.parse({ scale: rT(sc), x: rT(clamp(x0, -1, 1)), y: rT(clamp(y0, -1, 1)), ...(c.framing?.focus ? { focus: c.framing.focus } : {}) });
     if (sc !== s0 || Math.abs(x0) > 1 || Math.abs(y0) > 1) short.push(c.id);
     // The moved picture no longer reaches an edge of the frame: black (or what is under V1) shows there.
     const half = (fr.scale - 1) / 2 + 1e-9;
@@ -1257,9 +1267,9 @@ export function applyOp(snap: Snapshot, op: Op, ctx: EditContext): { snap: Snaps
 // Small text summary of a project for the AI (get_project). Kept well under 8k tokens.
 // ---------------------------------------------------------------------------------------------
 /** "scale 1.15, moved down 34%" */
-export function framingText(f: { scale: number; x: number; y: number }) {
+export function framingText(f: { scale: number; x: number; y: number; focus?: { x: number; y: number } }) {
   const pct = (n: number) => `${Math.round(Math.abs(n) * 100)}%`;
-  return [`scale ${f.scale}`, f.x ? `moved ${f.x > 0 ? "right" : "left"} ${pct(f.x)}` : "", f.y ? `moved ${f.y > 0 ? "down" : "up"} ${pct(f.y)}` : ""].filter(Boolean).join(", ");
+  return [f.focus ? `reframed on ${f.focus.x}, ${f.focus.y} of the footage` : "", f.scale !== 1 || !f.focus ? `scale ${f.scale}` : "", f.x ? `moved ${f.x > 0 ? "right" : "left"} ${pct(f.x)}` : "", f.y ? `moved ${f.y > 0 ? "down" : "up"} ${pct(f.y)}` : ""].filter(Boolean).join(", ");
 }
 
 /** "turned 90° (3 of 8 clips)", "framed scale 1.15, moved down 30%": how the clips' look reads, or "" if plain. */

@@ -1,21 +1,23 @@
 import { AppError, enqueue, getText, newRedis, type ColorSamples, type FaceSamples, type FramesJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { isSequence, mainVideoOf, parseCube, QUEUES, type ClipLook, type EditOp, type Lut, type Timeline } from "@rendrr/shared";
+import { aspectSize, isSequence, mainVideoOf, parseCube, QUEUES, speakerCentre, type ClipLook, type EditOp, type Lut, type Timeline, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { visionDetailsOf } from "./deep";
 import { QueueEvents } from "bullmq";
 
 // Phase 6: shot matching measures frames of the clips (the worker reads their preview copies, the pixels the editor
 // shows); imported LUTs are read from storage when a grade needs their numbers.
 
 let events: QueueEvents | null = null;
+type V1 = { id: string; sourceVideoId?: string; sourceIn: number; sourceOut: number; rotate?: number; freeze?: number; framing?: { focus?: { x: number; y: number } } };
 const SAMPLE_WAIT_MS = 60_000;
 
 /** Small frames of these clips (V1 or b-roll) as the editor shows them. Fails loudly: never a silent empty result. */
 export async function colorSamples(tl: Timeline, aspect: string, ids: string[]): Promise<ColorSamples> {
   const main = mainVideoOf(tl);
-  const [w, h] = aspect === "9:16" ? [36, 64] : aspect === "1:1" ? [48, 48] : [64, 36];
+  const { width: w, height: h } = aspectSize(aspect, 36);
   const clips = ids.map((id) => {
-    const v1 = (tl.tracks.v1 as unknown as { id: string; sourceVideoId?: string; sourceIn: number; sourceOut: number; rotate?: number; freeze?: number }[]).find((c) => c.id === id);
-    if (v1) return { id, videoId: v1.sourceVideoId || main, srcIn: v1.sourceIn, srcOut: v1.freeze ? v1.sourceIn + 0.04 : v1.sourceOut, rotate: v1.rotate ?? 0, fitY: 0.4 };
+    const v1 = (tl.tracks.v1 as unknown as V1[]).find((c) => c.id === id);
+    if (v1) return { id, videoId: v1.sourceVideoId || main, srcIn: v1.sourceIn, srcOut: v1.freeze ? v1.sourceIn + 0.04 : v1.sourceOut, rotate: v1.rotate ?? 0, fitY: 0.4, ...(v1.framing?.focus ? { focus: v1.framing.focus } : {}) };
     const v2 = (tl.tracks.v2 as unknown as { id: string; kind?: string; videoId?: string; sourceStart?: number; length?: number; start: number; end: number }[]).find((c) => c.id === id && c.kind === "broll" && c.videoId);
     if (v2) { const s = v2.sourceStart ?? 0; return { id, videoId: v2.videoId!, srcIn: s, srcOut: s + Number(v2.length ?? v2.end - v2.start), rotate: 0, fitY: 0.5 }; }
     throw new AppError(`There is no clip "${id}" on V1 or b-roll on V2. Read the project again to get the current clip ids. Nothing was changed.`, 400, "invalid-edit");
@@ -37,12 +39,12 @@ export async function colorSamples(tl: Timeline, aspect: string, ids: string[]):
 export async function faceSamples(tl: Timeline, aspect: string, ids: string[]): Promise<FaceSamples> {
   const main = mainVideoOf(tl);
   // 360 px on the short side: YuNet's face box at that size matches its size in a full-size frame best.
-  const [w, h] = aspect === "9:16" ? [360, 640] : aspect === "1:1" ? [480, 480] : [640, 360];
-  const v1 = tl.tracks.v1 as unknown as { id: string; sourceVideoId?: string; sourceIn: number; sourceOut: number; rotate?: number; freeze?: number }[];
+  const { width: w, height: h } = aspectSize(aspect, aspect === "1:1" || aspect === "4:5" ? 480 : 360);
+  const v1 = tl.tracks.v1 as unknown as V1[];
   const clips = ids.slice(0, 40).map((id) => {
     const c = v1.find((x) => x.id === id);
     if (!c) throw new AppError(`There is no clip "${id}" on V1. Read the project again to get the current clip ids. Nothing was changed.`, 400, "invalid-edit");
-    return { id, videoId: c.sourceVideoId || main, srcIn: c.sourceIn, srcOut: c.freeze ? c.sourceIn + 0.04 : c.sourceOut, rotate: c.rotate ?? 0, fitY: 0.4 };
+    return { id, videoId: c.sourceVideoId || main, srcIn: c.sourceIn, srcOut: c.freeze ? c.sourceIn + 0.04 : c.sourceOut, rotate: c.rotate ?? 0, fitY: 0.4, ...(c.framing?.focus ? { focus: c.framing.focus } : {}) };
   });
   events ||= new QueueEvents(QUEUES.frames.name, { connection: newRedis() });
   const job = await enqueue<FramesJob>("frames", { times: [], faces: { w, h, clips } });
@@ -60,12 +62,19 @@ export async function closeColorEvents() { await events?.close(); events = null;
 /** match_color and set_framing fitFaceTo ops get their measurements (the ops themselves are pure: they need them sent in). */
 export async function withMeasurements(projectId: string, edits: EditOp[]): Promise<EditOp[]> {
   const faces = (e: EditOp) => e.op === "set_framing" && !!e.fitFaceTo && !e.faces;
-  if (!edits.some((e) => (e.op === "match_color" && !e.measured) || faces(e))) return edits;
+  const speaker = (e: EditOp) => e.op === "set_framing" && e.focus === "face" && !e.centers;
+  if (!edits.some((e) => (e.op === "match_color" && !e.measured) || faces(e) || speaker(e))) return edits;
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timeline: true, aspect: true } });
   const tl = p.timeline as unknown as Timeline;
   const out: EditOp[] = [];
   for (const e of edits) {
     if (e.op === "match_color" && !e.measured) out.push({ ...e, measured: await colorSamples(tl, p.aspect, Array.from(new Set([e.to, ...e.clipIds]))) });
+    else if (e.op === "set_framing" && speaker(e)) {
+      const main = mainVideoOf(tl);
+      const v1 = tl.tracks.v1 as unknown as V1[];
+      const ids = e.clipIds ?? v1.filter((c) => (c.sourceVideoId || main) === main).map((c) => c.id);
+      out.push({ ...e, centers: await speakerCentres(v1.filter((c) => ids.includes(c.id)).map((c) => ({ id: c.id, videoId: c.sourceVideoId || main, srcIn: c.sourceIn, srcOut: c.freeze ? c.sourceIn + 0.04 : c.sourceOut, rotate: c.rotate ?? 0 }))) });
+    }
     else if (e.op === "set_framing" && faces(e)) {
       // The clips it frames: those named, else every clip of the main footage (as set_framing does).
       const main = mainVideoOf(tl);
@@ -73,6 +82,31 @@ export async function withMeasurements(projectId: string, edits: EditOp[]): Prom
       if (ids.length > 40) throw new AppError(`fitFaceTo measures 40 clips at most; this edit has ${ids.length}. Send clipIds in groups of 40. Nothing was changed.`, 400, "invalid-edit");
       out.push({ ...e, faces: await faceSamples(tl, p.aspect, ids) });
     } else out.push(e);
+  }
+  return out;
+}
+
+/**
+ * Auto reframe (set_framing focus "face"): where the speaker's face is in each clip, from the faces Rendrr measured at
+ * 10 fps when the video came in (speakerCentre), as shares of the picture as the clip turns it. Null: no face there, or
+ * that video has no face measurements yet.
+ */
+export async function speakerCentres(clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number }[]): Promise<Record<string, { x: number; y: number } | null>> {
+  const ids = Array.from(new Set(clips.map((c) => c.videoId)));
+  const rows = await prisma.footageAnalysis.findMany({ where: { videoId: { in: ids } }, select: { videoId: true, vision: true } });
+  const vis = new Map<string, { d: VisionDetails; turned: number }>();
+  for (const r of rows) {
+    const v = r.vision as unknown as VisionSummary | null;
+    const d = v ? await visionDetailsOf(v).catch(() => null) : null;
+    if (d) vis.set(r.videoId, { d, turned: v!.turned ?? 0 });
+  }
+  const out: Record<string, { x: number; y: number } | null> = {};
+  for (const c of clips) {
+    const v = vis.get(c.videoId);
+    // A frozen frame or a very short clip: the faces just around it.
+    const pad = c.srcOut - c.srcIn < 0.3 ? 0.15 : 0;
+    const at = v ? speakerCentre(v.d, v.turned, c.rotate, c.srcIn - pad, c.srcOut + pad) : null;
+    out[c.id] = at ? { x: at.x, y: at.y } : null;
   }
   return out;
 }

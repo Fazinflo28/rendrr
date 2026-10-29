@@ -347,8 +347,8 @@ export type SequenceView = {
   editToSource(clipId: string, t: number): number;
 };
 
-const sameFraming = (a?: Framing | null, b?: Framing | null) => (!a && !b) || (!!a && !!b && a.scale === b.scale && a.x === b.x && a.y === b.y);
-export const plainFraming = (f?: Framing | null): Framing | null => (!f || (f.scale === 1 && f.x === 0 && f.y === 0) ? null : f);
+export const sameFraming = (a?: Framing | null, b?: Framing | null) => (!a && !b) || (!!a && !!b && a.scale === b.scale && a.x === b.x && a.y === b.y && a.focus?.x === b.focus?.x && a.focus?.y === b.focus?.y);
+export const plainFraming = (f?: Framing | null): Framing | null => (!f || (f.scale === 1 && f.x === 0 && f.y === 0 && !f.focus) ? null : f);
 // Keyframed clips play as parts of their own (their motion is the clip's).
 /** Colour and compositing (Phase 6): clips with different looks are drawn apart. */
 const colorOf = (c: SeqClip) => { const card = (c as { cardLook?: unknown }).cardLook; return c.grade || c.key || c.masks || c.effects || card ? JSON.stringify([c.grade, c.key, c.masks, c.effects, card]) : ""; };

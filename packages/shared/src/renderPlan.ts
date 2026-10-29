@@ -3,7 +3,7 @@
 // ffmpegArgs() turns a plan + local file paths into one FFmpeg command (a single pass: fast and lossless between steps).
 // Sequences (model B) are planned here; timelines stored in model A go to the unchanged A planner (renderPlanA.ts).
 import { catalogMusic, catalogSfx, findTemplate } from "./catalog";
-import type { Aspect, CaptionLook } from "./constants";
+import { aspectSize, type Aspect, type CaptionLook } from "./constants";
 import { cutRegions, editOf, isSequence, mainVideoOf, mergeRanges, normalSpeed, rateOf, sequenceView, srcAt, type Attached, type PicturePart, type Range, type SeqClip, type SequenceView, type SoundPart } from "./sequence";
 import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing, Resolution, Codec } from "./timeline";
@@ -135,7 +135,7 @@ export class RenderPlanError extends Error {
 }
 
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
-const sameFraming = (a: Framing | null, b: Framing | null) => (!a && !b) || (!!a && !!b && a.scale === b.scale && a.x === b.x && a.y === b.y);
+const sameFraming = (a: Framing | null, b: Framing | null) => (!a && !b) || (!!a && !!b && a.scale === b.scale && a.x === b.x && a.y === b.y && a.focus?.x === b.focus?.x && a.focus?.y === b.focus?.y);
 /** Phase 7: the standard frame rates a final snaps to (within 0.5%), as FFmpeg fractions. */
 const STANDARD_RATES: [number, string][] = [[24000 / 1001, "24000/1001"], [24, "24"], [25, "25"], [30000 / 1001, "30000/1001"], [30, "30"], [48, "48"], [50, "50"], [60000 / 1001, "60000/1001"], [60, "60"]];
 /**
@@ -160,9 +160,7 @@ const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 export function outputSize(aspect: Aspect, kind: RenderKind, resolution?: Resolution | null) {
   // Phase 7: a final's short side follows its export resolution (720, 1080 or 2160); previews stay 540.
   const short = kind === "preview" ? 540 : resolution === "4k" ? 2160 : resolution === "720p" ? 720 : 1080;
-  if (aspect === "9:16") return { width: short, height: even((short * 16) / 9) };
-  if (aspect === "1:1") return { width: short, height: short };
-  return { width: even((short * 16) / 9), height: short };
+  return aspectSize(aspect, short);
 }
 
 export const DEFAULT_CAPTION_RULES: Record<CaptionLook, CaptionRules> = {
@@ -526,7 +524,7 @@ export function planRender(input: PlanInput): RenderPlan {
   const jl = { j: live.filter((c, i) => i > 0 && c.soundStart < c.start - 1e-6).length, l: live.filter((c, i) => i > 0 && c.soundStart > c.start + 1e-6).length, muted: (tl.tracks.v1 as unknown as { audioMuted?: boolean }[]).filter((c) => c.audioMuted).length };
   const turned = new Set(parts.map((p) => p.rotate)), framings = parts.filter((p) => p.framing);
   const lookText = parts.every((p) => p.rotate === parts[0].rotate && sameFraming(p.framing, parts[0].framing))
-    ? `${parts[0].rotate ? `Turn the footage ${parts[0].rotate}° clockwise, then fit` : "Fit"} to ${snapshot.aspect} at ${width}x${height}, ${rateText(out.fps)} fps${parts[0].framing ? `; frame it: scale ${parts[0].framing.scale}, offset ${parts[0].framing.x}, ${parts[0].framing.y}` : ""}`
+    ? `${parts[0].rotate ? `Turn the footage ${parts[0].rotate}° clockwise, then fit` : "Fit"} to ${snapshot.aspect} at ${width}x${height}, ${rateText(out.fps)} fps${parts[0].framing?.focus ? `, reframed on ${parts[0].framing.focus.x}, ${parts[0].framing.focus.y} of the footage` : ""}${parts[0].framing && (parts[0].framing.scale !== 1 || parts[0].framing.x || parts[0].framing.y) ? `; frame it: scale ${parts[0].framing.scale}, offset ${parts[0].framing.x}, ${parts[0].framing.y}` : ""}`
     : `Fit each part to ${snapshot.aspect} at ${width}x${height}, ${rateText(out.fps)} fps (turned ${Array.from(turned).join("/")}°, ${framings.length} framed parts)`;
   const operations = [
     `Play ${parts.length} ${parts.length === 1 ? "part" : "parts"} from ${sources.length} ${sources.length === 1 ? "video" : "videos"} (${live.length} clips, ${cutCount} word cuts): ${total.toFixed(2)}s`,
@@ -916,6 +914,10 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     /** Where a clip's picture lives: HDR (10-bit, the output's transfer) or SDR (graded, keyed, other transfer, or SDR). */
     const domOf = (vid: string, look: LookOp | undefined): "sdr" | "hdr" => (hdr && info(vid).hdr && (info(vid).transfer ?? "pq") === hdr.transfer && !look?.grade && !look?.key ? "hdr" : "sdr");
     const fit = `fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1`;
+    // Reframed (a framing's focus): the fit cuts around that point of the footage, as near as its edges allow (fitCrop).
+    const fitFor = (f: Framing | null | undefined) => (f?.focus ? `fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:x='clip(${n3(f.focus.x)}*iw-ow/2,0,iw-ow)':y='clip(${n3(f.focus.y)}*ih-oh*0.4,0,ih-oh)',setsar=1` : fit);
+    // Scale and offset after the fit (a focus alone only moves the fit).
+    const moved = (f: Framing | null | undefined) => (f && (f.scale !== 1 || f.x || f.y) ? f : null);
     const frame = (from: string, f: Framing, to: string, tag: string, canvas: "black" | "clear" | { base: string } = "black", card?: CardOp, frames?: number) => {
       // The fitted picture is scaled about its centre and moved over a black frame (Phase 6: over what is behind V1, or
       // a clear frame when keyframes move it next). A card: its shadow under it, its border over it.
@@ -945,7 +947,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       const N = Math.max(1, Math.round((x.end - x.start) * FPS));
       const r = rateOf(x);
       const lk = looks[x.clipId ?? x.clipIds?.[0] ?? ""], dom = domOf(x.videoId, lk);
-      const look = `${turnOf(x.rotate)}${toneOf(x.videoId, dom)}${fit}`;
+      const look = `${turnOf(x.rotate)}${toneOf(x.videoId, dom)}${fitFor(x.framing)}`;
       // tpad clones a frame at the link's frame rate: without a rate (after trim) FFmpeg 7 gives the clones one
       // timestamp and they are dropped, so the stream is put on the 30 fps grid first.
       const pad = `,fps=${R},tpad=stop_mode=clone:stop=2,trim=end_frame=${N}`;
@@ -970,7 +972,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       const m = clipId ? motion[clipId] : undefined;
       // A card is drawn through frame() (its shadow and border), framed or not.
       const card = plan.cards?.[x.clipId ?? x.clipIds?.[0] ?? ""];
-      const frm = x.framing ?? (card ? { scale: 1, x: 0, y: 0 } : null);
+      const frm = moved(x.framing) ?? (card ? { scale: 1, x: 0, y: 0 } : null);
       // The clip's own picture, blurred, as the background: taken before its look (where something shows behind it).
       const blurBg = !!bg?.blur && (!!frm || !!lk?.alpha || !!m);
       if (!lk && !hdr && !frm && !m) { g.push(`${chain},format=yuv420p[${out}]`); return; }
@@ -1003,9 +1005,9 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     if (uniform) {
       const p0 = plan.parts[0], lk = looks[p0.clipIds[0]], dom = domOf(p0.videoId, lk);
       const card = plan.cards?.[p0.clipIds[0]];
-      const frm = p0.framing ?? (card ? { scale: 1, x: 0, y: 0 } : null);
+      const frm = moved(p0.framing) ?? (card ? { scale: 1, x: 0, y: 0 } : null);
       const blurBg = !!bg?.blur && (!!frm || !!lk?.alpha);
-      g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId, dom)}${fit}${blurBg ? ",split[vfit][vbs]" : "[vfit]"}`);
+      g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId, dom)}${fitFor(p0.framing)}${blurBg ? ",split[vfit][vbs]" : "[vfit]"}`);
       v = "vfit";
       // Phase 6: one look for the whole edit, drawn once (keyed or masked parts show what is behind V1).
       const all = Math.max(1, Math.round(plan.outputSeconds * FPS));

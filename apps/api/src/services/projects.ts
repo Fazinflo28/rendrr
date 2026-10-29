@@ -1,7 +1,7 @@
 import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, signGet } from "@rendrr/core";
 import { deleteEditCommentFiles } from "./commentMedia";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, asSequence, aspectFor, buildRawSequence, catalogMusic, catalogSfx, findTemplate, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { allWords, asSequence, aspectFor, buildRawSequence, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { otherVideoIds, playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
@@ -11,6 +11,46 @@ export async function defaultFolderId(userId: string, name?: string): Promise<st
   const u = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
   const created = await prisma.folder.create({ data: { userId, name: "My edits", workspace: `${(name || u.name).split(" ")[0]}'s Workspace` } });
   return created.id;
+}
+
+/** A new folder (a project: a client, a series) for the user's edits. */
+export async function createFolder(userId: string, name: string) {
+  const [count, u] = await Promise.all([prisma.folder.count({ where: { userId } }), prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { name: true } })]);
+  return prisma.folder.create({ data: { userId, name: name.trim().slice(0, 80) || "New project", workspace: `${(u.name || "My").split(" ")[0]}'s Workspace`, cover: 1 + (count % 6) } });
+}
+
+/** The user's own folder, or null when that id is not theirs. */
+async function ownFolder(userId: string, id?: string | null): Promise<string | null> {
+  if (!id) return null;
+  const f = await prisma.folder.findUnique({ where: { id } });
+  return f && f.userId === userId ? f.id : null;
+}
+
+/**
+ * A new edit that starts as another edit is now (its current version, every change kept), for another version of it
+ * (another shape, a cut-down, shorts). `bare`: only the sequence and its whole-edit settings come along (captions and
+ * their style, sound, export, background, the words it cut): b-roll, text, graphics, music and sound effects hang on
+ * clips the new edit replaces, so they stay with the first edit.
+ */
+export async function copyProject(userId: string, srcId: string, input: { name?: string | null; folderId?: string | null; bare?: boolean }, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}) {
+  const src = await getOwnedProject(userId, srcId);
+  const ver = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId: src.id, v: src.currentVersion } } });
+  const snap0 = (ver?.timeline ?? { timeline: src.timeline, name: src.name, aspect: src.aspect, styleId: src.styleId }) as unknown as Snapshot;
+  let timeline = snap0.timeline;
+  if (input.bare) timeline = { ...timeline, tracks: { ...timeline.tracks, v2: [], v3: (timeline.tracks.v3 as V3Clip[]).filter((c) => isCaptionMarker("v3", c)), a2: [], a3: [] } } as typeof timeline;
+  const name = (input.name || "").trim() || `${src.name} copy`;
+  const folderId = (await ownFolder(userId, input.folderId)) ?? src.folderId;
+  const v = await prisma.video.findUniqueOrThrow({ where: { id: src.videoId }, include: { analysis: true } });
+  const words = allWords((v.analysis?.transcript as unknown as Transcript) || []);
+  const p = await prisma.project.create({
+    data: {
+      userId, folderId, videoId: src.videoId, styleId: snap0.styleId ?? null, ...(src.reference ? { reference: src.reference as Prisma.InputJsonValue } : {}), name, aspect: snap0.aspect, status: "Draft", art: src.art,
+      timeline: timeline as unknown as Prisma.InputJsonValue, currentVersion: 1, outputSeconds: Math.round(outputDuration(timeline, words) * 100) / 100,
+      versions: { create: { v: 1, note: `Copy of "${src.name}" v${src.currentVersion}`, timeline: { ...snap0, timeline, name } as unknown as Prisma.InputJsonValue, createdBy: opts.actorKind || "user", sealed: true } },
+    },
+  });
+  await prisma.folder.update({ where: { id: folderId }, data: { updatedAt: new Date() } });
+  return p;
 }
 
 export async function getOwnedProject(userId: string, id: string): Promise<Project> {
@@ -56,12 +96,7 @@ export async function createProject(userId: string, input: { videoId?: string; v
   const [v, ...more] = vids as NonNullable<(typeof vids)[number]>[];
   const asked = input.reference ?? (input.styleId ? { kind: "style" as const, id: input.styleId } : null);
   const reference = asked ? await resolveReference(userId, asked) : null;
-  let folderId = input.folderId || null;
-  if (folderId) {
-    const f = await prisma.folder.findUnique({ where: { id: folderId } });
-    if (!f || f.userId !== userId) folderId = null;
-  }
-  folderId ||= await defaultFolderId(userId);
+  const folderId = (await ownFolder(userId, input.folderId)) ?? (await defaultFolderId(userId));
   const transcript = v.analysis!.transcript as unknown as Transcript;
   const timeline = buildRawSequence(transcript, v.seconds, Array.isArray(input.cut) ? input.cut : [], v.id, more.map((m) => ({ id: m.id, name: m.name, seconds: m.seconds, ready: true })));
   const aspect = input.aspect || aspectFor(v.orientation);

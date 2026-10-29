@@ -72,7 +72,7 @@ export type StyleInput = {
 export function buildStyleFile(i: StyleInput): StyleFile {
   const S = Math.max(1, i.video.seconds), min = S / 60, m = i.measure;
   const W = i.video.width || m.size[0], H = i.video.height || m.size[1];
-  const shape = W < H ? "9:16" : W === H ? "1:1" : "16:9";
+  const shape = W === H ? "1:1" : W < H ? (W / H > 0.7 ? "4:5" : "9:16") : "16:9";
 
   // Pacing: shots from the cuts; pauses kept between words (the gaps the editor left in).
   const bounds = [0, ...i.cuts.filter((c) => c > 0.05 && c < S - 0.05), S], shots = bounds.slice(1).map((b, k) => b - bounds[k]);
