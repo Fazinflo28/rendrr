@@ -348,6 +348,21 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Graphics visible | Sampled 2 a second across the part on screen, 8 to 24 moments. Invisible only when no moment has a pixel over 1% opaque (the old rule, under 0.2% of the frame at the most covered moment, stays for older checks; it missed a small graphic). |
 | Graphic over the face | The main face (largest box) from Part 2's 10 fps faces at the footage moment playing then, placed as the render draws it: undo vision's measuring turn, the clip's turn, fit (cover, centred across, 40% down), framing, V1 keyframes, zoom. The cover is the graphic's alpha (64x64 per moment) averaged over that box. A keyframed graphic moves, so it is not measured; b-roll over V1 means no face then. Flagged over 25%; a full-screen title over the face is flagged too (the AI knows if it meant it). |
 
+## Rendrr inside Claude, one render per revision, the editing skill (29 October)
+
+| Question | Decision |
+|---|---|
+| How the app gets into Claude | An MCP App (the io.modelcontextprotocol/ui extension, protocol 2026-01-26): open_projects carries `_meta.ui.resourceUri` (and the older `ui/resourceUri`), the page is a `ui://` resource of type `text/html;profile=mcp-app`. Works where the host supports MCP Apps (Claude on the web and desktop); elsewhere open_projects still answers in text. |
+| The page | One HTML file with its own small JSON-RPC bridge (initialize, tool calls, messages, links, size, theme). The official app library bundled with its dependencies is 418 KB; the bridge is about 60 lines. No outside scripts, fonts or styles. |
+| What the page may load | Only the storage the API signs links for: its origin is read from a signed link (so it is right for R2, Railway buckets or AWS, path or host style) and declared as the resource's `resourceDomains`; `connectDomains` is empty. Data comes through the host's tool calls, never by fetch. |
+| The app's tools | app_list_projects, app_get_project, app_add_comment, app_resolve_comment, app_render_preview, marked visibility "app" so the AI does not see them (the AI has get_comments and resolve_comment). They go through the same internal route as the AI's tools, as the signed-in user. The app's reads are not logged as tool calls (it polls). |
+| Comments | The editor's own notes table (ProjectComment), at the preview's time, so the Comments tab, the markers and get_comments show them. Client comments from review links are shown and can be resolved too. |
+| Updates | Every 3 s while a preview renders, every 20 s otherwise (so a render the AI starts shows up), not while the app is hidden. The player is kept across updates (no reload), and so is what the user is typing. Inline sizes are fixed pixels: the frame grows to fit the app, so screen-height units would shrink it. |
+| A render button in the app | Only when the latest version has no preview and nothing is rendering. It is the user's own action, so it does not go against "render once". |
+| One render per revision | Not a hard limit (a user may want a second render). Instead: a check that needs no render (check_edit, and its flags at the end of apply_edits), a repeat render_preview with nothing changed returns the existing preview, and the guide, tool texts, instructions and prompts all say: one apply_edits, check, render once. |
+| The skill in the connector | MCP has no skill type yet. So: the core (about 1,100 characters) in the server instructions, which hosts send with every chat; the whole skill (about 14,000) from a tool the instructions tell the AI to call, since an AI in Claude can call tools but not read resources itself; plus a `skill://` resource and a prompt for clients that use those. |
+| What was taken out of the skill | Names of people and clients, the review site, client delivery, Drive downloads, local transcription and FFmpeg steps: private, or done by Rendrr itself. Its rules, mistakes table and QA gate are kept, each pointed at the Rendrr tool that catches it. |
+
 ## Engine Part 6: the user interface (28 October)
 
 | Question | Decision |

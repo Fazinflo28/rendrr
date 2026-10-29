@@ -111,7 +111,9 @@ describe("connector tool list", () => {
     // 33: test_graphic (a few seconds of a graphic over the footage, before a full preview).
     // 37: list_library, get_library_item, add_library_item, search_icons (the hidden library: ready animations).
     // 38: analyze_reference (a reference video measured into a style file).
-    expect(MCP_TOOLS.length).toBeLessThanOrEqual(38);
+    // 41: get_editing_skill (the skill that comes with the connector), check_edit (a check with no render, so one
+    // render per revision), open_projects (the Rendrr app in the chat; its own tools are in APP_TOOLS, hidden from the AI).
+    expect(MCP_TOOLS.length).toBeLessThanOrEqual(41);
     const names = MCP_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
     for (const gone of ["cut_silences", "remove_fillers", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);

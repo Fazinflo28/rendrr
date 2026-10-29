@@ -5,7 +5,7 @@ import { AppError, applyTimelineChange, enqueue, notFound, putObject, readGraphi
 import { prisma, type Prisma } from "@rendrr/db";
 import {
   AddFontInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
-  heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript,
+  heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
   MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
@@ -22,6 +22,7 @@ import { waveformPng } from "./services/waveform";
 import { testGraphic } from "./services/testGraphic";
 import { addLibraryItem, getLibraryItem, listLibrary, searchIcons, withIcons } from "./services/library";
 import { analyzeReference, styleFileLines, styleFileOut } from "./services/styleFiles";
+import { openProjects } from "./services/claudeApp";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
 /** loginId: the Clerk user who called (a linked login opens its account's userId). */
@@ -178,7 +179,9 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   if (r.unchanged) return { text: `Nothing changed (still v${r.version}): ${r.summary}.`, data: { version: r.version } };
   const steps = r.summary.split("; ");
   await prisma.aiChatMessage.create({ data: { projectId, userId: c.userId, role: "ai", ai: aiName(c), text: (note?.trim() || `Made ${steps.length === 1 ? "a change" : steps.length + " changes"}.`).slice(0, 600), workflow: steps.map((x) => x.charAt(0).toUpperCase() + x.slice(1)) as unknown as Prisma.InputJsonValue, changed: true } });
-  return { text: `Done (v${r.version}, ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s): ${r.summary}.`, data: { version: r.version } };
+  // The edit's own check (no render) rides along, so the AI fixes what it shows before it renders anything.
+  const flags = (await checkOf(projectId, r.version, null, null).catch(() => "")).split("\n").find((l) => l.startsWith("Flags:"));
+  return { text: `Done (v${r.version}, ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s): ${r.summary}.${flags ? `\nEdit check (nothing rendered): ${flags}${flags === "Flags: none" ? "" : " (check_edit lists where)"}.` : ""}`, data: { version: r.version } };
 }
 
 /** The longest a tool call waits for a job: clients drop calls after about a minute (some sooner), so a longer
@@ -251,6 +254,10 @@ async function checkOf(projectId: string, version: number, loudness: FileLoudnes
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
   // ---------------- read ----------------
+  async get_editing_skill() {
+    return { text: EDITING_SKILL };
+  },
+
   async list_footage(c, i) {
     const vs = await prisma.video.findMany({ where: { userId: c.userId, ...(i.kind ? { kind: i.kind } : {}) }, orderBy: { createdAt: "desc" }, take: 500 });
     const recipes = i.kind === "reference" ? await prisma.reference.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 }) : [];
@@ -342,6 +349,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const pg = pageOf(ps, i);
     return { text: `Edits ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${ps.length} (id | name | folder | style applied | aspect | status | version):\n` + pg.shown.map((p) => `${p.id} | ${p.name} | ${p.folder.name} | ${p.styleId ?? "none"} | ${p.aspect} | ${p.status} | v${p.currentVersion}`).join("\n") + pg.tail };
   },
+
+  open_projects: (c, i) => openProjects(c, i),
 
   async get_project(c, i) {
     const p = await getOwnedProject(c.userId, i.projectId);
@@ -526,6 +535,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: parts.filter(Boolean).join("\n") };
   },
 
+  async check_edit(c, i) {
+    const p = await getOwnedProject(c.userId, i.projectId);
+    const done = await prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", version: p.currentVersion, status: "done" }, select: { id: true } });
+    return { text: clip(`Check of v${p.currentVersion} from the edit itself (nothing rendered${done ? "; this version already has a preview: get_render " + done.id : ""}). The file's own sound (gaps, clicks), loudness and graphics on screen come with render_preview, once.\n${await checkOf(p.id, p.currentVersion, null, null)}`) };
+  },
+
   async get_preview_frames(c, i) {
     const p = await getOwnedProject(c.userId, i.projectId);
     const r = await prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", status: "done", outputKey: { not: null } }, orderBy: { createdAt: "desc" } });
@@ -670,6 +685,14 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
 
   // ---------------- render and share ----------------
   async render_preview(c, i) {
+    // One preview per version: asking again with nothing changed returns the preview that version already has.
+    const p = await getOwnedProject(c.userId, i.projectId);
+    const latest = await prisma.projectVersion.findFirst({ where: { projectId: p.id }, orderBy: { v: "desc" }, select: { v: true } });
+    const had = !i.again && latest ? await prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", version: latest.v, status: "done", outputKey: { not: null } }, orderBy: { createdAt: "desc" } }) : null;
+    if (had) {
+      const out = await renderOut(had.id);
+      return { ...out, text: `Nothing changed since preview v${had.version}, so nothing was rendered. Its check again:\n${out.text}\nMake every change in one apply_edits (check_edit checks it without rendering), then render once.` };
+    }
     const r = await startRender(c.userId, i.projectId, "preview");
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     return renderOut(r.id);

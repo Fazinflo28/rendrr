@@ -8,6 +8,8 @@ export * from "./ops";
 export * from "./format";
 export * from "./schemas";
 export * from "./mcpTools";
+export * from "./editingSkill";
+export * from "./mcpApp";
 export * from "./breakdown";
 export * from "./qa";
 export * from "./graphicHtml";

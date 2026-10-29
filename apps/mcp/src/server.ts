@@ -3,20 +3,17 @@
 import { clerkClient, clerkMiddleware, getAuth } from "@clerk/express";
 import { authServerMetadataHandlerClerk, protectedResourceHandlerClerk } from "@clerk/mcp-tools/express";
 import { verifyClerkToken } from "@clerk/mcp-tools/server";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { HOW_TO_EDIT, MCP_RATE_LIMIT_PER_MIN, MCP_TOOLS } from "@rendrr/shared";
+import { MCP_RATE_LIMIT_PER_MIN } from "@rendrr/shared";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { z } from "zod";
+import { buildServer, type Who } from "./build";
 
 const API = (process.env.API_INTERNAL_URL || process.env.PUBLIC_API_URL || "http://localhost:4000").replace(/\/$/, "");
 const SECRET = process.env.INTERNAL_API_SECRET || "";
 const WEB = (process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "");
 if (!SECRET) console.warn("[mcp] INTERNAL_API_SECRET is not set: tool calls will be refused by the API");
 if (!process.env.CLERK_SECRET_KEY || !process.env.CLERK_PUBLISHABLE_KEY) console.warn("[mcp] CLERK keys are not set: logins will fail");
-
-type Who = { clerkId: string; kind: "claude" | "chatgpt"; name: string };
 
 // ---------------- which AI is calling ----------------
 const clientNames = new Map<string, { name: string; at: number }>();
@@ -40,84 +37,6 @@ async function who(req: Request): Promise<Who> {
   const kind = /openai|chatgpt|gpt/i.test(name) ? "chatgpt" : "claude";
   const display = /claude|anthropic/i.test(name) ? "Claude" : kind === "chatgpt" ? "ChatGPT" : name;
   return { clerkId, kind, name: display };
-}
-
-// ---------------- forwarding to the API ----------------
-type ToolOut = { text: string; images?: string[] };
-async function callApi(w: Who, path: string, body?: unknown, method = "POST"): Promise<{ ok: boolean; json: any }> {
-  const r = await fetch(API + path, {
-    method,
-    headers: { "x-internal-secret": SECRET, "x-rendrr-clerk-id": w.clerkId, "x-rendrr-ai": w.kind, "x-rendrr-ai-name": w.name, "content-type": "application/json" },
-    body: method === "GET" ? undefined : JSON.stringify(body ?? {}),
-  }).catch(() => null);
-  if (!r) return { ok: false, json: { error: { message: "Rendrr's server did not answer. Try again in a moment." } } };
-  return { ok: r.ok, json: await r.json().catch(() => ({})) };
-}
-
-async function imageContent(urls: string[] = []) {
-  const out: { type: "image"; data: string; mimeType: string }[] = [];
-  for (const u of urls.slice(0, 8)) {
-    try {
-      const r = await fetch(u);
-      if (!r.ok) continue;
-      const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.length > 900_000) continue;
-      out.push({ type: "image", data: buf.toString("base64"), mimeType: r.headers.get("content-type") || "image/jpeg" });
-    } catch { /* skip */ }
-  }
-  return out;
-}
-
-function buildServer(w: Who) {
-  const server = new McpServer({ name: "rendrr", version: "1.0.0", title: "Rendrr" }, {
-    instructions: "Rendrr edits video: you decide, Rendrr measures and marks (never cuts on its own), applies exactly what you send and renders. get_footage reads any video as text plus one overview image; apply_edits makes all changes in one call; render_preview returns a text check. Times are seconds in the ORIGINAL footage. Guide: rendrr://how-to-edit.",
-  });
-
-  for (const def of MCP_TOOLS) {
-    server.registerTool(def.name, {
-      title: def.title,
-      description: def.description,
-      // Strict: a field the tool does not have is an error the AI sees (it was dropped silently, e.g. "ops" for "edits").
-      inputSchema: def.input.strict(),
-      annotations: { readOnlyHint: !def.write && !def.long, destructiveHint: false, openWorldHint: false },
-    }, async (args: Record<string, unknown>, extra) => {
-      // Long tools (renders, graphics) keep the client's timeout alive with progress notifications.
-      const token = extra?._meta?.progressToken;
-      let n = 0;
-      const tick = token != null ? setInterval(() => { n++; extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: n, message: "Still working…" } }).catch(() => {}); }, 5000) : null;
-      try {
-        const r = await callApi(w, `/internal/tools/${def.name}`, args);
-        if (!r.ok) return { content: [{ type: "text" as const, text: r.json?.error?.message || "That did not work. Try again." }], isError: true };
-        const out = r.json as ToolOut;
-        return { content: [{ type: "text" as const, text: out.text }, ...(await imageContent(out.images))] };
-      } finally {
-        if (tick) clearInterval(tick);
-      }
-    });
-  }
-
-  server.registerResource("styles", "rendrr://styles", { title: "Style packs", description: "Every style pack with its rules, as text and machine rules.", mimeType: "text/markdown" }, async (uri) => {
-    const r = await callApi(w, "/internal/resources/styles", undefined, "GET");
-    return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: r.ok ? r.json.text : "Could not load the styles right now." }] };
-  });
-  server.registerResource("how-to-edit", "rendrr://how-to-edit", { title: "How to edit with Rendrr", description: "A short guide: read, style, edit in one call, check, hand off.", mimeType: "text/markdown" }, async (uri) => ({
-    contents: [{ uri: uri.href, mimeType: "text/markdown", text: HOW_TO_EDIT }],
-  }));
-
-  server.registerPrompt("edit-footage", {
-    title: "Edit footage",
-    description: "A first pass of an edit: read the footage, its marks and the style, cut, caption, render a preview and check it.",
-    argsSchema: { videoId: z.string().describe("Footage id from list_footage"), styleId: z.string().describe("Style id from list_styles, for example s1") },
-  }, ({ videoId, styleId }) => ({
-    messages: [{ role: "user", content: { type: "text", text:
-      `Edit my footage ${videoId} in style ${styleId} with Rendrr.\n\n` +
-      `1. get_footage("${videoId}") and get_style("${styleId}"). Tell me in two lines what the video is about and the strongest hook.\n` +
-      `2. mark_silences, mark_fillers and get_retakes on the footage: Rendrr measures, you decide what goes.\n` +
-      `3. create_project, then one apply_edits call: apply_style ${styleId} (its captions; it lists its other rules for you), the cuts you chose (cut_words with word ids or from/to), the best take of each retake, the hook in the first 3 seconds, caption fixes and zooms on the key lines. Keep sentences whole. Add a short note.\n` +
-      `4. render_preview and read its check. Fix with another apply_edits if it shows pauses, fillers or missing captions.\n` +
-      `5. Tell me what you did. Ask before rendering the final.\n\nGuide: rendrr://how-to-edit` } }],
-  }));
-  return server;
 }
 
 // ---------------- HTTP ----------------
