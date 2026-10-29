@@ -95,7 +95,7 @@ window.addEventListener("message", async (e) => {
   const m = e.data; window.log.push(m);
   const reply = (result) => f.contentWindow.postMessage({ jsonrpc: "2.0", id: m.id, result }, "*");
   if (m.method === "ui/initialize") reply({ protocolVersion: "2026-01-26", hostInfo: { name: "test-host", version: "1" }, hostCapabilities: { openLinks: {}, serverTools: {}, message: { text: {} }, updateModelContext: { text: {} } },
-    hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"], styles: { variables: { "--color-background-primary": "rgb(250, 249, 245)" } } } });
+    hostContext: { theme: "light", displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"], styles: { variables: { "--color-background-primary": "rgb(250, 249, 245)" } }, ...(phone ? { platform: "mobile" } : {}) } });
   else if (m.method === "ui/notifications/initialized") {
     f.contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: {} } }, "*");
     const data = await window.hostTool("open", {});
@@ -108,7 +108,8 @@ window.addEventListener("message", async (e) => {
     window.fs = m.params.mode === "fullscreen";
     f.style.width = phone ? "100vw" : window.fs ? "1200px" : "900px"; f.style.height = window.fs ? (phone ? "100vh" : "1000px") : (window.inlineH || 600) + "px";
     reply({ mode: m.params.mode });
-    f.contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { displayMode: m.params.mode } }, "*");
+    // A phone's full-screen panel lays its header and chat box over the app, and says so.
+    f.contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { displayMode: m.params.mode, ...(phone ? { safeAreaInsets: window.fs ? { top: 100, right: 0, bottom: 140, left: 0 } : { top: 0, right: 0, bottom: 0, left: 0 } } : {}) } }, "*");
   }
   else if (m.method === "ui/notifications/size-changed") { window.inlineH = Math.min(1400, m.params.height); if (!window.fs) f.style.height = window.inlineH + "px"; }
 });
@@ -327,6 +328,15 @@ check((await hostLog()).some((m) => m.method === "ui/open-link" && m.params.url 
 await app.locator("button", { hasText: "All projects" }).click();
 await app.locator(".card").first().waitFor();
 check((await app.locator(".card").count()) === 2, "back to all projects");
+// An edit never rendered (the editor plays edits live, so many have no preview): its first preview starts on its own.
+const renders = () => calls.filter((c) => c.name === "app_render_preview" && c.args.projectId === "p2").length;
+await app.locator(".card", { hasText: "Founder story" }).click();
+await app.locator(".noprev").waitFor({ timeout: 5000 }); await sleep(600);
+check(renders() === 1 && /Making a preview to watch here/.test(await app.locator(".noprev").innerText()), `an edit with no preview starts one on its own and says so (${renders()} render asked)`);
+await app.locator("button", { hasText: "All projects" }).click(); await app.locator(".card").first().waitFor();
+await app.locator(".card", { hasText: "Founder story" }).click(); await sleep(800);
+check(renders() === 1, "opening it again does not start another");
+await app.locator("button", { hasText: "All projects" }).click(); await app.locator(".card").first().waitFor();
 
 // The host switches to dark: the app follows.
 await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark", styles: { variables: { "--color-background-primary": "rgb(31, 30, 29)" } } } }, "*"));
@@ -351,8 +361,10 @@ await papp.locator(".card").first().tap();
 await papp.locator("video").waitFor({ timeout: 10000 }); await sleep(400);
 fit = await fits();
 check(await pframe().evaluate(() => document.documentElement.classList.contains("fs")) && fit.over <= 1 && !fit.wide.length, `phone, the edit opens full screen and fits (${fit.wide.join(", ") || "nothing sticks out"})`);
-const pBox = await pframe().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); return { v: r("video"), c: r(".compose"), h: innerHeight }; });
-check(pBox.v.height >= 250 && pBox.c.bottom <= pBox.h + 1 && pBox.c.top > pBox.v.bottom, `phone: the player (${Math.round(pBox.v.height)} px tall), then the comments, the box at the bottom on screen`);
+const pBox = await pframe().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); return { top: r(".top").top, v: r("video"), c: r(".compose"), l: r(".side > .list, .side > .empty"), h: innerHeight, padB: parseFloat(getComputedStyle(document.body).paddingBottom) }; });
+check(pBox.top >= 100, `phone: the app's header is clear of Claude's header (${Math.round(pBox.top)} px down)`);
+check(pBox.v.height >= 250 && pBox.c.top > pBox.v.bottom && pBox.c.bottom < pBox.l.top && pBox.c.bottom <= pBox.h - 140, `phone: the player (${Math.round(pBox.v.height)} px), then the box to write a comment, clear of Claude's chat box (${Math.round(pBox.h - pBox.c.bottom)} px above the bottom), then the comments`);
+check(pBox.padB >= 140, "phone: the page ends clear of Claude's chat box");
 await papp.locator("textarea").tap();
 await papp.locator("textarea").fill("From my phone");
 check(await pframe().evaluate(() => parseFloat(getComputedStyle(document.querySelector("textarea")).fontSize) >= 16), "the box's text is 16 px (phones do not zoom in)");

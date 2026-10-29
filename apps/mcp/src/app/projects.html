@@ -26,7 +26,9 @@ html[data-theme="light"] {
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
-body { padding: 14px; }
+/* --it/--ir/--ib/--il: where the host's own bars cover the app (Claude's phone panel: its header on top, its chat box
+   at the bottom), from the host's safe area insets. */
+body { padding: calc(14px + var(--it, 0px)) calc(14px + var(--ir, 0px)) calc(14px + var(--ib, 0px)) calc(14px + var(--il, 0px)); }
 button { font: inherit; color: inherit; cursor: pointer; }
 button:disabled { cursor: default; opacity: .45; }
 .row { display: flex; align-items: center; gap: 8px; }
@@ -70,7 +72,7 @@ h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; }
 .pv { display: flex; flex-direction: column; gap: 10px; }
 .pv .side { display: flex; flex-direction: column; gap: 10px; }
 html.fs, html.fs body { height: 100%; }
-html.fs body { padding: 14px 18px; overflow: hidden; }
+html.fs body { padding: calc(14px + var(--it, 0px)) calc(18px + var(--ir, 0px)) calc(14px + var(--ib, 0px)) calc(18px + var(--il, 0px)); overflow: hidden; }
 html.fs #root { height: 100%; overflow: auto; }
 html.fs .pv { height: 100%; }
 html.fs .pv .side { flex: 1; min-height: 0; }
@@ -97,7 +99,7 @@ html.fs .stage.tall video { height: max(220px, min(62vh, calc(100vh - 560px))); 
 .pen.on { border-color: var(--ink); box-shadow: 0 0 0 2px var(--bg) inset; }
 .ibtn.on { background: var(--accent); color: var(--on-accent); border-color: transparent; }
 /* Full screen the share panel floats over the page, so the comments keep their room. */
-html.fs .share { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: min(520px, calc(100% - 20px)); z-index: 6; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+html.fs .share { position: fixed; top: calc(10px + var(--it, 0px)); left: 50%; transform: translateX(-50%); width: min(520px, calc(100% - 20px)); z-index: 6; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
 .sm { display: none; }
 .shade { display: none; }
 html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; background: rgba(0,0,0,.25); }
@@ -105,7 +107,14 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 .share input { width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: var(--r-sm); padding: 8px 10px; font: 13px var(--mono); }
 /* Phones: one column, bigger targets, nothing wider than the screen. */
 @media (max-width: 560px) {
-  body { padding: 10px; }
+  body, html.fs body { padding: calc(10px + var(--it, 0px)) calc(10px + var(--ir, 0px)) calc(10px + var(--ib, 0px)) calc(10px + var(--il, 0px)); }
+  /* The box to write a comment goes right under the player (a phone's bottom is the host's chat box), and the page
+     scrolls as a page, full screen too. */
+  .pv .side > .compose { order: -1; }
+  html.fs body { overflow: auto; }
+  html.fs #root, html.fs .pv { height: auto; overflow: visible; }
+  html.fs .pv .side { flex: none; }
+  html.fs .pv .side > .list, html.fs .pv .side > .empty { flex: none; max-height: none; }
   h1 { font-size: 16px; }
   .top { gap: 6px; }
   .top .grow { flex-basis: calc(100% - 120px); }
@@ -177,7 +186,7 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 .cm.editing { border-color: var(--accent); }
 .cm .chk { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--line); background: transparent; display: inline-flex; align-items: center; justify-content: center; padding: 0; font-size: 13px; }
 .cm.done .chk { background: var(--accent); color: var(--on-accent); border-color: transparent; }
-.toast { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.toast { position: fixed; left: 50%; bottom: calc(14px + var(--ib, 0px)); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 7px 12px; border-radius: var(--r-sm); font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .toast.on { opacity: .95; }
 .skel { height: 160px; border-radius: var(--r-md); background: linear-gradient(90deg, var(--panel), var(--surface), var(--panel)); background-size: 200% 100%; animation: sk 1.2s linear infinite; }
 @keyframes sk { to { background-position: -200% 0; } }
@@ -243,6 +252,15 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
     const vars = ctx.styles && ctx.styles.variables;
     if (vars) for (const k in vars) if (vars[k] != null) document.documentElement.style.setProperty(k, vars[k]);
     if (ctx.displayMode) { document.documentElement.classList.toggle("fs", ctx.displayMode === "fullscreen"); lastH = 0; if (state.page || state.project) render(); }
+    applyInsets();
+  }
+  // Keep clear of the host's own bars: its safe area insets; a phone's full-screen panel that gives none gets room for
+  // Claude's header and chat box (they lie over the app there).
+  function applyInsets() {
+    const i = host.ctx.safeAreaInsets, root = document.documentElement.style;
+    const phoneFs = host.ctx.displayMode === "fullscreen" && (host.ctx.platform === "mobile" || matchMedia("(pointer: coarse) and (max-width: 560px)").matches);
+    const v = i ? { it: i.top, ir: i.right, ib: i.bottom, il: i.left } : phoneFs ? { it: 100, ir: 0, ib: 140, il: 0 } : { it: 0, ir: 0, ib: 0, il: 0 };
+    for (const k in v) root.setProperty("--" + k, Math.max(0, Number(v[k]) || 0) + "px");
   }
 
   // Full screen is the host's own panel (like a media viewer): asked for when the user opens an edit, or with the button.
@@ -267,6 +285,7 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
   state.compose = freshCompose();
   // The player lives across redraws (a poll every few seconds must not reload it); views hook into its time.
   let player = null, polling = null, wantedId = null, timeHooks = [];
+  const autoRendered = new Set();
 
   function onToolInput(args) { if (args.projectId) { wantedId = args.projectId; } }
   function onToolResult(res) {
@@ -298,6 +317,9 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
     const fresh = sameProject && view.preview && view.preview.renderId !== prevRender;
     render(fresh);
     schedulePoll();
+    // An edit never rendered has nothing to play (the editor plays edits live, so many have no preview): its first
+    // preview starts on its own, once, and plays when it is done.
+    if (!view.preview && !view.rendering && !view.failed && !autoRendered.has(view.project.id)) { autoRendered.add(view.project.id); renderPreview(); }
   }
 
   // If the host starts the app again when it goes full screen, the edit the user just opened opens again.
@@ -424,7 +446,9 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
       stage = h("div", { class: "stage" + (tall ? " tall" : "") }, h("div", { class: "frame" }, player, canvas));
     } else {
       player = null;
-      stage = h("div", { class: "stage" }, h("div", { class: "noprev" }, v.rendering ? "The first preview is rendering…" : "No preview yet."));
+      stage = h("div", { class: "stage" }, h("div", { class: "noprev" }, v.rendering
+        ? h("div", {}, h("b", {}, "Making a preview to watch here…"), h("div", { class: "small", style: "margin-top:6px" }, "A long edit takes a few minutes. It plays here as soon as it is ready."))
+        : state.busy ? "Starting the preview…" : "No preview yet."));
     }
     const strip = seekView(v);
     const ctrl = controlsView(v);
