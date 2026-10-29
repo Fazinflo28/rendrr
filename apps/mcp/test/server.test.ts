@@ -82,9 +82,14 @@ describe("the connector", () => {
     const res = resources.find((x) => x.uri === APP_URI)!;
     assert.equal(res.mimeType, "text/html;profile=mcp-app");
     const read = await client.readResource({ uri: APP_URI });
-    // The first address still answers, with the same (newest) page.
-    const first = await client.readResource({ uri: "ui://rendrr/projects.html" });
-    assert.equal((first.contents[0] as { text: string }).text, (read.contents[0] as { text: string }).text);
+    // The first address and any earlier one (a chat started before the page changed) answer with the newest page.
+    for (const uri of ["ui://rendrr/projects.html", "ui://rendrr/projects-9bbc3bd8ed5a.html", "ui://rendrr/projects-f0a76ef9a738.html"]) {
+      const old = await client.readResource({ uri });
+      assert.equal((old.contents[0] as { text: string }).text, (read.contents[0] as { text: string }).text, uri);
+      assert.equal(old.contents[0].uri, uri);
+      assert.deepEqual((old.contents[0] as { _meta: unknown })._meta, (read.contents[0] as { _meta: unknown })._meta, uri);
+    }
+    await assert.rejects(client.readResource({ uri: "ui://rendrr/other.html" }));
     const c = read.contents[0] as { mimeType: string; text: string; _meta: { ui: { csp: { resourceDomains: string[]; connectDomains: string[] }; prefersBorder: boolean } } };
     assert.equal(c.mimeType, "text/html;profile=mcp-app");
     assert.match(c.text, /^<!doctype html>/);

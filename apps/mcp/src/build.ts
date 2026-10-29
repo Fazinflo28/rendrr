@@ -2,7 +2,7 @@
 // Rendrr app in the chat (an MCP App: open_projects shows it, its own tools are hidden from the AI).
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { APP_MIME_TYPE, APP_RESOURCE_URI, APP_TOOLS, EDITING_SKILL, HOW_TO_EDIT, MCP_INSTRUCTIONS, MCP_TOOLS, type ToolDef } from "@rendrr/shared";
 import { z } from "zod";
 
@@ -100,6 +100,9 @@ export function buildServer(w: Who) {
   server.registerResource("projects-app", APP_URI, { title: "Rendrr projects", description: "The user's edits, previews and comments, shown in the chat.", mimeType: APP_MIME_TYPE }, appPage);
   // The first address, for a host still holding a tool list that names it: the newest page there too.
   server.registerResource("projects-app-first", APP_RESOURCE_URI, { title: "Rendrr projects", description: "The same page at its first address.", mimeType: APP_MIME_TYPE }, appPage);
+  // Every earlier page address (a chat started before the page last changed still asks for the hash it was given):
+  // the newest page, so the app opens instead of "Unable to reach Rendrr".
+  server.registerResource("projects-app-earlier", new ResourceTemplate(APP_RESOURCE_URI.replace(/\.html$/, "-{hash}.html"), { list: undefined }), { title: "Rendrr projects", description: "The same page at an earlier address.", mimeType: APP_MIME_TYPE }, appPage);
   server.registerResource("styles", "rendrr://styles", { title: "Style packs", description: "Every style pack with its rules, as text and machine rules.", mimeType: "text/markdown" }, async (uri) => {
     const r = await callApi(w, "/internal/resources/styles", undefined, "GET");
     return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: r.ok ? r.json.text : "Could not load the styles right now." }] };
