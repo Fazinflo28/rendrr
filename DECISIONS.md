@@ -368,6 +368,8 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Editing and deleting | The user's own notes: words, pictures and drawing. Client comments (from review links) can be deleted and resolved, not reworded. |
 | Share | The review link Rendrr already has (watch, comment, approve, no account), for the version being watched; one made before (no password, not expired) is reused. Sharing marks the edit "In review", as sharing from the editor does. |
 
+| An edit with no preview | Opening it in the app starts its first preview once (one render, the one the user would ask for anyway). It is not started again for that edit while the app is open, and a failed render shows why, with a Render preview button to try again. |
+| Claude's own bars on a phone | The app keeps clear of the space the host says it covers (safe-area insets; a fixed margin if the host gives none) and puts the comment box under the player, away from Claude's chat box. |
 | The page's address | Claude kept showing the first version of the page after it changed: hosts keep app pages by their address. The address now carries a hash of the page (ui://rendrr/projects-<hash>.html), so every change is a new address and is fetched again; the first address still answers with the newest page. |
 | What was taken out of the skill | Names of people and clients, the review site, client delivery, Drive downloads, local transcription and FFmpeg steps: private, or done by Rendrr itself. Its rules, mistakes table and QA gate are kept, each pointed at the Rendrr tool that catches it. |
 
