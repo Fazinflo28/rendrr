@@ -57,7 +57,8 @@ const left = await page.evaluate(() => parseFloat(document.querySelector(".track
 check(left > 1000 && w3.any > 0, `scrolled: the canvas follows (left ${Math.round(left)} px) and draws there`);
 await page.locator("#zoom-fit").click(); await page.waitForTimeout(400);
 
-// 3. Marks: thin coloured lines with a note; the toggle hides them and is remembered.
+// 3. Marks: short coloured ticks on the ruler (no lines through the tracks) with a note; the toggle hides them and is
+// remembered.
 const marks = page.locator(".tl-mark");
 const n = await marks.count();
 check(n >= 3, `marks are on the timeline (${n})`);
@@ -68,9 +69,10 @@ check(!!ai && /^Note: Hook ends · Cut here for the short version \(\d+:\d\d\.\d
 const colours = await marks.evaluateAll((els) => Array.from(new Set(els.map((e) => e.style.getPropertyValue("--mk")))));
 check(colours.length >= 2, `marks are coloured by kind (${colours.join(" ")})`);
 const lineW = await marks.first().evaluate((e) => getComputedStyle(e, "::after").width);
-check(parseFloat(lineW) <= 1.01, `the line is thin (${lineW})`);
+check(parseFloat(lineW) <= 2.01, `the tick is thin (${lineW})`);
+check(await page.evaluate(() => [...document.querySelectorAll(".tl-mark")].every((m) => m.closest(".ruler") && m.getBoundingClientRect().height <= 8)), "marks sit on the ruler only, no lines through the tracks");
 await page.locator("#marks-toggle").click(); await page.waitForTimeout(200);
-check((await page.locator(".tl-mark").count()) === 0 && (await page.locator("#marks-toggle").textContent()).startsWith("Marks off"), "the toggle hides them");
+check((await page.locator(".tl-mark").count()) === 0 && (await page.locator("#marks-toggle").getAttribute("aria-pressed")) === "false", "the toggle hides them");
 await page.evaluate(() => globalThis.__rendrrNav.go("/library")); await page.waitForTimeout(300);
 await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await page.waitForTimeout(1200);
 check((await page.locator(".tl-mark").count()) === 0, "hidden marks stay hidden when the editor opens again");

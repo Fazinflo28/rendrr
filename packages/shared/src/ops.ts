@@ -85,6 +85,12 @@ const EDIT_OPS = [
     gradient: z.object({ from: z.string().regex(/^#[0-9a-fA-F]{6}$/), to: z.string().regex(/^#[0-9a-fA-F]{6}$/), angle: z.number().min(0).max(360).optional() }).optional(),
     videoId: z.string().min(1).max(80).optional(), blur: z.number().min(1).max(100).optional(), pattern: BackgroundSchema.innerType().shape.pattern, none: z.boolean().optional() }),
   z.object({ op: z.literal("rename"), name: z.string().min(1).max(200) }),
+  // The project bin (the editor's Media panel): library videos kept with the edit to use, or taken off it.
+  z.object({ op: z.literal("add_media"), videoIds: z.array(z.string().min(1).max(80)).min(1).max(50) }),
+  z.object({ op: z.literal("remove_media"), videoIds: z.array(z.string().min(1).max(80)).min(1).max(50) }),
+  // The reference the user (or the AI) attaches for the AI to copy: shown in the editor's Reference monitor, never
+  // applied. Kept on the project, not in the edit: the server takes it out of the batch (applyOp refuses it alone).
+  z.object({ op: z.literal("set_reference"), videoId: z.string().min(1).max(80).nullable().optional(), styleId: z.string().min(1).max(80).optional() }),
   z.object({ op: z.literal("apply_style"), styleId: z.string().max(80), overrides: StyleRulesPatchSchema.optional() }),
   // ---- the sequence ----
   // A clip of any video (default the main footage) into V1: at position `index`, or at edit time `at` (a clip
@@ -113,7 +119,7 @@ const EDIT_OPS = [
   // The edit's sound: dialogue cleanup preset, loudness target (LUFS, null = off), true-peak ceiling (dBTP), how many
   // dB music goes down under speech (0 = off), fades of the whole mix. Fields left out keep their value.
   z.object({ op: z.literal("set_audio"), cleanup: z.enum(CLEANUPS).optional(), loudness: z.number().min(-30).max(-6).nullable().optional(), peak: z.number().min(-6).max(0).optional(), duck: z.number().min(0).max(30).optional(), fadeIn: z.number().min(0).max(10).optional(), fadeOut: z.number().min(0).max(10).optional(),
-    highpass: z.number().min(0).max(300).nullable().optional(), denoise: z.number().min(0).max(40).nullable().optional(), presence: z.number().min(0).max(8).nullable().optional(), deess: z.number().min(0).max(1).nullable().optional(), compress: z.number().min(1).max(10).nullable().optional(), declick: z.number().min(0).max(0.03).optional() }),
+    highpass: z.number().min(0).max(300).nullable().optional(), denoise: z.number().min(0).max(40).nullable().optional(), presence: z.number().min(-8).max(8).nullable().optional(), deess: z.number().min(0).max(1).nullable().optional(), compress: z.number().min(1).max(10).nullable().optional(), declick: z.number().min(0).max(0.03).optional() }),
   // One clip's sound: a V1 clip's dialogue (track v1 or a1, the default), a music clip (a2) or a sound effect (a3).
   z.object({ op: z.literal("set_clip_audio"), track: z.enum(["v1", "a1", "a2", "a3"]).optional(), clipId, gainDb: z.number().min(-40).max(20).optional(), fadeIn: z.number().min(0).max(30).optional(), fadeOut: z.number().min(0).max(30).optional() }),
   // ---- speed, transitions, keyframes (Phase 5) ----
@@ -634,6 +640,24 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, aspect: op.aspect }, summary: `changed shape to ${op.aspect}` };
     case "rename":
       return { snap: { ...snap, name: op.name }, summary: `renamed the edit to "${op.name}"` };
+    case "set_reference":
+      throw new EditError("set_reference is kept on the project by Rendrr's server: send it with apply_edits.");
+    case "add_media": {
+      const have = tl.media ?? [];
+      const names: string[] = [];
+      for (const vid of op.videoIds) {
+        const v = ctx.getVideo?.(vid);
+        if (ctx.getVideo && !v && vid !== ctx.videoId) throw new EditError(`There is no video "${vid}" in the library. list_footage shows them.`);
+        names.push(v?.name ? `"${v.name}"` : vid);
+      }
+      const media = [...have, ...op.videoIds.filter((x, i, a) => !have.includes(x) && a.indexOf(x) === i)];
+      if (media.length > 200) throw new EditError("The project bin holds 200 videos at most.");
+      return { snap: { ...snap, timeline: { ...tl, media } }, summary: `project bin: added ${names.join(", ")}` };
+    }
+    case "remove_media": {
+      const media = (tl.media ?? []).filter((x) => !op.videoIds.includes(x));
+      return { snap: { ...snap, timeline: { ...tl, media: media.length ? media : undefined } }, summary: `project bin: took off ${op.videoIds.length === 1 ? "1 video" : op.videoIds.length + " videos"}` };
+    }
     case "set_framing": {
       const ids = targets(tl, op.clipIds);
       if (op.fitFaceTo) return fitFaces(snap, op.fitFaceTo, op, ids);

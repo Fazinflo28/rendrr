@@ -181,8 +181,7 @@ export function ColorTab({ clip, track, projectId, clips, lutList, reloadLuts, t
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
   if (!clip || !(track === "v1" || track === "a1" || (track === "v2" && clip.kind === "broll"))) {
-    return html`<div class="pb" id="color-panel" style="padding-top:16px"><p class="t-small muted">Select a clip on V1 or a b-roll clip to colour it: grade, LUT, match, key, masks, blur.</p>
-      ${hdrRow(timeline, doOp)}</div>`;
+    return html`<${WholeEditColor} clips=${clips} lutList=${lutList} reloadLuts=${reloadLuts} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />`;
   }
   const sl = { H, liveOp };
   const g = clip.grade || {};
@@ -292,6 +291,62 @@ export function ColorTab({ clip, track, projectId, clips, lutList, reloadLuts, t
     ${track === "v2" && html`<label class="t-small row" style="gap:6px" id="under-row"><input type="checkbox" id="under-v1" checked=${!!clip.under} onChange=${(e) => doOp({ op: "set_under", clipId: clip.id, under: e.target.checked })} />Behind the main picture (shows where V1 is keyed, masked or framed smaller)</label>`}
     ${hdrRow(timeline, doOp)}
     <p class="t-small muted" id="color-note">The picture here is drawn with the render's own numbers: the same LUT, key, masks, blur and sharpen.</p>
+  </div></div>`;
+}
+
+/** The Color tab with no clip selected: the look of the whole edit, every V1 clip at once (set_grade all), like an
+ *  adjustment layer: a LUT (pick or import), the basic grade and sharpening. A clip's own controls are one click away. */
+function WholeEditColor({ clips, lutList, reloadLuts, timeline, doOp, H, liveOp, toast }) {
+  const fileRef = useRef(null); const [busy, setBusy] = useState(false);
+  const v1 = clips.filter((c) => c.sourceIn != null);
+  const g = v1[0]?.grade || {};
+  const same = (f) => v1.every((c) => JSON.stringify((c.grade || {})[f] ?? null) === JSON.stringify(g[f] ?? null));
+  const mixed = ["exposure", "contrast", "temperature", "tint", "saturation", "lut"].filter((f) => !same(f));
+  const gop = (patch) => ({ op: "set_grade", all: true, ...patch });
+  const sl = { H, liveOp };
+  const fx = v1[0]?.effects || [];
+  const sharpen = fx.find((e) => e.type === "sharpen")?.amount ?? 0;
+  const ownFx = v1.some((c) => (c.effects || []).some((e) => e.type !== "sharpen" || e.area));
+  const importLut = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const text = await file.text();
+      parseCube(text);
+      const l = await api.uploadLut(file.name, text);
+      delete lutData[l.id]; delete lutLoading[l.id];
+      await reloadLuts();
+      doOp(gop({ lut: { id: l.id, amount: 1 } }));
+    } catch (e) { toast(e.message); } finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
+  };
+  return html`<div class="pb" id="color-panel" style="padding-top:16px"><div class="col" style="gap:18px" id="whole-color">
+    <p class="t-small muted" style="margin:0">The whole edit: every clip on V1 at once. Select a clip to grade it on its own, or for match, key, masks and blur.</p>
+    <div class="col" style="gap:8px" id="whole-lut">
+      <b class="t-label">Look (LUT)</b>
+      <div class="row" style="gap:8px;align-items:flex-end">
+        <label class="t-small grow" style="display:grid;gap:4px">LUT<select class="input sm" id="whole-lut-select" value=${same("lut") ? g.lut?.id || "" : ""} onChange=${(e) => doOp(gop({ lut: e.target.value ? { id: e.target.value, amount: g.lut?.amount ?? 1 } : null }))}>
+          <option value="">${same("lut") ? "None" : "Different on each clip"}</option>${lutList.map((l) => html`<option key=${l.id} value=${l.id}>${l.name}</option>`)}</select></label>
+        <${Btn} size="sm" id="whole-lut-import" icon="upload" disabled=${busy} onClick=${() => fileRef.current?.click()}>${busy ? "Importing…" : "Import .cube"}<//>
+        <input ref=${fileRef} type="file" accept=".cube,text/plain" id="whole-lut-file" style="display:none" onChange=${(e) => importLut(e.target.files?.[0])} />
+      </div>
+      ${g.lut && same("lut") && html`<${OpSlider} id="whole-lut-amount" label="Amount" value=${g.lut.amount ?? 1} min=${0} max=${1} step=${0.01} show=${pct} opFor=${(v) => gop({ lut: { ...g.lut, amount: v } })} ...${sl} />`}
+      <span class="t-small muted">Your AI can apply a LUT too: give it the .cube file.</span>
+    </div>
+    <div class="col" style="gap:8px" id="whole-grade">
+      <div class="row between"><b class="t-label">Basic correction</b>${v1.some((c) => c.grade) && html`<${Btn} kind="ghost" size="xs" id="whole-reset" onClick=${() => doOp(gop({ reset: true }))}>Reset every clip<//>`}</div>
+      ${mixed.length > 0 && html`<span class="t-small muted">Clips differ in ${mixed.join(", ")}: a slider sets that value on every clip.</span>`}
+      <${OpSlider} id="whole-exposure" label="Exposure" value=${g.exposure || 0} min=${-3} max=${3} step=${0.05} show=${(v) => sgn(v, 2) + " stops"} opFor=${(v) => gop({ exposure: v })} ...${sl} />
+      <${OpSlider} id="whole-contrast" label="Contrast" value=${g.contrast || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ contrast: v })} ...${sl} />
+      <div class="row" style="gap:8px"><div class="grow"><${OpSlider} id="whole-temperature" label="Temperature" value=${g.temperature || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ temperature: v })} ...${sl} /></div>
+        <div class="grow"><${OpSlider} id="whole-tint" label="Tint" value=${g.tint || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ tint: v })} ...${sl} /></div></div>
+      <${OpSlider} id="whole-saturation" label="Saturation" value=${g.saturation ?? 100} min=${0} max=${200} step=${1} show=${(v) => v + "%"} opFor=${(v) => gop({ saturation: v })} ...${sl} />
+    </div>
+    <div class="col" style="gap:8px" id="whole-sharpen">
+      <b class="t-label">Sharpen</b>
+      ${ownFx ? html`<span class="t-small muted">Some clips have their own effects: sharpen them clip by clip.</span>`
+        : html`<${OpSlider} id="whole-sharpen-amount" label="Amount" value=${sharpen} min=${0} max=${100} step=${1} show=${(v) => (v ? String(v) : "off")} opFor=${(v) => ({ op: "set_effects", all: true, effects: v ? [{ type: "sharpen", amount: v }] : [] })} ...${sl} />`}
+    </div>
+    ${hdrRow(timeline, doOp)}
   </div></div>`;
 }
 

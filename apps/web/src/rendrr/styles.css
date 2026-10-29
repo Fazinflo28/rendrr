@@ -298,7 +298,7 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .ed-top .name { font-weight: 600; font-size: 17px; height: 40px; padding: 0 var(--s3); border-radius: 10px; background: transparent; border: 2px solid transparent; flex: 0 1 260px; min-width: 140px; }
 .ed-top .name:hover { background: var(--raised); }
 .ed-top .name:focus { background: var(--raised-strong); border-color: transparent; box-shadow: 0 0 0 2px var(--accent-ring); outline: none; }
-.ed-body { display: grid; grid-template-columns: 1fr 380px; gap: var(--s3); padding: 0 var(--s6) var(--s6); min-height: 0; }
+.ed-body { display: grid; grid-template-columns: 300px minmax(0, 1fr) 380px; gap: var(--s3); padding: 0 var(--s6) var(--s6); min-height: 0; }
 .ed-left { display: grid; grid-template-rows: 1fr 292px; gap: var(--s3); min-height: 0; min-width: 0; }
 .panel { background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-card); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .panel .ph { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); padding: var(--s4) var(--s4) var(--s3); }
@@ -329,7 +329,7 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 
 /* timeline */
 .tl { margin: 0; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-card); display: grid; grid-template-rows: auto 1fr; overflow: hidden; min-height: 0; }
-.tl-bar { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--s2); min-height: 44px; padding: 4px var(--s3); border-bottom: 1px solid var(--line); }
+.tl-bar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s3); min-height: 44px; padding: 4px var(--s3); border-bottom: 1px solid var(--line); }
 .tl-bar .tc-ro { white-space: nowrap; }
 .tc-ro { font-size: 13px; } .tc-ro b { font-weight: 500; }
 .tl-tools { display: flex; align-items: center; gap: 4px; justify-self: center; }
@@ -339,7 +339,18 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .tool .kbd { height: 18px; line-height: 18px; min-width: 18px; padding: 0 5px; font-size: 10px; color: var(--muted); }
 .tl-bar .zoom { display: flex; align-items: center; gap: 4px; justify-self: end; }
 .tl-bar input[type=range] { width: 110px; accent-color: var(--accent); }
-.tl-body { display: grid; grid-template-columns: 118px 1fr; min-height: 0; }
+.tl-body { display: grid; grid-template-columns: 44px 118px 1fr; min-height: 0; }
+/* The tool bar, like Premiere's: a narrow strip of icons; hovering one names it with its shortcut. */
+.tl-tbar { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; border-right: 1px solid var(--line); background: var(--surface); overflow-y: auto; overflow-x: visible; scrollbar-width: none; }
+.tl-tbar .tool-set { display: flex; flex-direction: column; gap: 2px; padding: 0; margin: 0; border: 0; }
+.tl-tbar .tool.icon { width: 32px; height: 28px; }
+.tl-tbar .tool.on { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-ring); }
+.tbar-sep { width: 20px; height: 1px; background: var(--hair-strong); margin: 4px 0; flex: none; }
+.tl-acts { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.tl-acts .tool.icon { width: 32px; height: 30px; }
+[data-tip] { position: relative; }
+[data-tip]:hover::after { content: attr(data-tip); position: absolute; z-index: 60; left: calc(100% + 8px); top: 50%; transform: translateY(-50%); width: max-content; max-width: 260px; padding: 6px 9px; border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 11.5px; line-height: 16px; font-weight: 500; white-space: normal; text-align: left; box-shadow: var(--shadow-pop); pointer-events: none; }
+.tl-acts [data-tip]:hover::after { left: 50%; top: calc(100% + 6px); transform: translateX(-50%); }
 .tl-labels { display: flex; flex-direction: column; padding-top: 24px; border-right: 1px solid var(--line); background: var(--surface); }
 .tl-labels div { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; font-size: 11px; color: var(--muted); }
 .tl-labels div b { font-weight: 600; font-size: 11px; color: var(--muted); width: 26px; height: 20px; border-radius: 6px; background: var(--raised); display: grid; place-items: center; font-variant-numeric: tabular-nums; }
@@ -349,7 +360,7 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .tl-scroll { overflow-x: auto; overflow-y: hidden; position: relative; }
 .tl-canvas { position: relative; height: 100%; min-width: 100%; }
 .ruler { position: relative; height: 24px; cursor: pointer; border-bottom: 1px solid var(--line); }
-.ruler span { position: absolute; top: 3px; padding-left: 5px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ruler span { position: absolute; top: 3px; padding-left: 5px; font-size: 10px; line-height: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ruler span::before { content: ""; position: absolute; left: 0; top: 2px; width: 1px; height: 18px; background: var(--hair-strong); }
 .ruler .mt { position: absolute; bottom: 0; width: 1px; height: 5px; background: var(--line); }
 .ruler .cm { position: absolute; top: 5px; width: 10px; height: 10px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 2px var(--surface); transform: translateX(-50%); cursor: pointer; z-index: 2; }
@@ -360,7 +371,12 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .track:nth-child(4) { border-bottom: 1px solid var(--hair-strong); }
 .clip { position: absolute; top: 4px; height: 26px; border-radius: 6px; background: var(--raised); display: flex; align-items: center; padding: 0 10px; font-size: 11px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; cursor: pointer; user-select: none; box-shadow: inset 0 0 0 1px var(--hair-strong); transition: box-shadow .1s; }
 .clip .cl { overflow: hidden; text-overflow: ellipsis; position: relative; }
-.clip.video { background: var(--ink); color: var(--bg); box-shadow: none; }
+.clip.video { background: #2a2d31; color: #fff; box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); padding: 0 6px; }
+.clip.video .strip { position: absolute; inset: 0; display: flex; overflow: hidden; pointer-events: none; border-radius: inherit; }
+.clip.video .strip i { flex: none; height: 100%; background: #2a2d31 center / cover no-repeat; border-right: 1px solid rgba(0,0,0,.35); }
+.clip.video .cl { z-index: 1; padding: 0 5px; border-radius: 4px; background: rgba(0,0,0,.55); color: #fff; font-size: 10.5px; line-height: 16px; }
+.clip.video .cl:empty { display: none; }
+.clip.video.on { box-shadow: inset 0 0 0 2px var(--accent); }
 /* Engine Part 6: sound clips are see-through boxes over their real waveform (the track's canvas, drawn from the 10 ms
    peaks); the label sits at the top left. */
 .clip.audio { background: color-mix(in srgb, var(--surface) 30%, transparent); box-shadow: inset 0 0 0 1px var(--hair-strong); align-items: flex-start; padding-top: 2px; }
@@ -369,9 +385,10 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .track .wave { position: absolute; top: 0; pointer-events: none; --wave: #4f9fe0; --wave-off: rgba(136,136,136,.45); }
 .track.a2 .wave { --wave: #46a758; } .track.a3 .wave { --wave: #e2a336; }
 /* Marks: a thin coloured line through the tracks (a 7 px wide hover area), a tint in the ruler over a stretch. */
-.tl-canvas .tl-mark { position: absolute; top: 24px; bottom: 0; width: 7px; z-index: 3; cursor: pointer; }
-.tl-canvas .tl-mark::after { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: var(--mk, #999); opacity: .75; }
-.tl-canvas .tl-mark:hover::after { width: 2px; opacity: 1; }
+/* Marks: a short coloured tick at the ruler's foot (clear of the time labels above it), a tint over a stretch. */
+.ruler .tl-mark { position: absolute; bottom: 0; height: 6px; width: 7px; z-index: 3; cursor: pointer; }
+.ruler .tl-mark::after { content: ""; position: absolute; left: 3px; bottom: 0; height: 6px; width: 1.5px; border-radius: 1px; background: var(--mk, #999); opacity: .85; }
+.ruler .tl-mark:hover::after { width: 2.5px; height: 9px; opacity: 1; }
 .ruler .tl-mrange { position: absolute; bottom: 0; height: 4px; opacity: .55; pointer-events: none; border-radius: 1px; }
 .clip.title { background: var(--surface); box-shadow: inset 0 0 0 1px var(--hair-strong); }
 .clip.title::before { content: ""; width: 3px; height: 14px; border-radius: 2px; background: var(--ink); margin-right: 7px; flex: none; }
@@ -913,6 +930,8 @@ a { color: var(--accent-ink); }
   .ed-left > .center { order: 1; }
   .ed-body > .panel { order: 2; height: min(72dvh, 600px); }
   .ed-left > .tl { order: 3; height: 300px; }
+  .ed-side { order: 4; display: flex; flex-direction: column; }
+  .ed-side .bin { max-height: 440px; }
   .pwrap.fit { height: auto; }
   .pwrap.fit .player { flex: none; width: min(100%, calc(56dvh * var(--ar, 1.7778))); }
   .tl-body { grid-template-columns: 84px 1fr; }
@@ -981,7 +1000,7 @@ a { color: var(--accent-ink); }
 .tl-tools { flex-wrap: wrap; row-gap: 2px; }
 .tool.on { background: var(--raised); box-shadow: inset 0 0 0 1px var(--hair-strong); }
 .tool-set { gap: 2px; padding-right: 6px; margin-right: 2px; border-right: 1px solid var(--hair-strong); }
-.clip.video.other { background: var(--accent); color: var(--on-accent); }
+.clip.video.other { background: var(--accent); color: var(--on-accent); box-shadow: inset 0 0 0 2px var(--accent); }
 .clip.muted { opacity: .5; }
 .tl-canvas .tl-drop { position: absolute; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: var(--accent); pointer-events: none; z-index: 2; } /* reorder marker (not .drop: that is the file drop zone) */
 .tl-canvas.tool-razor .clip { cursor: crosshair; }
@@ -1018,3 +1037,79 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .cmt-img { width: 64px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); display: block; }
 .cmt a { color: var(--accent-ink); text-decoration: underline; word-break: break-all; }
 .cmt-ink { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; }
+
+/* Voice presets (Audio tab), like Premiere's Essential Sound: a grid of named presets, the one in use lit. */
+.presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.presets .preset { text-align: left; padding: 8px 10px; border-radius: var(--r-sm); background: var(--raised); box-shadow: inset 0 0 0 1px var(--hair); display: flex; flex-direction: column; gap: 2px; min-width: 0; transition: background-color .15s var(--ease), box-shadow .15s var(--ease); }
+.presets .preset:hover { background: var(--raised-strong); }
+.presets .preset b { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.presets .preset span { font-size: 11px; line-height: 15px; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.presets .preset.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-ring); }
+.presets .preset.on b { color: var(--accent); }
+
+/* The left column, like Premiere's Source monitor over its Project panel: the reference (or a bin video) on top, the
+   project bin below. */
+.ed-side { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--s3); min-height: 0; min-width: 0; }
+.mon, .bin { background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-card); min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.mon-head, .bin-head { display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 6px 0 10px; border-bottom: 1px solid var(--line); flex: none; }
+.bin-head b { font-size: 12.5px; font-weight: 600; }
+.mon-tabs { display: flex; gap: 2px; min-width: 0; flex: 1; }
+.mon-tabs button { height: 28px; padding: 0 10px; border-radius: var(--r-sm); font-size: 12px; font-weight: 500; color: var(--ink-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.mon-tabs button.on { color: var(--ink); background: var(--raised-strong); box-shadow: var(--shadow-indicator); }
+.mon-screen { aspect-ratio: 16 / 9; background: #000; display: grid; place-items: center; min-height: 0; }
+.mon-screen video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.mon-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px; text-align: center; color: var(--muted); }
+.mon-empty b { color: var(--ink); }
+.mon-foot { padding: 8px; border-top: 1px solid var(--line); }
+.bin { min-height: 0; }
+.bin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 10px; overflow: auto; align-content: start; }
+.bin-item { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bin-thumb { position: relative; aspect-ratio: 16 / 10; border-radius: var(--r-sm); overflow: hidden; background: var(--raised); box-shadow: inset 0 0 0 1px var(--hair); display: block; width: 100%; }
+.bin-thumb.sm { width: 56px; flex: none; aspect-ratio: 16 / 10; }
+.bin-thumb .len { position: absolute; right: 4px; bottom: 4px; font-size: 10px; line-height: 14px; padding: 0 5px; border-radius: 4px; background: rgba(0,0,0,.6); color: #fff; font-variant-numeric: tabular-nums; }
+.bin-thumb .badge-in { position: absolute; left: 4px; top: 4px; font-size: 9.5px; line-height: 14px; padding: 0 5px; border-radius: 4px; background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.bin-item.on .bin-thumb { box-shadow: 0 0 0 2px var(--accent); }
+.bin-item:hover .bin-thumb { box-shadow: inset 0 0 0 1px var(--hair-strong), 0 0 0 1px var(--hair-strong); }
+.ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.tool.icon.xs { width: 22px; height: 22px; border-radius: 6px; }
+.bin-add { padding: 8px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; max-height: 50%; min-height: 0; }
+.bin-list { overflow: auto; display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+.bin-row { display: flex; align-items: center; gap: 8px; padding: 4px; border-radius: var(--r-sm); }
+.bin-row:hover { background: var(--raised); }
+.bin-row .muted { display: block; }
+@media (max-width: 1500px) { .ed-body { grid-template-columns: 260px minmax(0, 1fr) 360px; } }
+
+/* Comments, like Frame.io: Open / All / Done, a card each (who, when, the moment, the words; actions on hover; the
+   check marks it done), the box to write one at the bottom. */
+.cm-head { display: flex; align-items: center; gap: 8px; padding: 12px 0 10px; flex: none; }
+.cm-head .seg { width: 100%; } .cm-head .seg button { flex: 1; }
+.cm-list { gap: 6px; flex: 1; min-height: 0; overflow: auto; }
+.cmt { display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--r-md); background: var(--raised); cursor: pointer; transition: background-color .15s var(--ease), box-shadow .15s var(--ease); }
+.cmt:hover { background: var(--raised-strong); }
+.cmt.now { box-shadow: inset 0 0 0 1px var(--accent-ring); }
+.cmt.done { opacity: .55; }
+.cmt .gava { width: 26px; height: 26px; font-size: 10px; flex: none; }
+.gava.client { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--hair-strong); }
+.cmt-top { display: flex; align-items: center; gap: 6px; font-size: 12.5px; line-height: 18px; min-width: 0; }
+.cmt-top b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmt-top .muted { font-size: 11.5px; white-space: nowrap; }
+.cmt-acts { display: inline-flex; gap: 2px; opacity: 0; transition: opacity .15s var(--ease); }
+.cmt:hover .cmt-acts, .cmt:focus-within .cmt-acts { opacity: 1; }
+.cmt-check { width: 22px; height: 22px; border-radius: 6px; box-shadow: inset 0 0 0 1.5px var(--ink-ghost); color: transparent; display: inline-grid; place-items: center; flex: none; }
+.cmt-check:hover { box-shadow: inset 0 0 0 1.5px var(--accent); color: var(--accent); }
+.cmt-check.on { background: var(--accent); color: var(--on-accent); box-shadow: none; }
+.cmt-body { margin: 4px 0 0; font-size: 13px; line-height: 19px; word-break: break-word; white-space: pre-wrap; }
+.cbox { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 10px; margin-top: 8px; border-top: 0; border-radius: var(--r-md); background: var(--raised); box-shadow: 0 0 0 1px var(--hair-strong); flex: none; }
+.cbox:focus-within { box-shadow: 0 0 0 2px var(--accent-ring); }
+.cbox-text { width: 100%; resize: none; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13.5px; line-height: 19px; outline: none; min-height: 40px; max-height: 140px; }
+.cbox-text::placeholder { color: var(--ink-ghost); }
+@media (hover: none) { .cmt-acts { opacity: 1; } }
+
+/* The right panel, like Premiere's: its tabs in two rows that always fit (nothing cut short), each tab's sections
+   under small upper-case headings with a line between them. */
+.panel > .tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; margin: var(--s3) var(--s4) 0; padding: 3px; overflow: visible; flex: none; }
+.panel > .tabs button { height: 30px; padding: 0 4px; font-size: 12px; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.panel > .tabs button .n { font-size: 10.5px; line-height: 16px; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--raised-strong); color: var(--ink); }
+.panel > .tabs button.on .n { background: var(--accent); color: var(--on-accent); }
+.panel .pb > .col > .col > b.t-label:first-child, .panel .pb > .col > b.t-label:first-child, .panel .pb > .col > .col > .row.between:first-child > b.t-label, .panel .pb .sec-h { font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.panel .pb > .col > .col + .col, .panel .pb > .col > .col + details, .panel .pb > .col > details + .col { border-top: 1px solid var(--hair-strong); padding-top: 14px; }

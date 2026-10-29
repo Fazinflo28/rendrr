@@ -23,7 +23,9 @@ import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./colo
 import { ExportModal, timeLeft } from "./export";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
-import { applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { SourceMonitor, MediaBin, useLibrary } from "./media";
+import { Filmstrip } from "./filmstrip";
+import { VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -59,6 +61,7 @@ const styleCode = (st, S) => [
   "  best_on: " + st.platforms.join(", "),
 ].join("\n");
 // Premiere's tools and keys.
+const TOOL_ICON = { select: "select", razor: "razor", ripple: "ripple", roll: "roll", slip: "slip", slide: "slide" };
 const TOOLS = [["select", "V", "Select", "Click to select, drag a clip to reorder it, drag an edge to trim"], ["razor", "C", "Razor", "Click a clip to split it there"], ["ripple", "B", "Ripple", "Drag an edge: the clip gets longer or shorter and the edit closes up"], ["roll", "N", "Rolling", "Drag a cut: one clip gets longer, the next shorter"], ["slip", "Y", "Slip", "Drag a clip: same place and length, other footage"], ["slide", "U", "Slide", "Drag a clip between its neighbours"]];
 const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "Pause"], ["L", "Forward 5 seconds"], ...TOOLS.map(([, k, l, d]) => [k, `${l}: ${d.charAt(0).toLowerCase() + d.slice(1)}`]), ["S", "Snapping on or off"], ["Shift Z", "Zoom the timeline to fit"], ["Cmd K", "Split at the playhead"], ["Alt drag", "Drag a dialogue edge: J or L cut"], ["Delete", "Cut selected words or clip"], ["Cmd Z", "Undo"], ["Cmd Shift Z", "Redo"], ["?", "Show shortcuts"]];
 const r2 = (n) => Math.round(n * 100) / 100;
@@ -481,8 +484,8 @@ function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek 
 
 
 // The cleanup values the Audio tab can set by hand: key, label, range, step, unit.
-const FINE = [["highpass", "Rumble cut (high-pass)", 0, 300, 10, " Hz"], ["denoise", "Noise reduction", 0, 40, 1, " dB"], ["presence", "Presence (3.5 kHz lift)", 0, 8, 0.5, " dB"], ["deess", "De-esser", 0, 1, 0.05, ""], ["compress", "Compression", 1, 10, 0.5, ":1"]];
-const CLEANUP_NAME = { none: "None", light: "Light", voice: "Voice", noisy: "Noisy room" };
+const FINE = [["highpass", "Rumble cut (high-pass)", 0, 300, 10, " Hz"], ["denoise", "Noise reduction", 0, 40, 1, " dB"], ["presence", "Presence", -8, 8, 0.5, " dB"], ["deess", "De-esser", 0, 1, 0.05, ""], ["compress", "Compression", 1, 10, 0.5, ":1"]];
+const CLEANUP_NAME = Object.fromEntries(VOICE_PRESETS.map((v) => [v.id, v.name]));
 const LOUDNESS = [[-14, "-14 LUFS (online)"], [-16, "-16 LUFS (podcast)"], [-23, "-23 LUFS (broadcast)"]];
 const dB = (x) => (x > 0 ? "+" : "") + (Math.round(x * 10) / 10) + " dB";
 // The Audio tab: the whole edit's sound (set_audio) and the selected clip's level and fades (set_clip_audio).
@@ -500,8 +503,9 @@ function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp }) {
   return html`<div class="pb" id="audio-panel" style="padding-top:16px"><div class="col" style="gap:16px">
     <div class="col" style="gap:10px">
       <b class="t-label">Whole edit</b>
-      <label class="t-small" style="display:grid;gap:4px">Dialogue cleanup<select class="input sm" id="audio-cleanup" value=${a.cleanup} onChange=${(e) => doOp({ op: "set_audio", cleanup: e.target.value })}>${CLEANUPS.map((c) => html`<option key=${c} value=${c}>${CLEANUP_NAME[c]}</option>`)}</select>
-        ${a.cleanup !== "none" && html`<span class="muted" id="audio-cleanup-what">${CLEANUP_TEXT[a.cleanup].replace(/^[^(]*\(|\)$/g, "")}</span>`}</label>
+      <div class="col" style="gap:6px" id="voice-presets"><span class="t-small">Voice preset <span class="muted">(Essential Sound)</span></span>
+        <div class="presets" role="radiogroup" aria-label="Voice preset">${VOICE_PRESETS.map((v) => html`<button key=${v.id} role="radio" aria-checked=${a.cleanup === v.id} class=${"preset" + (a.cleanup === v.id ? " on" : "")} data-preset=${v.id} title=${v.what} onClick=${() => doOp({ op: "set_audio", cleanup: v.id })}><b>${v.name}</b><span>${v.what}</span></button>`)}</div>
+        <select class="input sm hide" id="audio-cleanup" aria-hidden="true" tabindex="-1" value=${a.cleanup} onChange=${(e) => doOp({ op: "set_audio", cleanup: e.target.value })}>${CLEANUPS.map((c) => html`<option key=${c} value=${c}>${CLEANUP_NAME[c]}</option>`)}</select></div>
       <div class="row" style="gap:8px">
         <label class="t-small grow" style="display:grid;gap:4px">Loudness<select class="input sm" id="audio-loudness" value=${loud} onChange=${(e) => doOp({ op: "set_audio", loudness: e.target.value === "off" ? null : +e.target.value })}>${loudOpts.map(([v, l]) => html`<option key=${v} value=${String(v)}>${l}</option>`)}<option value="off">Off (limiter only)</option></select></label>
         <label class="t-small grow" style="display:grid;gap:4px">True-peak ceiling<select class="input sm" id="audio-peak" value=${String(a.peak)} disabled=${a.loudness == null} onChange=${(e) => doOp({ op: "set_audio", peak: +e.target.value })}>${Array.from(new Set([-1, -1.5, -2, a.peak])).map((v) => html`<option key=${v} value=${String(v)}>${v} dBTP</option>`)}</select></label>
@@ -577,12 +581,12 @@ function EditorInner({ project, reload, ai, keep }) {
   const footDur = project.timeline.duration;
   // The edit is a sequence. A project stored before Phase 2 is shown converted (the server stores it so at the next save).
   const tl = useMemo(() => asSequence(project.timeline, words, project.videoId, project.video?.seconds || footDur), [project, words]);
-  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, captionStyle: tl.captionStyle, audio: tl.audio, export: tl.export });
+  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, captionStyle: tl.captionStyle, audio: tl.audio, export: tl.export, media: tl.media });
   const S = H.state;
   // The edit as the server and the renderer see it, the place of every clip in it, and the render plan the live
   // player draws from. Times on the timeline and in the player are EDIT seconds.
   const initial = useRef(S).current;
-  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio, export: s.export });
+  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio, export: s.export, media: s.media });
   const timeline = useMemo(() => tlOf(S), [S]);
   const lay = useMemo(() => layoutTimeline(timeline, words), [timeline, words]);
   const view = useMemo(() => sequenceView(lay, words), [lay, words]);
@@ -625,6 +629,9 @@ function EditorInner({ project, reload, ai, keep }) {
     try { await api.updateProject(project.id, { reference: r ? { kind: r.kind, id: r.id } : null }); toast(r ? "Attached for your AI to read" : "Reference taken off", { icon: "check", tone: "brand" }); }
     catch (e) { setReference(before); toast(e.message); }
   };
+  // The left column: the library (bin and reference picker), the bin video playing in the monitor.
+  const lib = useLibrary([project.id]); const [source, setSource] = useState(null); const { openAdd } = useApp();
+  const usedIds = useMemo(() => Array.from(new Set([...S.tracks.v1.map((c) => c.sourceVideoId).filter(Boolean), ...S.tracks.v2.filter((b) => b.kind === "broll" && b.videoId).map((b) => b.videoId)])).filter((x) => x !== project.videoId), [S.tracks]);
   const captionRules = useMemo(() => { const r = StyleRulesSchema.safeParse(style?.rules); return r.success ? r.data.captions : undefined; }, [style]);
   // Phase 6: the user's LUTs, and the numbers of the ones this edit's grades use (the plan needs them, as the render).
   const lutQ = useAsync(() => api.listLuts().catch(() => []), []);
@@ -667,11 +674,11 @@ function EditorInner({ project, reload, ai, keep }) {
 
   // ---- editing: every change is one of the connector's ops, run here on the editor's state ----
   const ectx = useMemo(() => ({ videoId: project.videoId, transcript, silences: project.silences || [], sceneCuts: [], duration: footDur, getStyle: () => undefined,
-    getVideo: (id) => (others[id] ? { id, name: others[id].name, seconds: others[id].seconds || 0, ready: true } : undefined),
+    getVideo: (id) => { if (others[id]) return { id, name: others[id].name, seconds: others[id].seconds || 0, ready: true }; const v = (lib.library || []).find((x) => x.id === id); return v ? { id, name: v.name, seconds: v.seconds || 0, ready: v.status === "ready" } : undefined; },
     getGraphic: (id) => { const g = findTemplate(id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
-    sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others]);
+    sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others, lib.library]);
   const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
-  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export }, summary: r.summary }; };
+  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export, media: t.media }, summary: r.summary }; };
   const say = (t) => t.charAt(0).toUpperCase() + t.slice(1);
   const doOp = (op, tell = true) => { try { const r = opOn(H.state, op); H.commit(r.state); if (tell) toast(say(r.summary), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
   const liveOp = (base, op) => { try { H.replace(opOn(base, op).state); return true; } catch { return false; } };
@@ -912,6 +919,8 @@ function EditorInner({ project, reload, ai, keep }) {
   // Comments from the Rendrr app in Claude can carry a drawing and pictures; the user's own notes can be edited, any deleted.
   const [cEdit, setCEdit] = useState(null); // { id, text }
   const [cDel, setCDel] = useState(null);
+  const [cFilter, setCFilter] = useState(() => (comments.some((c) => !c.resolved) || !comments.length ? "open" : "all"));
+  const shownComments = cFilter === "open" ? comments.filter((c) => !c.resolved) : cFilter === "done" ? comments.filter((c) => c.resolved) : comments;
   const [ink, setInk] = useState(null); // { time, strokes }: a comment's drawing, shown on the picture at its moment
   const saveCEdit = async () => { try { const u = await api.editComment(cEdit.id, cEdit.text); setComments((x) => x.map((i) => (i.id === u.id ? { ...i, ...u } : i))); setCEdit(null); } catch (e) { toast(e.message); } };
   const delComment = async (c) => {
@@ -938,6 +947,13 @@ function EditorInner({ project, reload, ai, keep }) {
     </div>
 
     <div class="ed-body">
+      <aside class="ed-side" aria-label="Reference and project media">
+        <${SourceMonitor} reference=${reference} refs=${lib.refs} styles=${sq.data || []} onReference=${attach} source=${source} onCloseSource=${() => setSource(null)}
+          onInsert=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }], at: pb.time })} onAppend=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }] })} />
+        <${MediaBin} library=${lib.library} used=${usedIds} bin=${S.media || []} mainId=${project.videoId} previewing=${source?.id} onPreview=${(v) => setSource(v)}
+          onAppend=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }] })} onAddToBin=${(v) => doOp({ op: "add_media", videoIds: [v.id] })} onRemoveFromBin=${(v) => doOp({ op: "remove_media", videoIds: [v.id] })}
+          onImport=${() => openAdd("footage")} />
+      </aside>
       <div class="ed-left">
       <div class="center">
         ${viewVer && viewVer !== project.versions.length && html`<div class="ver-banner"><span>Viewing V${viewVer} of ${S.name} (read only)</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" onClick=${async () => { try { await api.restoreVersion(project.id, viewVer); toast("V" + viewVer + " restored as a new version"); setViewVer(null); reload(); } catch (e) { toast(e.message); } }}>Restore this version<//><${Btn} kind="ghost" size="xs" id="back-latest" onClick=${() => setViewVer(null)}>Back to latest<//></div></div>`}
@@ -953,26 +969,30 @@ function EditorInner({ project, reload, ai, keep }) {
       <div class="tl-bar">
         <div class="row" style="gap:6px"><${Btn} kind="quiet" size="xs" icon=${pb.playing ? "pause" : "play"} aria-label=${pb.playing ? "Pause" : "Play"} onClick=${pb.toggle} />
           <span class="mono t-small tc-ro"><b>${fmtTime(pb.time, true)}</b><span class="muted"> / ${fmtTime(dur, true)}</span></span></div>
-        <div class="tl-tools">
-          <span class="row tool-set" role="radiogroup" aria-label="Tool">${TOOLS.map(([k, key, label, hint]) => html`<button key=${k} class=${"tool" + (tool === k ? " on" : "")} id=${"tool-" + k} role="radio" aria-checked=${tool === k} title=${label + " (" + key + "): " + hint} onClick=${() => setTool(k)}>${label}<span class="kbd">${key}</span></button>`)}</span>
-          <button class="tool" id="snap" aria-pressed=${snapOn} title="Snapping (S): edges land on the playhead and on other clips' edges" onClick=${() => setSnapOn((x) => !x)}>${snapOn ? "Snap on" : "Snap off"}<span class="kbd">S</span></button>
-          <button class="tool" id="marks-toggle" aria-pressed=${showMarks} title=${showMarks ? "Hide the marks on the timeline" : "Show the marks on the timeline (silences, fillers, retakes and notes, as thin lines)"} onClick=${() => setShowMarks(!showMarks)}>${showMarks ? "Marks on" : "Marks off"}${marks.length ? html`<span class="kbd">${marks.length}</span>` : null}</button>
-          <button class="tool" id="split" title="Split at the playhead (Cmd K)" onClick=${split}><${Icon} name="scissors" size="15" />Split<span class="kbd">⌘K</span></button>
-          <button class="tool" id="add-clip" title="Add whole videos (the parts of a video filmed in parts) or a part of one to the sequence" onClick=${() => setAddOpen(true)}><${Icon} name="plus" size="15" />Add videos</button>
-          <button class="tool" id="rotate" title=${"Turn " + (selV1 ? "this clip" : "the footage") + " 90° clockwise (footage filmed sideways)"} onClick=${() => doOp({ op: "set_rotation", degrees: (rotNow + 90) % 360, clipIds: lookIds })}><${Icon} name="refresh" size="15" />Rotate${rotNow ? " " + rotNow + "°" : ""}</button>
-          <span style="position:relative"><button class="tool" id="frame-btn" title=${"Position and scale of " + (selV1 ? "this clip" : "the footage")} onClick=${() => setFrameOpen((o) => !o)}><${Icon} name="image" size="15" />Frame</button>
+        <div class="tl-acts">
+          <button class="tool icon" id="split" data-tip="Split at the playhead (⌘K)" aria-label="Split at the playhead" onClick=${split}><${Icon} name="scissors" size="16" /></button>
+          <button class="tool icon" id="add-clip" data-tip="Add videos to the sequence" aria-label="Add videos" onClick=${() => setAddOpen(true)}><${Icon} name="plus" size="16" /></button>
+          <button class="tool icon" id="rotate" data-tip=${"Turn " + (selV1 ? "this clip" : "the footage") + " 90° clockwise" + (rotNow ? " (now " + rotNow + "°)" : "")} aria-label="Rotate" onClick=${() => doOp({ op: "set_rotation", degrees: (rotNow + 90) % 360, clipIds: lookIds })}><${Icon} name="refresh" size="16" /></button>
+          <span style="position:relative"><button class="tool icon" id="frame-btn" data-tip=${"Position and scale of " + (selV1 ? "this clip" : "the footage")} aria-label="Frame" onClick=${() => setFrameOpen((o) => !o)}><${Icon} name="image" size="16" /></button>
             ${frameOpen && html`<div class="menu" id="frame-pop" style="left:0;right:auto;top:36px;min-width:240px;padding:12px;display:grid;gap:8px"><span class="t-small muted">${selV1 ? "This clip" : "Every clip of the footage"}</span>${[["scale", "Scale", 0.5, 2, 0.01], ["x", "Left / right", -0.5, 0.5, 0.01], ["y", "Up / down", -0.5, 0.5, 0.01]].map(([k, l, lo, hi, st]) => html`<label key=${k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${frNow[k]}</span><input type="range" data-frame=${k} min=${lo} max=${hi} step=${st} value=${frNow[k]} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => liveOp(H.state, { op: "set_framing", [k]: +e.target.value, clipIds: lookIds })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}<${Btn} kind="ghost" size="xs" onClick=${() => doOp({ op: "set_framing", scale: 1, x: 0, y: 0, clipIds: lookIds }, false)}>Reset<//></div>`}</span>
-          <button class="tool" id="delete-clip" disabled=${!sel} onClick=${removeSel}><${Icon} name="trash" size="15" />Delete<span class="kbd">⌫</span></button>
-          ${selV1 && html`<button class="tool" id="mute-clip" title="Silence this clip's dialogue, or bring it back" onClick=${toggleMute}><${Icon} name="mic" size="15" />${selV1.audioMuted ? "Unmute" : "Mute"}</button>`}
-          ${selClip && html`<span class="t-small muted" style="margin-left:4px">${selClip.label}</span>`}
+          <button class="tool icon" id="delete-clip" data-tip="Delete the selected clip (⌫)" aria-label="Delete" disabled=${!sel} onClick=${removeSel}><${Icon} name="trash" size="16" /></button>
+          ${selV1 && html`<button class="tool icon" id="mute-clip" data-tip=${selV1.audioMuted ? "Bring this clip's dialogue back" : "Silence this clip's dialogue"} aria-label=${selV1.audioMuted ? "Unmute" : "Mute"} onClick=${toggleMute}><${Icon} name="mic" size="16" /></button>`}
+          ${selClip && html`<span class="t-small muted ell" style="margin-left:6px;max-width:220px">${selClip.label}</span>`}
         </div>
         <div class="zoom"><button class="tool icon" aria-label="Zoom out" onClick=${() => setZoom((z) => Math.max(ZMIN, Math.round(z / 1.4)))}><${Icon} name="more" size="14" /></button><input id="tl-zoom" type="range" min="0" max="1000" value=${Math.round((1000 * Math.log(zoom / ZMIN)) / Math.log(ZMAX / ZMIN))} onInput=${(e) => setZoom(Math.round(ZMIN * Math.pow(ZMAX / ZMIN, +e.target.value / 1000)))} aria-label="Timeline zoom" /><button class="tool icon" aria-label="Zoom in" onClick=${() => setZoom((z) => Math.min(ZMAX, Math.round(z * 1.4)))}><${Icon} name="plus" size="14" /></button><button class="tool" id="zoom-fit" title="Zoom to fit (Shift Z)" onClick=${fit}>Fit</button></div>
       </div>
       <div class="tl-body">
+        <div class="tl-tbar" role="toolbar" aria-orientation="vertical" aria-label="Tools">
+          <span class="tool-set" role="radiogroup" aria-label="Tool">${TOOLS.map(([k, key, label, hint]) => html`<button key=${k} class=${"tool icon" + (tool === k ? " on" : "")} id=${"tool-" + k} role="radio" aria-checked=${tool === k} aria-label=${label} data-tip=${label + " (" + key + "): " + hint} onClick=${() => setTool(k)}><${Icon} name=${TOOL_ICON[k]} size="16" /></button>`)}</span>
+          <i class="tbar-sep" />
+          <button class=${"tool icon" + (snapOn ? " on" : "")} id="snap" aria-pressed=${snapOn} aria-label=${snapOn ? "Snapping on" : "Snapping off"} data-tip=${"Snapping (S): " + (snapOn ? "on" : "off") + ". Edges land on the playhead and on other clips' edges"} onClick=${() => setSnapOn((x) => !x)}><${Icon} name="magnet" size="16" /></button>
+          <button class=${"tool icon" + (showMarks ? " on" : "")} id="marks-toggle" aria-pressed=${showMarks} aria-label=${showMarks ? "Marks on" : "Marks off"} data-tip=${(showMarks ? "Hide" : "Show") + " the marks on the ruler (" + marks.length + "): silences, fillers, retakes, notes"} onClick=${() => setShowMarks(!showMarks)}><${Icon} name="flag" size="16" /></button>
+        </div>
         <div class="tl-labels">${TRACKS.map(([k, l]) => html`<div key=${k} class=${k[0]} style=${TRACK_H[k] ? { height: TRACK_H[k] + "px" } : null} title=${TRACK_HINT[k]}><b>${l}</b><span>${TRACK_HINT[k]}</span></div>`)}</div>
         <div class="tl-scroll"><div class=${"tl-canvas tool-" + tool} ref=${canvasRef} style=${{ width: canvasW }} id="timeline">
           <div class="ruler" onPointerDown=${scrubTimeline}>${ticks.map((t) => html`<span key=${t} style=${{ left: px(t) }}>${tickStep < 1 ? fmtTime(t, true) : fmtTime(t)}</span>`)}${zoom >= 8 ? Array.from({ length: Math.floor(dur) + 1 }).map((_, t) => html`<i key=${"m" + t} class="mt" style=${{ left: px(t) }} />`) : null}
             ${showMarks && marks.filter((m) => m.end > m.start + 0.05).map((m) => html`<i key=${"r" + m.id} class="tl-mrange" style=${{ left: px(m.start), width: Math.max(2, (m.end - m.start) * zoom), background: MARK_COLORS[m.source === "ai" ? "custom" : m.kind] }} />`)}
+            ${showMarks && marks.map((m) => html`<i key=${"p" + m.id} class="tl-mark" data-kind=${m.kind} title=${markNote(m)} style=${{ left: px(m.start) - 3, "--mk": MARK_COLORS[m.source === "ai" ? "custom" : m.kind] }} onPointerDown=${(e) => { e.stopPropagation(); pb.seek(m.start); }} />`)}
             ${comments.filter((c) => c.time > 0).map((c) => html`<div key=${c.id} class="cm" title=${c.text} onPointerDown=${(e) => { e.stopPropagation(); pb.seek(c.time); setRtab("comments"); }} style=${{ left: px(c.time) }} />`)}</div>
           ${TRACKS.map(([k]) => html`<div key=${k} class=${"track " + k[0] + " " + k + (k === "v1" ? " v1main" : "")} style=${TRACK_H[k] ? { height: TRACK_H[k] + "px" } : null} onPointerDown=${(e) => { setSel(null); scrubTimeline(e); }}>
             ${k[0] === "a" && waveParts[k].length > 0 && html`<${WaveLayer} parts=${waveParts[k]} peaks=${peaks} zoom=${zoom} pad=${PAD} canvasRef=${canvasRef} height=${(TRACK_H[k] || 34) - 1} />`}
@@ -980,10 +1000,9 @@ function EditorInner({ project, reload, ai, keep }) {
               return html`<div key=${c.id} class=${"clip " + (k === "v1" ? "video" : k[0] === "a" ? "audio" : c.kind === "zoom" ? "fx" : "title") + (isOn(k, c) ? " on" : "") + (gone ? " gone" : "") + (other ? " other" : "") + (c.audioMuted ? " muted" : "")} data-clip=${c.id} data-track=${k}
                 title=${gone ? "Not in the edit: its footage is cut" : k === "a1" ? "Its V1 clip's dialogue. Alt-drag an edge for a J or L cut." : k === "v1" ? `${clipText(k, c)} · footage ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}s` : c.label}
                 style=${{ left: px(c.start), width: Math.max(gone ? 4 : 8, (c.end - c.start) * zoom) }}
-                onPointerDown=${clipDown(k, c)}>${fadesOf(k, c)}${marksOf(k, c)}<span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
+                onPointerDown=${clipDown(k, c)}>${k === "v1" && !gone && html`<${Filmstrip} url=${urls[c.sourceVideoId || main]} from=${c.sourceIn} to=${c.sourceOut} width=${(c.end - c.start) * zoom} />`}${fadesOf(k, c)}${marksOf(k, c)}<span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
             ${k === "v1" && drop != null && html`<div class="tl-drop" id="drop-marker" style=${{ left: px(drop) - 1 }} />`}
           </div>`)}
-          ${showMarks && marks.map((m) => html`<i key=${m.id} class="tl-mark" data-kind=${m.kind} title=${markNote(m)} style=${{ left: px(m.start) - 3, "--mk": MARK_COLORS[m.source === "ai" ? "custom" : m.kind] }} onPointerDown=${(e) => { e.stopPropagation(); pb.seek(m.start); }} />`)}
           <div class="playhead" id="playhead" style=${{ left: px(pb.time) - 1 }}><i /></div>
         </div></div>
       </div>
@@ -992,7 +1011,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
 
       <div class="panel">
-        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["clip", "Clip"], ["color", "Color"], ["audio", "Audio"], ["text", "Text"], ["style", "Reference"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.length ? " · " + comments.length : ""}</button>`)}</div>
+        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["clip", "Clip"], ["color", "Color"], ["audio", "Audio"], ["text", "Text"], ["style", "Reference"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.some((c) => !c.resolved) ? html`<span class="n">${comments.filter((c) => !c.resolved).length}</span>` : ""}</button>`)}</div>
         ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
           <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted">${S.cut.length} cut</span></div>
           ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
@@ -1010,24 +1029,27 @@ function EditorInner({ project, reload, ai, keep }) {
           </div>
           <p class="t-small muted" style="margin:0">Ask for changes in Claude or ChatGPT. This tab only shows what they did.</p>
         </div>`}
-        ${rtab === "comments" && html`<div class="pb cmts" style="padding-top:12px">
-          <div class="col" style="gap:8px;flex:1;min-height:0;overflow:auto" id="comment-list">
-            ${comments.length === 0 ? html`<div class="state" style="padding:28px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="comment" /></div><b class="t-label">No comments yet</b><p class="t-small">Leave a note at any moment of the video. Clients can too, from a review link.</p></div>`
-            : comments.map((c) => html`<div key=${c.id} class=${"cmt" + (c.resolved ? " done" : "")} data-comment=${c.id}>
-                <span class="gava" style="width:26px;height:26px;font-size:10px">${initials(c.author)}</span>
-                <div class="grow" style="min-width:0"><div class="row" style="gap:8px"><b class="t-label">${c.author}${c.mine ? " (you)" : ""}</b><span class="t-small muted">${fmtAgo(c.at)}${c.edited ? " · edited" : ""}</span><div class="grow" />
-                    ${c.mine && html`<button class="cmt-act" onClick=${() => setCEdit({ id: c.id, text: c.text })}>Edit</button>`}
-                    <button class=${"cmt-act" + (cDel === c.id ? " warn" : "")} aria-label="Delete comment" onClick=${() => delComment(c)}>${cDel === c.id ? "Delete?" : html`<${Icon} name="trash" />`}</button>
-                    <${Btn} kind="quiet" size="xs" class="act" icon=${c.resolved ? "refresh" : "check"} aria-label=${c.resolved ? "Reopen" : "Resolve"} onClick=${() => resolve(c)} /></div>
-                  ${cEdit?.id === c.id ? html`<form class="row" style="gap:6px;margin-top:4px" onSubmit=${(e) => { e.preventDefault(); saveCEdit(); }}><input class="input sm grow" aria-label="Edit comment" value=${cEdit.text} onInput=${(e) => setCEdit({ ...cEdit, text: e.target.value })} onKeyDown=${(e) => e.key === "Escape" && setCEdit(null)} autoFocus /><${Btn} size="sm" type="submit">Save<//><${Btn} size="sm" kind="quiet" type="button" onClick=${() => setCEdit(null)}>Cancel<//></form>`
-                  : html`<p class="t-small" style="margin-top:2px">${c.time > 0 && html`<button class="tc" onClick=${() => pb.seek(c.time)}>${fmtTime(c.time)}</button>`}${linkified(c.text)}</p>`}
+        ${rtab === "comments" && html`<div class="pb cmts" id="comments-panel">
+          <div class="cm-head"><div class="seg sm" role="tablist" aria-label="Which comments">${[["open", "Open", comments.filter((c) => !c.resolved).length], ["all", "All", comments.length], ["done", "Done", comments.filter((c) => c.resolved).length]].map(([k, l, n]) => html`<button key=${k} role="tab" aria-selected=${cFilter === k} class=${cFilter === k ? "on" : ""} id=${"cm-filter-" + k} onClick=${() => setCFilter(k)}>${l} <span class="muted">${n}</span></button>`)}</div></div>
+          <div class="col cm-list" id="comment-list">
+            ${comments.length === 0 ? html`<div class="state" style="padding:28px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="comment" /></div><b class="t-label">No comments yet</b><p class="t-small">Pause where something should change and write it below. Clients can comment too, from a review link.</p></div>`
+            : shownComments.length === 0 ? html`<p class="t-small muted" style="padding:16px 4px">${cFilter === "open" ? "Every comment is resolved." : "No resolved comments yet."}</p>`
+            : shownComments.map((c) => html`<div key=${c.id} class=${"cmt" + (c.resolved ? " done" : "") + (Math.abs(pb.time - c.time) < 0.05 && c.time > 0 ? " now" : "")} data-comment=${c.id} onClick=${(e) => { if (!e.target.closest("button, a, input, form") && c.time > 0) { pb.setPlaying(false); pb.seek(c.time); } }}>
+                <span class=${"gava" + (c.mine ? "" : " client")}>${initials(c.author)}</span>
+                <div class="grow" style="min-width:0">
+                  <div class="cmt-top"><b>${c.author}${c.mine ? " (you)" : ""}</b><span class="muted">${fmtAgo(c.at)}${c.edited ? " · edited" : ""}</span><div class="grow" />
+                    <span class="cmt-acts">${c.mine && html`<button class="cmt-act" onClick=${() => setCEdit({ id: c.id, text: c.text })}>Edit</button>`}
+                    <button class=${"cmt-act" + (cDel === c.id ? " warn" : "")} aria-label="Delete comment" onClick=${() => delComment(c)}>${cDel === c.id ? "Delete?" : html`<${Icon} name="trash" />`}</button></span>
+                    <button class=${"cmt-check" + (c.resolved ? " on" : "")} aria-label=${c.resolved ? "Reopen" : "Resolve"} title=${c.resolved ? "Reopen" : "Mark as done"} onClick=${() => resolve(c)}><${Icon} name="check" size="12" /></button></div>
+                  ${cEdit?.id === c.id ? html`<form class="row" style="gap:6px;margin-top:6px" onSubmit=${(e) => { e.preventDefault(); saveCEdit(); }}><input class="input sm grow" aria-label="Edit comment" value=${cEdit.text} onInput=${(e) => setCEdit({ ...cEdit, text: e.target.value })} onKeyDown=${(e) => e.key === "Escape" && setCEdit(null)} autoFocus /><${Btn} size="sm" type="submit">Save<//><${Btn} size="sm" kind="quiet" type="button" onClick=${() => setCEdit(null)}>Cancel<//></form>`
+                  : html`<p class="cmt-body">${c.time > 0 && html`<button class="tc" onClick=${() => pb.seek(c.time)}>${fmtTime(c.time)}</button>`}${linkified(c.text)}</p>`}
                   ${(c.drawing || c.images?.length) ? html`<div class="row cmt-media">${c.drawing && html`<button class="cmt-badge" onClick=${() => showInk(c)}>✎ Drawing</button>`}${(c.images || []).map((im) => html`<a key=${im.id} href=${im.url} target="_blank" rel="noopener noreferrer" title=${im.name || "Picture"}><img class="cmt-img" src=${im.url} alt=${im.name || "Picture"} /></a>`)}</div>` : null}</div>
               </div>`)}
           </div>
           <form class="cbox" onSubmit=${(e) => { e.preventDefault(); postComment(); }}>
-            <button type="button" class="tc big" title="Comment at this moment" onClick=${() => pb.setPlaying(false)}>${fmtTime(pb.time)}</button>
-            <input id="comment-input" class="input sm grow" placeholder="Leave a comment at this moment…" value=${draft} onInput=${(e) => setDraft(e.target.value)} onFocus=${() => pb.setPlaying(false)} />
-            <${Btn} size="sm" type="submit" id="comment-post" disabled=${!draft.trim() || posting}>${posting ? "…" : "Post"}<//>
+            <textarea id="comment-input" class="cbox-text" rows="2" placeholder="Leave a comment at this moment…" value=${draft} onInput=${(e) => setDraft(e.target.value)} onFocus=${() => pb.setPlaying(false)} onKeyDown=${(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); postComment(); } }} />
+            <div class="row" style="gap:6px"><button type="button" class="tc big" title="The comment goes at this moment" onClick=${() => pb.setPlaying(false)}>${fmtTime(pb.time, true)}</button><div class="grow" />
+              <${Btn} size="sm" type="submit" id="comment-post" disabled=${!draft.trim() || posting}>${posting ? "…" : "Comment"}<//></div>
           </form>
         </div>`}
         ${rtab === "clip" && html`<${ClipTab} clip=${sel && isV1(sel.track) ? selV1 : selClip} track=${sel?.track} plan=${plan} first=${!!selV1 && lay.tracks.v1.find((c) => c.end - c.start > 0.01)?.id === selV1.id} at=${pb.time} srcAt=${(id, t) => view.editToSource(id, t)} onSeek=${(t) => pb.seek(t)} doOp=${doOp} H=${H} liveOp=${liveOp} />`}

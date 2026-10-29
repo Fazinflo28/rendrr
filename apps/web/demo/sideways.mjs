@@ -35,7 +35,7 @@ await page.evaluate(() => { globalThis.__rendrrDemoSideways = 90; globalThis.__r
 await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await page.waitForTimeout(1200);
 check(await page.locator("#sideways").isVisible(), "sideways footage: the editor offers to turn it");
 check((await page.locator("#sideways").textContent()).includes("turned 90° clockwise"), "it says which way");
-check((await page.locator("#rotate").textContent()).trim() === "Rotate", "nothing is turned before the user clicks");
+check(!(await page.locator("#rotate").getAttribute("data-tip")).includes("(now"), "nothing is turned before the user clicks");
 
 // 3. Keep as is hides it; Turn it upright turns every clip of that footage and the offer goes away.
 await page.getByRole("button", { name: "Keep as is" }).click(); await page.waitForTimeout(200);
@@ -44,7 +44,7 @@ await page.evaluate(() => globalThis.__rendrrNav.go("/library")); await page.wai
 await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await page.waitForTimeout(1200);
 await page.locator("#turn-upright").click(); await page.waitForTimeout(400);
 check(!(await page.locator("#sideways").count()), "after turning, the offer is gone");
-check((await page.locator("#rotate").textContent()).includes("90°"), `the footage is turned 90° (${(await page.locator("#rotate").textContent()).trim()})`);
+check((await page.locator("#rotate").getAttribute("data-tip")).includes("(now 90°)"), `the footage is turned 90° (${await page.locator("#rotate").getAttribute("data-tip")})`);
 
 check(errors.length === 0, `no page errors (${errors.join(" | ")})`);
 await browser.close(); server.close();

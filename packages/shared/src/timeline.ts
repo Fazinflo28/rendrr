@@ -118,7 +118,7 @@ export const AudioSettingsSchema = z.object({
    *  3.5 kHz, de-esser 0-1, compression ratio (1 = off). */
   highpass: z.number().min(0).max(300).optional(),
   denoise: z.number().min(0).max(40).optional(),
-  presence: z.number().min(0).max(8).optional(),
+  presence: z.number().min(-8).max(8).optional(),
   deess: z.number().min(0).max(1).optional(),
   compress: z.number().min(1).max(10).optional(),
 });
@@ -187,6 +187,9 @@ export const TimelineSchema = z.object({
   marks: z.array(MarkSchema).max(5000).optional(),
   /** The AI's notes on Rendrr's marks in this edit, or that one is hidden here, by mark id. */
   markEdits: z.record(MarkEditSchema).optional(),
+  /** The project bin: library videos kept with this edit to use (the editor's Media panel), besides the ones it
+   *  already uses. Ids, in the order added. */
+  media: z.array(z.string().min(1).max(80)).max(200).optional(),
 });
 
 export type Clip = z.infer<typeof ClipSchema>;

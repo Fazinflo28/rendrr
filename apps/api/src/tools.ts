@@ -2,14 +2,14 @@
 // Every response is small text; images only when asked for (images: true, get_frames, get_preview_frames).
 // Every write goes through applyTimelineChange.
 import { AppError, applyTimelineChange, enqueue, notFound, putObject, readGraphic, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
-import { prisma, type Prisma } from "@rendrr/db";
+import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
   MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
-import { createProject, getOwnedProject, graphicPlacements } from "./services/projects";
+import { createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
@@ -136,6 +136,13 @@ async function recipeOut(c: Ctx, refId: string): Promise<ToolOut | null> {
 }
 
 /** The reference the user attached to an edit, for the AI to read (Rendrr never applies it). */
+/** The project bin (the editor's Media panel): library videos kept with the edit to use (add_media). */
+async function binLine(userId: string, tl: Timeline): Promise<string[]> {
+  if (!tl.media?.length) return [];
+  const vs = await prisma.video.findMany({ where: { id: { in: tl.media }, userId }, select: { id: true, name: true, seconds: true, kind: true } });
+  return [`Project bin (add_media / remove_media; add_clip videoId puts one in the edit): ${tl.media.map((id) => { const v = vs.find((x) => x.id === id); return v ? `${v.id} "${v.name}" ${v.seconds.toFixed(1)}s${v.kind === "reference" ? " (reference)" : ""}` : `${id} (gone)`; }).join("; ")}`];
+}
+
 function referenceLine(ref: ReferenceRef | null): string | null {
   if (!ref) return null;
   const how = ref.kind === "style" ? `style ${ref.id} "${ref.name}" (get_style)` : `${ref.kind === "recipe" ? "recipe" : "reference video"} ${ref.id} "${ref.name}" (get_footage)`;
@@ -170,6 +177,16 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
     await prisma.aiChatMessage.create({ data: { projectId, userId: c.userId, role: "ai", ai: aiName(c), text: note.trim().slice(0, 600) } });
     return { text: "Note posted in Rendrr's AI tab.", data: { version: p0.currentVersion } };
   }
+  // set_reference is kept on the project (the editor's Reference monitor), not in the edit.
+  const refs = edits.filter((e) => e.op === "set_reference") as Extract<EditOp, { op: "set_reference" }>[];
+  let refText = "";
+  for (const r of refs) {
+    const ref = r.videoId ? await resolveReference(c.userId, { kind: "video", id: r.videoId }) : r.styleId ? await resolveReference(c.userId, { kind: "style", id: r.styleId }) : null;
+    await prisma.project.update({ where: { id: projectId }, data: { reference: ref ? (ref as unknown as Prisma.InputJsonValue) : Prisma.DbNull } });
+    refText = ref ? `Reference set: ${ref.kind === "video" ? "video" : "style"} "${ref.name}" (shown in the editor's Reference monitor, never applied).` : "Reference taken off.";
+  }
+  edits = edits.filter((e) => e.op !== "set_reference");
+  if (refs.length && !edits.length) return { text: refText, data: { version: p0.currentVersion } };
   // The activity log keeps the edits, but long lists (clips, word ids) only as counts.
   const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e.op === "set_grade" && e.lut?.cube ? { ...e, lut: { ...e.lut, cube: `${e.lut.cube.length} characters` } } : e)) };
   // Phase 6: match_color gets the clips' measured frames (the worker reads them; a failure stops here, loudly).
@@ -183,7 +200,7 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   await prisma.aiChatMessage.create({ data: { projectId, userId: c.userId, role: "ai", ai: aiName(c), text: (note?.trim() || `Made ${steps.length === 1 ? "a change" : steps.length + " changes"}.`).slice(0, 600), workflow: steps.map((x) => x.charAt(0).toUpperCase() + x.slice(1)) as unknown as Prisma.InputJsonValue, changed: true } });
   // The edit's own check (no render) rides along, so the AI fixes what it shows before it renders anything.
   const flags = (await checkOf(projectId, r.version, null, null).catch(() => "")).split("\n").find((l) => l.startsWith("Flags:"));
-  return { text: `Done (v${r.version}, ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s): ${r.summary}.${flags ? `\nEdit check (nothing rendered): ${flags}${flags === "Flags: none" ? "" : " (check_edit lists where)"}.` : ""}`, data: { version: r.version } };
+  return { text: `${refText ? refText + "\n" : ""}Done (v${r.version}, ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s): ${r.summary}.${flags ? `\nEdit check (nothing rendered): ${flags}${flags === "Flags: none" ? "" : " (check_edit lists where)"}.` : ""}`, data: { version: r.version } };
 }
 
 /** The longest a tool call waits for a job: clients drop calls after about a minute (some sooner), so a longer
@@ -376,6 +393,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       ...(await placementLine(c.userId, p.timeline as unknown as Timeline)),
       marksLine(v, p.timeline as unknown as Timeline),
       ...(luts.length ? [`Your LUTs (set_grade lut id): ${luts.map((l) => `${l.id} "${l.name}"`).join(", ")}`] : []),
+      ...(await binLine(c.userId, p.timeline as unknown as Timeline)),
       preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet."].join("\n")) };
   },
 
