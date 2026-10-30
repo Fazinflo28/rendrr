@@ -90,6 +90,26 @@ describe("the user's own audio", { skip: (!ready || !ff) && "needs a database, R
     assert.match((await tool("apply_edits", { projectId, edits: [{ op: "set_voice", soundId: null }] })).text, /the edit plays its clips' own sound again/);
   });
 
+  it("a chat whose tool list is older than add_audio: apply_edits set_voice takes the file itself", async () => {
+    // upload: true answers with a link and changes nothing.
+    const before = (await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).currentVersion;
+    let link = "";
+    await assert.rejects(tool("apply_edits", { projectId, edits: [{ op: "set_voice", upload: true }] }), (e: Error) => {
+      assert.match(e.message, /^Nothing changed yet\. Upload link for the audio file, for 30 minutes: \S+\/audio\/upload\/[\w-]+\n/);
+      link = linkOf(e.message);
+      return true;
+    });
+    assert.equal((await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).currentVersion, before);
+    const j = JSON.parse((await send(link, readFileSync(join(dir, "enhanced.mp3")), "?name=Old chat voice")).body) as { id: string; status: string };
+    assert.equal(j.status, "ready");
+    const r = await tool("apply_edits", { projectId, edits: [{ op: "set_voice", soundId: j.id }] });
+    assert.match(r.text, /the edit's sound is now "Old chat voice"/);
+    // Unknown id and no file: says how to bring one in from here.
+    await assert.rejects(tool("apply_edits", { projectId, edits: [{ op: "set_voice", soundId: "nope" }] }), /set_voice takes the file itself: url \(a share link\), driveFileId, or upload: true/);
+    await assert.rejects(tool("apply_edits", { projectId, edits: [{ op: "set_voice" }] }), /set_voice needs the file/);
+    await tool("apply_edits", { projectId, edits: [{ op: "set_voice", soundId: null }] });
+  });
+
   it("a file that is not audio says why, and nothing is left half made", async () => {
     const out = await tool("add_audio", { upload: true });
     const r = await send(linkOf(out.text), Buffer.from("this is not audio at all, just text".repeat(50)), "?name=notes.txt");

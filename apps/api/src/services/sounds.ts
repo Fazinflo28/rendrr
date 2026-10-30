@@ -103,3 +103,26 @@ export function soundOut(s: { id: string; name: string; seconds: number; status:
 }
 
 export async function closeSoundEvents() { await events?.close(); events = null; }
+
+/**
+ * set_voice and add_music with the file itself (url, driveFileId) are brought in first, as add_audio does, and get its
+ * soundId; upload: true answers with a one-time link instead (nothing is changed). So a chat whose tool list is older
+ * than add_audio still uses the user's own audio through apply_edits.
+ */
+export async function resolveSoundRefs<T extends { op: string }>(userId: string, edits: T[], ai?: string): Promise<T[]> {
+  const out: T[] = [];
+  for (const e of edits) {
+    const x = e as T & { url?: string; driveFileId?: string; upload?: boolean; name?: string; soundId?: string | null };
+    if ((e.op !== "set_voice" && e.op !== "add_music") || !(x.url || x.driveFileId || x.upload)) { out.push(e); continue; }
+    if ([x.url, x.driveFileId, x.upload].filter(Boolean).length > 1 || x.soundId) throw err(`${e.op} takes one of soundId, url, driveFileId or upload.`);
+    const { url, driveFileId, upload, name, ...rest } = x;
+    if (upload) {
+      const u = await soundUploadLink(userId, name);
+      throw new AppError(`Nothing changed yet. Upload link for the audio file, for 30 minutes: ${u.url}\nSend the file from your code workspace (up to 500 MB):\n  curl -sS -T "<file>" "${u.url}"\nThe reply is JSON with its soundId once it is ready (a few seconds; a long file up to a minute). Then apply_edits ${e.op}{soundId: "<that id>"}. ${ai === "chatgpt" ? "ChatGPT's code sandbox has no internet, so it cannot send the file: send url (a share link) or driveFileId instead." : `If the workspace cannot reach ${u.host}, the user allows that host in their AI's settings (Claude: Settings > Capabilities, code execution, allowed domains), or send url (a share link) or driveFileId instead.`}`, 400, "sound-upload-link");
+    }
+    const s = await soundFromSource(userId, { url, driveFileId, name });
+    if (s.status !== "ready") throw err(soundOut(s));
+    out.push({ ...rest, soundId: s.id } as unknown as T);
+  }
+  return out;
+}

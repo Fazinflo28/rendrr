@@ -36,6 +36,9 @@ const lookTargets = { clipId: z.string().max(80).optional(), clipIds: z.array(z.
 const by = z.number().finite().min(-3600).max(3600);
 /** edit: true = the op's times are seconds of the edit, not of the footage. */
 const edit = z.boolean().optional();
+/** The user's audio file itself, on set_voice and add_music: the server brings it in first (as add_audio does) and the
+ *  op gets its soundId. upload: a link for the AI's code workspace to send the file to (nothing is changed yet). */
+const SOUND_SOURCE = { url: z.string().url().max(2000).optional(), driveFileId: z.string().max(200).optional(), upload: z.boolean().optional(), name: z.string().max(120).optional() };
 const clipId = z.string().max(80);
 // The ops that change an edit step by step. An AI sends a list of them in one go (the `batch` op).
 const EDIT_OPS = [
@@ -60,8 +63,8 @@ const EDIT_OPS = [
   // look: back to that look's preset style. styleId: the captions of that style (its full caption style if it has one).
   z.object({ op: z.literal("set_captions"), on: z.boolean(), look: CaptionLookSchema.optional(), styleId: z.string().max(80).optional() }),
   z.object({ op: z.literal("edit_caption"), lineId: z.string().max(40), text: z.string().max(2000) }),
-  z.object({ op: z.literal("add_music"), trackId: z.string().max(80).optional(), soundId: z.string().max(80).optional(), gainDb: z.number().min(-40).max(6).optional(), start: t.optional(), end: t.optional(), edit }),
-  z.object({ op: z.literal("set_voice"), soundId: z.string().max(80).nullable(), start: t.optional(), gainDb: z.number().min(-30).max(12).optional() }),
+  z.object({ op: z.literal("add_music"), trackId: z.string().max(80).optional(), soundId: z.string().max(80).optional(), ...SOUND_SOURCE, gainDb: z.number().min(-40).max(6).optional(), start: t.optional(), end: t.optional(), edit }),
+  z.object({ op: z.literal("set_voice"), soundId: z.string().max(80).nullable().optional(), ...SOUND_SOURCE, start: t.optional(), gainDb: z.number().min(-30).max(12).optional() }),
   // from: seconds into a custom graphic where this placement starts (one recording placed many times). params: a
   // template's fields, or values for a custom graphic's window.params (each new set is recorded once, then cached).
   z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), from: z.number().min(0).max(4 * 3600).optional(), label: z.string().max(200).optional(), edit }),
@@ -620,10 +623,11 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       // The user's own file (add_audio), or a library track or mood.
       let base: Record<string, unknown> & { id: string; label: string; start: number; end: number };
       let track: { name: string } | undefined;
+      if (op.url || op.driveFileId || op.upload) throw new EditError("add_music with url, driveFileId or upload is brought in by Rendrr's server (apply_edits through the AI); here send soundId.");
       if (op.soundId) {
         if (op.trackId) throw new EditError("add_music takes trackId (a library track or mood) or soundId (your own file from add_audio), not both.");
         const s = ctx.getSound?.(op.soundId);
-        if (!s) throw new EditError(`There is no audio file "${op.soundId}" of yours. add_audio brings one in.`);
+        if (!s) throw new EditError(`There is no audio file "${op.soundId}" of yours. add_audio brings one in, or add_music takes the file itself: url (a share link), driveFileId, or upload: true.`);
         if (!s.ready) throw new EditError(`"${s.name}" is still being prepared. Try again in a moment.`);
         track = { name: s.name };
         base = { id: rid("m"), start: 0, end: 0, label: s.name, soundId: s.id, gainDb: op.gainDb ?? -18 };
@@ -642,9 +646,11 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, timeline: withTracks(tl, "a2", [...keep, attachAt(view(), base as Clip, s, e)]) }, summary: `added music: ${track.name} (clip ${base.id})` };
     }
     case "set_voice": {
+      if (op.url || op.driveFileId || op.upload) throw new EditError("set_voice with url, driveFileId or upload is brought in by Rendrr's server (apply_edits through the AI); here send soundId.");
       if (op.soundId === null) { const { voice: _v, ...rest } = tl; return { snap: { ...snap, timeline: rest as Timeline }, summary: "the edit plays its clips' own sound again" }; }
+      if (!op.soundId) throw new EditError("set_voice needs the file: soundId (from add_audio), or url (a share link), driveFileId, or upload: true for a link your code workspace sends it to; null brings the clips' own sound back.");
       const s = ctx.getSound?.(op.soundId);
-      if (!s) throw new EditError(`There is no audio file "${op.soundId}" of yours. add_audio brings one in.`);
+      if (!s) throw new EditError(`There is no audio file "${op.soundId}" of yours. add_audio brings one in, or set_voice takes the file itself: url (a share link), driveFileId, or upload: true.`);
       if (!s.ready) throw new EditError(`"${s.name}" is still being prepared. Try again in a moment.`);
       const total = view().total, start = rT(Math.max(0, op.start ?? 0));
       const voice = { soundId: s.id, start, ...(op.gainDb != null ? { gainDb: op.gainDb } : {}), editSeconds: rT(total) };

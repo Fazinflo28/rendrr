@@ -26,7 +26,7 @@ import { addLibraryItem, getLibraryItem, listLibrary, searchIcons, withIcons } f
 import { analyzeReference, styleFileLines, styleFileOut } from "./services/styleFiles";
 import { openProjects } from "./services/claudeApp";
 import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, latestFinal } from "./services/driveSave";
-import { soundFromSource, soundLine, soundOut, soundsText, soundUploadLink } from "./services/sounds";
+import { resolveSoundRefs, soundFromSource, soundLine, soundOut, soundsText, soundUploadLink } from "./services/sounds";
 import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
@@ -193,7 +193,7 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   // The activity log keeps the edits, but long lists (clips, word ids) only as counts.
   const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e.op === "set_grade" && e.lut?.cube ? { ...e, lut: { ...e.lut, cube: `${e.lut.cube.length} characters` } } : e)) };
   // Phase 6: match_color gets the clips' measured frames (the worker reads them; a failure stops here, loudly).
-  const ready = await withMeasurements(projectId, withIcons(await resolveLutRefs(c.userId, edits)));
+  const ready = await withMeasurements(projectId, withIcons(await resolveSoundRefs(c.userId, await resolveLutRefs(c.userId, edits), c.ai ?? undefined)));
   const luts = ready.some((e) => e.op === "match_color") ? await lutsFor(c.userId, p0.timeline as unknown as Timeline) : undefined;
   const r = await applyTimelineChange(projectId, ready.length === 1 ? ready[0] : { op: "batch", ops: ready }, actorFor(c, "apply_edits", logged), { luts });
   const v = await prisma.video.findUniqueOrThrow({ where: { id: p0.videoId }, include: { analysis: true } });
