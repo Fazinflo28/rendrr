@@ -354,6 +354,8 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | 12. Restore after a range cut | restore_words from/to puts footage a range cut took out back (on the clip it was cut from; the two halves are one clip again when they are alike); word ids a range cut took out come back too. |
 | 13. set_clips drops graphics | A V3 graphic or text whose V1 clip set_clips replaced stays at its edit times (over what plays there now), and the result names it; one that moved with its clip is named too. |
 | 14. delete_clip needs the track | track is found from the clip id when left out. |
+| A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
+| Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
 ## Premiere parity, phase 2b: video inside text (30 October, night)
 

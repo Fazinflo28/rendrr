@@ -1,6 +1,7 @@
 // The Rendrr app in the chat and the one-render rule: the app's tools list the edits, show one edit's latest preview,
 // its render progress and comments, add and resolve comments (the editor's own tables); check_edit checks an edit
-// without rendering; apply_edits ends with the edit's flags; render_preview with nothing changed renders nothing.
+// without rendering; apply_edits ends with the edit's flags; render_preview with nothing changed renders nothing (a
+// graphic in the edit changed in place is a change).
 // Needs a database, Redis and storage (as in .env). Run: pnpm --filter @rendrr/api test
 import assert from "node:assert/strict";
 import type { AppProjectView } from "@rendrr/shared";
@@ -244,6 +245,36 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
     assert.equal((await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).name, `Reel ${run} for the client`);
     await assert.rejects(APP_HANDLERS.app_rename_project(c(otherId), { projectId, name: "Mine now" }), /could not find|not found|does not exist|gone/i);
     await prisma.project.update({ where: { id: projectId }, data: { name: `Reel ${run}` } });
+  });
+
+  it("render_preview renders again when a graphic in the edit was changed in place (create_graphic replace)", async () => {
+    // Its own edit with one custom graphic placed, and a preview of that version made after the graphic.
+    const pid = (await createProject(userId, { videoId, name: `Bar ${run}` })).id;
+    const code = `<canvas id="c"></canvas><script>window.renderFrame = (t) => { const g = document.getElementById("c").getContext("2d"); g.fillStyle = "#FFC400"; g.fillRect(0, 0, t * 10, 9); };</script>`;
+    const old = new Date(Date.now() - 60_000);
+    const g = await prisma.graphic.create({ data: { ownerId: userId, name: `Bar ${run}`, kind: "custom", code, durationSec: 5, width: 640, height: 360, status: "ready", changedAt: old, createdAt: old } });
+    const p = await prisma.project.findUniqueOrThrow({ where: { id: pid } });
+    const tl = p.timeline as { tracks: { v3: unknown[] } };
+    tl.tracks.v3 = [{ id: `gb${run}`, start: 0, end: 5, label: "Bar", kind: "graphic", graphicId: g.id }];
+    await prisma.project.update({ where: { id: pid }, data: { timeline: tl as never } });
+    const ver = await prisma.projectVersion.findFirstOrThrow({ where: { projectId: pid } });
+    await prisma.projectVersion.update({ where: { id: ver.id }, data: { timeline: { ...(ver.timeline as object), timeline: tl } as never } });
+    await prisma.render.create({ data: { projectId: pid, userId, kind: "preview", version: 1, status: "done", outputKey: `renders/${run}-bar.mp4`, seconds: 20, quality: "540p", steps: [], createdAt: new Date(Date.now() - 30_000) } });
+    const count = () => prisma.render.count({ where: { projectId: pid } });
+    assert.match((await tool("render_preview", { projectId: pid })).text, /^Nothing changed since preview v1/);
+    assert.equal(await count(), 1);
+    // One line of its code fixed in place: same id, same edit.
+    const fix = await tool("create_graphic", { codeFrom: g.id, edits: [{ find: "#FFC400", replace: "#38E07B" }], replace: true });
+    assert.match(fix.text, /^Changed with 1 edit: same id/);
+    const again = await tool("render_preview", { projectId: pid });
+    console.log(again.text.split("\n")[0]);
+    assert.match(again.text, new RegExp(`^"Bar ${run}" \\(${g.id}\\) changed since preview v1: rendering it again\\.`));
+    assert.equal(await count(), 2, "rendered again");
+    // That new preview done: asking again renders nothing.
+    await prisma.render.updateMany({ where: { projectId: pid, status: { not: "done" } }, data: { status: "done", outputKey: `renders/${run}-bar2.mp4`, seconds: 20 } });
+    assert.match((await tool("render_preview", { projectId: pid })).text, /^Nothing changed since preview v1/);
+    assert.equal(await count(), 2);
+    for (const j of await queue("graphic").getJobs(["waiting", "delayed"])) if ((j.data as { graphicId?: string }).graphicId === g.id) await j.remove().catch(() => {});
   });
 
   it("get_editing_skill returns the skill", async () => {

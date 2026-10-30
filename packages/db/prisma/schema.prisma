@@ -277,6 +277,9 @@ model Graphic {
   /// Things the recording noticed that the AI should know (a font that was not there, drawn with a fallback).
   warnings     Json     @default("[]")
   attempts     Int      @default(0)
+  /// When its code or a recording of it was last replaced (create_graphic replace, rerecord, retry_graphic): a
+  /// preview made before it is out of date even though the edit did not change.
+  changedAt    DateTime @default(now())
   createdAt    DateTime @default(now())
 }
 

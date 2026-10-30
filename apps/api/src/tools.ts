@@ -989,13 +989,18 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const p = await getOwnedProject(c.userId, i.projectId);
     const latest = await prisma.projectVersion.findFirst({ where: { projectId: p.id }, orderBy: { v: "desc" }, select: { v: true } });
     const had = !i.again && latest ? await prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", version: latest.v, status: "done", outputKey: { not: null } }, orderBy: { createdAt: "desc" } }) : null;
-    if (had) {
+    // A graphic in the edit changed in place since (create_graphic replace, rerecord): the edit is the same, the
+    // picture is not.
+    const used = had ? Array.from(new Set((((p.timeline as unknown as Timeline).tracks?.v3 ?? []) as V3Clip[]).filter((x) => x.kind === "graphic" && x.graphicId).map((x) => x.graphicId!))) : [];
+    const changed = had && used.length ? await prisma.graphic.findMany({ where: { id: { in: used }, ownerId: c.userId, changedAt: { gt: had.createdAt } }, select: { id: true, name: true } }) : [];
+    if (had && !changed.length) {
       const out = await renderOut(had.id);
       return { ...out, text: `Nothing changed since preview v${had.version}, so nothing was rendered. Its check again:\n${out.text}\nMake every change in one apply_edits (check_edit checks it without rendering), then render once.` };
     }
     const r = await startRender(c.userId, i.projectId, "preview");
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
-    return renderOut(r.id);
+    const out = await renderOut(r.id);
+    return had ? { ...out, text: `${changed.map((g) => `"${g.name}" (${g.id})`).join(", ")} changed since preview v${had.version}: rendering it again.\n${out.text}` } : out;
   },
   async render_final(c, i) {
     // Saving into Drive: the folder is found and checked first, so a wrong name or a refused folder is said now, not

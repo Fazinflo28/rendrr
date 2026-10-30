@@ -94,7 +94,7 @@ export const codeHash = (code: string) => createHash("sha256").update(code).dige
  */
 export async function rerecordGraphic(graphicId: string) {
   await queue("graphic").remove(graphicId).catch(() => {});
-  await prisma.graphic.update({ where: { id: graphicId }, data: { status: "queued", error: null, attempts: 0 }, select: { id: true } });
+  await prisma.graphic.update({ where: { id: graphicId }, data: { status: "queued", error: null, attempts: 0, changedAt: new Date() }, select: { id: true } });
   await enqueue<GraphicJob>("graphic", { graphicId }, { jobId: `${graphicId}-r${Date.now().toString(36)}` });
 }
 
@@ -144,5 +144,6 @@ export async function dropVariant(g: GraphicRow, params?: Record<string, unknown
   await deleteObject(v.key).catch(() => {});
   await redis().del(errorKey(v.progressId), warningsKey(v.progressId), `graphic:${v.progressId}:progress`).catch(() => {});
   await queue("graphic").remove(v.jobId).catch(() => {});
+  await prisma.graphic.update({ where: { id: g.id }, data: { changedAt: new Date() }, select: { id: true } }).catch(() => {});
   return v;
 }
