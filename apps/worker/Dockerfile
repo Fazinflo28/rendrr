@@ -26,11 +26,15 @@ RUN mkdir -p /opt/models/wav2vec2 && cd /opt/models/wav2vec2 \
         && curl -fsSL --retry 3 -o vocab.json https://huggingface.co/Xenova/wav2vec2-base-960h/resolve/main/vocab.json \
         && [ "$(stat -c %s model_quantized.onnx)" -gt 50000000 ] && echo "wav2vec2 ready: $(sha256sum model_quantized.onnx)" \
         || (rm -f model_quantized.onnx vocab.json; echo "WARNING: wav2vec2 not downloaded; word alignment falls back to the sound only"))
-# remove_background: MediaPipe's selfie segmenter (Apache-2.0; 250 KB), the person's matte (python/matte.py).
+# remove_background: two of MediaPipe's models (Apache-2.0), the person's matte (python/matte.py): the selfie segmenter
+# (250 KB) finds the people, the multiclass selfie model (16 MB) cuts them out. Pinned versions, checked.
 RUN mkdir -p /opt/models/selfie && cd /opt/models/selfie \
-    && curl -fsSL --retry 3 -o selfie_segmenter.tflite https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite \
-    && [ "$(stat -c %s selfie_segmenter.tflite)" -gt 100000 ] && echo "selfie segmenter ready: $(sha256sum selfie_segmenter.tflite)"
-ENV PYTHON_BIN=/opt/venv/bin/python CHROMIUM_PATH=/usr/bin/chromium ALIGN_MODEL=/opt/models/wav2vec2/model_quantized.onnx ALIGN_VOCAB=/opt/models/wav2vec2/vocab.json MATTE_MODEL=/opt/models/selfie/selfie_segmenter.tflite
+    && curl -fsSL --retry 3 -o selfie_segmenter.tflite https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite \
+    && curl -fsSL --retry 3 -o selfie_multiclass_256x256.tflite https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite \
+    && echo "191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b  selfie_segmenter.tflite" | sha256sum -c - \
+    && echo "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0  selfie_multiclass_256x256.tflite" | sha256sum -c - \
+    && echo "selfie models ready"
+ENV PYTHON_BIN=/opt/venv/bin/python CHROMIUM_PATH=/usr/bin/chromium ALIGN_MODEL=/opt/models/wav2vec2/model_quantized.onnx ALIGN_VOCAB=/opt/models/wav2vec2/vocab.json MATTE_MODEL=/opt/models/selfie/selfie_multiclass_256x256.tflite MATTE_LOCATE=/opt/models/selfie/selfie_segmenter.tflite
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./

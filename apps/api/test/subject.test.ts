@@ -75,7 +75,7 @@ describe("remove background through the connector", { skip: !ready && "needs DAT
     assert.equal(m!.turn, 0);
     assert.equal(m!.block, 10);
     assert.deepEqual(Object.keys(m!.blocks), ["0", "1", "2"]);
-    assert.match(m!.blocks[0]!, /matte-v1-t0-0\.mp4/);
+    assert.match(m!.blocks[0]!, /matte-v2-t0-0\.mp4/);
     assert.equal(m!.blocks[1], null);
     assert.equal(m!.blocks[2], null);
     assert.equal(await matteBlockUrls(userId, "not-a-video", 0, 5), null);

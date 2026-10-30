@@ -54,8 +54,8 @@ export const QUEUES = {
   // remove_background: the person's matte of a video, made block by block ahead of the render (matteTimeoutMs).
   matte: { name: "matte", timeoutMs: 10 * 60_000, attempts: 2 },
 } as const;
-/** A matte job's limit: 90 s a block (about 30 s each on the worker) and 2 minutes. */
-export const matteTimeoutMs = (blocks: number) => 2 * 60_000 + blocks * 90_000;
+/** A matte job's limit: 3 minutes a block (about 1 minute for 10 s of 30 fps footage; twice that at 60 fps) and 2 minutes. */
+export const matteTimeoutMs = (blocks: number) => 2 * 60_000 + blocks * 180_000;
 /** A reference is read at about 7x its speed on the worker; the limit allows 0.5 s a second of video and 4 minutes. */
 export const styleTimeoutMs = (seconds: number) => 4 * 60_000 + Math.round(seconds * 500);
 /** The deeper measurements' limit grows with the footage: 0.6x its length (faces at 10 fps are most of it) plus a

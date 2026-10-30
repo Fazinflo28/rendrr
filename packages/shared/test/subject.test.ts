@@ -56,7 +56,7 @@ describe("the matte's blocks", () => {
     expect(matteBlocks(12, 25, 30)).toEqual([1, 2]);
     expect(matteBlocks(9, 9.5, 30)).toEqual([0, 1]);
     expect(matteBlocks(25, 29.9, 30)).toEqual([2]);
-    expect(matteKey("u", "v", 90, 3)).toBe("frames/u/v/matte-v1-t90-3.mp4");
+    expect(matteKey("u", "v", 90, 3)).toBe("frames/u/v/matte-v2-t90-3.mp4");
     expect(matteJobId("v", 0, 2)).toBe("matte-v-t0-2");
   });
   it("give a render extra time to make them: every block once, two at a time; none without it", () => {

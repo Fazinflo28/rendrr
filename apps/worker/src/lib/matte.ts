@@ -11,9 +11,10 @@ import { JobError, run } from "./ffmpeg";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MATTE_PY = join(HERE, "../../python/matte.py");
 const PYTHON = process.env.PYTHON_BIN || "python3";
-/** MediaPipe's selfie segmenter (Apache-2.0), fetched into the worker image. */
-export const MATTE_MODEL = process.env.MATTE_MODEL || "/opt/models/selfie/selfie_segmenter.tflite";
-/** Blocks made at once: each is a model, a decoder and an encoder (about 40 threads, one CPU). */
+/** MediaPipe's models (Apache-2.0), fetched into the worker image: the one that cuts the person out, and the fast one that finds them. */
+export const MATTE_MODEL = process.env.MATTE_MODEL || "/opt/models/selfie/selfie_multiclass_256x256.tflite";
+export const MATTE_LOCATE = process.env.MATTE_LOCATE || "/opt/models/selfie/selfie_segmenter.tflite";
+/** Blocks made at once: each is two models, a decoder and an encoder (about 40 threads, one to two CPUs). */
 const AT_ONCE = 2;
 
 type MatteVideo = { id: string; userId: string; proxyKey: string | null; seconds: number; turn: number };
@@ -32,11 +33,11 @@ export async function matteVideo(videoId: string, userId: string, fallbackTurn =
  */
 export async function makeMatteBlock(v: MatteVideo, k: number, dir: string, signal?: AbortSignal, onProgress?: (f: number) => void): Promise<string> {
   if (!v.proxyKey) throw new JobError("The preview copy of this footage expired. Rebuild it from your Library, then render again.", "expired", false);
-  if (!existsSync(MATTE_MODEL)) throw new JobError("The background remover is not installed on this server.", "no-model", false);
+  if (!existsSync(MATTE_MODEL) || !existsSync(MATTE_LOCATE)) throw new JobError("The background remover is not installed on this server.", "no-model", false);
   const from = k * MATTE_BLOCK, to = Math.min(v.seconds, from + MATTE_BLOCK);
   if (to <= from) throw new JobError(`That part of the footage (from ${from}s) is past the video's end.`, "range", false);
   const out = join(dir, `matte-${v.id}-${k}.mp4`);
-  await run(PYTHON, [MATTE_PY, "--input", await signGet(v.proxyKey, 3600), "--from", String(from), "--to", String(to), "--turn", String(v.turn), "--model", MATTE_MODEL, "--out", out],
+  await run(PYTHON, [MATTE_PY, "--input", await signGet(v.proxyKey, 3600), "--from", String(from), "--to", String(to), "--turn", String(v.turn), "--model", MATTE_MODEL, "--locate", MATTE_LOCATE, "--out", out],
     { signal, onLine: (l) => { const m = /^PROGRESS (\d+)/.exec(l); if (m) onProgress?.(Number(m[1]) / 100); } });
   await uploadFile(matteKey(v.userId, v.id, v.turn, k), out, "video/mp4");
   return out;

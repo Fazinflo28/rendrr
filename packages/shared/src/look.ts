@@ -121,7 +121,7 @@ export const subjectText = (s: Subject) => `background removed${s.invert ? " (in
  * a clip trimmed or moved reuses the blocks it already had. MATTE_VERSION changes when the matte does.
  */
 export const MATTE_BLOCK = 10;
-export const MATTE_VERSION = 1;
+export const MATTE_VERSION = 2;
 /** Where a block of a video's matte is kept (with the video's frames, deleted with it), and the job that makes it.
  *  turn: the turn that makes the footage's people upright (the model sees them upright). */
 export const matteKey = (userId: string, videoId: string, turn: number, k: number) => `${PREFIX.frames}${userId}/${videoId}/matte-v${MATTE_VERSION}-t${turn}-${k}.mp4`;
