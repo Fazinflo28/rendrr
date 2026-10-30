@@ -58,13 +58,16 @@ export async function uploadFile(key: string, path: string, contentType: string)
   const { size } = await stat(path);
   if (size > 4.5e9) throw new Error("file too large for single upload");
   // The SDK cannot send a stream twice, so its own retries do not cover a file: a dropped connection (a kept-alive
-  // socket the server had already closed after a pause) or the bucket asking us to slow down is sent again from the
-  // file here, after a pause that grows (1, 2, 4, 8 s, with some spread so files sent together do not come back together).
+  // socket the server had already closed after a pause), the bucket asking us to slow down, a 5xx, or the bucket's
+  // gateway failing part way ("Request body is not seekable, cannot retry": it could not send our stream on again) is
+  // sent again from the file here, after a pause that grows (1, 2, 4, 8 s, with some spread so files sent together do
+  // not come back together).
   for (let attempt = 0; ; attempt++) {
     try { await putObject(key, createReadStream(path), contentType, size); return size; }
     catch (e) {
       const why = `${(e as Error).message} ${(e as { code?: string }).code ?? ""}`;
-      const again = /socket hang up|ECONNRESET|EPIPE|non-retryable streaming/i.test(why) || throttled(e);
+      const status = (e as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode ?? 0;
+      const again = /socket hang up|ECONNRESET|ETIMEDOUT|EPIPE|non-retryable streaming|not seekable|cannot retry/i.test(why) || throttled(e) || status >= 500;
       if (attempt >= 4 || !again) throw e;
       await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt * (0.75 + Math.random() * 0.5)));
     }
