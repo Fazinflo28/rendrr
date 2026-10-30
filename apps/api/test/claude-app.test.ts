@@ -3,6 +3,7 @@
 // without rendering; apply_edits ends with the edit's flags; render_preview with nothing changed renders nothing.
 // Needs a database, Redis and storage (as in .env). Run: pnpm --filter @rendrr/api test
 import assert from "node:assert/strict";
+import type { AppProjectView } from "@rendrr/shared";
 import { after, before, describe, it } from "node:test";
 
 const ready = !!process.env.DATABASE_URL && !!process.env.REDIS_URL && !!process.env.S3_BUCKET;
@@ -220,6 +221,27 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
       assert.equal(del.statusCode, 200, del.body);
       assert.equal(await prisma.projectComment.count({ where: { id } }), 0);
     } finally { await srv.close(); }
+  });
+
+  it("the app lists every rendered version, opens the one picked, gives its download, and renames the edit", async () => {
+    const fin = await prisma.render.create({ data: { projectId, userId, kind: "final", version: 1, status: "done", outputKey: `renders/${run}-f1.mp4`, seconds: 20, quality: "1080p", steps: [] } });
+    const v = (await app("app_get_project", { projectId })).data as AppProjectView;
+    assert.deepEqual(v.versions.map((x) => `${x.kind} v${x.version} ${x.quality}`).slice(0, 2), ["final v1 1080p", "preview v1 540p"]);
+    assert.equal(v.preview!.kind, "preview"); // the latest preview is what plays by default
+    assert.match(v.preview!.download, /response-content-disposition=attachment/);
+    assert.equal(v.preview!.fileName, `Reel ${run} preview v1.mp4`);
+    const f = (await app("app_get_project", { projectId, renderId: fin.id })).data as AppProjectView;
+    assert.equal(f.preview!.renderId, fin.id);
+    assert.equal(f.preview!.kind, "final");
+    assert.equal(f.preview!.fileName, `Reel ${run} final v1.mp4`);
+    // Another user's render id plays this edit's latest preview, never theirs.
+    const o = (await app("app_get_project", { projectId, renderId: "nope-not-mine" })).data as AppProjectView;
+    assert.equal(o.preview!.kind, "preview");
+    const r = await app("app_rename_project", { projectId, name: `Reel ${run} for the client` });
+    assert.equal((r.data as AppProjectView).project.name, `Reel ${run} for the client`);
+    assert.equal((await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).name, `Reel ${run} for the client`);
+    await assert.rejects(APP_HANDLERS.app_rename_project(c(otherId), { projectId, name: "Mine now" }), /could not find|not found|does not exist|gone/i);
+    await prisma.project.update({ where: { id: projectId }, data: { name: `Reel ${run}` } });
   });
 
   it("get_editing_skill returns the skill", async () => {

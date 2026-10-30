@@ -55,21 +55,28 @@ const db = {
   comments: { p1: [{ id: "c0", time: 1.2, text: "The client wants the logo smaller", author: "Dana", mine: false, resolved: false, at: now - 7200e3 }], p2: [] },
   preview: { p1: { renderId: "r1", version: 1, url: `${M}/v1.webm?X-Amz-Signature=b&slow=1500`, seconds: 8, quality: "540p", at: now - 3600e3 }, p2: null },
   rendering: { p1: null, p2: null },
+  older: { p1: [], p2: [] }, // previews a newer one replaced (the version menu keeps them)
+  finals: { p1: [{ renderId: "rf1", version: 1, url: `${M}/v2.webm?X-Amz-Signature=f`, seconds: 6, quality: "1080p", at: now - 1800e3 }], p2: [] },
 };
 const calls = [];
-const view = (id) => {
+const view = (id, renderId) => {
   const p = db.projects.find((x) => x.id === id);
+  // Every rendered version, newest first (as Rendrr lists them); the one asked for, else the latest preview.
+  const pv = (x, kind) => x && { ...x, kind, download: x.url + "&dl=1", fileName: `${p.name} ${kind} v${x.version}.mp4` };
+  const all = [pv(db.preview[id], "preview"), ...db.older[id].map((x) => pv(x, "preview")), ...db.finals[id].map((x) => pv(x, "final"))].filter(Boolean).sort((a, b) => b.at - a.at);
+  const shown = (renderId && all.find((x) => x.renderId === renderId)) || pv(db.preview[id], "preview") || all.find((x) => x.kind === "final") || null;
   return { project: { id: p.id, name: p.name, folder: p.folder, aspect: p.aspect, status: p.status, version: p.version, updated: p.updated, seconds: p.seconds, editorUrl: `https://app.rendrr.live/editor/${p.id}` },
-    preview: db.preview[id], rendering: db.rendering[id], failed: null, comments: [...db.comments[id]].sort((a, b) => a.time - b.time) };
+    preview: shown, versions: all.map(({ renderId: r, version, kind, quality, at }) => ({ renderId: r, version, kind, quality, at })), rendering: db.rendering[id], failed: null, comments: [...db.comments[id]].sort((a, b) => a.time - b.time) };
 };
 function tool(name, args) {
   calls.push({ name, args });
   if (name === "app_list_projects") { const ps = db.projects.filter((p) => !args.query || p.name.toLowerCase().includes(args.query.toLowerCase())); return { projects: ps, total: ps.length, offset: 0 }; }
   if (name === "app_get_project") {
     const r = db.rendering[args.projectId];
-    if (r) { r.percent += 45; r.queued = false; r.step = "Encoding"; if (r.percent >= 100) { db.rendering[args.projectId] = null; db.preview[args.projectId] = { renderId: "r2", version: 2, url: `${M}/v2.webm?X-Amz-Signature=c`, seconds: 6, quality: "540p", at: Date.now() }; } }
-    return view(args.projectId);
+    if (r) { r.percent += 45; r.queued = false; r.step = "Encoding"; if (r.percent >= 100) { db.rendering[args.projectId] = null; db.older[args.projectId].unshift(db.preview[args.projectId]); db.preview[args.projectId] = { renderId: "r2", version: 2, url: `${M}/v2.webm?X-Amz-Signature=c`, seconds: 6, quality: "540p", at: Date.now() }; } }
+    return view(args.projectId, args.renderId);
   }
+  if (name === "app_rename_project") { db.projects.find((x) => x.id === args.projectId).name = args.name; return view(args.projectId); }
   // Pictures come back as data: links here (Rendrr gives signed storage links); drawings as their strokes.
   const pics = (ims = []) => ims.map((im, i) => ({ id: "im" + calls.length + "-" + i, url: `data:${im.type};base64,${im.data}`, w: im.w ?? null, h: im.h ?? null, name: im.name ?? null }));
   if (name === "app_add_comment") { db.comments[args.projectId].push({ id: "c" + calls.length, time: args.time, text: args.text, author: "Ana", mine: true, resolved: false, at: Date.now(), edited: false, renderId: args.renderId ?? null, drawing: args.drawing ? { w: args.drawing.w, h: args.drawing.h, strokes: args.drawing.strokes } : null, images: pics(args.images) }); return view(args.projectId); }
@@ -146,10 +153,10 @@ check(await frame().evaluate(() => { const t = getComputedStyle(document.querySe
 check(await frame().evaluate(() => { const c = document.querySelector(".card"); const o = c.querySelector(".thumb .over .name"); return getComputedStyle(c).backgroundColor === "rgb(28, 30, 33)" && !!o && o.textContent.length > 0; }), "project cards as in the web app (surface colour, the name over the picture)");
 const thumbOk = await frame().evaluate(() => new Promise((r) => { const i = document.querySelector(".thumb img"); if (!i) return r("no picture"); const done = () => r(i.complete && i.naturalWidth > 0 ? true : "not loaded"); i.complete ? done() : (i.onload = done, i.onerror = done); }));
 check(thumbOk === true, `thumbnails load from the storage origin, their signed links as given (${thumbOk})`);
-check(await frame().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); const h1 = r("h1"); return h1.height < 40 && r(".top .btn.big").top < h1.bottom + 20; }), "the header fits: the title on one line, the buttons beside it");
+check(await frame().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); const h1 = r("h1"); return h1.height < 40 && r(".top .ibtn.accent").top < h1.bottom + 20; }), "the header fits: the title on one line, the buttons beside it");
 const sized = (await hostLog()).filter((m) => m.method === "ui/notifications/size-changed");
 check(sized.length >= 1 && sized[sized.length - 1].params.height > 200, `the app tells the host its height (${sized.map((s) => s.params.height).join(", ")})`);
-check((await app.locator(".btn.big", { hasText: "Full screen" }).count()) === 1, "the grid offers full screen");
+check((await app.locator('button[aria-label="Full screen"]').count()) === 1, "the grid offers full screen");
 await page.screenshot({ path: join(dir, "app-list.png") });
 
 // 2. Search keeps the field focused while results come back.
@@ -196,7 +203,7 @@ const seekW = await app.locator(".seek").evaluate((e) => e.getBoundingClientRect
 await app.locator(".seek").click({ position: { x: seekW * 0.75, y: 11 } }); await sleep(250);
 const afterSeek = await frame().evaluate(() => document.querySelector("video").currentTime);
 check(Math.abs(afterSeek - 6) < 0.25, `the seek bar moves the player (to ${afterSeek.toFixed(3)} s)`);
-await app.locator("h1").click();
+await app.locator(".pv .top .meta").click(); // the page (the name itself opens to rename)
 await page.keyboard.press("ArrowLeft"); await sleep(150);
 await page.keyboard.press("Shift+ArrowLeft"); await sleep(150);
 const afterKeys = await frame().evaluate(() => document.querySelector("video").currentTime);
@@ -208,7 +215,7 @@ check(Math.abs(t - afterKeys - 0.1) < 0.02, `the +0.1 s button steps on (${t.toF
   const tc = await app.locator(".tc").innerText(), m = /^(\d+):(\d+)\.(\d{3})/.exec(tc), now = await frame().evaluate(() => document.querySelector("video").currentTime);
   check(!!m && Math.abs(+m[1] * 60 + +m[2] + +m[3] / 1000 - now) <= 0.002, `the time shows the exact moment (${tc}, video at ${now.toFixed(4)})`); }
 check(/^at 00:0\d\.\d{3}$/.test(await app.locator(".at").innerText()), `the new comment's moment follows the player (${await app.locator(".at").innerText()})`);
-check(/v2 has changes this preview \(v1\) does not show yet/.test(await app.locator("body").innerText()), "it says the latest version has no preview yet");
+check(/v2 has changes the latest preview \(v1\) does not show yet/.test(await app.locator("body").innerText()), "it says the latest version has no preview yet");
 check((await app.locator(".seek .mk").count()) === 1, "the client's comment is a pin under the seek bar");
 // The seek bar is big enough to hold: a tall strip to press, dragged with the picture following.
 const sb = await app.locator(".seek .hit").boundingBox(), bar = await app.locator(".seek .bar").boundingBox();
@@ -230,7 +237,7 @@ check(await frame().evaluate(() => Math.abs(document.querySelector("video").curr
 await frame().evaluate((x) => { document.querySelector("video").currentTime = x; }, t); await sleep(200); // back where the steps left it
 check((await hostLog()).filter((m) => m.method === "ui/notifications/size-changed").length === fsSizes, "full screen, the app does not resize the host's panel");
 // Back in the chat: the same order, the frame as tall as the app.
-await app.locator("button", { hasText: "Exit full screen" }).click(); await sleep(400);
+await app.locator('button[aria-label="Exit full screen"]').click(); await sleep(400);
 const inBox = await boxes();
 check(!inBox.fs && inBox.order && inBox.vh >= 500, `in the chat: the same order, a tall player (${Math.round(inBox.vh)} px; the frame grows to fit, so no vh)`);
 check(await frame().evaluate(() => document.querySelector("video").currentTime > 1.6), "the player keeps its place when the view changes");
@@ -335,7 +342,7 @@ await del.click(); await sleep(300);
 check(calls.some((c) => c.name === "app_delete_comment") && (await app.locator(".cm", { hasText: "Logo 20% smaller" }).count()) === 0, "and then deletes it");
 
 // 6c. Share: a review link for the version being watched, to copy or open.
-await app.locator(".top button", { hasText: "Share" }).click();
+await app.locator('.top button[aria-label="Share"]').click();
 await app.locator(".share input").waitFor({ timeout: 5000 });
 const shareCall = calls.filter((c) => c.name === "app_share_link").pop();
 check(shareCall?.args.version === 1 && (await app.locator(".share input").inputValue()) === "https://app.rendrr.live/review/tok-p1", "Share makes the review link for the version being watched");
@@ -362,14 +369,38 @@ await frame().waitForFunction(() => document.querySelector("video").readyState >
 await sleep(1200);
 check(await frame().evaluate(() => { const v = document.querySelector("video"); return v.readyState >= 2 && v.paused && v.currentTime === 0; }), "and does not play on its own");
 check(/Preview v2 is ready\. Press play to watch\./.test(await app.locator("#toast").innerText()), "it says the new preview is ready to play");
-check(!/has changes this preview/.test(await app.locator("body").innerText()), "the note about missing changes is gone");
+check(!/has changes the latest preview/.test(await app.locator("body").innerText()), "the note about missing changes is gone");
+
+// 7b. The header: icons with their names on hover; download what is watched; the versions to watch; rename.
+const acts = await frame().evaluate(() => [...document.querySelectorAll(".pv .top .acts button, .pv .top > button")].map((b) => ({ label: b.getAttribute("aria-label"), title: b.title, svg: !!b.querySelector("svg"), text: b.innerText.trim() })));
+check(acts.length === 5 && acts.every((a) => a.svg && !a.text && a.title) && ["All projects", "Share", "Download", "Open in Rendrr"].every((l) => acts.some((a) => a.label === l)) && acts.some((a) => /^(Exit )?[Ff]ull screen$/.test(a.label)), `the header buttons are icons, named on hover (${acts.map((a) => a.label).join(", ")})`);
+await app.locator('button[aria-label="Download"]').click(); await sleep(200);
+check((await hostLog()).some((m) => m.method === "ui/open-link" && /v2\.webm\?X-Amz-Signature=c&dl=1$/.test(m.params.url)) && /Downloading Knee pain reel preview v2\.mp4/.test(await app.locator("#toast").innerText()), "Download gets the file being watched (through the host)");
+const opts = await app.locator("select.ver option").allInnerTexts();
+check(opts.join(" | ") === "v2 · Preview | v1 · Final 1080p | v1 · Preview", `the version menu lists every render, newest first (${opts.join(" | ")})`);
+await app.locator("select.ver").selectOption("rf1");
+await frame().waitForFunction(() => /X-Amz-Signature=f/.test(document.querySelector("video")?.getAttribute("src") || ""), null, { timeout: 5000 }).catch(() => {});
+check(calls.some((c) => c.name === "app_get_project" && c.args.renderId === "rf1") && /X-Amz-Signature=f/.test(await frame().evaluate(() => document.querySelector("video").getAttribute("src"))), "picking the final plays the final");
+check(/v1 final/.test(await app.locator(".stamp").innerText()) && /the final/.test(await app.locator('button[aria-label="Download"]').getAttribute("title")) && await frame().evaluate(() => document.querySelector("video").paused), "the player says it is the final, Download takes the final, nothing plays on its own");
+check(!/has changes the latest preview/.test(await app.locator("body").innerText()) && !/Preview v1 is ready/.test(await app.locator("#toast").innerText()), "watching an older render is not news, and no note asks for a render");
+await app.locator("select.ver").selectOption("r2");
+await frame().waitForFunction(() => /v2\.webm\?X-Amz-Signature=c/.test(document.querySelector("video")?.getAttribute("src") || ""), null, { timeout: 5000 }).catch(() => {});
+check(/v2\.webm\?X-Amz-Signature=c/.test(await frame().evaluate(() => document.querySelector("video").getAttribute("src"))), "and back to the latest preview");
+// Rename: click the name, type, Enter; Esc leaves it as it was.
+await app.locator("h1.name").click();
+check(await frame().evaluate(() => document.activeElement?.classList.contains("rename") && document.activeElement.value === "Knee pain reel"), "clicking the name opens it to rename");
+await app.locator(".rename").fill("Knee pain reel FINAL"); await app.locator(".rename").press("Enter"); await sleep(300);
+check(calls.some((c) => c.name === "app_rename_project" && c.args.name === "Knee pain reel FINAL") && (await app.locator("h1.name").innerText()).toLowerCase() === "knee pain reel final", "Enter renames the edit in Rendrr");
+await app.locator("h1.name").click(); await app.locator(".rename").fill("Oops"); await app.locator(".rename").press("Escape"); await sleep(200);
+check((await app.locator("h1.name").innerText()).toLowerCase() === "knee pain reel final" && !calls.some((c) => c.name === "app_rename_project" && c.args.name === "Oops"), "Esc leaves the name as it was");
+db.projects[0].name = "Knee pain reel";
 
 // 8. Full screen with the button, Open in Rendrr, back to every edit.
-await app.locator("button", { hasText: "Full screen" }).click(); await sleep(200);
+await app.locator('button[aria-label="Full screen"]').click(); await sleep(200);
 check((await hostLog()).some((m) => m.method === "ui/request-display-mode" && m.params.mode === "fullscreen") && await frame().evaluate(() => document.documentElement.classList.contains("fs")), "full screen asks the host and lays out for it");
-await app.locator("button", { hasText: "Open in Rendrr" }).click(); await sleep(200);
+await app.locator('button[aria-label="Open in Rendrr"]').click(); await sleep(200);
 check((await hostLog()).some((m) => m.method === "ui/open-link" && m.params.url === "https://app.rendrr.live/editor/p1"), "Open in Rendrr opens the editor");
-await app.locator("button", { hasText: "All projects" }).click();
+await app.locator('button[aria-label="All projects"]').click();
 await app.locator(".card").first().waitFor();
 check((await app.locator(".card").count()) === 2, "back to all projects");
 // An edit never rendered (the editor plays edits live, so many have no preview): its first preview starts on its own.
@@ -377,10 +408,10 @@ const renders = () => calls.filter((c) => c.name === "app_render_preview" && c.a
 await app.locator(".card", { hasText: "Founder story" }).click();
 await app.locator(".noprev").waitFor({ timeout: 5000 }); await sleep(600);
 check(renders() === 1 && /Making a preview to watch here/.test(await app.locator(".noprev").innerText()), `an edit with no preview starts one on its own and says so (${renders()} render asked)`);
-await app.locator("button", { hasText: "All projects" }).click(); await app.locator(".card").first().waitFor();
+await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card").first().waitFor();
 await app.locator(".card", { hasText: "Founder story" }).click(); await sleep(800);
 check(renders() === 1, "opening it again does not start another");
-await app.locator("button", { hasText: "All projects" }).click(); await app.locator(".card").first().waitFor();
+await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card").first().waitFor();
 
 // The host switches theme: the app keeps Rendrr's look.
 await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark", styles: { variables: { "--color-background-primary": "rgb(31, 30, 29)" } } } }, "*"));
@@ -426,7 +457,7 @@ await papp.locator(".ctrl button", { hasText: "Done" }).tap();
 await papp.locator(".compose button", { hasText: "Comment" }).tap();
 await sleep(400);
 check(calls.filter((c) => c.name === "app_add_comment").pop().args.drawing?.strokes?.length === 1, "a drawing from the phone is saved");
-await papp.locator(".top button", { hasText: "Share" }).tap();
+await papp.locator('.top button[aria-label="Share"]').tap();
 await papp.locator(".share input").waitFor({ timeout: 5000 });
 fit = await fits();
 check(fit.over <= 1 && !fit.wide.length, `phone: the share panel fits (${fit.wide.join(", ") || "nothing sticks out"})`);
@@ -436,7 +467,7 @@ check(pAfter.ctrlRows === 1, `phone: the player controls fit on one line (${pAft
 await ph.screenshot({ path: join(dir, "app-phone.png") });
 await papp.locator(".shade").tap({ position: { x: 20, y: 800 } }); await sleep(150);
 check((await papp.locator(".share").count()) === 0, "phone: a tap outside closes the share panel");
-await papp.locator("button", { hasText: "Exit" }).tap(); await sleep(400);
+await papp.locator('button[aria-label="Exit full screen"]').tap(); await sleep(400);
 fit = await fits();
 check(!(await pframe().evaluate(() => document.documentElement.classList.contains("fs"))) && fit.over <= 1 && !fit.wide.length, `phone, in the chat: it fits (${fit.wide.join(", ") || "nothing sticks out"})`);
 await sleep(500); await ph.screenshot({ path: join(dir, "app-phone-inline.png") });

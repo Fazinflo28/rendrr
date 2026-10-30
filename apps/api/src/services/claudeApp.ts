@@ -1,11 +1,11 @@
 // The Rendrr app inside the chat (an MCP App): every edit, each one's latest preview with its render progress, and its
 // comments. The app calls these through the host and the MCP server, as the signed-in user; comments land in the same
 // tables as the editor's (the Comments tab and the markers show them, and get_comments reads them for the AI).
-import { notFound, signGet } from "@rendrr/core";
+import { applyTimelineChange, notFound, signGet } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import type { AppComment, AppOpen, AppProjectCard, AppProjectsPage, AppProjectView } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
-import { renderStatus, startRender } from "./render";
+import { renderResult, renderStatus, startRender } from "./render";
 import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
 import { createReviewLink } from "../routes/reviews";
 import type { ToolCtx, ToolOut } from "../tools";
@@ -48,9 +48,9 @@ export async function appProjects(userId: string, i: { offset?: number; limit?: 
   return { projects, total, offset };
 }
 
-export async function appProject(userId: string, projectId: string): Promise<AppProjectView> {
+export async function appProject(userId: string, projectId: string, renderId?: string): Promise<AppProjectView> {
   const p = await getOwnedProject(userId, projectId);
-  const [folder, user, latest, done, live, failed, notes, client] = await Promise.all([
+  const [folder, user, latest, done, live, failed, notes, client, all] = await Promise.all([
     prisma.folder.findUnique({ where: { id: p.folderId }, select: { name: true } }),
     prisma.user.findUnique({ where: { id: userId }, select: { name: true } }),
     prisma.projectVersion.findFirst({ where: { projectId: p.id }, orderBy: { v: "desc" }, select: { v: true } }),
@@ -59,8 +59,15 @@ export async function appProject(userId: string, projectId: string): Promise<App
     prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", status: "failed" }, orderBy: { createdAt: "desc" } }),
     prisma.projectComment.findMany({ where: { projectId: p.id }, orderBy: { createdAt: "asc" }, take: 300 }),
     prisma.reviewComment.findMany({ where: clientCommentsWhere(p), orderBy: { createdAt: "asc" }, take: 300 }),
+    prisma.render.findMany({ where: { projectId: p.id, status: "done", outputKey: { not: null } }, orderBy: { createdAt: "desc" }, take: 120 }),
   ]);
   const st = live ? await renderStatus(live) : null;
+  // The versions to pick from: the newest render of each version and kind.
+  const seen = new Set<string>();
+  const versions = all.filter((r) => { const k = `${r.kind}:${r.version}`; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 40);
+  // Watching: the render picked (one of this edit's), else the latest preview, else the latest final.
+  const shown = (renderId && all.find((r) => r.id === renderId)) || done || all.find((r) => r.kind === "final") || null;
+  const res = shown ? await renderResult(shown) : null;
   const version = latest?.v ?? p.currentVersion;
   const comments: AppComment[] = [
     ...(await Promise.all(notes.map(async (n) => ({ id: n.id, time: n.time, text: n.text, author: user?.name || "You", mine: true, resolved: n.resolved, at: n.createdAt.getTime(), edited: !!n.editedAt, renderId: n.renderId, ...(await commentMedia(n)) })))),
@@ -68,7 +75,8 @@ export async function appProject(userId: string, projectId: string): Promise<App
   ].sort((a, b) => a.time - b.time || a.at - b.at);
   return {
     project: { id: p.id, name: p.name, folder: folder?.name ?? "", aspect: p.aspect, status: p.status, version, updated: p.updatedAt.getTime(), seconds: p.outputSeconds || null, editorUrl: WEB() ? `${WEB()}/editor/${p.id}` : null },
-    preview: done?.outputKey ? { renderId: done.id, version: done.version, url: await signGet(done.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), seconds: done.seconds, quality: done.quality ?? "540p", at: done.createdAt.getTime() } : null,
+    preview: shown?.outputKey && res ? { renderId: shown.id, version: shown.version, kind: shown.kind === "final" ? "final" : "preview", url: await signGet(shown.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), download: res.downloadUrl!, fileName: res.fileName, seconds: shown.seconds, quality: shown.quality ?? (shown.kind === "final" ? "1080p" : "540p"), at: shown.createdAt.getTime() } : null,
+    versions: versions.map((r) => ({ renderId: r.id, version: r.version, kind: r.kind === "final" ? "final" as const : "preview" as const, quality: r.quality ?? (r.kind === "final" ? "1080p" : "540p"), at: r.createdAt.getTime() })),
     rendering: live && st ? { renderId: live.id, version: live.version, percent: Math.round(st.percent ?? 0), step: st.steps[st.step] ?? null, etaSec: st.etaSec, queued: st.status === "queued" } : null,
     // A failed render is only news while nothing newer worked.
     failed: failed && (!done || failed.createdAt > done.createdAt) && (!live || failed.createdAt > live.createdAt) ? { version: failed.version, error: failed.error || "The render failed." } : null,
@@ -105,8 +113,13 @@ export const APP_HANDLERS: Record<string, (c: ToolCtx, input: any) => Promise<To
     return { text: `${page.projects.length} of ${page.total} edits.`, data: page };
   },
   async app_get_project(c, i) {
-    const view = await appProject(c.userId, i.projectId);
+    const view = await appProject(c.userId, i.projectId, i.renderId);
     return { text: `"${view.project.name}" v${view.project.version}.`, data: view };
+  },
+  async app_rename_project(c, i) {
+    const p = await getOwnedProject(c.userId, i.projectId);
+    if (i.name !== p.name) await applyTimelineChange(p.id, { op: "rename", name: i.name }, { kind: "user", userId: c.userId });
+    return { text: `Renamed to "${i.name}".`, data: await appProject(c.userId, p.id) };
   },
   async app_add_comment(c, i) {
     const p = await getOwnedProject(c.userId, i.projectId);

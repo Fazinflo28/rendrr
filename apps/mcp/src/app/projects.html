@@ -169,6 +169,19 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 .ibtn { width: 36px; height: 36px; border-radius: var(--r-btn); background: var(--raised); box-shadow: var(--shadow-quiet); display: inline-flex; align-items: center; justify-content: center; padding: 0; flex: none; }
 .ibtn:hover { background: var(--raised-strong); }
 .ibtn svg { width: 16px; height: 16px; fill: currentColor; }
+/* The edit's header: icon buttons (their names show on hover), the version to watch, the name (click to rename). */
+.ibtn.ghost { background: transparent; box-shadow: none; }
+.ibtn.ghost:hover:not(:disabled) { background: var(--raised); }
+.ibtn.accent { background: var(--accent-tint); color: var(--accent); }
+.ibtn.accent:hover:not(:disabled) { background: var(--accent-ring); }
+.ibtn svg.st { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.pv .top .acts { display: flex; gap: 6px; flex: none; align-items: center; }
+.ver { height: 36px; max-width: 190px; padding: 0 30px 0 10px; border-radius: var(--r-btn); background: var(--raised) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4' fill='none' stroke='%23a1a1aa' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 8px center / 14px; color: var(--ink); border: 0; font: inherit; font-size: 13px; box-shadow: var(--shadow-quiet); appearance: none; -webkit-appearance: none; cursor: pointer; text-overflow: ellipsis; }
+.ver:hover { background-color: var(--raised-strong); }
+.ver option { background: var(--surface); color: var(--ink); }
+.pv .top h1.name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: text; border-radius: var(--r-xs); }
+.pv .top h1.name:hover { box-shadow: 0 0 0 1px var(--hair-strong); }
+.rename { width: 100%; height: 30px; padding: 0 8px; border: 0; border-radius: var(--r-xs); background: var(--raised); color: var(--ink); font: 700 18px/30px var(--display); text-transform: uppercase; outline: 2px solid var(--accent); }
 .tc { font-size: 14px; padding: 0 6px; font-variant-numeric: tabular-nums; }
 .tc .tot { color: var(--muted); }
 .step { height: 32px; font-size: 13px; padding: 0 10px; }
@@ -241,12 +254,12 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
   .search { max-width: none; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
   .thumb .name { font-size: 13.5px; }
-  .stage video, html.fs .stage video { max-height: 256px; }
+  .stage video, html.fs .stage video { max-height: 252px; }
   html.fs .stage.tall video { height: 360px; }
   .stage.tall video { height: 440px; }
   .pv, .pv .side { gap: 8px; }
   .ctrl { flex-wrap: wrap; row-gap: 4px; gap: 4px; padding: 4px; }
-  .seek { height: 70px; }
+  .seek { height: 66px; }
   .seek .hit { height: 40px; }
   .seek .bar { top: 17px; height: 10px; } .seek:hover .bar, .seek.drag .bar { top: 15px; height: 14px; }
   .seek .head { top: 10px; width: 24px; height: 24px; margin-left: -12px; }
@@ -256,6 +269,15 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
   .pv .top { flex-wrap: nowrap; gap: 4px; }
   .pv .top .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pv .top .btn { padding: 0 9px; }
+  /* Phones: the name gets its own line; the version and the icons go on the next. */
+  .pv .top { flex-wrap: wrap; }
+  .pv .top .grow { flex: 1 1 calc(100% - 52px); min-width: 0; }
+  .pv .top .acts { width: 100%; gap: 6px; }
+  .pv .top .acts .ibtn, .pv .top .acts .ver { height: 36px; }
+  .pv .top .acts .ibtn, .pv .top > .ibtn { width: 36px; height: 36px; }
+  /* The second header line is paid for here, so the box to write a comment stays clear of the chat box below. */
+  .pv { gap: 8px; }
+  .ver { flex: 1; max-width: none; font-size: 13px; }
   .tc { font-size: 13px; padding: 0 2px; }
   .tc .tot { display: none; } /* the seek bar shows how far along it is */
   .lg { display: none; } .sm { display: inline; }
@@ -357,8 +379,8 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
   const isFullscreen = () => host.ctx.displayMode === "fullscreen";
   const setDisplay = (mode) => (viaOpenAI ? Promise.resolve(oa().requestDisplayMode({ mode })) : request("ui/request-display-mode", { mode })).then((r) => { if (r && r.mode) applyContext({ displayMode: r.mode }); }).catch(() => {});
   const fsButton = () => !canFullscreen() ? null : isFullscreen()
-    ? h("button", { class: "btn ghost", "aria-label": "Exit full screen", onClick: () => setDisplay("inline") }, h("span", { class: "lg" }, "Exit full screen"), h("span", { class: "sm" }, "Exit"))
-    : h("button", { class: "btn big", title: "Open the player and comments full screen", onClick: () => setDisplay("fullscreen") }, "⤢ ", h("span", { class: "lg" }, "Full screen"), h("span", { class: "sm" }, "Full"));
+    ? iconBtn("shrink", "Exit full screen", () => setDisplay("inline"))
+    : iconBtn("expand", "Full screen: the player and comments in a bigger panel", () => setDisplay("fullscreen"), "accent");
 
   // Tell the host how tall the app is, whenever that changes.
   let lastH = 0;
@@ -405,12 +427,18 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
     if (state.view === "list") render();
   }
 
-  function showProject(view) {
+  function showProject(view, picked) {
     const prevRender = state.project && state.project.preview && state.project.preview.renderId;
+    const prevNewest = state.project && state.project.versions && state.project.versions[0] && state.project.versions[0].renderId;
     const sameProject = state.project && state.project.project.id === view.project.id;
+    if (!sameProject) { state.pick = null; state.renaming = false; }
+    // While renaming, the name being typed stays (a poll does not overwrite it).
+    if (sameProject && state.renaming) view.project.name = state.project.project.name;
+    // Watching an older version: a new render shows up in the version menu, said once.
+    if (sameProject && state.pick && view.versions && view.versions[0] && view.versions[0].renderId !== prevNewest) setTimeout(() => toast((view.versions[0].kind === "final" ? "Final" : "Preview") + " v" + view.versions[0].version + " is ready: pick it in the version menu."), 50);
     state.project = view; state.view = "project";
     if (!sameProject) { state.filter = view.comments.some((c) => !c.resolved) || !view.comments.length ? "open" : "all"; state.draft = ""; state.compose = freshCompose(); state.drawMode = false; state.viewDrawing = null; state.share = null; }
-    const fresh = sameProject && view.preview && view.preview.renderId !== prevRender;
+    const fresh = !picked && !state.pick && sameProject && view.preview && view.preview.renderId !== prevRender;
     render(fresh);
     schedulePoll();
     // An edit never rendered has nothing to play (the editor plays edits live, so many have no preview): its first
@@ -437,7 +465,7 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
     polling = setTimeout(async () => {
       if (state.view !== "project" || !state.project) return;
       if (document.visibilityState === "hidden") return schedulePoll();
-      try { const v = await callTool("app_get_project", { projectId: state.project.project.id }); if (v && state.view === "project" && state.project && v.project.id === state.project.project.id) showProject(v); }
+      try { const v = await callTool("app_get_project", { projectId: state.project.project.id, ...(state.pick ? { renderId: state.pick } : {}) }); if (v && state.view === "project" && state.project && v.project.id === state.project.project.id) showProject(v); }
       catch { schedulePoll(); }
     }, ms);
   }
@@ -514,14 +542,25 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 
   function projectView(fresh) {
     const v = state.project;
-    const back = h("button", { class: "btn ghost", "aria-label": "All projects", onClick: () => { stopPolling(); state.view = "list"; state.project = null; state.pendingProject = null; state.share = null; player = null; render(); if (!state.page) loadList(); } }, "← ", h("span", { class: "lg" }, "All projects"));
+    const back = iconBtn("back", "All projects", () => { stopPolling(); state.view = "list"; state.project = null; state.pendingProject = null; state.share = null; state.pick = null; state.renaming = false; player = null; render(); if (!state.page) loadList(); }, "ghost");
     if (!v) return h("div", {}, h("div", { class: "row top" }, back), h("div", { class: "skel" }));
     const p = v.project;
+    // The name: click it to rename (Enter saves, Esc leaves it as it was).
+    const name = state.renaming
+      ? h("input", { class: "rename", value: p.name, maxlength: 120, "aria-label": "Edit name", "data-key": "rename", onKeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); saveName(e.target.value); } else if (e.key === "Escape") { state.renaming = false; render(); } }, onBlur: (e) => saveName(e.target.value) })
+      : h("h1", { class: "name", title: p.name + " (click to rename)", role: "button", tabindex: "0", onClick: startRename, onKeydown: (e) => { if (e.key === "Enter") startRename(); } }, p.name);
+    const shownV = v.preview;
+    // The rendered versions to watch, newest first: previews and finals.
+    const versions = v.versions || [];
+    const pick = versions.length > 1 && shownV ? h("select", { class: "ver", "aria-label": "Version to watch", title: "Version to watch", onChange: (e) => pickVersion(e.target.value) },
+      versions.map((x) => h("option", { value: x.renderId, selected: x.renderId === shownV.renderId }, "v" + x.version + " · " + (x.kind === "final" ? "Final " + x.quality : "Preview")))) : null;
     const top = h("div", { class: "row top" }, back,
-      h("div", { class: "grow" }, h("h1", { title: p.name, style: "white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, p.name), h("div", { class: "meta" }, [p.folder, "v" + p.version, p.status, p.aspect].filter(Boolean).join(" · "))),
-      fsButton(),
-      h("button", { class: "btn", title: "A link to watch and comment on this video, no account needed", onClick: () => toggleShare(v) }, "Share"),
-      p.editorUrl ? h("button", { class: "btn", "aria-label": "Open in Rendrr", onClick: () => openLink(p.editorUrl) }, h("span", { class: "lg" }, "Open in Rendrr"), h("span", { class: "sm" }, "↗")) : null);
+      h("div", { class: "grow" }, name, h("div", { class: "meta" }, [p.folder, "v" + p.version, p.status, p.aspect].filter(Boolean).join(" · "))),
+      h("div", { class: "acts" }, pick,
+        fsButton(),
+        iconBtn("share", "Share: a link to watch and comment, no account needed", () => toggleShare(v)),
+        shownV ? iconBtn("download", "Download: " + (shownV.kind === "final" ? "the final" : "this preview") + " (v" + shownV.version + ", " + shownV.quality + ")", () => download(shownV)) : null,
+        p.editorUrl ? iconBtn("external", "Open in Rendrr", () => openLink(p.editorUrl)) : null));
 
     // The player: the latest preview, or a note while there is none.
     const tall = p.aspect === "9:16" || p.aspect === "4:5";
@@ -552,7 +591,7 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
       const frame = h("div", { class: "frame" + loadingClass(player) }, player, canvas,
         h("div", { class: "load", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Loading preview…"),
         h("div", { class: "fail" }, h("span", {}, "The preview did not load."), h("button", { class: "btn", onClick: retryPreview }, "Try again")),
-        h("span", { class: "stamp", "aria-hidden": "true" }, stampT, h("i", {}, "v" + v.preview.version)));
+        h("span", { class: "stamp", "aria-hidden": "true" }, stampT, h("i", {}, "v" + v.preview.version + (v.preview.kind === "final" ? " final" : ""))));
       stage = h("div", { class: "stage" + (tall ? " tall" : "") }, frame);
     } else {
       player = null;
@@ -570,8 +609,10 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
     } else if (v.failed) {
       notes.push(h("div", { class: "note err" }, "The render of v" + v.failed.version + " failed: " + v.failed.error));
     }
-    if (!v.rendering && (!v.preview || v.preview.version < p.version)) {
-      notes.push(h("div", { class: "note row" }, h("span", { class: "grow" }, v.preview ? "v" + p.version + " has changes this preview (v" + v.preview.version + ") does not show yet." : "This edit has no preview yet."),
+    // Measured against the latest preview (not an older version being watched).
+    const lastPrev = (v.versions || []).find((x) => x.kind === "preview") || (v.preview && v.preview.kind !== "final" ? v.preview : null);
+    if (!v.rendering && (!lastPrev || lastPrev.version < p.version)) {
+      notes.push(h("div", { class: "note row" }, h("span", { class: "grow" }, lastPrev ? "v" + p.version + " has changes the latest preview (v" + lastPrev.version + ") does not show yet." : "This edit has no preview yet."),
         h("button", { class: "btn", disabled: state.busy, onClick: renderPreview }, state.busy ? "Starting…" : "Render preview")));
     }
     requestAnimationFrame(placeInk);
@@ -629,6 +670,12 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
   }
 
   const ICONS = {
+    back: '<svg class="st" viewBox="0 0 16 16"><path d="M13 8H3M7.5 3.5L3 8l4.5 4.5"/></svg>',
+    expand: '<svg class="st" viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"/></svg>',
+    shrink: '<svg class="st" viewBox="0 0 16 16"><path d="M13.5 6.5h-4v-4M2.5 9.5h4v4M9.5 6.5l4-4M6.5 9.5l-4 4"/></svg>',
+    share: '<svg class="st" viewBox="0 0 16 16"><circle cx="12" cy="3.5" r="1.8"/><circle cx="4" cy="8" r="1.8"/><circle cx="12" cy="12.5" r="1.8"/><path d="M5.6 7.1l4.8-2.7M5.6 8.9l4.8 2.7"/></svg>',
+    download: '<svg class="st" viewBox="0 0 16 16"><path d="M8 2.5V10M5 7l3 3 3-3M3 12.5h10"/></svg>',
+    external: '<svg class="st" viewBox="0 0 16 16"><path d="M9 2.5h4.5V7M13.5 2.5L7.5 8.5M12 9.5v4H2.5V4h4"/></svg>',
     play: '<svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z"/></svg>',
     pause: '<svg viewBox="0 0 16 16"><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z"/></svg>',
     sound: '<svg viewBox="0 0 16 16"><path d="M2 6h3l4-3.5v11L5 10H2z"/><path d="M11 5.2a3.6 3.6 0 0 1 0 5.6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
@@ -669,6 +716,29 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
   let others = null;
   try { others = new BroadcastChannel("rendrr-player"); others.onmessage = (e) => { if (e.data && e.data.playing && e.data.playing !== me && player && !player.paused) player.pause(); }; } catch { others = null; }
   function tellOthers() { try { if (others) others.postMessage({ playing: me }); } catch {} }
+  // An icon button: its name shows on hover (title) and is read out (aria-label).
+  function iconBtn(name, label, onClick, kind) { return h("button", { class: "ibtn" + (kind ? " " + kind : ""), title: label, "aria-label": label.split(":")[0], onClick }, icon(name)); }
+  function startRename() { state.renaming = true; render(); const el = document.querySelector(".rename"); if (el) { el.focus(); el.select(); } }
+  async function saveName(text) {
+    if (!state.renaming) return;
+    state.renaming = false;
+    const v = state.project, name = (text || "").trim().slice(0, 120);
+    if (!v || !name || name === v.project.name) { render(); return; }
+    const was = v.project.name;
+    v.project.name = name; render();
+    try { await callTool("app_rename_project", { projectId: v.project.id, name }); toast("Renamed."); }
+    catch (e) { v.project.name = was; render(); toast(e.message || "Could not rename it."); }
+  }
+  // Watch another rendered version (a preview or a final); the latest preview is the default.
+  async function pickVersion(renderId) {
+    const v = state.project;
+    if (!v) return;
+    state.pick = v.versions && v.versions.find((x) => x.kind === "preview") && v.versions.find((x) => x.kind === "preview").renderId === renderId ? null : renderId;
+    try { const view = await callTool("app_get_project", { projectId: v.project.id, renderId }); if (view && state.project && view.project.id === state.project.project.id) showProject(view, true); }
+    catch (e) { toast(e.message || "Could not open that version."); }
+  }
+  // The file comes from the storage with its name; the host opens the link (a page in a chat cannot save files itself).
+  function download(pv) { openLink(pv.download); toast("Downloading " + (pv.fileName || "the video") + "…"); }
   function togglePlay() { if (player) player.paused ? player.play().catch(() => {}) : player.pause(); }
   function step(d) { if (player) seek(Math.min(isFinite(player.duration) ? player.duration : Infinity, Math.max(0, player.currentTime + d))); }
 

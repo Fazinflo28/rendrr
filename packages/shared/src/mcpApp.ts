@@ -24,8 +24,10 @@ export const COMMENT_IMAGES_MAX = 4;
 export const APP_TOOLS: ToolDef[] = [
   { name: "app_list_projects", title: "Projects for the app", app: true, description: "The Rendrr app: a page of the user's edits, newest first.",
     input: z.object({ offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(60).optional(), query: z.string().max(100).optional() }) },
-  { name: "app_get_project", title: "One project for the app", app: true, description: "The Rendrr app: one edit's latest preview, its render progress and its comments.",
-    input: z.object({ projectId: id("project") }) },
+  { name: "app_get_project", title: "One project for the app", app: true, description: "The Rendrr app: one edit's latest preview (or the render asked for), its rendered versions, its render progress and its comments.",
+    input: z.object({ projectId: id("project"), renderId: id("render").optional() }) },
+  { name: "app_rename_project", title: "Rename the edit", app: true, write: true, description: "The Rendrr app: rename the edit.",
+    input: z.object({ projectId: id("project"), name: z.string().trim().min(1).max(120) }) },
   { name: "app_add_comment", title: "Add a comment", app: true, write: true, description: "The Rendrr app: add the user's comment at a moment of the preview (seconds of the edited video), with a drawing on the picture and pictures if they made them.",
     input: z.object({ projectId: id("project"), time: z.number().min(0).max(24 * 3600), text: z.string().trim().max(2000).default(""), renderId: id("render").optional(), drawing: DrawingInput.optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional() }) },
   { name: "app_edit_comment", title: "Edit a comment", app: true, write: true, description: "The Rendrr app: change the user's own comment: its text, its drawing (null takes it off), pictures to take off (their ids) or to add.",
@@ -47,7 +49,10 @@ export type CommentImage = { id: string; url: string; w: number | null; h: numbe
 export type AppComment = { id: string; time: number; text: string; author: string; mine: boolean; resolved: boolean; at: number; edited: boolean; renderId: string | null; drawing: CommentDrawing | null; images: CommentImage[] };
 export type AppProjectView = {
   project: { id: string; name: string; folder: string; aspect: string; status: string; version: number; updated: number; seconds: number | null; editorUrl: string | null };
-  preview: { renderId: string; version: number; url: string; seconds: number; quality: string; at: number } | null;
+  /** The render being watched: the latest preview, or the version picked (a preview or a final); download: its file. */
+  preview: { renderId: string; version: number; kind: "preview" | "final"; url: string; download: string; fileName: string; seconds: number; quality: string; at: number } | null;
+  /** Every rendered version to pick from, newest first (a final and a preview of the same version are both there). */
+  versions: { renderId: string; version: number; kind: "preview" | "final"; quality: string; at: number }[];
   rendering: { renderId: string; version: number; percent: number; step: string | null; etaSec: number | null; queued: boolean } | null;
   failed: { version: number; error: string } | null;
   comments: AppComment[];
