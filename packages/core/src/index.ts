@@ -9,3 +9,4 @@ export * from "./driveSave";
 export * from "./joblog";
 export * from "./timeline";
 export * from "./graphics";
+export * from "./matte";

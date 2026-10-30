@@ -154,9 +154,15 @@ void main() {
   // An effect mixed in by its area (maskedmerge).
   mix: `uniform sampler2D base; uniform sampler2D fx; uniform sampler2D area;
 void main() { vec2 q = img(); vec4 b = texture(base, fboUV(q)); o = vec4(mix(b.rgb, texture(fx, fboUV(q)).rgb, texture(area, picUV(q)).r), b.a); }`,
-  // To the canvas: the masks multiply the key's alpha (premultiplied for the page).
-  out: `uniform sampler2D pic; uniform sampler2D mask; uniform bool hasMask;
-void main() { vec2 q = img(); vec4 c = texture(pic, fboUV(q)); float a = c.a * (hasMask ? texture(mask, picUV(q)).r : 1.0); o = vec4(c.rgb * a, a); }`,
+  // To the canvas: the masks and the person's matte (remove_background, fitted like the picture: its edge moved and
+  // softened by mfx = [low, high, invert]) multiply the key's alpha (premultiplied for the page).
+  out: `uniform sampler2D pic; uniform sampler2D mask; uniform bool hasMask; uniform sampler2D mat; uniform bool hasMat; uniform vec3 mfx;
+void main() {
+  vec2 q = img(); vec4 c = texture(pic, fboUV(q));
+  float m = hasMat ? smoothstep(mfx.x, mfx.y, texture(mat, fboUV(q)).r) : 1.0;
+  if (hasMat && mfx.z > 0.5) m = 1.0 - m;
+  float a = c.a * (hasMask ? texture(mask, picUV(q)).r : 1.0) * m; o = vec4(c.rgb * a, a);
+}`,
 };
 
 /** A renderer on one canvas, or null when the browser has no WebGL2. */
@@ -189,8 +195,8 @@ export function createLookRenderer(canvas) {
     const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
     return { t, f, w, h };
   };
-  const src = tex();
-  let W = 0, H = 0, fit = null, buf = [], small = null, smallB = 0, skinT = null;
+  const src = tex(), msrc = tex();
+  let W = 0, H = 0, fit = null, buf = [], small = null, smallB = 0, skinT = null, mfit = null;
   const lut3 = gl.createTexture(); let lutId = null, lutN = 0;
   // A complete 3D texture from the start (an identity), so the look pass never samples an empty one.
   gl.bindTexture(gl.TEXTURE_3D, lut3);
@@ -224,12 +230,13 @@ export function createLookRenderer(canvas) {
   return {
     /**
      * Draws the video's current frame. spec: { W, H, rotate, fitY, focus (a framing's, fitCrop), lut: {id, n, data} | null, key: {rgb, sim, blend,
-     * spill, blue} | null, mask: {key, px} | null, effects: [{type, px, amount, area: {key, px} | null}] }.
+     * spill, blue} | null, mask: {key, px} | null, effects: [{type, px, amount, area: {key, px} | null}] }. matte: the
+     * person's matte as a video element at the same footage time ({ el, edge, soft, invert }), or null.
      */
-    draw(video, spec) {
+    draw(video, spec, matte = null) {
       if (spec.W !== W || spec.H !== H) {
         W = spec.W; H = spec.H; canvas.width = W; canvas.height = H;
-        fit = target(W, H, true); buf = [target(W, H), target(W, H), target(W, H)]; small = null;
+        fit = target(W, H, true); buf = [target(W, H), target(W, H), target(W, H)]; small = null; mfit = null;
       }
       gl.bindTexture(gl.TEXTURE_2D, src);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
@@ -280,7 +287,22 @@ export function createLookRenderer(canvas) {
           cur = a;
         } else cur = b;
       }
-      use("out", { hasMask: !!spec.mask }, [["pic", buf[cur].t], ["mask", spec.mask ? grey(spec.mask.key, spec.mask.px, W, H) : src]]);
+      // The matte through the same fit as the picture (its own size, the same turn and crop); a frame not decoded yet
+      // keeps the last one.
+      const mm = matte?.el;
+      if (mm) {
+        if (!mfit) mfit = target(W, H, true);
+        if (mm.readyState >= 2 && mm.videoWidth) {
+          gl.bindTexture(gl.TEXTURE_2D, msrc);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, mm);
+          use("fit", { vsize: [mm.videoWidth, mm.videoHeight], rot: spec.rotate || 0, fit: [crop.cx, crop.cy] }, [["src", msrc]]);
+          run(mfit);
+        }
+      }
+      // edge -20..20 moves the cut's middle (out: lower), soft 0-100 widens it; as the render's lut and blur do, near enough.
+      const mw = 0.04 + 0.005 * (matte?.soft ?? 20), mc = 0.5 - 0.02 * (matte?.edge ?? 0);
+      use("out", { hasMask: !!spec.mask, hasMat: !!mm, mfx: [mc - mw / 2, mc + mw / 2, matte?.invert ? 1 : 0] },
+        [["pic", buf[cur].t], ["mask", spec.mask ? grey(spec.mask.key, spec.mask.px, W, H) : src], ["mat", mm && mfit ? mfit.t : src]]);
       gl.clearColor(0, 0, 0, 0); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.clear(gl.COLOR_BUFFER_BIT);
       run(null);
       for (const [key, t] of pics) if (!used.has(key)) { gl.deleteTexture(t); pics.delete(key); }

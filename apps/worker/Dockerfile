@@ -26,7 +26,11 @@ RUN mkdir -p /opt/models/wav2vec2 && cd /opt/models/wav2vec2 \
         && curl -fsSL --retry 3 -o vocab.json https://huggingface.co/Xenova/wav2vec2-base-960h/resolve/main/vocab.json \
         && [ "$(stat -c %s model_quantized.onnx)" -gt 50000000 ] && echo "wav2vec2 ready: $(sha256sum model_quantized.onnx)" \
         || (rm -f model_quantized.onnx vocab.json; echo "WARNING: wav2vec2 not downloaded; word alignment falls back to the sound only"))
-ENV PYTHON_BIN=/opt/venv/bin/python CHROMIUM_PATH=/usr/bin/chromium ALIGN_MODEL=/opt/models/wav2vec2/model_quantized.onnx ALIGN_VOCAB=/opt/models/wav2vec2/vocab.json
+# remove_background: MediaPipe's selfie segmenter (Apache-2.0; 250 KB), the person's matte (python/matte.py).
+RUN mkdir -p /opt/models/selfie && cd /opt/models/selfie \
+    && curl -fsSL --retry 3 -o selfie_segmenter.tflite https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite \
+    && [ "$(stat -c %s selfie_segmenter.tflite)" -gt 100000 ] && echo "selfie segmenter ready: $(sha256sum selfie_segmenter.tflite)"
+ENV PYTHON_BIN=/opt/venv/bin/python CHROMIUM_PATH=/usr/bin/chromium ALIGN_MODEL=/opt/models/wav2vec2/model_quantized.onnx ALIGN_VOCAB=/opt/models/wav2vec2/vocab.json MATTE_MODEL=/opt/models/selfie/selfie_segmenter.tflite
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./

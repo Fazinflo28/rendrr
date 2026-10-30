@@ -6,6 +6,7 @@ import {
 import { AppError, notFound } from "./errors";
 import { publishProject } from "./queue";
 import { prewarmGraphics } from "./graphics";
+import { prewarmMattes } from "./matte";
 
 // ---------------------------------------------------------------------------------------------
 // applyTimelineChange: the ONLY code path that writes a project's timeline.
@@ -144,6 +145,8 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
   }
   // Custom graphics placed with their own params: their recordings start now (the editor shows them when ready).
   if (!result.unchanged) await prewarmGraphics(actor.userId, result.snapshot.timeline).catch((e) => console.error("[graphics] prewarm:", (e as Error).message));
+  // remove_background: the person's matte of each block not made yet starts now (the editor and renders read it).
+  if (!result.unchanged) await prewarmMattes(actor.userId, result.snapshot.timeline).catch((e) => console.error("[matte] prewarm:", (e as Error).message));
   return result;
 }
 

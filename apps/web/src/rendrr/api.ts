@@ -246,6 +246,8 @@ export const api: any = {
   },
   restoreVersion: (projectId: string, v: number) => post(`/projects/${enc(projectId)}/versions/${v}/restore`),
   /** Auto reframe: where the speaker's face is in these clips (shares of the picture as turned), null where none. */
+  /** remove_background: the links of a video's matte blocks over footage from..to (null: still being made). */
+  matte: (projectId: string, videoId: string, from: number, to: number, rotate = 0) => get(`/projects/${enc(projectId)}/matte?video=${enc(videoId)}&from=${from}&to=${to}&rotate=${rotate}`) as Promise<{ turn: number; block: number; blocks: Record<string, string | null> }>,
   skinAreas: (projectId: string, clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number; focus: { x: number; y: number } | null }[], aspect?: string) => post(`/projects/${enc(projectId)}/skin-areas`, { clips, aspect }) as Promise<{ areas: Record<string, { shape: "ellipse"; x: number; y: number; w: number; h: number; feather?: number } | null> }>,
   speakerCentres: (projectId: string, clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number }[]) => post(`/projects/${enc(projectId)}/speaker`, { clips }) as Promise<{ centers: Record<string, { x: number; y: number } | null> }>,
   /** Live changes to a project (AI edits). Returns a function that stops listening. */

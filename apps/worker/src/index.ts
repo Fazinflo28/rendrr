@@ -1,6 +1,6 @@
 import { env, newRedis, queue, type GraphicJob, type MaintenanceJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { deepTimeoutMs, processTimeoutMs, QUEUES, renderTimeoutMs, styleTimeoutMs } from "@rendrr/shared";
+import { deepTimeoutMs, matteAllowanceMs, matteTimeoutMs, processTimeoutMs, QUEUES, renderTimeoutMs, styleTimeoutMs } from "@rendrr/shared";
 import { Worker, type Job } from "bullmq";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -16,6 +16,7 @@ import { heardFailed, heardJob } from "./jobs/heard";
 import { snapshotJob } from "./jobs/snapshot";
 import { styleFailed, styleJob } from "./jobs/style";
 import { testGraphicJob } from "./jobs/testGraphic";
+import { matteJob } from "./jobs/matte";
 import { framesJob } from "./jobs/frames";
 import { maintenanceJob } from "./jobs/maintenance";
 import { proxyJob } from "./jobs/proxy";
@@ -42,8 +43,8 @@ const renderUser = async (job: Job) => (await prisma.render.findUnique({ where: 
 const videoLimit = async (job: Job) => processTimeoutMs((await prisma.video.findUnique({ where: { id: (job.data as { videoId: string }).videoId }, select: { seconds: true } }))?.seconds ?? 0);
 const deepLimit = async (job: Job) => deepTimeoutMs((await prisma.video.findUnique({ where: { id: (job.data as { videoId: string }).videoId }, select: { seconds: true } }))?.seconds ?? 0);
 const renderLimit = async (job: Job) => {
-  const r = await prisma.render.findUnique({ where: { id: (job.data as { renderId: string }).renderId }, select: { kind: true, quality: true, project: { select: { video: { select: { seconds: true } } } } } });
-  return renderTimeoutMs(r?.kind === "preview" ? "preview" : "final", r?.project.video.seconds ?? 0, r?.quality) + 60_000;
+  const r = await prisma.render.findUnique({ where: { id: (job.data as { renderId: string }).renderId }, select: { kind: true, quality: true, project: { select: { timeline: true, video: { select: { seconds: true } } } } } });
+  return renderTimeoutMs(r?.kind === "preview" ? "preview" : "final", r?.project.video.seconds ?? 0, r?.quality) + matteAllowanceMs(r?.project.timeline) + 60_000;
 };
 // A custom graphic's limit grows with its length and size (see recordLimitMs).
 const graphicLimit = async (job: Job) => {
@@ -73,6 +74,8 @@ const workers = [
   new Worker(QUEUES.style.name, guarded("style", styleLimit, "Measuring the reference", styleJob, (job, msg) => styleFailed((job.data as { styleFileId: string }).styleFileId, msg), styleUser), { connection: newRedis(), concurrency: conc("style", 1), lockDuration: 60_000 }),
   // A finished final copied into the user's Google Drive (save_to_drive, render_final driveFolder).
   new Worker(QUEUES.drive.name, guarded("drive", QUEUES.drive.timeoutMs, "Saving to Google Drive", driveSaveJob, (job, msg, code) => driveSaveFailed((job.data as { renderId: string }).renderId, msg, code), renderUser), { connection: newRedis(), concurrency: conc("drive", 2), lockDuration: 60_000 }),
+  // remove_background: blocks of a video's matte, made ahead of the render (one at a time; a render makes two at once).
+  new Worker(QUEUES.matte.name, guarded("matte", matteTimeoutMs(1), "Cutting out the person", matteJob, async () => {}), { connection: newRedis(), concurrency: conc("matte", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),
 ];
 for (const w of workers) w.on("error", (e) => console.error(`[${w.name}] worker error:`, e.message));

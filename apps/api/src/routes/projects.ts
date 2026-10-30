@@ -1,4 +1,4 @@
-import { AppError, applyTimelineChange, notFound, projectChannel, restoreVersion, signGet } from "@rendrr/core";
+import { AppError, applyTimelineChange, matteBlockUrls, notFound, projectChannel, restoreVersion, signGet } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
 import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
@@ -159,6 +159,15 @@ export default async function projects(app: FastifyInstance) {
     const ok = new Set(mine.map((v) => v.id));
     const areas = await skinFaceAreas(clips.filter((c) => ok.has(c.videoId)).map((c) => ({ id: c.id, sourceVideoId: c.videoId, sourceIn: c.srcIn, sourceOut: c.srcOut, rotate: c.rotate, framing: c.focus ? { focus: c.focus } : undefined })), "", aspect ?? p.aspect);
     return { areas };
+  });
+
+  // remove_background in the editor: the links of a video's matte blocks over footage from..to (null: being made).
+  app.get("/projects/:id/matte", async (req) => {
+    await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    const q = z.object({ video: z.string().min(1).max(80), from: z.coerce.number().min(0), to: z.coerce.number().min(0), rotate: z.coerce.number().int().optional() }).parse(req.query);
+    const out = await matteBlockUrls(req.user!.id, q.video, q.from, Math.max(q.from, q.to), q.rotate ?? 0);
+    if (!out) throw notFound("That video is not in your library.");
+    return out;
   });
 
   app.get("/projects/:id/versions", async (req) => {

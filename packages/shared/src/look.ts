@@ -7,6 +7,7 @@
 //   key      FFmpeg's colorkey and despill formulas, which the player's shader repeats.
 //   match    shot matching from measured pixels: three-point curves per channel and a saturation ratio.
 import { z } from "zod";
+import { matteTimeoutMs, PREFIX } from "./constants";
 
 const unit = z.number().min(0).max(1);
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "a colour like #00FF00");
@@ -105,9 +106,48 @@ export function faceSkinArea(b: [number, number, number, number]): Area {
 export const SKIN_DEFAULTS = { smooth: 35, blemishes: 40, even: 35, brighten: 0 } as const;
 export const skinActive = (s: Skin | undefined) => !!s && (s.smooth > 0 || s.blemishes > 0 || s.even > 0 || s.brighten > 0);
 
+/**
+ * remove_background: the person in a clip kept and everything around them made transparent, from a matte Rendrr makes
+ * of the footage with an AI model (MediaPipe's selfie segmenter: people, not objects). What shows instead is what is
+ * behind V1: set_background, or b-roll laid behind with set_under. edge: the matte's edge moved out (+) or in (-), in
+ * pixels at 1080p; soft: its feather, 0-100; invert: the person removed, the background kept.
+ */
+export const SubjectSchema = z.object({ edge: z.number().min(-20).max(20), soft: share100, invert: z.boolean().optional() });
+export type Subject = z.infer<typeof SubjectSchema>;
+export const SUBJECT_DEFAULTS = { edge: 0, soft: 20 } as const;
+export const subjectText = (s: Subject) => `background removed${s.invert ? " (inverted: the person removed)" : ""}${s.edge ? `, edge ${s.edge > 0 ? "+" : ""}${s.edge}` : ""}${s.soft !== SUBJECT_DEFAULTS.soft ? `, soft ${s.soft}` : ""}`;
+/**
+ * The matte is made in blocks of footage (MATTE_BLOCK seconds from the video's start), each once per video and kept:
+ * a clip trimmed or moved reuses the blocks it already had. MATTE_VERSION changes when the matte does.
+ */
+export const MATTE_BLOCK = 10;
+export const MATTE_VERSION = 1;
+/** Where a block of a video's matte is kept (with the video's frames, deleted with it), and the job that makes it.
+ *  turn: the turn that makes the footage's people upright (the model sees them upright). */
+export const matteKey = (userId: string, videoId: string, turn: number, k: number) => `${PREFIX.frames}${userId}/${videoId}/matte-v${MATTE_VERSION}-t${turn}-${k}.mp4`;
+export const matteJobId = (videoId: string, turn: number, k: number) => `matte-${videoId}-t${turn}-${k}`;
+/** The blocks footage srcIn..srcOut needs, with `margin` seconds each side (transitions show footage past a cut). */
+export function matteBlocks(srcIn: number, srcOut: number, seconds = Infinity, margin = 2): number[] {
+  const last = Math.max(0, Math.ceil(Math.min(seconds, srcOut + margin) / MATTE_BLOCK) - 1);
+  const k0 = Math.min(last, Math.floor(Math.max(0, srcIn - margin) / MATTE_BLOCK));
+  return Array.from({ length: last - k0 + 1 }, (_, i) => k0 + i);
+}
+
+/**
+ * The extra time a render of this timeline may spend making its mattes (every block of every V1 clip with
+ * remove_background, two at once, as if none were made yet): added to the render's own limits, which only count the
+ * render's work. 0 with no remove_background.
+ */
+export function matteAllowanceMs(timeline: unknown): number {
+  const v1 = ((timeline as { tracks?: { v1?: unknown } } | null)?.tracks?.v1 ?? []) as { sourceVideoId?: string; sourceIn?: number; sourceOut?: number; subject?: unknown }[];
+  const blocks = new Set<string>();
+  for (const c of Array.isArray(v1) ? v1 : []) if (c?.subject) for (const k of matteBlocks(c.sourceIn ?? 0, c.sourceOut ?? 0)) blocks.add(`${c.sourceVideoId ?? ""}:${k}`);
+  return blocks.size ? matteTimeoutMs(Math.ceil(blocks.size / 2)) : 0;
+}
+
 /** Everything Phase 6 adds to a drawn clip (V1, b-roll). */
-export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[]; skin?: Skin };
-export const hasLook = (c: ClipLook | null | undefined) => !!c && (!!c.grade && gradeIsActive(c.grade) || !!c.key || !!c.masks?.length || !!c.effects?.length || skinActive(c.skin));
+export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[]; skin?: Skin; subject?: Subject };
+export const hasLook = (c: ClipLook | null | undefined) => !!c && (!!c.grade && gradeIsActive(c.grade) || !!c.key || !!c.masks?.length || !!c.effects?.length || skinActive(c.skin) || !!c.subject);
 export const gradeIsActive = (g: Grade | undefined) => !!g && (!!g.exposure || !!g.contrast || !!g.temperature || !!g.tint || (g.saturation != null && g.saturation !== 100) || !!g.lut || !!g.curves && Object.values(g.curves).some(Boolean));
 
 // ---------------------------------------------------------------------------------------------

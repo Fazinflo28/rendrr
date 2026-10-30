@@ -3,7 +3,7 @@ import { catalogMusic, catalogSfx } from "./catalog";
 import { CaptionStyleSchema, CardSchema, TEXT_ANIMS, TextStyleSchema } from "./captions";
 import { ASPECTS, CAPTION_LOOKS } from "./constants";
 import { KeysSchema, RampPointSchema, TransitionSchema } from "./motion";
-import { ChromaKeySchema, EffectSchema, GradeSchema, MaskSchema, SkinSchema } from "./look";
+import { ChromaKeySchema, EffectSchema, GradeSchema, MaskSchema, SkinSchema, SubjectSchema } from "./look";
 import { BackgroundSchema, CardLookSchema } from "./cardLook";
 
 // The shared timeline. Same shape as timelineFor() in ui/rendrr-ui.html.
@@ -22,7 +22,7 @@ export const ClipSchema = z.object({ id, start: time, end: time, label }).passth
 /** Keyframes (Phase 5), on any clip that is drawn: V1, b-roll, graphics, text. */
 const keys = KeysSchema.optional();
 /** Colour and compositing (Phase 6), on V1 and b-roll clips: grade, chroma key, masks, blur/pixelate. */
-const look = { grade: GradeSchema.optional(), key: ChromaKeySchema.optional(), masks: z.array(MaskSchema).max(8).optional(), effects: z.array(EffectSchema).max(4).optional(), skin: SkinSchema.optional() };
+const look = { grade: GradeSchema.optional(), key: ChromaKeySchema.optional(), masks: z.array(MaskSchema).max(8).optional(), effects: z.array(EffectSchema).max(4).optional(), skin: SkinSchema.optional(), subject: SubjectSchema.optional() };
 
 /** V1 (model B): the footage fields are checked by sequenceProblems; speed, transition and keyframes here (Phase 5). */
 export const V1ClipSchema = ClipSchema.extend({

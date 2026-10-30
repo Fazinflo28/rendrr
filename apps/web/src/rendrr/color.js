@@ -6,7 +6,7 @@ import { useState, useEffect, useRef, useMemo, html, Btn, Icon } from "./ui";
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
 import { createLookRenderer } from "./look-gl";
-import { areaPicture, buildLut, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, LUT_SIZE, maskPicture, parseCube, SKIN_DEFAULTS, spillType } from "@rendrr/shared";
+import { areaPicture, buildLut, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, LUT_SIZE, maskPicture, parseCube, SKIN_DEFAULTS, spillType, SUBJECT_DEFAULTS } from "@rendrr/shared";
 
 // ---------------------------------------------------------------------------------------------
 // Imported LUTs: their numbers, loaded once per page.
@@ -50,18 +50,34 @@ export function lookSpec(look, W, H, luts = {}) {
 /**
  * The picture of one video element drawn through its look, the size of the plan. The video stays the clock (hidden);
  * the canvas redraws on every new frame, seek and look change. onFail: no WebGL2 here (the video then shows plain).
+ * matte (remove_background): { urls (each block's link by number; null while it is made), block (seconds), edge, soft,
+ * invert }: a hidden video of the person's matte follows the footage's time, block by block.
  */
-export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, focus = null, luts, onFail }) {
+export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, focus = null, luts, onFail, matte = null }) {
   const cv = useRef(null);
   const spec = lookSpec(look, W, H, luts);
   const cur = useRef(null);
-  cur.current = { ...spec, rotate, fitY, focus };
+  cur.current = { ...spec, rotate, fitY, focus, matte };
   useEffect(() => {
     let r = null;
     try { r = createLookRenderer(cv.current); } catch (e) { console.warn(e); }
     if (!r) { onFail?.(); return; }
     let raf = 0, last = "", dirty = true, el = null;
     const mark = () => { dirty = true; };
+    const mv = document.createElement("video");
+    mv.muted = true; mv.playsInline = true; mv.crossOrigin = "anonymous"; mv.preload = "auto";
+    mv.addEventListener("seeked", mark); mv.addEventListener("loadeddata", mark);
+    // The matte's block at the footage's time, seeked (paused) or playing along (corrected when it drifts).
+    const matteAt = (s) => {
+      const m = s.matte; if (!m || !el) return null;
+      const t = el.currentTime, k = Math.floor(t / m.block), url = m.urls?.[k];
+      if (!url) return null;
+      if (mv.dataset.k !== String(k)) { mv.src = url; mv.dataset.k = String(k); }
+      const want = t - k * m.block;
+      if (!el.paused) { if (Math.abs(mv.playbackRate - el.playbackRate) > 1e-3) mv.playbackRate = el.playbackRate; if (mv.paused) mv.play().catch(() => {}); if (Math.abs(mv.currentTime - want) > 0.12) { try { mv.currentTime = want; } catch {} } }
+      else { if (!mv.paused) mv.pause(); if (Math.abs(mv.currentTime - want) > 0.02) { try { mv.currentTime = want; } catch {} } }
+      return { el: mv, edge: m.edge, soft: m.soft, invert: m.invert };
+    };
     const onFrame = () => { dirty = true; if (el?.requestVideoFrameCallback) el.requestVideoFrameCallback(onFrame); };
     const tick = () => {
       const v = videoRef.current;
@@ -72,16 +88,17 @@ export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, focus
       }
       const s = cur.current;
       if (el && s && el.readyState >= 2 && el.videoWidth) {
-        const k = `${el.currentTime.toFixed(4)}|${s.id}|${s.rotate}|${s.fitY}|${s.focus ? s.focus.x + "," + s.focus.y : ""}`;
+        const mt = matteAt(s);
+        const k = `${el.currentTime.toFixed(4)}|${s.id}|${s.rotate}|${s.fitY}|${s.focus ? s.focus.x + "," + s.focus.y : ""}|${mt ? `${mv.currentTime.toFixed(4)},${mt.edge},${mt.soft},${mt.invert}` : ""}`;
         if (dirty || k !== last || !el.paused) {
-          try { r.draw(el, s); cv.current.dataset.drawn = String((+cv.current.dataset.drawn || 0) + 1); } catch (e) { console.warn(e); }
+          try { r.draw(el, s, mt); cv.current.dataset.drawn = String((+cv.current.dataset.drawn || 0) + 1); if (mt) cv.current.dataset.matte = mv.dataset.k; } catch (e) { console.warn(e); }
           last = k; dirty = false;
         }
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => { cancelAnimationFrame(raf); el?.removeEventListener("seeked", mark); el?.removeEventListener("loadeddata", mark); r.dispose(); };
+    return () => { cancelAnimationFrame(raf); el?.removeEventListener("seeked", mark); el?.removeEventListener("loadeddata", mark); mv.removeAttribute("src"); mv.load(); r.dispose(); };
   }, []);
   return html`<canvas ref=${cv} data-look=${look ? "1" : "plain"} style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />`;
 }
@@ -177,13 +194,13 @@ function AreaControls({ idp, a, set, sl }) {
   </div>`;
 }
 
-export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast }) {
+export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast, mattes = {} }) {
   const [ch, setCh] = useState("master");
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
   if (!clip || !(track === "v1" || track === "a1" || (track === "v2" && clip.kind === "broll"))) {
-    return html`<${WholeEditColor} clips=${clips} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} lutList=${lutList} reloadLuts=${reloadLuts} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />`;
+    return html`<${WholeEditColor} clips=${clips} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} lutList=${lutList} reloadLuts=${reloadLuts} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} mattes=${mattes} />`;
   }
   const sl = { H, liveOp };
   const g = clip.grade || {};
@@ -276,6 +293,7 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
         </div>`) : html`<p class="t-small muted">The clip shows only inside its masks. Shapes are on the clip's picture and move with it.</p>`}
     </div>
 
+    ${track === "v1" || clip.sourceIn != null ? html`<${BackgroundSection} targets=${[clip]} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mattes=${mattes} />` : null}
     ${track === "v1" || clip.sourceIn != null ? html`<${SkinSection} targets=${[clip]} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />` : null}
     <div class="col" style="gap:8px" id="effects-panel">
       <div class="row between"><b class="t-label">Blur, pixelate, sharpen</b><span class="row" style="gap:4px">
@@ -295,6 +313,38 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
     ${hdrRow(timeline, doOp)}
     <p class="t-small muted" id="color-note">The picture here is drawn with the render's own numbers: the same LUT, key, masks, blur and sharpen.</p>
   </div></div>`;
+}
+
+/**
+ * Remove background (remove_background) on V1 clips: the person cut out by the AI matte, with its edge, softness and
+ * invert; and what goes behind them (set_background: black, a colour, the room blurred, a gradient, a pattern). The
+ * matte is made on the server the first time (the note says how far); the player shows it as soon as it is there.
+ */
+const BACKS = [["none", "Black"], ["color", "A colour"], ["blur", "The room, blurred"], ["gradient", "A gradient"], ["pattern", "A pattern"]];
+function BackgroundSection({ targets, timeline, doOp, H, liveOp, mattes }) {
+  const v1 = targets.filter((c) => c.sourceIn != null);
+  const done = v1.filter((c) => c.subject), first = done[0]?.subject;
+  const vals = first ?? SUBJECT_DEFAULTS, ids = (cs) => cs.map((c) => c.id);
+  const bg = timeline.background || null;
+  const kind = !bg ? "none" : bg.gradient ? "gradient" : bg.blur ? "blur" : bg.pattern ? "pattern" : bg.color ? "color" : bg.videoId ? "video" : "none";
+  const missing = Object.values(mattes || {}).reduce((n, m) => n + (m.missing || 0), 0);
+  const sl = { H, liveOp };
+  const setBack = (k) => doOp(k === "none" ? { op: "set_background", none: true } : k === "color" ? { op: "set_background", color: "#1E1E24" } : k === "blur" ? { op: "set_background", blur: 40 }
+    : k === "gradient" ? { op: "set_background", gradient: { from: "#2B2F77", to: "#0E0F1A", angle: 160 } } : { op: "set_background", pattern: { kind: "grid", color: "#F4F1EA", ink: "#D9D4C7" } });
+  return html`<div class="col" style="gap:8px" id="bg-panel">
+    <div class="row between"><b class="t-label">Remove background</b>
+      <label class="t-small row" style="gap:6px"><input type="checkbox" id="bg-on" checked=${done.length > 0} disabled=${!v1.length} onChange=${(e) => doOp(e.target.checked ? { op: "remove_background", clipIds: ids(v1) } : { op: "remove_background", clipIds: ids(done), off: true })} />On</label></div>
+    ${done.length ? html`
+      <${OpSlider} id="bg-edge" label="Edge" value=${vals.edge} min=${-20} max=${20} step=${1} show=${(v) => (v > 0 ? "+" + v : String(v))} opFor=${(v) => ({ op: "remove_background", clipIds: ids(done), edge: v })} ...${sl} />
+      <${OpSlider} id="bg-soft" label="Softness" value=${vals.soft} min=${0} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => ({ op: "remove_background", clipIds: ids(done), soft: v })} ...${sl} />
+      <label class="t-small row" style="gap:6px"><input type="checkbox" id="bg-invert" checked=${!!vals.invert} onChange=${(e) => doOp({ op: "remove_background", clipIds: ids(done), invert: e.target.checked })} />Remove the person instead (keep the room)</label>
+      <label class="t-small" style="display:grid;gap:4px">Behind the person<select class="input sm" id="bg-behind" value=${kind} onChange=${(e) => setBack(e.target.value)}>
+        ${kind === "video" && html`<option value="video">A video from your library</option>`}${BACKS.map(([v, t]) => html`<option key=${v} value=${v}>${t}</option>`)}</select></label>
+      ${kind === "color" && html`<${OpColor} id="bg-color" value=${bg.color.toLowerCase()} opFor=${(c) => ({ op: "set_background", color: c.toUpperCase() })} ...${sl} />`}
+      ${kind === "blur" && html`<${OpSlider} id="bg-blur" label="Blur" value=${bg.blur} min=${1} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => ({ op: "set_background", blur: v })} ...${sl} />`}
+      <p class="t-small muted" style="margin:0" id="bg-note">${missing ? `Cutting out the person on the server: ${missing} ${missing === 1 ? "part" : "parts"} of 10 s left. The player shows it when ready. ` : ""}${done.length < v1.length ? `On ${done.length} of ${v1.length} clips. ` : ""}People, not objects. B-roll set behind V1 shows there too.</p>`
+    : html`<p class="t-small muted" style="margin:0">Cut the person out and put them on a colour, the room blurred, a gradient or another video. Your AI can do it too.</p>`}
+  </div>`;
 }
 
 /**
@@ -335,7 +385,7 @@ function SkinSection({ targets, projectId, mainVideo, aspect, doOp, H, liveOp, t
 
 /** The Color tab with no clip selected: the look of the whole edit, every V1 clip at once (set_grade all), like an
  *  adjustment layer: a LUT (pick or import), the basic grade and sharpening. A clip's own controls are one click away. */
-function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLuts, timeline, doOp, H, liveOp, toast }) {
+function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLuts, timeline, doOp, H, liveOp, toast, mattes }) {
   const fileRef = useRef(null); const [busy, setBusy] = useState(false);
   const v1 = clips.filter((c) => c.sourceIn != null);
   const g = v1[0]?.grade || {};
@@ -385,6 +435,7 @@ function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLu
       ${ownFx ? html`<span class="t-small muted">Some clips have their own effects: sharpen them clip by clip.</span>`
         : html`<${OpSlider} id="whole-sharpen-amount" label="Amount" value=${sharpen} min=${0} max=${100} step=${1} show=${(v) => (v ? String(v) : "off")} opFor=${(v) => ({ op: "set_effects", all: true, effects: v ? [{ type: "sharpen", amount: v }] : [] })} ...${sl} />`}
     </div>
+    <${BackgroundSection} targets=${v1} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mattes=${mattes} />
     <${SkinSection} targets=${v1} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />
     ${hdrRow(timeline, doOp)}
   </div></div>`;

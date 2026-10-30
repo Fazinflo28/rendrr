@@ -13,7 +13,7 @@ import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr,
 import { audioSettings, type AudioMixSettings } from "./timeline";
 import { buildStyledAss, captionStyleOf, layoutCaptions, styleText, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
-import { areaPicture, buildLut, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, type Skin, type SkinParams, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
+import { areaPicture, buildLut, matteBlocks, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean; transfer?: HdrTransfer };
@@ -73,7 +73,11 @@ export type CaptionEvent = { start: number; end: number; text: string };
  */
 /** skin: the retouch's values, its numbers at the plan's size, and its area as a picture (file). */
 export type SkinOp = { skin: Skin; p: SkinParams; file?: string };
-export type LookOp = { grade?: Grade; lut?: string; lutHdr?: string; key?: ChromaKey; masks?: Mask[]; mask?: string; effects?: (Effect & { px: number; file?: string })[]; skin?: SkinOp; alpha: boolean };
+/** subject: remove_background's values and the matte it reads (plan.mattes[matte]: the footage's blocks). */
+export type SubjectOp = Subject & { matte: string };
+export type LookOp = { grade?: Grade; lut?: string; lutHdr?: string; key?: ChromaKey; masks?: Mask[]; mask?: string; effects?: (Effect & { px: number; file?: string })[]; skin?: SkinOp; subject?: SubjectOp; alpha: boolean };
+/** A subject matte: blocks of MATTE_BLOCK seconds of one video's matte (made once per video, kept), joined. */
+export type MatteOp = { videoId: string; blocks: number[] };
 /** What a look file holds; lookFileData() writes it. shadow and border: a card's, in its framed place; gradient: what
  *  is behind V1 (a colour is a gradient from it to itself). */
 export type LookFile = { kind: "lut"; grade: Grade; hdr?: HdrTransfer } | { kind: "hdr"; hdr: HdrTransfer } | { kind: "mask"; masks: Mask[] } | { kind: "area"; area: Area }
@@ -126,6 +130,8 @@ export type RenderPlan = {
   hdr?: { transfer: HdrTransfer; lut: string } | null;
   /** V1 clips drawn as cards (by clip id) and what is behind V1 (null: black). */
   cards?: Record<string, CardOp>;
+  /** remove_background: the matte blocks each subject reads, by name (LookOp.subject.matte). */
+  mattes?: Record<string, MatteOp>;
   background?: BackgroundOp | null;
   /** Sequences: the caption style, the captions with their lines and word times, the text layers (Phase 4). */
   captionStyle?: CaptionStyle;
@@ -497,22 +503,32 @@ export function planRender(input: PlanInput): RenderPlan {
   // Phase 7: a final's codec (HDR kept is always HEVC 10-bit); previews are H.264.
   const codec: Codec = kind === "final" && (hdr || tl.export?.codec === "hevc") ? "hevc" : "h264";
   const looks: Record<string, LookOp> = {};
+  const mattes: Record<string, MatteOp> = {};
   const missingLuts = new Set<string>();
-  const lookFor = (c: ClipLook & { id: string; cardLook?: CardLook }) => {
+  // The person's matte: the blocks of footage the clip plays, with 2 s each side for transitions.
+  const matteFor = (c: { sourceVideoId: string; sourceIn: number; sourceOut: number }) => {
+    const blocks = matteBlocks(c.sourceIn, c.sourceOut, infoOf(c.sourceVideoId)?.seconds);
+    const name = `matte_${c.sourceVideoId}_${blocks[0]}_${blocks[blocks.length - 1]}`;
+    mattes[name] = { videoId: c.sourceVideoId, blocks };
+    return name;
+  };
+  const lookFor = (c: ClipLook & { id: string; cardLook?: CardLook; sourceVideoId?: string; sourceIn?: number; sourceOut?: number }) => {
     const grade = c.grade && gradeIsActive(c.grade) ? { ...c.grade } : undefined;
     if (grade?.lut && !input.luts?.[grade.lut.id]) { missingLuts.add(grade.lut.id); delete grade.lut; }
     const g = grade && gradeIsActive(grade) ? grade : undefined;
     // A card's crop and corners are one more mask (drawn as masks are, in the render and the player).
     const masks = masksWithCard(c.masks, c.cardLook);
     const skin = skinActive(c.skin) ? c.skin! : undefined;
-    if (!g && !c.key && !masks?.length && !c.effects?.length && !skin) return;
+    const subject = c.subject && c.sourceVideoId ? { ...c.subject, matte: matteFor(c as { sourceVideoId: string; sourceIn: number; sourceOut: number }) } : undefined;
+    if (!g && !c.key && !masks?.length && !c.effects?.length && !skin && !subject) return;
     looks[c.id] = {
       ...(g ? { grade: g, lut: file({ kind: "lut", grade: g }), ...(hdr ? { lutHdr: file({ kind: "lut", grade: g, hdr: hdr.transfer }) } : {}) } : {}),
       ...(c.key ? { key: c.key } : {}),
       ...(masks?.length ? { masks, mask: file({ kind: "mask", masks }) } : {}),
       ...(c.effects?.length ? { effects: c.effects.map((e) => ({ ...e, px: effectPx(e, width, height), ...(e.area ? { file: file({ kind: "area", area: e.area }) } : {}) })) } : {}),
       ...(skin ? { skin: { skin, p: skinParams(skin, width, height), ...(skin.area ? { file: file({ kind: "area", area: skin.area }) } : {}) } } : {}),
-      alpha: !!c.key || !!masks?.length,
+      ...(subject ? { subject } : {}),
+      alpha: !!c.key || !!masks?.length || !!subject,
     };
   };
   for (const c of v1) lookFor(c);
@@ -554,7 +570,7 @@ export function planRender(input: PlanInput): RenderPlan {
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
-    ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr"),
+    ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr", background?.text),
     ...(Object.keys(cards).length || v1.some((c) => hasCard((c as { cardLook?: CardLook }).cardLook)) ? [`Cards: ${(v1 as (SeqClip & { cardLook?: CardLook })[]).filter((c) => hasCard(c.cardLook)).slice(0, 4).map((c) => `${c.id} ${cardLookText(c.cardLook!)}`).join("; ")}`] : []),
     ...(background ? [`Behind V1: ${background.text}`] : bgIn?.videoId ? ["Behind V1: the background video is not in the library or not ready: black instead"] : []),
     ...(audio.some((a) => a.kind === "voice") ? [`Voice: "${voFile!.name}" plays in place of every clip's own sound, from ${r3(vo!.start)}s (${r3(voFile!.seconds)}s file, edit ${r3(total)}s${Math.abs(vo!.start + voFile!.seconds - total) > 0.05 ? `: ${vo!.start + voFile!.seconds > total ? "the file runs past the edit's end" : "the file ends before the edit"}` : ""}${vo!.editSeconds != null && Math.abs(vo!.editSeconds - total) > 0.05 ? `; the edit was ${r3(vo!.editSeconds)}s when the voice was set: a cut since then is not in the file, so it is out of sync after it` : ""})`] : []),
@@ -570,7 +586,7 @@ export function planRender(input: PlanInput): RenderPlan {
     outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, captionStyle, styledCaptions, texts, ass, operations, audioMix,
     transitions, clipMotion,
     looks, lookFiles, under, hdr, ...(hdr && ass ? { ass: hdrAss(ass, hdr.transfer) } : {}),
-    ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}),
+    ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}),
   };
 }
 
@@ -601,7 +617,7 @@ function exportNotes(out: { fps: number; capped: boolean }, width: number, heigh
 }
 
 /** The render plan's Phase 6 lines: colour, key, masks, blur, under layers, HDR. */
-function colorLines(looks: Record<string, LookOp>, under: OverlayOp[], missingLuts: Set<string>, hdr: RenderPlan["hdr"], hdrClips: string[], kind: RenderKind, hdrFootage: boolean, toSdr: boolean): string[] {
+function colorLines(looks: Record<string, LookOp>, under: OverlayOp[], missingLuts: Set<string>, hdr: RenderPlan["hdr"], hdrClips: string[], kind: RenderKind, hdrFootage: boolean, toSdr: boolean, behind?: string): string[] {
   const all = Object.entries(looks);
   const list = <T,>(xs: [string, T][], f: (x: T) => string) => xs.slice(0, 4).map(([id, x]) => `${id} ${f(x)}`).join("; ") + (xs.length > 4 ? `; +${xs.length - 4} more` : "");
   const graded = all.filter(([, l]) => l.grade).map(([id, l]) => [id, l.grade!] as [string, Grade]);
@@ -616,6 +632,8 @@ function colorLines(looks: Record<string, LookOp>, under: OverlayOp[], missingLu
   if (fx.length) out.push(`Effects: ${list(fx, effectsText)}`);
   const skins = all.filter(([, l]) => l.skin).map(([id, l]) => [id, l.skin!.skin] as [string, Skin]);
   if (skins.length) out.push(`Skin: ${list(skins, (k) => skinText(k).replace(/^skin retouch: /, ""))}`);
+  const cutout = all.filter(([, l]) => l.subject).map(([id, l]) => [id, l.subject!] as [string, SubjectOp]);
+  if (cutout.length) out.push(`Background: ${list(cutout, (x) => subjectText(x).replace(/^background removed/, "removed").replace(/^removed$/, "removed"))} (the person cut out by an AI matte); behind: ${under.length ? "b-roll laid under V1" : behind ?? "black (no set_background)"}`);
   if (under.length) out.push(`Under V1: ${under.length} b-roll ${under.length === 1 ? "clip" : "clips"} (${under.slice(0, 4).map((u) => u.clipId).join(", ")})`);
   const sdrGraded = hdrClips.filter((id) => looks[id]?.grade || looks[id]?.key || looks[id]?.skin);
   const gradedNote = sdrGraded.length ? `; ${sdrGraded.slice(0, 6).join(", ")} graded, keyed or retouched in SDR (as the editor shows them): no highlights above SDR white there` : "";
@@ -730,6 +748,8 @@ export type PlanFiles = {
   audio?: Record<string, string>; // by clip id
   /** Phase 6: b-roll drawn behind V1, by clip id; the look files (LUTs, mask pictures), by file name. */
   under?: Record<string, string>;
+  /** remove_background: each matte's blocks joined (an FFmpeg concat list), by matte name (plan.mattes). */
+  mattes?: Record<string, string>;
   looks?: Record<string, string>;
   /** Phase 7: how long each graphic's file plays (seconds, by clip id). A clip longer than its file holds the last
    *  frame, as the player does with a custom graphic's recording. */
@@ -827,6 +847,34 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     return `lp${tag}`;
   };
   /**
+   * remove_background: the matte of footage a..b of one video (its blocks joined, from the first one a needs), on the
+   * output's frame grid with the footage's own times, so the clip's trim, speed, turn and fit apply to it as they do
+   * to the picture. Read from the list's start: a seek (-ss) on FFmpeg's concat reader moves its frames' times.
+   */
+  let nMatte = 0;
+  const matteIn = (name: string, a: number, b: number) => {
+    const m = plan.mattes?.[name], list = files.mattes?.[name];
+    if (!m || !list || a < m.blocks[0] * MATTE_BLOCK - 1e-6) throw new RenderPlanError("The background matte of a clip is missing. Render again.");
+    inputs.push("-f", "concat", "-safe", "0", "-i", list);
+    const l = `mt${nMatte++}`;
+    g.push(`[${idx++}:v]setpts=PTS+${m.blocks[0] * MATTE_BLOCK}/TB,fps=${R},format=gray,trim=end=${n6(b + 1)}[${l}]`);
+    return l;
+  };
+  /** The matte with remove_background's edge (out or in), softness and invert, at the output size. */
+  const subjectMatte = (m: string, s: SubjectOp, tag: string) => {
+    const k = Math.min(W, H) / 1080, f: string[] = [];
+    // Blurred by the edge's size, then the blur's 16% (edge out) or 84% (edge in) made the new middle: the edge moves by
+    // about that many pixels; 0 stays 0 and 255 stays 255 (the background stays clear, the person solid).
+    if (s.edge) { const T = s.edge > 0 ? 40 : 215; f.push(`gblur=sigma=${n3(Math.max(0.5, Math.abs(s.edge) * k))}`, `lut=c0='if(lt(val,${T}),val*128/${T},128+(val-${T})*127/${255 - T})'`); }
+    const soft = 0.06 * s.soft * k;
+    if (soft >= 0.3) f.push(`gblur=sigma=${n3(soft)}`);
+    if (s.invert) f.push("negate");
+    if (!f.length) return m;
+    g.push(`[${m}]${f.join(",")}[ms${tag}]`);
+    return `ms${tag}`;
+  };
+  const mattesFor: Record<string, string> = {};
+  /**
    * Skin retouch on [inp] (the fitted picture, W x H, still YUV): the skin found by its colour (and inside its area),
    * retouched at the working size (blemishes: spots darker than a closing, filled from the skin around them, then the
    * local brightness put back; smooth: bilateral; even: the colour planes moved towards their blur where they differ a
@@ -920,6 +968,11 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     if (look?.mask) {
       const mk = picture(look.mask, frames, "m" + tag);
       if (alpha) { g.push(`[${alpha}][${mk}]blend=all_mode=multiply[lq${tag}]`); alpha = `lq${tag}`; } else alpha = mk;
+    }
+    // remove_background: the person's matte (put through the clip's own steps by drawSeg) into the alpha.
+    if (look?.subject && mattesFor[tag]) {
+      const sm = subjectMatte(mattesFor[tag], look.subject, tag);
+      if (alpha) { g.push(`[${alpha}][${sm}]blend=all_mode=multiply[lr${tag}]`); alpha = `lr${tag}`; } else alpha = sm;
     }
     const yuv = `scale=out_color_matrix=${hdr ? "bt2020" : "bt709"}:out_range=tv:flags=accurate_rnd,format=${PF}`;
     if (!alpha) { g.push(`[${rgb}]${yuv}[lo${tag}]`); return { out: `lo${tag}`, alpha: false }; }
@@ -1100,6 +1153,14 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       } else if (r === 0) chain = `[${branch(x.videoId, x.srcIn, x.srcIn + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
       else if (r !== 1) chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
       else chain = `[${branch(x.videoId, x.srcIn, x.srcOut)}]${vt(x)}${exact ? pad : ""},${look}`;
+      // remove_background: the matte through the same trim, speed, turn and fit (not reversed clips: they keep theirs).
+      if (lk?.subject && r >= 0) {
+        const mt = matteIn(lk.subject.matte, x.srcIn, r === 0 ? x.srcIn + 1 / FPS : x.srcOut + 1 / FPS);
+        const steps = r === 0 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N}`
+          : r !== 1 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(x)}${exact ? pad : ""}`;
+        g.push(`[${mt}]${steps},${turnOf(x.rotate)}${fitFor(x.framing)},format=gray[mf${tag}]`);
+        mattesFor[tag] = `mf${tag}`;
+      }
       const clipId = x.clipId ?? (x.clipIds?.length === 1 ? x.clipIds[0] : undefined);
       const m = clipId ? motion[clipId] : undefined;
       // A card is drawn through frame() (its shadow and border), framed or not.
@@ -1128,7 +1189,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     // One video, one look, all at normal speed and still: cut, join, then fit once (the same graph model A used).
     // Otherwise each part is drawn on its own first.
     const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
-    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0]));
+    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject);
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId, p.srcIn, p.srcOut)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
     // concat's output counts in microseconds, a hair before each frame's exact time; back on the 1/30 s grid so every
     // overlay below lines up with its own frame (else each one shows a frame late).

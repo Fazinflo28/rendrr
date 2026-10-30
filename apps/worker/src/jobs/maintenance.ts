@@ -1,6 +1,6 @@
 import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderTimeoutMs, TEMP_ORIGINAL_HOURS, type Breakdown } from "@rendrr/shared";
+import { DAY_MS, matteAllowanceMs, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderTimeoutMs, TEMP_ORIGINAL_HOURS, type Breakdown } from "@rendrr/shared";
 import { ensureAssets } from "../lib/assets";
 import type { Ctx } from "../lib/job";
 import { framesPrefix, queueMissingBreakdowns } from "./breakdown";
@@ -67,9 +67,9 @@ export async function cleanup() {
   // Stuck work. A running render is judged against its own limit (it grows with the footage); a queued one only
   // after six hours, since it may simply be waiting behind others.
   const hourAgo = new Date(now.getTime() - 3600_000);
-  const active = await prisma.render.findMany({ where: { status: { in: ["queued", "running"] } }, select: { id: true, kind: true, quality: true, status: true, createdAt: true, startedAt: true, project: { select: { video: { select: { seconds: true } } } } } });
+  const active = await prisma.render.findMany({ where: { status: { in: ["queued", "running"] } }, select: { id: true, kind: true, quality: true, status: true, createdAt: true, startedAt: true, project: { select: { timeline: true, video: { select: { seconds: true } } } } } });
   const dead = active.filter((r) => r.status === "running"
-    ? now.getTime() - (r.startedAt ?? r.createdAt).getTime() > renderTimeoutMs(r.kind === "preview" ? "preview" : "final", r.project.video.seconds, r.quality) + 15 * 60_000
+    ? now.getTime() - (r.startedAt ?? r.createdAt).getTime() > renderTimeoutMs(r.kind === "preview" ? "preview" : "final", r.project.video.seconds, r.quality) + matteAllowanceMs(r.project.timeline) + 15 * 60_000
     : now.getTime() - r.createdAt.getTime() > 6 * 3600_000);
   if (dead.length) await prisma.render.updateMany({ where: { id: { in: dead.map((r) => r.id) } }, data: { status: "failed", error: "Render did not finish. Nothing was lost. Try again.", finishedAt: now } });
   out.stuckRenders = dead.length;

@@ -12,6 +12,7 @@ import { pipeline } from "node:stream/promises";
 import { COVER_SIZE, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, windowBudget } from "../lib/ffmpeg";
 import { cachedAsset, cachedCopy } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
+import { ensureMattes } from "../lib/matte";
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
 import { measureSound } from "../lib/sound";
@@ -36,7 +37,9 @@ export async function renderJob(ctx: Ctx) {
   const ac = new AbortController();
   ctx.signal.addEventListener("abort", () => ac.abort(), { once: true });
   let previewTimedOut = false;
-  const pt = kind === "preview" ? setTimeout(() => { previewTimedOut = true; ac.abort(); }, renderTimeoutMs("preview", video.seconds)) : null;
+  const previewLimit = renderTimeoutMs("preview", video.seconds);
+  const armPreview = (ms: number) => (kind === "preview" ? setTimeout(() => { previewTimedOut = true; ac.abort(); }, ms) : null);
+  let pt = armPreview(previewLimit);
   const signal = ac.signal;
 
   // Phase 7: the time left. Before the encode it comes from this user's last renders of the same kind and quality
@@ -187,6 +190,15 @@ export async function renderJob(ctx: Ctx) {
       const p = join(ctx.dir, `look-${name}`);
       await writeFile(p, lookFileData(spec, plan, luts));
       files.looks![name] = p;
+    }
+    // remove_background: the person's matte, made once per block of footage and kept (the first render waits for it).
+    // The preview's clock stops meanwhile (the job's own limit allows for it: matteAllowanceMs).
+    if (plan.mattes) {
+      const m0 = Date.now();
+      if (pt) clearTimeout(pt);
+      files.mattes = await ensureMattes(plan, video.userId, ctx.dir, signal, (f) => sendThrottled(i, 0.2 + 0.7 * f));
+      if (pt) pt = armPreview(Math.max(60_000, previewLimit - (m0 - t0)));
+      if (Date.now() - m0 > 3000) plan.operations.push(`Background: the person's matte made in ${Math.round((Date.now() - m0) / 1000)} s (kept: the next render reuses it)`);
     }
     for (const a of plan.audio) {
       // The user's own file: the one found for this user above (its key from the database, not the edit).

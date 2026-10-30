@@ -16,7 +16,7 @@ import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDL
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { libraryItem, libraryParams } from "./library";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
-import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin } from "./look";
+import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
@@ -151,7 +151,7 @@ const EDIT_OPS = [
     exposure: z.number().min(-4).max(4).nullable().optional(), contrast: z.number().min(-100).max(100).nullable().optional(), temperature: z.number().min(-100).max(100).nullable().optional(), tint: z.number().min(-100).max(100).nullable().optional(), saturation: z.number().min(0).max(200).nullable().optional(),
     curves: z.object({ master: CurveSchema.nullable().optional(), r: CurveSchema.nullable().optional(), g: CurveSchema.nullable().optional(), b: CurveSchema.nullable().optional() }).nullable().optional(), lut: LutInputSchema.nullable().optional() }),
   // A clip's grade onto other clips (with: also its key, masks, blur/pixelate).
-  z.object({ op: z.literal("copy_grade"), from: clipId, to: z.array(clipId).max(2000).optional(), all: z.boolean().optional(), video: z.string().max(80).optional(), with: z.array(z.enum(["grade", "key", "masks", "effects", "skin"])).max(5).optional() }),
+  z.object({ op: z.literal("copy_grade"), from: clipId, to: z.array(clipId).max(2000).optional(), all: z.boolean().optional(), video: z.string().max(80).optional(), with: z.array(z.enum(["grade", "key", "masks", "effects", "skin", "subject"])).max(6).optional() }),
   // Clips' colour matched to a reference clip from measured frames (the server measures them; the result is a grade).
   z.object({ op: z.literal("match_color"), clipIds: z.array(clipId).min(1).max(200), to: clipId, measured: z.record(z.object({ w: z.number().int().min(1).max(512), h: z.number().int().min(1).max(512), rgb: z.string().max(2_000_000) })).optional() }),
   // Chroma key: color (pick it from the frame), similarity, blend, spill; off removes the key.
@@ -164,6 +164,10 @@ const EDIT_OPS = [
   // measured into faceAreas; a clip with no face measured gets the whole picture), "frame", or a shape. off removes it.
   z.object({ op: z.literal("retouch_skin"), ...lookTargets, smooth: z.number().min(0).max(100).optional(), blemishes: z.number().min(0).max(100).optional(), even: z.number().min(0).max(100).optional(), brighten: z.number().min(0).max(100).optional(),
     area: z.union([z.literal("face"), z.literal("frame"), AreaSchema]).optional(), faceAreas: z.record(AreaSchema.nullable()).optional(), off: z.boolean().optional() }),
+  // The person kept, the background around them transparent (an AI matte Rendrr makes of the footage; V1 clips; default
+  // clips: every V1 clip). edge -20..20 (out / in, px at 1080p), soft 0-100, invert (the person removed); fields left
+  // out keep their value or the defaults (0, 20). off puts the background back. What shows: set_background / set_under.
+  z.object({ op: z.literal("remove_background"), ...lookTargets, edge: z.number().min(-20).max(20).optional(), soft: z.number().min(0).max(100).optional(), invert: z.boolean().optional(), off: z.boolean().optional() }),
   // A b-roll clip behind V1 (shows where V1 is keyed, masked, framed smaller or moved away) or back over it.
   z.object({ op: z.literal("set_under"), clipId, under: z.boolean() }),
   // How the final file is made: hdr keep (HDR footage stays HDR) or sdr (converted).
@@ -1095,6 +1099,23 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const none = faceless.length ? `; no face measured on ${faceless.length === ids.length ? "them" : faceless.slice(0, 8).join(", ") + (faceless.length > 8 ? ` and ${faceless.length - 8} more` : "")}: the skin is found over the whole picture there` : "";
       return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${sk ? skinText(sk) : "no skin retouch"}${none}` };
     }
+    case "remove_background": {
+      const ids = op.clipId || op.clipIds || op.all || op.video ? lookIds(tl, op) : lookIds(tl, { all: true });
+      const onV1 = new Set((tl.tracks.v1 as Clip[]).map((c) => c.id));
+      const broll = ids.filter((id) => !onV1.has(id));
+      if (broll.length) throw new EditError(`remove_background works on V1 clips; ${broll.slice(0, 4).join(", ")} ${broll.length === 1 ? "is" : "are"} b-roll.`);
+      const next = mapLook(tl, ids, (c) => {
+        const { subject: _s, ...rest } = c;
+        if (op.off) return rest as typeof c;
+        const base = c.subject ?? SUBJECT_DEFAULTS;
+        const sj: Subject = { edge: op.edge ?? base.edge, soft: op.soft ?? base.soft };
+        if (op.invert ?? c.subject?.invert) sj.invert = true;
+        return { ...rest, subject: sj } as typeof c;
+      });
+      const sj = lookClip(next, ids[0]).clip.subject;
+      const behind = tl.background || (tl.tracks.v2 as (Clip & { under?: boolean })[]).some((c) => c.under) ? "" : "; behind it: black until set_background (a colour, gradient, pattern, library video or blur) or b-roll with set_under";
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${sj ? subjectText(sj) + behind : "background back"}` };
+    }
     case "set_under": {
       const c = findClip(tl, "v2", op.clipId) as V2Clip & { under?: boolean };
       if (c.kind !== "broll") throw new EditError(`Clip "${op.clipId}" on V2 is a zoom: only b-roll can go behind V1.`);
@@ -1422,7 +1443,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
 
 /** A clip's Phase 6 look in a few words: "grade, key, 2 masks, blur". */
 function lookTags(c: Clip & ClipLook): string {
-  const t = [c.grade ? "grade" : "", c.key ? "key" : "", c.masks?.length ? `${c.masks.length} ${c.masks.length === 1 ? "mask" : "masks"}` : "", ...(c.effects ?? []).map((e) => e.type), skinActive(c.skin) ? "skin" : "", hasCard((c as { cardLook?: CardLook }).cardLook) ? "card" : ""].filter(Boolean);
+  const t = [c.grade ? "grade" : "", c.key ? "key" : "", c.masks?.length ? `${c.masks.length} ${c.masks.length === 1 ? "mask" : "masks"}` : "", ...(c.effects ?? []).map((e) => e.type), skinActive(c.skin) ? "skin" : "", c.subject ? "no background" : "", hasCard((c as { cardLook?: CardLook }).cardLook) ? "card" : ""].filter(Boolean);
   return t.length ? `look: ${t.join(", ")}` : "";
 }
 /** The looks in full, clips with the same one together (get_project). */
@@ -1439,6 +1460,7 @@ export function colorSummary(tl: Timeline, lutName?: (id: string) => string | un
     ...group((c) => (c.masks?.length ? `masks ${masksText(c.masks)}` : "")),
     ...group((c) => (c.effects?.length ? effectsText(c.effects) : "")),
     ...group((c) => (skinActive(c.skin) ? skinText(c.skin!) : "")),
+    ...group((c) => (c.subject ? subjectText(c.subject) : "")),
     ...group((c) => { const cl = (c as { cardLook?: CardLook }).cardLook; return hasCard(cl) ? `card ${cardLookText(cl)}` : ""; }),
   ];
   if (tl.background) out.push(`behind V1: ${backgroundText(tl.background)}`);
