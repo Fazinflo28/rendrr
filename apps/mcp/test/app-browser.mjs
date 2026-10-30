@@ -1,8 +1,9 @@
 // The Rendrr app as Claude shows it: the page from the connector, in a sandboxed frame with the content security policy
 // a host builds from its declared domains, talking MCP Apps (JSON-RPC over postMessage) to a stand-in host whose tools
 // answer like Rendrr's. Checks: the projects grid; opening an edit plays its preview (from the storage origin only);
-// comments at the player's moment, markers, jump, resolve; Send to Claude; a render's progress, then the new preview
-// playing on its own; typing survives the polls; search; the web app's look; size. Real Chromium (Playwright), real video files.
+// a shimmer while the preview loads; comments at the player's moment, markers, jump, resolve; Send to Claude; a render's
+// progress, then the new preview, which waits for play (nothing plays on its own); typing survives the polls; search;
+// the web app's look; size. Real Chromium (Playwright), real video files.
 //   node test/app-browser.mjs   (from apps/mcp; needs ffmpeg)
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, statSync, createReadStream } from "node:fs";
@@ -29,8 +30,10 @@ ff("-f", "lavfi", "-i", "smptebars=s=320x568:r=25:d=6", "-f", "lavfi", "-i", "si
 ff("-f", "lavfi", "-i", "testsrc2=s=320x180", "-frames:v", "1", join(dir, "thumb.jpg"));
 
 // The storage: files with ranges, like signed links. A link changed on the way (its %2F turned into %252F) fails its
-// signature, as on the real storage.
-const media = createServer((req, res) => {
+// signature, as on the real storage. slow=ms holds the first bytes back that long (a big preview on a slow line).
+const media = createServer(async (req, res) => {
+  const slow = Number(new URL(req.url, "http://x").searchParams.get("slow") || 0);
+  if (slow && /^bytes=0-/.test(req.headers.range || "bytes=0-")) await sleep(slow);
   if (/%25/.test(req.url) || (req.url.includes("X-Amz-Credential") && !req.url.includes("X-Amz-Credential=tid%2F20261029%2Fiad"))) { res.statusCode = 403; return res.end(); }
   const f = join(dir, new URL(req.url, "http://x").pathname.slice(1));
   let size; try { size = statSync(f).size; } catch { res.statusCode = 404; return res.end(); }
@@ -50,7 +53,7 @@ const db = {
     { id: "p2", name: "Founder story", folder: "Brand", aspect: "16:9", status: "Draft", version: 1, updated: now - 86400e3 * 2, seconds: null, thumb: null, previewVersion: null, rendering: false, openComments: 0 },
   ],
   comments: { p1: [{ id: "c0", time: 1.2, text: "The client wants the logo smaller", author: "Dana", mine: false, resolved: false, at: now - 7200e3 }], p2: [] },
-  preview: { p1: { renderId: "r1", version: 1, url: `${M}/v1.webm?X-Amz-Signature=b`, seconds: 8, quality: "540p", at: now - 3600e3 }, p2: null },
+  preview: { p1: { renderId: "r1", version: 1, url: `${M}/v1.webm?X-Amz-Signature=b&slow=1500`, seconds: 8, quality: "540p", at: now - 3600e3 }, p2: null },
   rendering: { p1: null, p2: null },
 };
 const calls = [];
@@ -160,6 +163,14 @@ await app.locator(".search").fill(""); await sleep(600);
 // (the time in milliseconds, a seek bar with the comments on it, steps of 0.1 s).
 await app.locator(".card").first().click();
 await app.locator("video").waitFor({ timeout: 10000 });
+// While the first picture is on its way: a shimmer over the player, at the edit's shape (not a small black box).
+const loading = await frame().evaluate(() => { const f = document.querySelector(".frame"), l = document.querySelector(".load"), v = document.querySelector("video").getBoundingClientRect(); return { on: f.classList.contains("loading"), shown: getComputedStyle(l).visibility === "visible", text: l.innerText, w: v.width, h: v.height, ready: document.querySelector("video").readyState }; });
+check(loading.on && loading.shown && /Loading preview/.test(loading.text) && loading.ready < 2, `a shimmer shows while the preview loads (${loading.text}, ready ${loading.ready})`);
+check(Math.abs(loading.w / loading.h - 9 / 16) < 0.02 && loading.h >= 400, `the player keeps the edit's shape while it loads (${Math.round(loading.w)}x${Math.round(loading.h)})`);
+await page.screenshot({ path: join(dir, "app-loading.png") });
+await frame().waitForFunction(() => !document.querySelector(".frame").classList.contains("loading"), null, { timeout: 10000 }).catch(() => {});
+check(await frame().evaluate(() => document.querySelector("video").readyState >= 2 && !document.querySelector(".frame").classList.contains("loading")), "the shimmer goes once the picture is in");
+check(await frame().evaluate(() => document.querySelector("video").paused && document.querySelector("video").currentTime === 0), "opening an edit does not play it: the user presses play");
 await sleep(300);
 check((await hostLog()).some((m) => m.method === "ui/request-display-mode" && m.params.mode === "fullscreen") && await frame().evaluate(() => document.documentElement.classList.contains("fs")), "opening an edit asks the host for full screen");
 const boxes = () => frame().evaluate(() => {
@@ -334,7 +345,8 @@ check((await hostLog()).some((m) => m.method === "ui/open-link" && m.params.url 
 await app.locator(".share button", { hasText: "×" }).click(); await sleep(100);
 check((await app.locator(".share").count()) === 0, "the panel closes");
 
-// 7. Render the latest version: progress while it renders, typing survives the polls, then the new preview plays.
+// 7. Render the latest version: progress while it renders, typing survives the polls, then the new preview, waiting for
+// play.
 await app.locator("button", { hasText: "Render preview" }).click();
 await app.locator(".prog").waitFor({ timeout: 5000 });
 check(/Waiting to render v2/.test(await app.locator(".note").first().innerText()), "the render shows as waiting");
@@ -344,8 +356,10 @@ check(/Rendering v2 · 55% · Encoding/.test(await app.locator(".note").first().
 check(await frame().evaluate(() => document.activeElement?.tagName === "TEXTAREA" && document.activeElement.value === "half typed"), "typing keeps its place while progress comes in");
 await frame().waitForFunction(() => /v2\.webm/.test(document.querySelector("video")?.getAttribute("src") || ""), null, { timeout: 8000 }).catch(() => {});
 check(/v2\.webm/.test(await frame().evaluate(() => document.querySelector("video").getAttribute("src"))), "the new preview replaces the old one when it is done");
-await frame().waitForFunction(() => { const v = document.querySelector("video"); return v && !v.paused && v.currentTime > 0.3; }, null, { timeout: 8000 }).catch(() => {});
-check(await frame().evaluate(() => { const v = document.querySelector("video"); return !v.paused && v.currentTime > 0.3; }), "and plays on its own");
+await frame().waitForFunction(() => document.querySelector("video").readyState >= 2, null, { timeout: 8000 }).catch(() => {});
+await sleep(1200);
+check(await frame().evaluate(() => { const v = document.querySelector("video"); return v.readyState >= 2 && v.paused && v.currentTime === 0; }), "and does not play on its own");
+check(/Preview v2 is ready\. Press play to watch\./.test(await app.locator("#toast").innerText()), "it says the new preview is ready to play");
 check(!/has changes this preview/.test(await app.locator("body").innerText()), "the note about missing changes is gone");
 
 // 8. Full screen with the button, Open in Rendrr, back to every edit.
@@ -428,7 +442,7 @@ await phoneCtx.close();
 
 check(violations.length === 0, `nothing blocked by the content security policy${violations.length ? ": " + violations.join(" | ") : ""}`);
 check(errors.length === 0, `no errors${errors.length ? ": " + errors.join(" | ") : ""}`);
-console.log(`screenshots: ${["app-list", "app-fullscreen", "app-project", "app-comments", "app-dark", "app-phone", "app-phone-inline"].map((n) => join(dir, n + ".png")).join(" ")}`);
+console.log(`screenshots: ${["app-loading", "app-list", "app-fullscreen", "app-project", "app-comments", "app-dark", "app-phone", "app-phone-inline"].map((n) => join(dir, n + ".png")).join(" ")}`);
 await browser.close(); host.close(); media.close();
 if (fails.length) { console.log(`\n${fails.length} failed`); process.exit(1); }
 console.log("\nall passed");

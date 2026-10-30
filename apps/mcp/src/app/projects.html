@@ -116,6 +116,17 @@ html.fs .stage.tall video { height: max(220px, min(60vh, calc(100vh - 600px))); 
 .ink.on { pointer-events: auto; cursor: crosshair; touch-action: none; outline: 2px solid var(--accent); outline-offset: -2px; }
 /* The time over the picture, as in the editor's player. */
 .stamp { position: absolute; left: 10px; top: 10px; z-index: 2; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border-radius: var(--r-sm); background: rgba(0,0,0,.55); color: #fff; font-size: 12px; backdrop-filter: blur(4px); pointer-events: none; }
+/* While the preview loads (or stops to load more as it plays): a shimmer over the picture and a word, so it never
+   looks stuck. A click goes through to the player. */
+.load, .fail { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 8px; color: rgba(255,255,255,.85); font-size: 13px; opacity: 0; visibility: hidden; transition: opacity .2s, visibility .2s; pointer-events: none; }
+.load { background: linear-gradient(100deg, rgba(14,15,18,.92) 30%, rgba(54,58,66,.92) 50%, rgba(14,15,18,.92) 70%); background-size: 200% 100%; animation: sk 1.4s linear infinite; }
+.load .spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); border-top-color: #fff; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.frame.loading .load { opacity: 1; visibility: visible; }
+.fail { flex-direction: column; background: #0e0f12; padding: 16px; text-align: center; }
+.frame.failed .fail { opacity: 1; visibility: visible; pointer-events: auto; }
+.frame.failed .load { display: none; }
+@media (prefers-reduced-motion: reduce) { .load, .load .spin { animation: none; } }
 .stamp i { font-style: normal; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,.18); }
 .pens { display: flex; gap: 6px; }
 .pen { width: 24px; height: 24px; border-radius: 50%; box-shadow: 0 0 0 2px var(--hair-strong); }
@@ -518,9 +529,12 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
     const tall = p.aspect === "9:16" || p.aspect === "4:5";
     let stage;
     if (v.preview) {
-      // The same preview keeps its player (and where it is); a new preview gets a new one and plays.
+      // The same preview keeps its player (and where it is); a new preview gets a new one. Nothing plays on its own:
+      // the user presses play (a chat can hold many of these, and none should start by itself).
       if (!player || player.dataset.rid !== v.preview.renderId) {
-        const vid = h("video", { playsinline: true, preload: "metadata", src: v.preview.url, "data-rid": v.preview.renderId, title: "Play or pause (space)" });
+        const [aw, ah] = (p.aspect || "16:9").split(":");
+        const vid = h("video", { playsinline: true, preload: "metadata", src: v.preview.url, "data-rid": v.preview.renderId, title: "Play or pause (space)", style: "aspect-ratio: auto " + aw + " / " + ah });
+        watchLoading(vid);
         const emit = () => { for (const fn of timeHooks) fn(vid.currentTime); };
         for (const ev of ["timeupdate", "seeked", "pause", "ended", "loadedmetadata", "volumechange"]) vid.addEventListener(ev, emit);
         // While it plays, the timecode moves every frame (timeupdate alone is 4 times a second).
@@ -529,14 +543,19 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
         vid.addEventListener("loadedmetadata", () => placeInk());
         vid.addEventListener("play", () => { if (state.drawMode) { state.drawMode = false; render(); } state.viewDrawing = null; });
         new ResizeObserver(() => placeInk()).observe(vid);
-        if (fresh) { vid.addEventListener("loadeddata", () => { vid.play().catch(() => {}); }, { once: true }); setTimeout(() => toast("Preview v" + v.preview.version + " is ready."), 50); }
+        vid.addEventListener("play", () => tellOthers());
+        if (fresh) setTimeout(() => toast("Preview v" + v.preview.version + " is ready. Press play to watch."), 50);
         player = vid;
       }
       const canvas = h("canvas", { class: "ink" + (state.drawMode ? " on" : ""), "aria-label": state.drawMode ? "Draw on the picture" : null });
       inkCanvas(canvas);
       const stampT = h("span", { class: "mono" });
       onTime((t) => { stampT.textContent = fmtTime(t); });
-      stage = h("div", { class: "stage" + (tall ? " tall" : "") }, h("div", { class: "frame" }, player, canvas, h("span", { class: "stamp", "aria-hidden": "true" }, stampT, h("i", {}, "v" + v.preview.version))));
+      const frame = h("div", { class: "frame" + loadingClass(player) }, player, canvas,
+        h("div", { class: "load", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Loading preview…"),
+        h("div", { class: "fail" }, h("span", {}, "The preview did not load."), h("button", { class: "btn", onClick: retryPreview }, "Try again")),
+        h("span", { class: "stamp", "aria-hidden": "true" }, stampT, h("i", {}, "v" + v.preview.version)));
+      stage = h("div", { class: "stage" + (tall ? " tall" : "") }, frame);
     } else {
       player = null;
       stage = h("div", { class: "stage" }, h("div", { class: "noprev" }, v.rendering
@@ -616,6 +635,40 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
     muted: '<svg viewBox="0 0 16 16"><path d="M2 6h3l4-3.5v11L5 10H2z"/><path d="M11 6l4 4M15 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
   };
   const icon = (name) => { const t = document.createElement("template"); t.innerHTML = ICONS[name]; return t.content.firstChild; };
+  // Loading: from the start until the first picture is in, and while playing stops to load more. A seek or a stall
+  // shows it only after a moment, so scrubbing does not flash it. If the browser holds off on purpose (a phone saving
+  // data loads nothing until play), nothing is loading: no shimmer, play fetches it.
+  const isLoading = (vid) => !vid.error && (vid._wait || (vid.readyState < 2 && !vid._idle));
+  const loadingClass = (vid) => (vid.error ? " failed" : isLoading(vid) ? " loading" : "");
+  function watchLoading(vid) {
+    let timer = null;
+    const show = () => { const f = vid.parentNode; if (f) { f.classList.toggle("loading", isLoading(vid)); f.classList.toggle("failed", !!vid.error); } };
+    const update = () => { clearTimeout(timer); if (isLoading(vid)) timer = setTimeout(show, 250); else show(); };
+    vid.addEventListener("waiting", () => { vid._wait = true; update(); });
+    for (const ev of ["playing", "canplay", "loadeddata", "seeked", "pause"]) vid.addEventListener(ev, () => { if (ev !== "pause" || vid.readyState >= 3) vid._wait = false; update(); });
+    vid.addEventListener("seeking", update);
+    vid.addEventListener("play", () => { vid._idle = false; update(); });
+    vid.addEventListener("suspend", () => setTimeout(() => {
+      if (vid.readyState < 1 || vid.readyState >= 2 || vid.networkState !== 1 || vid._idle) return;
+      // Asked for the first picture once (a seek where it is); if the browser still waits, it waits for play.
+      if (!vid._nudged) { vid._nudged = true; try { vid.currentTime = vid.currentTime; } catch {} return; }
+      vid._idle = true; update();
+    }, 1500));
+    vid.addEventListener("error", () => { clearTimeout(timer); show(); });
+  }
+  // The link may have run out: a fresh one from Rendrr and a new player.
+  async function retryPreview() {
+    const id = state.project && state.project.project.id;
+    if (!id) return;
+    player = null;
+    try { const v = await callTool("app_get_project", { projectId: id }); if (v && state.view === "project" && state.project && v.project.id === id) showProject(v); else render(); }
+    catch (e) { toast(e.message); render(); }
+  }
+  // One player at a time: when this one plays, the Rendrr cards in the same chat that can hear it pause theirs.
+  const me = Math.random().toString(36).slice(2);
+  let others = null;
+  try { others = new BroadcastChannel("rendrr-player"); others.onmessage = (e) => { if (e.data && e.data.playing && e.data.playing !== me && player && !player.paused) player.pause(); }; } catch { others = null; }
+  function tellOthers() { try { if (others) others.postMessage({ playing: me }); } catch {} }
   function togglePlay() { if (player) player.paused ? player.play().catch(() => {}) : player.pause(); }
   function step(d) { if (player) seek(Math.min(isFinite(player.duration) ? player.duration : Infinity, Math.max(0, player.currentTime + d))); }
 
