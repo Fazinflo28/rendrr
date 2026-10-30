@@ -75,6 +75,10 @@ describe("set_framing focus", () => {
     expect(framingOf(r.snap, "b")).toBeUndefined();
     expect(r.summary).toBe("reframed the footage on the speaker's face (1 of 2); no face found in b: its fit stays as it was");
   });
+  it("says when clips were made in the same call (not measured yet)", () => {
+    const r = edit(two(), { op: "set_framing", focus: "face", centers: { a: { x: 0.3, y: 0.42 } } } as Op);
+    expect(r.summary).toBe('reframed the footage on the speaker\'s face (1 of 2); b made in this same call: send focus "face" again in the next apply_edits to reframe it');
+  });
   it("takes a point by hand, keeps scale and offset, null goes back to the middle", () => {
     let s = edit(two(), { op: "set_framing", scale: 1.2, clipIds: ["a"] } as Op).snap;
     s = edit(s, { op: "set_framing", focus: { x: 0.7, y: 0.4 }, clipIds: ["a"] } as Op).snap;

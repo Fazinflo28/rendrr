@@ -668,11 +668,12 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (op.fitFaceTo) return fitFaces(snap, op.fitFaceTo, op, ids);
       if (op.focus === "face" && !op.centers) throw new EditError("focus \"face\" needs the faces measured: send it through apply_edits, which measures them.");
       let shown: Framing | null = null;
-      const none: string[] = [];
+      const none: string[] = [], later: string[] = [];
       const next = setSeq(tl, seqClips(tl).map((c) => {
         if (!ids.has(c.id)) return c;
         const cur = c.framing ?? { scale: 1, x: 0, y: 0 };
-        const fc = op.focus === undefined ? cur.focus : op.focus === "face" ? op.centers![c.id] ?? (none.push(c.id), cur.focus) : op.focus ?? undefined;
+        // A clip with no entry was made after the faces were measured (in the same apply_edits).
+        const fc = op.focus === undefined ? cur.focus : op.focus === "face" ? op.centers![c.id] ?? ((op.centers![c.id] === null ? none : later).push(c.id), cur.focus) : op.focus ?? undefined;
         const f = FramingSchema.parse({ scale: r2(op.scale ?? cur.scale), x: r2(op.x ?? cur.x), y: r2(op.y ?? cur.y), ...(fc ? { focus: { x: rT(fc.x), y: rT(fc.y) } } : {}) });
         shown = f;
         const { framing: _f, ...rest } = c;
@@ -681,7 +682,8 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const f = shown as Framing | null;
       const what = op.clipIds ? `${ids.size} ${ids.size === 1 ? "clip" : "clips"}` : "the footage";
       const noFace = none.length ? `; no face found in ${none.slice(0, 12).join(", ")}${none.length > 12 ? ` and ${none.length - 12} more` : ""}: ${none.length === 1 ? "its" : "their"} fit stays as it was` : "";
-      if (op.focus === "face") return { snap: { ...snap, timeline: next }, summary: `reframed ${what} on the speaker's face (${ids.size - none.length} of ${ids.size})${noFace}` };
+      const notYet = later.length ? `; ${later.slice(0, 12).join(", ")}${later.length > 12 ? ` and ${later.length - 12} more` : ""} made in this same call: send focus "face" again in the next apply_edits to reframe ${later.length === 1 ? "it" : "them"}` : "";
+      if (op.focus === "face") return { snap: { ...snap, timeline: next }, summary: `reframed ${what} on the speaker's face (${ids.size - none.length - later.length} of ${ids.size})${noFace}${notYet}` };
       return { snap: { ...snap, timeline: next }, summary: (!f || !plainFraming(f) ? `${what} back to filling the frame` : `framed ${what}: ${framingText(f)}`) + noFace };
     }
     case "set_card": {
