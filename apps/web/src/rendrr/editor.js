@@ -25,7 +25,7 @@ import { ExportModal, timeLeft } from "./export";
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
-import { ASPECT_RATIO, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { ASPECT_RATIO, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -210,10 +210,10 @@ function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts, person
   const backText = frame.texts.some((x) => x.layer.behind);
   return html`${b && moved(frame.broll.motion, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} />`)}
     ${frame.graphics.filter((g) => g.behind).map(gfx)}
-    ${plan && backText && html`<${TextLayers} key="behind" plan=${plan} frame=${frame} only="behind" />`}
+    ${plan && backText && html`<${TextLayers} key="behind" plan=${plan} frame=${frame} only="behind" media=${media} playing=${playing} />`}
     ${person}
     ${frame.graphics.filter((g) => !g.behind).map(gfx)}
-    ${plan && html`<${TextLayers} key="front" plan=${plan} frame=${frame} only="front" />`}`;
+    ${plan && html`<${TextLayers} key="front" plan=${plan} frame=${frame} only="front" media=${media} playing=${playing} />`}`;
 }
 
 /**
@@ -242,21 +242,88 @@ function fontCss(d) {
     ...(d.shadow && !d.box ? { textShadow: `${d.shadow.x}px ${d.shadow.y}px 0 ${rgba(d.shadow.color, d.shadow.opacity)}` } : {}) };
 }
 const boxCss = (d) => (d.box ? { background: rgba(d.box.color, d.box.opacity), padding: `0 ${d.box.pad}px`, boxShadow: `0 ${-d.box.pad}px 0 ${rgba(d.box.color, d.box.opacity)}, 0 ${d.box.pad}px 0 ${rgba(d.box.color, d.box.opacity)}${d.shadow ? `, ${d.shadow.x}px ${d.shadow.y + d.box.pad}px 0 ${rgba(d.shadow.color, d.shadow.opacity)}` : ""}`, boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" } : {});
-function TextLayers({ plan, frame, only = "all" }) {
+/**
+ * Phase 2b: a text layer drawn from a mask, as the render draws it: a library video inside its letters (the layer's
+ * own block, laid out by the browser with its letters clear, draws the card, stroke, shadow and box), or its card with
+ * the letters cut out. A canvas the size of the stage draws the letters where the block puts them (measured from it
+ * every frame, so keyframes, animations and alignment carry over).
+ */
+function TextMatte({ l, block, W, H, alpha, cardAlpha, src, t, playing }) {
+  const cv = useRef(null), vid = useRef(null), st = useRef({});
+  st.current = { l, alpha, cardAlpha };
+  const want = l.inside ? (((t - l.start + l.inside.from) % l.inside.seconds) + l.inside.seconds) % l.inside.seconds : 0;
+  useEffect(() => {
+    const el = vid.current; if (!el) return;
+    if (playing) { if (Math.abs(el.currentTime - want) > 0.25) { try { el.currentTime = want; } catch {} } el.play().catch(() => {}); }
+    else { el.pause(); if (Math.abs(el.currentTime - want) > 0.04) { try { el.currentTime = want; } catch {} } }
+  }, [want, playing]);
+  useEffect(() => {
+    let raf = 0;
+    const draw = () => {
+      raf = requestAnimationFrame(draw);
+      const c = cv.current, b = block.current; if (!c || !b) return;
+      const ctx = c.getContext("2d"), { l, alpha, cardAlpha } = st.current;
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1; ctx.clearRect(0, 0, W, H);
+      const v = vid.current;
+      if (l.inside && !(v && v.readyState >= 2 && v.videoWidth)) return;
+      // The block's place on the stage: its offset, then its transform about its origin (as CSS applies them).
+      const cs = getComputedStyle(b), m = cs.transform && cs.transform !== "none" ? new DOMMatrix(cs.transform) : new DOMMatrix();
+      const [ox, oy] = cs.transformOrigin.split(" ").map(parseFloat);
+      const at = new DOMMatrix().translate(b.offsetLeft + ox, b.offsetTop + oy).multiply(m).translate(-ox, -oy);
+      const d = drawnOf(l.style, W, H), asc = (d.size * d.face.winAscent) / (d.face.winAscent + d.face.winDescent), pad = d.box ? d.box.pad : 0;
+      const letters = (op) => {
+        ctx.save(); ctx.setTransform(at); ctx.globalCompositeOperation = op; ctx.fillStyle = "#ffffff";
+        ctx.font = `400 ${cssSize(d.face, d.size)}px "${d.face.family}"`; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+        for (const sp of b.querySelectorAll("span[data-line]")) ctx.fillText(sp.textContent, sp.offsetLeft + pad, sp.offsetTop + asc);
+        ctx.restore();
+      };
+      if (l.inside) {
+        ctx.globalAlpha = alpha; letters("source-over"); ctx.globalAlpha = 1;
+        // The video over the letters only, fitted to cover the frame.
+        const k = Math.max(W / v.videoWidth, H / v.videoHeight), vw = v.videoWidth * k, vh = v.videoHeight * k;
+        ctx.globalCompositeOperation = "source-in"; ctx.drawImage(v, (W - vw) / 2, (H - vh) / 2, vw, vh);
+      } else {
+        ctx.globalAlpha = cardAlpha * l.card.opacity; ctx.fillStyle = l.card.color; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
+        letters("destination-out");
+      }
+    };
+    draw();
+    return () => cancelAnimationFrame(raf);
+  }, [W, H]);
+  return html`<canvas ref=${cv} width=${W} height=${H} data-matte=${l.clipId} style=${{ position: "absolute", left: 0, top: 0, width: W + "px", height: H + "px" }} />
+    ${l.inside && html`<video ref=${vid} src=${src} crossOrigin="anonymous" muted playsInline preload="auto" loop style=${{ position: "absolute", width: "2px", height: "2px", opacity: 0 }} />`}`;
+}
+
+/** One text layer: its card and its block of lines (Phase 2b: drawn from a mask when it has a video inside its letters
+ *  or is cut out of its card). */
+function TextLayer({ l, opacity, scale, dy, look, W, H, media, t, playing }) {
+  const block = useRef(null);
+  const d = drawnOf(l.style, W, H); const ax = l.style.align === "left" ? 0 : l.style.align === "right" ? 100 : 50;
+  // A keyframed layer (Phase 5): its anchor, scale, turn and opacity from textLookAt, as the ASS pieces draw it.
+  const pos = look ? { left: look.x + "px", top: look.y + "px", transform: `translate(${-ax}%, -50%) rotate(${look.rotation}deg) scale(${look.scale})`, opacity: look.opacity } : { left: l.style.x * W + "px", top: l.style.y * H + dy + "px", transform: `translate(${-ax}%, -50%) scale(${scale})`, opacity };
+  const matted = isMatted(l), cut = matted && !l.inside, src = l.inside ? media?.broll?.[l.inside.videoId]?.url : null;
+  // A video inside: the letters clear (their stroke, shadow and box still drawn). Cut out: the block only measured.
+  const font = matted ? { ...fontCss(cut ? { ...d, stroke: null, shadow: null } : d), color: "transparent" } : fontCss(d);
+  return html`<div data-text=${l.clipId}>
+    ${l.card && !cut && html`<div class="tcard" style=${{ background: rgba(l.card.color, l.card.opacity), opacity }} />`}
+    <div class="tblock" ref=${block} style=${{ ...pos, transformOrigin: `${ax}% 50%`, textAlign: l.style.align, ...(cut ? { visibility: "hidden" } : {}) }}>
+      ${l.lines.map((line, i) => html`<div key=${i}><span data-line=${i} style=${{ ...font, ...(cut ? {} : boxCss(d)) }}>${l.style.case === "upper" ? line.toUpperCase() : l.style.case === "lower" ? line.toLowerCase() : line}</span></div>`)}
+    </div>
+    ${matted && (cut || src) && html`<${TextMatte} l=${l} block=${block} W=${W} H=${H} alpha=${look ? look.opacity : opacity} cardAlpha=${opacity} src=${src} t=${t} playing=${playing} />`}
+  </div>`;
+}
+
+function TextLayers({ plan, frame, only = "all", media = null, playing = false }) {
   const ref = useRef(); const [k, setK] = useState(0);
   useEffect(() => { if (fontsLoaded) return; fontsLoaded = true; const st = document.createElement("style"); st.id = "rc-fonts"; st.textContent = fontFaceCss("/fonts/"); document.head.appendChild(st); }, []);
   useEffect(() => { const el = ref.current; if (!el) return; const f = () => setK(el.clientWidth / plan.width); f(); const ro = new ResizeObserver(f); ro.observe(el); return () => ro.disconnect(); }, [plan.width]);
   const W = plan.width, H = plan.height;
   const cs = plan.captionStyle, cd = cs && drawnOf(cs, W, H);
   return html`<div ref=${ref} class="tlayers" data-k=${k} data-captions=${plan.styledCaptions?.length ?? 0} data-texts=${plan.texts?.length ?? 0}><div class="stage" style=${{ width: W + "px", height: H + "px", transform: `scale(${k})` }}>
-    ${frame.texts.filter(({ layer: x }) => only === "all" || (only === "behind") === !!x.behind).map(({ layer: l, opacity, scale, dy, look }) => { const d = drawnOf(l.style, W, H); const ax = l.style.align === "left" ? 0 : l.style.align === "right" ? 100 : 50;
-      // A keyframed layer (Phase 5): its anchor, scale, turn and opacity from textLookAt, as the ASS pieces draw it.
-      const pos = look ? { left: look.x + "px", top: look.y + "px", transform: `translate(${-ax}%, -50%) rotate(${look.rotation}deg) scale(${look.scale})`, opacity: look.opacity } : { left: l.style.x * W + "px", top: l.style.y * H + dy + "px", transform: `translate(${-ax}%, -50%) scale(${scale})`, opacity };
-      return html`<div key=${l.clipId} data-text=${l.clipId}>
-        ${l.card && html`<div class="tcard" style=${{ background: rgba(l.card.color, l.card.opacity), opacity }} />`}
-        <div class="tblock" style=${{ ...pos, transformOrigin: `${ax}% 50%`, textAlign: l.style.align }}>
-          ${l.lines.map((line, i) => html`<div key=${i}><span style=${{ ...fontCss(d), ...boxCss(d) }}>${l.style.case === "upper" ? line.toUpperCase() : l.style.case === "lower" ? line.toLowerCase() : line}</span></div>`)}
-        </div></div>`; })}
+    ${frame.texts.filter(({ layer: x }) => only === "all" || (only === "behind") === !!x.behind)
+      // Phase 2b: as the render does, the layers drawn from a mask first on their side.
+      .sort((a, b) => (isMatted(b.layer) ? 1 : 0) - (isMatted(a.layer) ? 1 : 0))
+      .map(({ layer: l, opacity, scale, dy, look }) => html`<${TextLayer} key=${l.clipId} l=${l} opacity=${opacity} scale=${scale} dy=${dy} look=${look} W=${W} H=${H} media=${media} t=${frame.t ?? 0} playing=${playing} />`)}
     ${only !== "behind" && frame.captionLines && cd && html`<div class="tblock cap-layer" id="caption-layer" style=${{ left: cs.x * W + "px", top: cs.y * H + "px", transform: "translate(-50%, -100%)", textAlign: "center" }}>
       ${frame.captionLines.map((line, i) => html`<div key=${i}><span style=${{ ...fontCss(cd), ...boxCss(cd) }}>${line.map((w, j) => html`${j ? " " : ""}<span key=${j} data-active=${w.active ? "1" : null} style=${w.active ? { color: cs.highlight } : null}>${w.text}</span>`)}</span></div>`)}
     </div>`}
@@ -305,8 +372,23 @@ function StyleControls({ kind, style, card, anim, opFor, doOp, H, liveOp, idp })
   </div>`;
 }
 
+// Phase 2b: what shows inside a text layer's letters: its colour, a library video (a track matte), or the picture under
+// its card (the letters cut out of the card).
+function InsideControls({ selText, videos, doOp }) {
+  const mode = selText.inside ? "video" : selText.cutout ? "cutout" : "color";
+  const first = videos[0];
+  const pick = (m) => m === "video" ? first && doOp({ inside: { videoId: first.id, from: 0 } }) : m === "cutout" ? doOp({ cutout: true }) : doOp(selText.inside ? { inside: null } : { cutout: false });
+  return html`<div class="col" style="gap:6px" id="text-inside">
+    <label class="t-small" style="display:grid;gap:4px" title="A video inside the letters, or the letters cut out of the card so the picture shows through">Inside the letters<select class="input sm" id="text-inside-mode" value=${mode} onChange=${(e) => pick(e.target.value)}>
+      <option value="color">Their colour</option><option value="video" disabled=${!first}>${first ? "A video" : "A video (none ready in your library)"}</option><option value="cutout">Cut out of the card (the picture shows)</option></select></label>
+    ${selText.inside && html`<div class="row" style="gap:8px;align-items:flex-end">
+      <label class="t-small grow" style="display:grid;gap:4px">Video<select class="input sm" id="text-inside-video" value=${selText.inside.videoId} onChange=${(e) => doOp({ inside: { videoId: e.target.value, from: 0 } })}>${videos.map((v) => html`<option key=${v.id} value=${v.id}>${v.name}</option>`)}${!videos.some((v) => v.id === selText.inside.videoId) && html`<option value=${selText.inside.videoId}>${selText.inside.videoId}</option>`}</select></label>
+      <label class="t-small" style="display:grid;gap:4px;width:84px">From (s)<input class="input sm" id="text-inside-from" type="number" min="0" step="0.1" value=${selText.inside.from ?? 0} onChange=${(e) => doOp({ inside: { videoId: selText.inside.videoId, from: Math.max(0, +e.target.value || 0) } })} /></label></div>`}
+  </div>`;
+}
+
 // The Text tab: the caption style and the text layers (title cards, callouts).
-function TextTab({ timeline, aspect, captionRules, textClips, selText, onSelect, at, dur, doOp, H, liveOp }) {
+function TextTab({ timeline, aspect, captionRules, textClips, selText, onSelect, at, dur, doOp, H, liveOp, videos = [] }) {
   const style = captionStyleOf(timeline, aspect, captionRules);
   const cap = (patch) => ({ op: "set_caption_style", ...patch });
   const [draft, setDraft] = useState(selText?.text || "");
@@ -327,6 +409,7 @@ function TextTab({ timeline, aspect, captionRules, textClips, selText, onSelect,
         <div class="row" style="gap:4px">${TEXT_PRESETS.map((p) => html`<${Btn} key=${p} kind="ghost" size="xs" onClick=${() => doOp(txt({ preset: p }), false)}>${p}<//>`)}</div>
         <${StyleControls} kind="text" idp="txt" style=${selText.style || textPreset("plain").style} card=${selText.card} anim=${selText.anim || "fade"} opFor=${txt} doOp=${doOp} H=${H} liveOp=${liveOp} />
         <label class="t-small row" style="gap:6px" title="The person is drawn over it from an AI matte of the footage (people only), like a title behind the speaker"><input type="checkbox" id="text-behind" checked=${!!selText.behind} onChange=${(e) => doOp(txt({ behind: e.target.checked }))} />Behind the person</label>
+        <${InsideControls} selText=${selText} videos=${videos} doOp=${(op) => doOp(txt(op))} />
         <${Btn} kind="ghost" size="xs" icon="trash" onClick=${() => doOp({ op: "delete_clip", track: "v3", clipId: selText.id })}>Remove this text<//>
       </div>`}
     </div>
@@ -656,7 +739,14 @@ function EditorInner({ project, reload, ai, keep }) {
   const [added, setAdded] = useState({});
   const others = useMemo(() => ({ ...(project.videos || {}), ...added }), [project, added]);
   // Custom graphics by clip: a placement with its own params plays its own recording (g.t includes add_graphic from).
-  const media = useMemo(() => ({ broll: project.brollMedia || {}, graphicClips: project.graphicClipMedia || {}, audio: project.audioMedia || {} }), [project]);
+  // Phase 2b: a library video put inside a text's letters here plays at once (the saved edit lists it after a reload).
+  const [insideMedia, setInsideMedia] = useState({});
+  const insideIds = S.tracks.v3.map((c) => c.inside?.videoId).filter(Boolean).join(",");
+  useEffect(() => {
+    for (const id of insideIds ? insideIds.split(",") : []) if (!project.brollMedia?.[id] && !insideMedia[id])
+      api.getVideo(id).then((v) => v?.proxyUrl && setInsideMedia((m) => ({ ...m, [id]: { url: v.proxyUrl, seconds: v.seconds } }))).catch(() => {});
+  }, [insideIds]);
+  const media = useMemo(() => ({ broll: { ...(project.brollMedia || {}), ...insideMedia }, graphicClips: project.graphicClipMedia || {}, audio: project.audioMedia || {} }), [project, insideMedia]);
   const urls = useMemo(() => ({ ...Object.fromEntries(Object.entries(others).map(([id, v]) => [id, v.url || null])), [main]: project.video?.proxyUrl || null }), [others, main, project]);
   const [sel, setSel] = useState(null); // {track,id}
   const [wsel, setWsel] = useState(null); // {a,b} word indexes
@@ -1142,7 +1232,7 @@ function EditorInner({ project, reload, ai, keep }) {
         ${rtab === "clip" && html`<${ClipTab} clip=${sel && isV1(sel.track) ? selV1 : selClip} track=${sel?.track} plan=${plan} first=${!!selV1 && lay.tracks.v1.find((c) => c.end - c.start > 0.01)?.id === selV1.id} at=${pb.time} srcAt=${(id, t) => view.editToSource(id, t)} onSeek=${(t) => pb.seek(t)} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "color" && html`<${ColorTab} clip=${colorClip} track=${sel?.track} projectId=${project.id} mainVideo=${main} aspect=${S.aspect} clips=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")]} lutList=${lutQ.data || []} reloadLuts=${() => lutQ.reload()} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mode=${colorMode} setMode=${setColorMode} draft=${pathDraft} setDraft=${setPathDraft} toast=${toast} mattes=${mattes} />`}
         ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} voice=${S.voice ? { ...S.voice, name: (project.sounds || {})[S.voice.soundId]?.name } : null} />`}
-        ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
+        ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} videos=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} />`}
         ${rtab === "style" && html`<div class="pb" style="padding-top:16px"><div class="col" style="gap:16px">
           <div class="col" style="gap:8px"><b class="t-label">Reference</b><p class="t-small muted">Attached for your AI to read. Nothing from it is applied to the edit.</p>
             <${ReferencePicker} id="edit-reference" value=${reference} onChange=${attach} /></div>

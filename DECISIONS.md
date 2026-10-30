@@ -336,6 +336,19 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A video as a card on a background | set_framing already shrank and placed V1; what was missing was the card look and what shows around it. set_card puts crop and rounded corners on the clip as one more mask (the mask system draws it identically in the render and the player), and the drop shadow and border as greyscale pictures at the output size in the framed place, made by one shared function (a PGM file for FFmpeg, a canvas in the player), filled with their colour. set_background is edit-wide: a colour or gradient (one picture made by the shared code, decoded once and repeated with FFmpeg's loop filter; the player uses the CSS gradient, which the shared picture follows exactly), a library video (looped from the edit's start), or the clip's own picture blurred (Gaussian, scaled up by three blur widths a side in both, so the soft edges each blur makes stay outside the frame). Rendered and compared with the player: 0.5-0.7 levels of 255 apart. The field is cardLook (text layers already have a card). |
 | Footage filmed sideways | The picture measurement samples 8 frames and looks for clear faces at each quarter turn. When faces are clear only when turned (in at least half the frames and twice as often as filmed), the footage is measured turned that way and get_footage, get_vision and create_project say "filmed sideways ... set_rotation {degrees: 90}". The editor offers "Turn it upright" (or "Keep as is"). Rendrr never turns it by itself. |
 
+## Premiere parity, phase 2b: video inside text (30 October, night)
+
+| Question | Decision |
+|---|---|
+| What it is | Two looks on a text layer. inside{videoId, from}: a library video plays inside the letters (Premiere's Track Matte Key). cutout: the letters are cut out of the layer's card, so the edit's picture shows through them. Same op (add_text, set_text), and a choice in the Text panel. Both can go behind the person. Shape wipes wait for the transitions phase. |
+| Field name | `inside`, not `fill`: clips already have a `fill` (a clip over the whole edit). |
+| How the render draws it | Each such layer from its own mask: an ASS file of the letters in white on black (or the card in white with the letters solid black) timed from the layer's start, drawn by libass on limited-range YUV, so the step to grey gives the alpha its whole 0-255 range (straight on grey it ran 16-235). The video (or the card's colour) takes the mask as alpha and is laid over the picture. A video in the letters keeps its card, stroke, shadow and box: drawn first from a second file with the letters left clear. |
+| Order | On each side of the person: its graphics, then these layers, then its other text layers (and in front, the captions). So such a layer is under plain text layers placed with it. |
+| Looping | A video shorter than the text loops. Read with a seek when it does not; when it loops, cut at `from` after the loop: with a seek, FFmpeg starts every loop from the seek point (measured: a 2 s video from 0.5 s looped every 1.5 s). |
+| A cut-out's fade | The card fades as the layer's animation says; the hole in it does not (a fading hole would let the card show inside the letters half way). |
+| In the editor | The layer's own block is laid out as before (its letters clear, so its stroke, shadow and box show); a canvas the size of the frame draws the letters where that block is, measured each frame (keyframes and animations carry over), then the video only inside them, or the card with them cut out. A video picked in the panel plays at once. Checked against the render frame by frame (`inside-match.mjs`). |
+| A missing video | Not in the library or not ready: plain letters, and the plan's line says so. |
+
 ## Premiere parity, phase 2a: behind the person (30 October, night)
 
 | Question | Decision |
@@ -344,7 +357,7 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Text layers | They are drawn by libass from one subtitle file with the captions. Text behind the person goes in a second file drawn before the person; captions always stay in front. |
 | Where it does not apply | Over b-roll and transitions (the person is not on screen as the footage shows them), and for a clip framed smaller, moved, keyframed, drawn as a card or reversed (the matte would not line up). The layer is simply in front there; the plan's line and the result say where. |
 | The matte | The same matte as remove_background (made per 10 s block, kept). It is made when the edit is saved for the clips under a layer behind the person (placed with the edit's words), and a render makes any still missing. |
-| Not in this part | Video inside text (track matte) comes next as phase 2b. |
+| Not in this part | Video inside text (track matte): phase 2b, below. |
 
 ## Worker crashes from graphic-heavy renders (30 October, evening)
 

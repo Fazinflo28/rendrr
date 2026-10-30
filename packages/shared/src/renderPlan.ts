@@ -11,7 +11,7 @@ import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
 import { audioSettings, type AudioMixSettings } from "./timeline";
-import { buildStyledAss, captionStyleOf, layoutCaptions, styleText, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
+import { buildStyledAss, captionStyleOf, isMatted, layoutCaptions, styleText, textMatteAss, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
 import { areaPicture, buildLut, matteBlocks, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
@@ -50,6 +50,14 @@ export type PlanInput = {
 export type ZoomOp = { start: number; end: number; scale: number; mode: "punch" | "push" | "through" };
 /** keys: keyframes in seconds from the overlay's start (a b-roll clip with keys is a picture-in-picture). */
 export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string; keys?: Key[]; behind?: boolean };
+/**
+ * Phase 2b: a text layer drawn from a mask, on its side of the person (behind: before the person is laid back), after
+ * that side's graphics and before its other text layers. mask: an ASS file drawn white on black from the layer's start
+ * (its letters, or its card with the letters cut out); decor: an ASS file drawn on the picture in edit time (the card,
+ * stroke, shadow, box round a video in the letters). inside: the library video in the letters (looped from `from`);
+ * cut: the card's colour (the picture under it shows through the letters).
+ */
+export type TextMatteOp = { clipId: string; start: number; end: number; behind: boolean; mask: string; decor: string | null; inside?: { videoId: string; from: number; seconds: number }; cut?: string };
 /**
  * Phase 2: graphics and text layers behind the person. windows: when the person is laid back over them (output
  * seconds; not where b-roll or a transition plays). parts: the matte each picture part reads (by its index in
@@ -147,6 +155,8 @@ export type RenderPlan = {
   /** Phase 2: the text layers behind the person, drawn before the person is laid back over them. */
   assBehind?: string | null;
   person?: PersonOp;
+  /** Phase 2b: text layers with a video inside their letters or cut out of their card, each drawn from its mask. */
+  textMattes?: TextMatteOp[];
   operations: string[];
 };
 
@@ -490,16 +500,25 @@ export function planRender(input: PlanInput): RenderPlan {
   const styledCaptions = layoutCaptions(sequenceCaptionGroups(input, view), captionStyle, width, height, total);
   const captions: CaptionEvent[] = styledCaptions.map((c) => ({ start: c.start, end: c.end, text: c.lines.map((l) => l.map((w) => w.text).join(" ")).join(" ") })); // lines: styledCaptions
   const texts: TextLayer[] = [];
+  const insideMissing: string[] = [];
   for (const c of tl.tracks.v3 as (V3Clip & Attached & { text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim })[]) {
     if (c.kind !== "text" || !c.text?.trim()) continue;
     const sp = placed(c);
     if (!sp) continue;
     const def = textPreset("plain");
-    texts.push({ clipId: c.id, start: Math.round(sp.start * 100) / 100, end: Math.round(sp.end * 100) / 100, lines: c.text.split("\n"), style: c.style ?? def.style, card: c.card ?? null, anim: c.anim ?? def.anim, ...(c.keys?.length ? { keys: c.keys } : {}), ...(c.behind ? { behind: true } : {}) });
+    // Phase 2b: a video inside the letters needs its length (a library video the render can read).
+    const insideLen = c.inside ? input.brollSeconds?.[c.inside.videoId] : undefined;
+    if (c.inside && !insideLen) insideMissing.push(c.id);
+    texts.push({ clipId: c.id, start: Math.round(sp.start * 100) / 100, end: Math.round(sp.end * 100) / 100, lines: c.text.split("\n"), style: c.style ?? def.style, card: c.card ?? null, anim: c.anim ?? def.anim, ...(c.keys?.length ? { keys: c.keys } : {}), ...(c.behind ? { behind: true } : {}),
+      ...(c.inside && insideLen ? { inside: { videoId: c.inside.videoId, from: c.inside.from ?? 0, seconds: insideLen } } : {}), ...(c.cutout && c.card ? { cutout: true } : {}) });
   }
   // Phase 2: text layers behind the person are drawn in a pass of their own, before the person is laid back over them.
-  const ass = buildStyledAss({ captions: styledCaptions, captionStyle, texts: texts.filter((t) => !t.behind), width, height });
-  const assBehind = texts.some((t) => t.behind) ? buildStyledAss({ captions: [], captionStyle, texts: texts.filter((t) => t.behind), width, height }) : null;
+  // Phase 2b: layers drawn from a mask are drawn one by one, before the other text layers of their side.
+  const plain = texts.filter((t) => !isMatted(t));
+  const ass = buildStyledAss({ captions: styledCaptions, captionStyle, texts: plain.filter((t) => !t.behind), width, height });
+  const assBehind = plain.some((t) => t.behind) ? buildStyledAss({ captions: [], captionStyle, texts: plain.filter((t) => t.behind), width, height }) : null;
+  const textMattes: TextMatteOp[] = texts.filter(isMatted).map((t) => ({ clipId: t.clipId, start: t.start, end: t.end, behind: !!t.behind, ...textMatteAss(t, width, height),
+    ...(t.inside ? { inside: t.inside } : { cut: t.card!.color }) }));
 
   const parts = view.picture.map((p) => ({ ...p, start: r3(p.start), end: r3(p.end) }));
 
@@ -599,6 +618,7 @@ export function planRender(input: PlanInput): RenderPlan {
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
+    ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
     ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
     ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr", background?.text),
@@ -618,6 +638,7 @@ export function planRender(input: PlanInput): RenderPlan {
     transitions, clipMotion,
     looks, lookFiles, under, hdr, ...(hdr && ass ? { ass: hdrAss(ass, hdr.transfer) } : {}),
     ...(assBehind ? { assBehind: hdr ? hdrAss(assBehind, hdr.transfer) : assBehind } : {}), ...(person ? { person } : {}),
+    ...(textMattes.length ? { textMattes: hdr ? textMattes.map((m) => (m.decor ? { ...m, decor: hdrAss(m.decor, hdr.transfer) } : m)) : textMattes } : {}),
     ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}),
   };
 }
@@ -776,6 +797,10 @@ export type PlanFiles = {
   assPath?: string;
   /** Phase 2: plan.assBehind written out. */
   assBehindPath?: string;
+  /** Phase 2b: each plan.textMattes entry's mask and decor written out, and the library video in its letters (by clip id). */
+  textMasks?: Record<string, string>;
+  textDecor?: Record<string, string>;
+  insides?: Record<string, string>;
   fontsDir?: string;
   broll?: Record<string, string>; // by clip id
   graphics?: Record<string, string>; // by clip id
@@ -1476,13 +1501,13 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     v = `vb${i}`;
   });
   // 5. Graphics: transparent WebM, decoded with libvpx to keep the alpha channel.
+  // HDR output: a graphic's colours as the same light at SDR white (16-bit RGB through the SDR-into-HDR LUT).
+  const toHdr = cc.hdrLut ? `,scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrap16le,lut3d=file=${q(cc.hdrLut)}:interp=trilinear,scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd,format=${cc.PFA}` : "";
   const drawGraphic = (gr: OverlayOp, i: number) => {
     const path = files.graphics?.[gr.clipId];
     if (!path) return;
     inputs.push("-threads", plan.graphics.length <= 3 ? "2" : "1", "-c:v", "libvpx-vp9", "-i", path);
     const gi = next();
-    // HDR output: the graphic's colours as the same light at SDR white (16-bit RGB through the SDR-into-HDR LUT).
-    const toHdr = cc.hdrLut ? `,scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrap16le,lut3d=file=${q(cc.hdrLut)}:interp=trilinear,scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd,format=${cc.PFA}` : "";
     const n = Math.max(1, Math.round((gr.end - gr.start) * FPS));
     // Phase 7: a file shorter than its clip (a custom graphic placed longer than its recording) holds its last frame.
     const hold = (files.graphicSeconds?.[gr.clipId] ?? Infinity) - gr.sourceStart < gr.end - gr.start - 0.5 / FPS;
@@ -1500,8 +1525,32 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     v = `vg${i}`;
   };
   const tagHdr = plan.hdr ? `setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${plan.hdr.transfer === "pq" ? "smpte2084" : "arib-std-b67"}:range=tv,` : "";
+  const fontsDir = files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : "";
+  // Phase 2b: a text layer drawn from its mask (white on black, from the layer's start): a library video in its letters
+  // (what is drawn round them first: card, stroke, shadow, box), or its card with the letters cut out of it.
+  const drawTextMatte = (m: TextMatteOp, k: number) => {
+    const mask = files.textMasks?.[m.clipId], video = m.inside ? files.insides?.[m.clipId] : null;
+    if (!mask || (m.inside && !video)) return;
+    const n = Math.max(1, Math.round((m.end - m.start) * FPS)), len = n6(n / FPS + 1);
+    const decor = m.decor ? files.textDecor?.[m.clipId] : null;
+    if (decor) { g.push(`[${v}]${tagHdr}ass=filename=${q(decor)}${fontsDir}[vtd${k}]`); v = `vtd${k}`; }
+    // Drawn on limited-range YUV (black 16, white 235), so the step to grey makes the alpha run the whole 0-255.
+    g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${len},format=yuv420p,ass=filename=${q(mask)}${fontsDir},format=gray,trim=end_frame=${n}[tm${k}]`);
+    if (m.inside) {
+      // From `from`, fitted to cover the frame. Shorter than the text: looped, and cut at `from` after the loop (a seek
+      // before it would start every loop there).
+      const from = m.inside.from % m.inside.seconds, loops = m.inside.seconds - from < n / FPS;
+      inputs.push(...(loops ? ["-stream_loop", "-1"] : ["-ss", n3(from)]), "-i", video!);
+      const ii = next();
+      g.push(`[${ii}:v]${loops && from > 0 ? `trim=start=${n3(from)},setpts=PTS-STARTPTS,` : ""}fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,trim=end_frame=${n},setpts=PTS-STARTPTS,format=yuva420p[tv${k}]`);
+    } else g.push(`color=c=${m.cut!.replace("#", "0x")}:s=${W}x${H}:r=${R}:d=${len},trim=end_frame=${n},format=yuva420p[tv${k}]`);
+    g.push(`[tv${k}][tm${k}]alphamerge${toHdr},setpts=PTS-STARTPTS+${n3(m.start)}/TB[tl${k}]`);
+    g.push(`[${v}][tl${k}]overlay=enable='between(t,${n6(m.start)},${n6(m.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vtm${k}]`);
+    v = `vtm${k}`;
+  };
   // Phase 2: behind the person: their graphics, their text layers, then the person laid back over them.
   plan.graphics.forEach((gr, i) => { if (gr.behind) drawGraphic(gr, i); });
+  plan.textMattes?.forEach((m, k) => { if (m.behind) drawTextMatte(m, k); });
   if (plan.assBehind && files.assBehindPath) {
     g.push(`[${v}]${tagHdr}ass=filename=${q(files.assBehindPath)}${files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : ""}[vtb]`);
     v = "vtb";
@@ -1512,6 +1561,7 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     v = "vpl";
   }
   plan.graphics.forEach((gr, i) => { if (!gr.behind) drawGraphic(gr, i); });
+  plan.textMattes?.forEach((m, k) => { if (!m.behind) drawTextMatte(m, k); });
   // 6. Captions on top of everything.
   if (plan.ass && files.assPath) {
     // HDR: the frame is tagged BT.2020 so libass turns the (already PQ/HLG) caption colours into YUV with that matrix.

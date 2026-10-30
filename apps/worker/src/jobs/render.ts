@@ -1,6 +1,6 @@
 import { deleteObject, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { allWords, asSequence, boxCover, faceOnScreenAt, isSequence, layoutTimeline, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { allWords, asSequence, boxCover, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, planRender, RenderPlanError, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
@@ -108,9 +108,8 @@ export async function renderJob(ctx: Ctx) {
     await send(i, 0.2);
     const style = snapshot.styleId ? await prisma.style.findUnique({ where: { id: snapshot.styleId } }) : null;
     const rules = style ? StyleRulesSchema.safeParse(style.rules) : null;
-    // b-roll videos, and the library video behind V1 (set_background videoId): both need their preview copy.
-    const bgVideoId = (snapshot.timeline as { background?: { videoId?: string } }).background?.videoId;
-    const brollIds = Array.from(new Set([...snapshot.timeline.tracks.v2.map((c) => (c as { videoId?: string }).videoId), bgVideoId].filter(Boolean) as string[]));
+    // b-roll videos, the library video behind V1 (set_background videoId) and videos inside text: their preview copies.
+    const brollIds = libraryVideoIds(snapshot.timeline);
     const brollVideos = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId: video.userId, proxyKey: { not: null } } }) : [];
     const graphicClips = (snapshot.timeline.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId);
     const files: PlanFiles = { source: src, output: join(ctx.dir, "out.mp4"), assPath: join(ctx.dir, "captions.ass"), fontsDir: FONTS_DIR, broll: {}, graphics: {}, graphicSeconds: {}, audio: {}, videos: {}, under: {}, looks: {} };
@@ -226,6 +225,15 @@ export async function renderJob(ctx: Ctx) {
     }
     if (plan.ass) await writeFile(files.assPath!, plan.ass);
     if (plan.assBehind) { files.assBehindPath = join(ctx.dir, "behind.ass"); await writeFile(files.assBehindPath, plan.assBehind); }
+    // Phase 2b: text drawn from a mask: its mask and what is drawn round it, and the library video in its letters.
+    for (const m of plan.textMattes ?? []) {
+      const mp = join(ctx.dir, `text-${m.clipId}-mask.ass`);
+      await writeFile(mp, m.mask);
+      (files.textMasks ??= {})[m.clipId] = mp;
+      if (m.decor) { const dp = join(ctx.dir, `text-${m.clipId}-decor.ass`); await writeFile(dp, m.decor); (files.textDecor ??= {})[m.clipId] = dp; }
+      const bv = m.inside && brollVideos.find((x) => x.id === m.inside!.videoId);
+      if (bv && bv.proxyKey) { const p = join(ctx.dir, `inside-${bv.id}.mp4`); await cachedCopy(bv.proxyKey, p); (files.insides ??= {})[m.clipId] = p; }
+    }
     await send(i, 1);
     i++;
 

@@ -1,7 +1,7 @@
 import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, signGet } from "@rendrr/core";
 import { deleteEditCommentFiles } from "./commentMedia";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, libraryVideoIds, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { otherVideoIds, playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
@@ -194,9 +194,8 @@ export async function projectFull(userId: string, id: string) {
  * Templates are drawn live from their HTML.
  */
 async function playerMedia(userId: string, tl: Snapshot["timeline"]) {
-  // b-roll, and the library video behind V1 (set_background videoId).
-  const bgVideo = (tl as { background?: { videoId?: string } }).background?.videoId;
-  const brollIds = Array.from(new Set([...tl.tracks.v2.map((c) => (c as { videoId?: string }).videoId), bgVideo].filter(Boolean) as string[]));
+  // b-roll, the library video behind V1 (set_background videoId) and videos inside text (Phase 2b).
+  const brollIds = libraryVideoIds(tl);
   const vids = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId, proxyKey: { not: null } } }) : [];
   // The user's own audio files the edit uses (own music, the voice): the plan needs their keys and lengths, the
   // player their links.

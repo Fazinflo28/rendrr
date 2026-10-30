@@ -82,6 +82,9 @@ export const TEXT_ANIMS = ["none", "fade", "pop", "slide"] as const;
 export type TextAnim = (typeof TEXT_ANIMS)[number];
 export const CardSchema = z.object({ color: hex, opacity: unit });
 export type Card = z.infer<typeof CardSchema>;
+/** Phase 2b: a library video played inside a text layer's letters, from `from` seconds into it (looped when shorter). */
+export const TextInsideSchema = z.object({ videoId: z.string().max(80), from: z.number().min(0).max(4 * 3600).default(0) });
+export type TextInside = z.infer<typeof TextInsideSchema>;
 /** A partial style: what set_caption_style, add_text and set_text take. Nested parts replace as a whole; null removes. */
 export const CaptionStylePatchSchema = CaptionStyleSchema.partial();
 export const TextStylePatchSchema = TextStyleSchema.partial();
@@ -228,8 +231,12 @@ export function activeWord(c: StyledCaption, t: number): [number, number] | null
 }
 
 /** A text layer as the render draws it (edit seconds). */
-/** keys (Phase 5): keyframes in seconds from the layer's start; they move, scale, turn and fade the text (not its card). */
-export type TextLayer = { clipId: string; start: number; end: number; lines: string[]; style: TextStyle; card: Card | null; anim: TextAnim; keys?: Key[]; behind?: boolean };
+/** keys (Phase 5): keyframes in seconds from the layer's start; they move, scale, turn and fade the text (not its card).
+ *  inside (Phase 2b): a library video plays inside the letters (seconds: its length); cutout: the letters are cut out of
+ *  the card, so the picture under it shows through them. */
+export type TextLayer = { clipId: string; start: number; end: number; lines: string[]; style: TextStyle; card: Card | null; anim: TextAnim; keys?: Key[]; behind?: boolean; inside?: { videoId: string; from: number; seconds: number }; cutout?: boolean };
+/** Phase 2b: drawn on its own from a mask (a video inside the letters, or the letters cut out of the card). */
+export const isMatted = (t: Pick<TextLayer, "inside" | "cutout" | "card">) => !!t.inside || (!!t.cutout && !!t.card);
 /** Seconds an animation takes in and out. */
 export const ANIM_IN: Record<TextAnim, number> = { none: 0, fade: 0.25, pop: 0.15, slide: 0.25 };
 export const ANIM_OUT: Record<TextAnim, number> = { none: 0, fade: 0.25, pop: 0.25, slide: 0.25 };
@@ -302,32 +309,40 @@ export function assColor(hexColor: string, opacity = 1): string {
 }
 const bgr = (hexColor: string) => "&H" + assColor(hexColor).slice(4); // &HBBGGRR (no alpha), for \1c tags
 const n1 = (x: number) => String(Math.round(x * 10) / 10);
-function styleLine(name: string, d: Drawn, alignment: number): string {
+function styleLine(name: string, d: Drawn, alignment: number, fill = 1): string {
   const boxed = !!d.box;
   const outlineColour = boxed ? assColor(d.box!.color, d.box!.opacity) : assColor(d.stroke?.color ?? "#000000");
   const back = d.shadow ? assColor(d.shadow.color, d.shadow.opacity) : "&H00000000";
   const outline = boxed ? d.box!.pad : d.stroke?.px ?? 0;
-  return `Style: ${name},${d.face.family},${n1(d.size)},${assColor(d.color)},${assColor(d.color)},${outlineColour},${back},0,0,0,0,100,100,0,0,${boxed ? 3 : 1},${n1(outline)},0,${alignment},0,0,0,1`;
+  return `Style: ${name},${d.face.family},${n1(d.size)},${assColor(d.color, fill)},${assColor(d.color, fill)},${outlineColour},${back},0,0,0,0,100,100,0,0,${boxed ? 3 : 1},${n1(outline)},0,${alignment},0,0,0,1`;
 }
 const shadowTags = (d: Drawn) => (d.shadow ? `\\xshad${n1(d.shadow.x)}\\yshad${n1(d.shadow.y)}` : "");
 
 /**
  * One ASS file for the captions and the text layers. Text layers are drawn in V3 order under the captions; a card is a
  * full-frame rectangle under its text. WrapStyle 2: lines break only where this file says.
+ * draw (Phase 2b), for text layers drawn from a mask: "hollow" draws a layer's card, stroke, shadow and box with its
+ * letters left clear (a video goes in them); "mask" draws the letters alone in white (where the video shows); "cut"
+ * draws the card in white with the letters in black, solid (where the card stays, the letters cut out of it).
  */
-export function buildStyledAss(o: { captions: StyledCaption[]; captionStyle: CaptionStyle | null; texts: TextLayer[]; width: number; height: number }): string | null {
+export function buildStyledAss(o: { captions: StyledCaption[]; captionStyle: CaptionStyle | null; texts: TextLayer[]; width: number; height: number; draw?: "hollow" | "mask" | "cut" }): string | null {
   const { width: W, height: H } = o;
   if (!o.captions.length && !o.texts.length) return null;
   const styles: string[] = [], events: string[] = [];
   const ev = (layer: number, a: number, b: number, style: string, text: string) => events.push(`Dialogue: ${layer},${assTime(a)},${assTime(b)},${style},,0,0,0,,${text}`);
+  const masked = o.draw === "mask" || o.draw === "cut";
   o.texts.forEach((t, i) => {
-    const d = drawnOf(t.style, W, H);
+    const d0 = drawnOf(t.style, W, H);
+    const d: Drawn = masked ? { ...d0, color: o.draw === "mask" ? "#FFFFFF" : "#000000", stroke: null, shadow: null, box: null } : d0;
     const an = t.style.align === "left" ? 4 : t.style.align === "right" ? 6 : 5;
-    styles.push(styleLine(`T${i}`, d, an));
+    styles.push(styleLine(`T${i}`, d, an, o.draw === "hollow" ? 0 : 1));
     const X = n1(t.style.x * W), Y = n1(t.style.y * H);
     const fin = Math.round((t.anim === "pop" ? 0.1 : ANIM_IN[t.anim]) * 1000), fout = Math.round(ANIM_OUT[t.anim] * 1000);
-    const fad = t.anim === "none" ? "" : `\\fad(${fin},${fout})`;
-    if (t.card) ev(i * 2, t.start, t.end, "Card", `{\\an7\\pos(0,0)\\p1\\bord0\\shad0\\1c${bgr(t.card.color)}&\\1a&H${Math.round((1 - t.card.opacity) * 255 + 1e-9).toString(16).padStart(2, "0").toUpperCase()}&${fad}}m 0 0 l ${W} 0 ${W} ${H} 0 ${H}{\\p0}`);
+    const fad0 = t.anim === "none" ? "" : `\\fad(${fin},${fout})`;
+    // Cut out: the card fades, the hole in it is always whole.
+    const fad = o.draw === "cut" ? "" : fad0;
+    const card = o.draw === "mask" ? null : o.draw === "cut" && t.card ? { ...t.card, color: "#FFFFFF" } : t.card;
+    if (card) ev(i * 2, t.start, t.end, "Card", `{\\an7\\pos(0,0)\\p1\\bord0\\shad0\\1c${bgr(card.color)}&\\1a&H${Math.round((1 - card.opacity) * 255 + 1e-9).toString(16).padStart(2, "0").toUpperCase()}&${fad0}}m 0 0 l ${W} 0 ${W} ${H} 0 ${H}{\\p0}`);
     const body = t.lines.map((l) => esc(caseOf(l, t.style.case))).join("\\N");
     if (t.keys?.length) {
       // Keyframed (Phase 5): one event per piece of the curve table, each a straight line from its start to its end
@@ -336,7 +351,7 @@ export function buildStyledAss(o: { captions: StyledCaption[]; captionStyle: Cap
       for (let k = 0; k + 1 < cuts.length; k++) {
         const u0 = cuts[k], u1 = cuts[k + 1], ms = Math.round((u1 - u0) * 1000);
         const a = textLookAt(t, u0, W, H), b = textLookAt(t, u1, W, H);
-        const al = (o: number) => Math.round((1 - Math.min(1, Math.max(0, o))) * 255);
+        const al = (x: number) => (o.draw === "cut" ? 0 : Math.round((1 - Math.min(1, Math.max(0, x))) * 255));
         ev(i * 2 + 1, t.start + u0, t.start + u1, `T${i}`, `{\\move(${n1(a.x)},${n1(a.y)},${n1(b.x)},${n1(b.y)},0,${ms})\\fscx${n1(a.scale * 100)}\\fscy${n1(a.scale * 100)}\\frz${n1(-a.rotation)}\\fade(${al(a.opacity)},${al(b.opacity)},${al(b.opacity)},0,${ms},${ms},${ms})\\t(0,${ms},\\fscx${n1(b.scale * 100)}\\fscy${n1(b.scale * 100)}\\frz${n1(-b.rotation)})${shadowTags(d)}}${body}`);
       }
       return;
@@ -371,4 +386,17 @@ export function buildStyledAss(o: { captions: StyledCaption[]; captionStyle: Cap
     "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ...events, "",
   ].join("\n");
+}
+
+/**
+ * Phase 2b: what a text layer drawn from a mask is drawn with. mask: white where the video shows (its letters) or where
+ * the card stays (around the letters cut out of it), on black, timed from the layer's start. decor: for a video inside
+ * the letters, what is drawn round them (the card, stroke, shadow, box), timed in the edit (null when there is none).
+ */
+export function textMatteAss(t: TextLayer, W: number, H: number): { mask: string; decor: string | null } {
+  const from0 = { ...t, start: 0, end: Math.round((t.end - t.start) * 100) / 100 };
+  const mask = buildStyledAss({ captions: [], captionStyle: null, texts: [from0], width: W, height: H, draw: t.inside ? "mask" : "cut" })!;
+  const s = t.style;
+  const around = !!t.card || !!s.box || !!(s.stroke && s.stroke.width > 0) || !!(s.shadow && s.shadow.opacity > 0);
+  return { mask, decor: t.inside && around ? buildStyledAss({ captions: [], captionStyle: null, texts: [t], width: W, height: H, draw: "hollow" }) : null };
 }

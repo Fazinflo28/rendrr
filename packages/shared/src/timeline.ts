@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { catalogMusic, catalogSfx } from "./catalog";
-import { CaptionStyleSchema, CardSchema, TEXT_ANIMS, TextStyleSchema } from "./captions";
+import { CaptionStyleSchema, CardSchema, TEXT_ANIMS, TextInsideSchema, TextStyleSchema } from "./captions";
 import { ASPECTS, CAPTION_LOOKS } from "./constants";
 import { KeysSchema, RampPointSchema, TransitionSchema } from "./motion";
 import { ChromaKeySchema, EffectSchema, GradeSchema, MaskSchema, SkinSchema, SubjectSchema } from "./look";
@@ -64,6 +64,10 @@ export const V3ClipSchema = ClipSchema.extend({
   keys,
   /** Text layers and graphics: drawn behind the person (their AI matte laid over it), like a title behind the speaker. */
   behind: z.boolean().optional(),
+  /** Text layers (Phase 2b): a library video plays inside the letters (a track matte), or the letters are cut out of
+   *  the card so the picture under it shows through them. */
+  inside: TextInsideSchema.optional(),
+  cutout: z.boolean().optional(),
 });
 
 export const A2ClipSchema = ClipSchema.extend({
@@ -225,6 +229,14 @@ export type A2Clip = z.infer<typeof A2ClipSchema>;
 export type A3Clip = z.infer<typeof A3ClipSchema>;
 export type Tracks = z.infer<typeof TracksSchema>;
 export type Timeline = z.infer<typeof TimelineSchema>;
+/** The library videos an edit plays besides V1: b-roll, the video behind V1, and videos inside text (Phase 2b). */
+export function libraryVideoIds(tl: Timeline): string[] {
+  return Array.from(new Set([
+    ...tl.tracks.v2.map((c) => (c as { videoId?: string }).videoId),
+    tl.background?.videoId,
+    ...tl.tracks.v3.map((c) => (c as { inside?: { videoId?: string } }).inside?.videoId),
+  ].filter((x): x is string => !!x)));
+}
 export type TrackName = keyof Tracks;
 export const TRACK_NAMES: TrackName[] = ["v1", "v2", "v3", "a1", "a2", "a3"];
 export const TrackNameSchema = z.enum(["v1", "v2", "v3", "a1", "a2", "a3"]);

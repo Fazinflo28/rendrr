@@ -8,7 +8,7 @@ import {
   type AudioSettings, type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
 } from "./timeline";
 import { autoMusicFades, CLEANUP_KNOBS, cleanupText } from "./audio";
-import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema, presetStyle, styleText, TEXT_ANIMS, TEXT_PRESETS, textPreset, TextStylePatchSchema, TextStyleSchema, type Card, type TextAnim, type TextStyle } from "./captions";
+import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema, presetStyle, styleText, TEXT_ANIMS, TEXT_PRESETS, TextInsideSchema, textPreset, TextStylePatchSchema, TextStyleSchema, type Card, type TextAnim, type TextInside, type TextStyle } from "./captions";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
 import { MARK_KINDS, type Mark, type MarkEdit } from "./timeline";
 import { editToFootage, RENDRR_MARK } from "./marks";
@@ -123,8 +123,9 @@ const EDIT_OPS = [
   z.object({ op: z.literal("set_caption_style"), look: CaptionLookSchema.optional(), ...CaptionStylePatchSchema.shape }),
   // A text layer on V3 (title card, callout): text with \n line breaks, a preset to start from, any style field,
   // a full-frame card behind it, an animation. x, y: the point it hangs on.
-  z.object({ op: z.literal("add_text"), text: z.string().min(1).max(1000), start: t, end: t, edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), label: z.string().max(200).optional(), behind: z.boolean().optional(), ...TextStylePatchSchema.shape }),
-  z.object({ op: z.literal("set_text"), clipId, text: z.string().min(1).max(1000).optional(), start: t.optional(), end: t.optional(), edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), behind: z.boolean().optional(), ...TextStylePatchSchema.shape }),
+  // Phase 2b: inside plays a library video inside the letters; cutout cuts the letters out of the card (the picture shows).
+  z.object({ op: z.literal("add_text"), text: z.string().min(1).max(1000), start: t, end: t, edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), label: z.string().max(200).optional(), behind: z.boolean().optional(), inside: TextInsideSchema.nullable().optional(), cutout: z.boolean().optional(), ...TextStylePatchSchema.shape }),
+  z.object({ op: z.literal("set_text"), clipId, text: z.string().min(1).max(1000).optional(), start: t.optional(), end: t.optional(), edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), behind: z.boolean().optional(), inside: TextInsideSchema.nullable().optional(), cutout: z.boolean().optional(), ...TextStylePatchSchema.shape }),
   // ---- sound ----
   // The edit's sound: dialogue cleanup preset, loudness target (LUFS, null = off), true-peak ceiling (dBTP), how many
   // dB music goes down under speech (0 = off), fades of the whole mix. Fields left out keep their value.
@@ -616,15 +617,18 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (e0 - s0 < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
       const p = textPreset(op.preset ?? "plain");
       const style = TextStyleSchema.parse({ ...p.style, ...pickStyle(op) });
-      const c = attachAt(view(), { id: rid("t"), start: 0, end: 0, label: op.label || op.text.split("\n")[0].slice(0, 60), kind: "text" as const, text: op.text, style, card: op.card ?? null, anim: op.anim ?? p.anim, ...(op.behind ? { behind: true } : {}) } as Clip, s0, e0);
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added text "${op.text.split("\n")[0].slice(0, 40)}" at ${op.edit ? "edit " : ""}${fmtClock(op.start)} (clip ${c.id}; ${styleText(style)})${op.behind ? `; ${BEHIND_NOTE}` : ""}` };
+      const ins = textInside(op, {}, op.card ?? null, ctx);
+      const c = attachAt(view(), { id: rid("t"), start: 0, end: 0, label: op.label || op.text.split("\n")[0].slice(0, 60), kind: "text" as const, text: op.text, style, card: ins.card, anim: op.anim ?? p.anim, ...(op.behind ? { behind: true } : {}), ...ins.fields } as Clip, s0, e0);
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added text "${op.text.split("\n")[0].slice(0, 40)}" at ${op.edit ? "edit " : ""}${fmtClock(op.start)} (clip ${c.id}; ${styleText(style)})${ins.said}${op.behind ? `; ${BEHIND_NOTE}` : ""}` };
     }
     case "set_text": {
       const c = findClip(tl, "v3", op.clipId) as Clip & { kind?: string; text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim };
       if (c.kind !== "text") throw new EditError(`Clip "${op.clipId}" on V3 is not a text layer.`);
       const p = op.preset ? textPreset(op.preset) : null;
       const style = TextStyleSchema.parse({ ...(p ? p.style : c.style ?? textPreset("plain").style), ...pickStyle(op) });
-      let x: Clip = { ...c, style, ...(op.text ? { text: op.text, label: op.text.split("\n")[0].slice(0, 60) } : {}), ...(op.card !== undefined ? { card: op.card } : {}), ...(op.anim || p ? { anim: op.anim ?? p!.anim } : {}) } as Clip;
+      const ins = textInside(op, c as { inside?: TextInside; cutout?: boolean }, op.card !== undefined ? op.card : c.card ?? null, ctx);
+      const { inside: _i, cutout: _c, ...rest } = c as Clip & { inside?: TextInside; cutout?: boolean };
+      let x: Clip = { ...rest, style, ...(op.text ? { text: op.text, label: op.text.split("\n")[0].slice(0, 60) } : {}), card: ins.card, ...(op.anim || p ? { anim: op.anim ?? p!.anim } : {}), ...ins.fields } as Clip;
       if (op.behind === true) (x as { behind?: boolean }).behind = true;
       else if (op.behind === false) delete (x as { behind?: boolean }).behind;
       if (op.start != null || op.end != null) {
@@ -633,7 +637,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         if (e0 - s0 < 0.05) throw new EditError("A text layer must end after it starts, inside the edit.");
         x = attachAt(view(), x, s0, e0);
       }
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", (tl.tracks.v3 as Clip[]).map((y) => (y.id === c.id ? x : y))) }, summary: `changed text "${String((x as { text?: string }).text ?? "").split("\n")[0].slice(0, 40)}"${op.behind === true ? `; ${BEHIND_NOTE}` : op.behind === false ? "; in front of the person again" : ""}` };
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", (tl.tracks.v3 as Clip[]).map((y) => (y.id === c.id ? x : y))) }, summary: `changed text "${String((x as { text?: string }).text ?? "").split("\n")[0].slice(0, 40)}"${ins.said}${op.behind === true ? `; ${BEHIND_NOTE}` : op.behind === false ? "; in front of the person again" : ""}` };
     }
     case "edit_caption": {
       const line = ctx.transcript.find((l) => l.id === op.lineId);
@@ -1293,6 +1297,36 @@ const keyText = (keys: Key[]) => {
   return `${keys.length} ${keys.length === 1 ? "keyframe" : "keyframes"} (${props.join(", ") || "no values"}) at ${keys.map((k) => k.t.toFixed(2)).join(", ")}s`;
 };
 
+/**
+ * Phase 2b: what shows inside a text layer's letters after an op (add_text, set_text): its own colour, a library video
+ * (inside) or the picture under its card (cutout: a card is needed; black when it has none). The fields to set on the
+ * clip, its card, and what the result says.
+ */
+function textInside(op: { inside?: TextInside | null; cutout?: boolean; card?: Card | null }, cur: { inside?: TextInside; cutout?: boolean }, card: Card | null, ctx: EditContext): { fields: { inside?: TextInside; cutout?: true }; card: Card | null; said: string } {
+  if (op.inside && op.cutout) throw new EditError("A text layer takes inside (a video inside its letters) or cutout (its letters cut out of its card), not both.");
+  if (op.cutout && op.card === null) throw new EditError("cutout cuts the letters out of the text's card: keep a card (card {color, opacity}).");
+  // from 0 unless sent (an op applied without parsing has no defaults).
+  let inside = op.inside === undefined ? cur.inside : op.inside ? { videoId: op.inside.videoId, from: op.inside.from ?? 0 } : undefined;
+  let cutout = op.cutout === undefined ? !!cur.cutout : op.cutout;
+  if (op.inside) cutout = false;
+  if (op.cutout) inside = undefined;
+  let said = "";
+  if (op.inside) {
+    const v = ctx.getVideo?.(op.inside.videoId);
+    if (!v) throw new EditError("That video is not in your library (inside takes a library video's id: list_footage).");
+    if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
+    if (inside!.from >= v.seconds) throw new EditError(`"${v.name}" is only ${v.seconds.toFixed(1)}s long: inside.from must be under that.`);
+    said = `; ${v.name} plays inside the letters${inside!.from ? ` from ${+inside!.from.toFixed(3)}s` : ""} (looped when shorter than the text)`;
+  } else if (op.inside === null && cur.inside) said = "; no video inside the letters";
+  if (cutout && !card) {
+    if (op.card === null) { cutout = false; said += "; no card, so no longer cut out"; }
+    else card = { color: "#000000", opacity: 1 };
+  }
+  if (op.cutout) said = `; cut out of its card (${card!.color}): the picture under it shows through the letters`;
+  else if (op.cutout === false && cur.cutout) said += "; no longer cut out";
+  return { fields: { ...(inside ? { inside } : {}), ...(cutout ? { cutout: true as const } : {}) }, card, said };
+}
+
 /** The style fields of an op (add_text, set_text), leaving out the ones not sent. */
 function pickStyle(op: Record<string, unknown>): Partial<TextStyle> {
   const keys = Object.keys(TextStyleSchema.shape);
@@ -1454,7 +1488,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
       const auto = k === "a2" ? autoMusicFades(c.end - c.start) : { fadeIn: 0, fadeOut: 0 };
       const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
       const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
-      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
+      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.inside ? ` video ${(c.inside as TextInside).videoId}@${(c.inside as TextInside).from} inside the letters` : ""}${c.cutout ? " cut out of the card" : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
       const lk = k === "v2" ? lookTags(c as Clip & ClipLook) : "";
       const on = (c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "") + (Array.isArray(c.keys) && c.keys.length ? ` keys ${(c.keys as Key[]).map((k) => k.t).join(",")}s` : "") + (c.under ? " under V1" : "") + (lk ? " " + lk : "");
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;

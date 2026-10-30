@@ -220,7 +220,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
 
   // Text layers (Phase 4): where they sit at the preview size; one that does not fit or covers the captions is flagged.
   const { width: W, height: H } = aspectSize(snap.aspect, 540);
-  const texts = (tl.tracks.v3 as (Clip & { kind?: string; text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim })[])
+  const texts = (tl.tracks.v3 as (Clip & { kind?: string; text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim; inside?: { videoId: string }; cutout?: boolean })[])
     .filter((c) => c.kind === "text" && c.text?.trim() && c.end - c.start >= 0.05)
     .map((c) => ({ c, lines: c.text!.split("\n"), style: c.style ?? textPreset("plain").style, card: c.card ?? null, anim: c.anim ?? "fade" }));
   const capStyle: CaptionStyle = captionStyleOf(tl, snap.aspect);
@@ -311,7 +311,7 @@ export function editCheck(snap: Snapshot, tr: Transcript, opts: { pauseOver?: nu
     ...(heardLine ? [heardLine] : []),
     `Fillers left: ${fillers.length ? list(fillers.map((x) => `"${x.w.text.replace(/[^\w'-]/g, "")}" ${fmtT(x.at)}`)) : "none"}`,
     `Captions: ${tl.captionsOn ? `on (${tl.captionStyle ? "own style: " + styleText(tl.captionStyle) : tl.captionLook}), ${coverPct}% of spoken words` : "off"}`,
-    `Text: ${texts.length ? `${texts.length} ${texts.length === 1 ? "layer" : "layers"}: ` + list(texts.map((x) => `${fmtT(x.c.start)}-${fmtT(x.c.end)} ${JSON.stringify(x.lines.join(" / ").slice(0, 40))}${x.card ? " (card)" : ""}${x.anim !== "none" ? ` ${x.anim}` : ""}`), 6) : "none"}`,
+    `Text: ${texts.length ? `${texts.length} ${texts.length === 1 ? "layer" : "layers"}: ` + list(texts.map((x) => `${fmtT(x.c.start)}-${fmtT(x.c.end)} ${JSON.stringify(x.lines.join(" / ").slice(0, 40))}${x.card ? x.c.cutout ? " (cut out of its card)" : " (card)" : ""}${x.c.inside ? ` (video ${x.c.inside.videoId} inside)` : ""}${x.anim !== "none" ? ` ${x.anim}` : ""}`), 6) : "none"}`,
     // Only when the edit uses them (short outputs).
     ...(offSpeed.length ? [`Speed: ${list(offSpeed.map((c) => `${c.id} ${speedText(c)}`), 6)}`] : []),
     ...(trans.some((x) => x.end > x.start) ? [`Transitions: ${list(trans.filter((x) => x.end > x.start).map((x) => `${fmtT(x.at)} ${x.type}${x.dir ? " " + x.dir : ""} ${(x.end - x.start).toFixed(2)}s`), 8)}`] : []),
