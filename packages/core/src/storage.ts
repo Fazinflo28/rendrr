@@ -26,6 +26,10 @@ export function s3(): S3Client {
     // A stalled connection fails (and is retried by the SDK) instead of hanging a job: 10 s to connect,
     // 2 minutes without any data.
     requestHandler: { connectionTimeout: 10_000, requestTimeout: 120_000 },
+    // The bucket answers "Please reduce your request rate" (SlowDown) when many files go up at once (a graphic's
+    // variants, a render's frames): retried more times, and the client slows itself down while it is told to.
+    maxAttempts: 5,
+    retryMode: "adaptive",
   });
   return client;
 }
@@ -44,16 +48,25 @@ export async function signPut(key: string, contentType: string, seconds = 3600):
 export async function putObject(key: string, body: Buffer | string | Readable, contentType: string, contentLength?: number) {
   await s3().send(new PutObjectCommand({ Bucket: Bucket(), Key: key, Body: body, ContentType: contentType, ...(contentLength != null ? { ContentLength: contentLength } : {}) }));
 }
+/** The bucket asked us to slow down (SlowDown, 503, 429): worth sending again after a pause. */
+export const throttled = (e: unknown) => {
+  const x = e as { name?: string; code?: string; message?: string; $metadata?: { httpStatusCode?: number } };
+  return /SlowDown|reduce your request rate|TooManyRequests|ServiceUnavailable|Throttl/i.test(`${x?.name} ${x?.code} ${x?.message}`) || [429, 503].includes(x?.$metadata?.httpStatusCode ?? 0);
+};
+
 export async function uploadFile(key: string, path: string, contentType: string): Promise<number> {
   const { size } = await stat(path);
   if (size > 4.5e9) throw new Error("file too large for single upload");
-  // A dropped connection (a kept-alive socket the server had already closed after a pause) cannot be retried by the
-  // SDK with a stream; a file can be read again, so it is sent again (twice at most).
+  // The SDK cannot send a stream twice, so its own retries do not cover a file: a dropped connection (a kept-alive
+  // socket the server had already closed after a pause) or the bucket asking us to slow down is sent again from the
+  // file here, after a pause that grows (1, 2, 4, 8 s, with some spread so files sent together do not come back together).
   for (let attempt = 0; ; attempt++) {
     try { await putObject(key, createReadStream(path), contentType, size); return size; }
     catch (e) {
       const why = `${(e as Error).message} ${(e as { code?: string }).code ?? ""}`;
-      if (attempt >= 2 || !/socket hang up|ECONNRESET|EPIPE|non-retryable streaming/i.test(why)) throw e;
+      const again = /socket hang up|ECONNRESET|EPIPE|non-retryable streaming/i.test(why) || throttled(e);
+      if (attempt >= 4 || !again) throw e;
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt * (0.75 + Math.random() * 0.5)));
     }
   }
 }

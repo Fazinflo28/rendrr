@@ -33,7 +33,7 @@ export function filterThreads(graph?: string): number {
 }
 
 /** FFmpeg failed because the container could not start another thread. */
-export const outOfThreads = (e: unknown) => /Resource temporarily unavailable/.test(String((e as { stderr?: string })?.stderr ?? ""));
+export const outOfThreads = (e: unknown) => /Resource temporarily unavailable|thread creation failed|EAGAIN/.test(`${String((e as { stderr?: string })?.stderr ?? "")} ${(e as Error)?.message ?? ""}`);
 
 /** onLine: each line the command writes to stderr (a Python script's "PROGRESS n"). */
 export type RunOpts = { signal?: AbortSignal; onProgress?: (seconds: number) => void; onLine?: (line: string) => void; cwd?: string; stdin?: "ignore" };
@@ -170,7 +170,7 @@ export async function graphicCover(input: string, from: number, shown: number, s
   // Decoding goes as far as the last moment: a limit that grows with it (a stuck read gives no measurement).
   const limit = AbortSignal.timeout(30_000 + Math.round((from + shown) * 100));
   try {
-    const raw = await runOut("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-c:v", "libvpx-vp9", "-i", input,
+    const raw = await runOut("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-threads", "2", "-c:v", "libvpx-vp9", "-i", input,
       // Past the file's last picture it holds that picture, as the render does.
       "-vf", `fps=30,tpad=stop_mode=clone:stop=-1,select='${frames.map((n) => `eq(n,${n})`).join("+")}',alphaextract,scale=${S}:${S}:flags=area,format=gray`, "-frames:v", String(frames.length), "-fps_mode", "passthrough", "-f", "rawvideo", "pipe:1"], signal ? AbortSignal.any([signal, limit]) : limit);
     const got = Math.floor(raw.length / (S * S));

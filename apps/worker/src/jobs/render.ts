@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { COVER_SIZE, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, windowBudget } from "../lib/ffmpeg";
+import { COVER_SIZE, cpuBudget, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, windowBudget } from "../lib/ffmpeg";
 import { cachedAsset, cachedCopy } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
@@ -235,7 +235,10 @@ export async function renderJob(ctx: Ctx) {
       mixLoudness = await measureMix(plan, files, sourceInfo, { dir: ctx.dir, signal, onProgress: measuring ? (f) => sendThrottled(i, f) : undefined });
     }
     if (measuring) { await send(i, 1); i++; }
-    const argsFor = (ft: number) => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || undefined, filterThreads: ft, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets });
+    // Threads: the encoder as many as the container's CPUs (x264 left alone takes 1.5 times the host's 48), the decoders
+    // twice that between them; once more after running out, one filter thread and one per decoder.
+    const cpus = cpuBudget();
+    const argsFor = (ft: number, decode = cpus * 2) => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets });
     // The graph decides how many filter threads it may have (it is the same text whatever that number).
     const { args, filterGraph } = argsFor(filterThreads(argsFor(4).filterGraph));
     const graphPath = join(ctx.dir, "graph.txt");
@@ -258,8 +261,8 @@ export async function renderJob(ctx: Ctx) {
       } catch (e) {
         // Out of threads (a container limit): once more with one filter thread, which needs far fewer.
         if (signal.aborted || !outOfThreads(e)) throw e;
-        console.error("[render] ffmpeg ran out of threads; trying again with one filter thread");
-        await run("ffmpeg", withGraph(argsFor(1).args), { signal, onProgress });
+        console.error("[render] ffmpeg ran out of threads; trying again with one filter thread and one per decoder");
+        await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress });
       }
     } catch (e) {
       if (signal.aborted) throw e;

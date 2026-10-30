@@ -806,11 +806,34 @@ export type FfmpegOpts = {
    * CPU count on a many-core host starts thousands of threads and FFmpeg fails with EAGAIN at the container's limit.
    */
   filterThreads?: number;
+  /**
+   * Decoder threads for all the inputs together, each its share (at least 1). Left alone, each decoder starts as many
+   * as the host has CPUs (up to 16): a render with 15 graphics and a few footage windows started hundreds and ran the
+   * container out of threads. Graphics always decode with 1 or 2 (their pictures are simple).
+   */
+  inputThreads?: number;
   /** The loudness gain the measuring pass found (dB). Needed when the plan normalizes loudness. */
   loudnessGainDb?: number;
   /** Audio only, up to the mix, through ebur128: the measuring pass (its stderr has the loudness summary). */
   measure?: boolean;
 };
+
+/**
+ * Each input that sets no decoder threads of its own gets its share of `total` (at least 1, at most 16), as
+ * "-threads n" just before its "-i". Without a total the inputs are left as they are.
+ */
+export function capInputThreads(inputs: string[], total?: number): string[] {
+  if (!total) return inputs;
+  const groups: string[][] = [];
+  let cur: string[] = [];
+  for (let i = 0; i < inputs.length; i++) {
+    cur.push(inputs[i]);
+    if (inputs[i] === "-i") { cur.push(inputs[++i]); groups.push(cur); cur = []; }
+  }
+  const open = groups.filter((g) => !g.includes("-threads")).length;
+  const share = String(Math.max(1, Math.min(16, Math.floor(total / Math.max(1, open)))));
+  return [...groups.flatMap((g) => (g.includes("-threads") ? g : [...g.slice(0, -2), "-threads", share, ...g.slice(-2)])), ...cur];
+}
 
 export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: FfmpegOpts = {}): { args: string[]; filterGraph: string } {
   if (plan.model === "A") return ffmpegArgsA(plan, files, source, opts);
@@ -1388,7 +1411,7 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
   plan.graphics.forEach((gr, i) => {
     const path = files.graphics?.[gr.clipId];
     if (!path) return;
-    inputs.push("-c:v", "libvpx-vp9", "-i", path);
+    inputs.push("-threads", plan.graphics.length <= 3 ? "2" : "1", "-c:v", "libvpx-vp9", "-i", path);
     const gi = next();
     // HDR output: the graphic's colours as the same light at SDR white (16-bit RGB through the SDR-into-HDR LUT).
     const toHdr = cc.hdrLut ? `,scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrap16le,lut3d=file=${q(cc.hdrLut)}:interp=trilinear,scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd,format=${cc.PFA}` : "";
@@ -1480,7 +1503,7 @@ function mixAudio(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
 
 function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: FfmpegOpts): string[] {
   if (opts.measure) {
-    return ["-hide_banner", "-nostdin", "-y", "-nostats", ...inputs, "-filter_complex_script", "__FILTER_SCRIPT__", "-map", "[aout]", "-t", n3(plan.outputSeconds), "-progress", "pipe:1", "-f", "null", "-"];
+    return ["-hide_banner", "-nostdin", "-y", "-nostats", ...capInputThreads(inputs, opts.inputThreads), "-filter_complex_script", "__FILTER_SCRIPT__", "-map", "[aout]", "-t", n3(plan.outputSeconds), "-progress", "pipe:1", "-f", "null", "-"];
   }
   const preview = plan.kind === "preview";
   const trc = plan.hdr ? (plan.hdr.transfer === "pq" ? "smpte2084" : "arib-std-b67") : "";
@@ -1495,7 +1518,7 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
       : ["-c:v", "libx264", "-preset", preview ? "ultrafast" : "veryfast", "-crf", preview ? "28" : "20", "-pix_fmt", "yuv420p", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
   return [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
-    ...inputs,
+    ...capInputThreads(inputs, opts.inputThreads),
     ...(opts.filterThreads ? ["-filter_complex_threads", String(opts.filterThreads)] : []),
     "-filter_complex_script", "__FILTER_SCRIPT__",
     "-map", "[vout]", "-map", "[aout]",

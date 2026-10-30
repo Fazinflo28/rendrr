@@ -247,7 +247,7 @@ export function ffmpegArgsA(plan: RenderPlan, files: PlanFiles, source: SourceIn
   plan.graphics.forEach((gr, i) => {
     const path = files.graphics?.[gr.clipId];
     if (!path) return;
-    inputs.push("-c:v", "libvpx-vp9", "-i", path);
+    inputs.push("-threads", "1", "-c:v", "libvpx-vp9", "-i", path); // decoder threads capped (see FfmpegOpts.inputThreads)
     const gi = idx++;
     g.push(`[${gi}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n3(gr.start)},${n3(gr.end)})':eof_action=pass[vg${i}]`);
