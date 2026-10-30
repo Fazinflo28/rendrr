@@ -26,6 +26,7 @@ import { addLibraryItem, getLibraryItem, listLibrary, searchIcons, withIcons } f
 import { analyzeReference, styleFileLines, styleFileOut } from "./services/styleFiles";
 import { openProjects } from "./services/claudeApp";
 import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, latestFinal } from "./services/driveSave";
+import { soundFromSource, soundLine, soundOut, soundsText, soundUploadLink } from "./services/sounds";
 import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
@@ -279,6 +280,19 @@ async function waitFor<T>(fn: () => Promise<T | null>, ms: number, every = 1000)
 }
 
 /** A finished render as text: a preview comes with the check of the edit; nothing to download into the chat. */
+/** The edit's voice file (set_voice) and the user's own audio files, for get_project. */
+async function soundLines(userId: string, tl: Timeline): Promise<string[]> {
+  const out: string[] = [];
+  const vo = (tl as { voice?: { soundId: string; start: number; editSeconds?: number } | null }).voice;
+  const ss = await prisma.sound.findMany({ where: { userId }, orderBy: { createdAt: "desc" }, take: 10, select: { id: true, name: true, seconds: true, status: true, error: true } });
+  if (vo) {
+    const s = ss.find((x) => x.id === vo.soundId) ?? (await prisma.sound.findFirst({ where: { id: vo.soundId, userId } }));
+    out.push(s ? `Voice: "${s.name}" (${s.seconds.toFixed(3)}s) plays in place of every clip's own sound, from ${vo.start}s of the edit${vo.editSeconds != null ? ` (set when the edit was ${vo.editSeconds}s)` : ""}. set_voice null brings the clips' sound back.` : "Voice: its audio file is gone; the clips' own sound plays. set_voice null clears it.");
+  }
+  if (ss.length) out.push(`Your audio files (set_voice / add_music soundId): ${ss.map(soundLine).join("; ")}`);
+  return out;
+}
+
 /** The Drive folder to save into, or what to tell the user instead (not connected, not found, refused). */
 async function driveTargetOrText(userId: string, folder: string | undefined, create: boolean | undefined) {
   try { return await driveTarget(userId, folder, create); } catch (e) {
@@ -472,6 +486,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       ...(await placementLine(c.userId, p.timeline as unknown as Timeline)),
       marksLine(v, p.timeline as unknown as Timeline),
       ...(luts.length ? [`Your LUTs (set_grade lut id): ${luts.map((l) => `${l.id} "${l.name}"`).join(", ")}`] : []),
+      ...(await soundLines(c.userId, p.timeline as unknown as Timeline)),
       ...(await binLine(c.userId, p.timeline as unknown as Timeline)),
       preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet."].join("\n")) };
   },
@@ -861,6 +876,15 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: `${r.replaced ? "Replaced" : "Added"} font "${r.family}" ${r.weight}${r.style === "italic" ? " italic" : ""} (${r.format}, ${Math.round(r.size / 1024)} KB).${r.installed ? ` ${r.family} is also installed: graphics that name it now draw with this file.` : ""} Use it in create_graphic code by name: ${css}, or ctx.font = "${r.style === "italic" ? "italic " : ""}${r.weight} 48px '${r.family}'".`, data: { fontId: r.id } };
   },
 
+  async add_audio(c, i) {
+    if (i.upload) {
+      const u = await soundUploadLink(c.userId, i.name);
+      return { text: `Upload link for one audio file, for 30 minutes: ${u.url}\nSend the file from your code workspace (up to 500 MB):\n  curl -sS -T "<file>" "${u.url}"${i.name ? "" : "\n(add ?name=<a name> to the link to name it; else it is called Audio)"}\nThe reply is JSON with the file's id and length once it is ready (a few seconds; a long file up to a minute). Then apply_edits set_voice{soundId} or add_music{soundId}. ${c.ai === "chatgpt" ? "ChatGPT's code sandbox has no internet, so it cannot send the file: use url (a share link) or driveFileId instead." : `If the workspace cannot reach ${u.host}, the user allows that host in their AI's settings (Claude: Settings > Capabilities, code execution, allowed domains), or use url (a share link) or driveFileId instead.`}`, data: { uploadUrl: u.url } };
+    }
+    if (!i.url && !i.driveFileId) return { text: `Your audio files (newest first): ${await soundsText(c.userId)}. add_audio upload: true, url or driveFileId brings one in.` };
+    const s = await soundFromSource(c.userId, { url: i.url, driveFileId: i.driveFileId, name: i.name });
+    return { text: soundOut(s), data: { soundId: s.id, seconds: s.seconds, status: s.status } };
+  },
   async add_lut(c, i) {
     const l = AddLutInput.safeParse(i);
     if (!l.success) throw new AppError(l.error.issues[0].message, 400, "bad-lut");

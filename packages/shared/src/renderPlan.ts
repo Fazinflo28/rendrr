@@ -41,6 +41,9 @@ export type PlanInput = {
   hdrFootage?: Record<string, HdrTransfer>;
   /** Cuts on frames as model A rendered them; only to check a conversion from model A (sequenceView cutsOnFrames). */
   cutsOnFrames?: boolean;
+  /** The user's own audio files the edit uses (add_audio), by id: own music on A2 and the voice (set_voice). One that
+   *  is missing is left out (and said so). */
+  sounds?: Record<string, { key: string; seconds: number; name: string }>;
 };
 
 /** through: the zoom transition (in to the cut, out after it). */
@@ -53,7 +56,8 @@ export type Seg = { videoId: string; srcIn: number; srcOut: number; rate: number
 /** A transition on the cut at `at`, over [start, end). a / b: what each side shows over the whole window (dissolve,
  *  slide, whip; dips and zoom draw on the picture itself). asked: the duration the edit asked for. */
 export type TransitionOp = { clipId: string; type: Exclude<TransitionType, "cut">; dir?: Dir; at: number; start: number; end: number; asked: number; a: Seg[]; b: Seg[]; note?: string };
-export type AudioOp = { clipId: string; start: number; end: number; gainDb: number; assetKey: string; kind: "music" | "sfx"; fadeIn?: number; fadeOut?: number };
+/** voice: the user's own file in place of every clip's sound (set_voice); soundId: a user's file (not the library's). */
+export type AudioOp = { clipId: string; start: number; end: number; gainDb: number; assetKey: string; kind: "music" | "sfx" | "voice"; fadeIn?: number; fadeOut?: number; soundId?: string };
 /** The sequence's sound settings and the numbers the mix is made from (edit seconds). */
 export type AudioMix = AudioMixSettings & {
   /** Where people speak: music ducks under these. */
@@ -421,15 +425,19 @@ export function planRender(input: PlanInput): RenderPlan {
     if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: from, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}) });
   }
   const audio: AudioOp[] = [];
-  // Keys come from the catalog only (see catalogMusic), whatever the stored clip says.
+  // Keys come from the catalog only (see catalogMusic), whatever the stored clip says; the user's own files from the
+  // sounds the server found for this user (input.sounds).
+  const soundNotes: string[] = [];
   for (const c of tl.tracks.a2 as (A2Clip & Attached)[]) {
-    const track = catalogMusic(c);
-    if (!track) continue;
+    const own = c.soundId ? input.sounds?.[c.soundId] : undefined;
+    if (c.soundId && !own) { soundNotes.push(`Music ${c.id} left out: its audio file is not in Rendrr`); continue; }
+    const track = own ? null : catalogMusic(c);
+    if (!own && !track) continue;
     const sp = placed(c);
     if (!sp) continue;
     // A music clip without fades of its own fades in and out by itself (as before Phase 3).
     const x = c as A2Clip & { fadeIn?: number; fadeOut?: number }, auto = autoMusicFades(sp.end - sp.start);
-    audio.push({ clipId: c.id, ...sp, gainDb: c.gainDb ?? -18, assetKey: track.key, kind: "music", fadeIn: r3(x.fadeIn ?? auto.fadeIn), fadeOut: r3(x.fadeOut ?? auto.fadeOut) });
+    audio.push({ clipId: c.id, ...sp, gainDb: c.gainDb ?? -18, assetKey: own ? own.key : track!.key, kind: "music", fadeIn: r3(x.fadeIn ?? auto.fadeIn), fadeOut: r3(x.fadeOut ?? auto.fadeOut), ...(own ? { soundId: c.soundId } : {}) });
   }
   for (const c of tl.tracks.a3 as (A3Clip & Attached)[]) {
     const sfx = catalogSfx(c);
@@ -439,6 +447,11 @@ export function planRender(input: PlanInput): RenderPlan {
     const x = c as A3Clip & { fadeIn?: number; fadeOut?: number };
     audio.push({ clipId: c.id, start, end: r3(Math.min(total, start + Math.max(0.1, Number(c.length ?? c.end - c.start)))), gainDb: c.gainDb ?? -6, assetKey: sfx.key, kind: "sfx", fadeIn: x.fadeIn ?? 0, fadeOut: x.fadeOut ?? 0 });
   }
+  // The edit's whole sound replaced by the user's own file (set_voice): it plays from its start in place of every
+  // clip's sound, at its own level (not ducked), to the edit's end at most.
+  const vo = tl.voice ?? null, voFile = vo ? input.sounds?.[vo.soundId] : undefined;
+  if (vo && !voFile) soundNotes.push("Voice left out: its audio file is not in Rendrr (the clips' own sound plays)");
+  if (vo && voFile && vo.start < total) audio.push({ clipId: "voice", start: r3(vo.start), end: r3(Math.min(total, vo.start + voFile.seconds)), gainDb: vo.gainDb ?? 0, assetKey: voFile.key, kind: "voice", fadeIn: 0, fadeOut: 0, soundId: vo.soundId });
   // The sound: settings, where music ducks (speech), and dialogue clips with their own gain or fades.
   const settings = audioSettings(tl);
   const cutSet = new Set(tl.cut);
@@ -540,6 +553,8 @@ export function planRender(input: PlanInput): RenderPlan {
     ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr"),
     ...(Object.keys(cards).length || v1.some((c) => hasCard((c as { cardLook?: CardLook }).cardLook)) ? [`Cards: ${(v1 as (SeqClip & { cardLook?: CardLook })[]).filter((c) => hasCard(c.cardLook)).slice(0, 4).map((c) => `${c.id} ${cardLookText(c.cardLook!)}`).join("; ")}`] : []),
     ...(background ? [`Behind V1: ${background.text}`] : bgIn?.videoId ? ["Behind V1: the background video is not in the library or not ready: black instead"] : []),
+    ...(audio.some((a) => a.kind === "voice") ? [`Voice: "${voFile!.name}" plays in place of every clip's own sound, from ${r3(vo!.start)}s (${r3(voFile!.seconds)}s file, edit ${r3(total)}s${Math.abs(vo!.start + voFile!.seconds - total) > 0.05 ? `: ${vo!.start + voFile!.seconds > total ? "the file runs past the edit's end" : "the file ends before the edit"}` : ""}${vo!.editSeconds != null && Math.abs(vo!.editSeconds - total) > 0.05 ? `; the edit was ${r3(vo!.editSeconds)}s when the voice was set: a cut since then is not in the file, so it is out of sync after it` : ""})`] : []),
+    ...soundNotes,
     `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${cleanupText(settings) !== "none" ? `, cleanup ${cleanupText(settings)}` : ""}${settings.declick ? `, ${Math.round(settings.declick * 1000)} ms fade at every cut` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
     settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : hdr ? `Encode final: HEVC 10-bit HDR (${hdr.transfer === "pq" ? "PQ" : "HLG"}, BT.2020), ${width}x${height}, ${rateText(out.fps)} fps` : `Encode final: ${codec === "hevc" ? "HEVC" : "H.264"}, ${width}x${height}, ${rateText(out.fps)} fps`,
@@ -1139,6 +1154,9 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     const name = `atempo@at${u[0].start.toFixed(3).replace(".", "_")}`;
     return `atrim=start=${n6(a)}:end=${n6(u[u.length - 1].srcOut)},asetpts=PTS-STARTPTS,asetnsamples=n=480${cmds ? `,asendcmd=c='${cmds}'` : ""},${name}=tempo=${rateOf(u[0])},apad,atrim=end_sample=${n},asetpts=PTS-STARTPTS${declick(n / 48000)}`;
   };
+  // The user's own file in place of every clip's sound (set_voice): no footage sound is read at all.
+  const voice = plan.audio.find((a) => a.kind === "voice" && files.audio?.[a.clipId]);
+  if (voice) units.length = 0;
   // Each sound unit from the window that reads its footage, in edit order.
   units.forEach((u, i) => {
     if (!live(u[0])) return;
@@ -1149,7 +1167,12 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
   units.forEach((u, i) => { if (!live(u[0])) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${editSamples(u)},asetpts=PTS-STARTPTS[a${i}]`); });
   // The sound ends where the edit does, to the millisecond; the picture on its last frame: the sound is padded or
   // cut to the picture's length (under half a frame).
-  g.push(`${units.map((_, i) => `[a${i}]`).join("")}concat=n=${units.length}:v=0:a=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
+  if (voice) {
+    inputs.push("-i", files.audio!.voice);
+    const vi = idx++;
+    const d = Math.max(0.001, voice.end - voice.start);
+    g.push(`[${vi}:a]atrim=0:${n6(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${voice.gainDb}dB,adelay=delays=${Math.round(voice.start * 1000)}:all=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
+  } else g.push(`${units.map((_, i) => `[a${i}]`).join("")}concat=n=${units.length}:v=0:a=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
 
   if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null });
   mixAudio(plan, files, g, inputs, () => idx++, opts);

@@ -198,12 +198,18 @@ async function playerMedia(userId: string, tl: Snapshot["timeline"]) {
   const bgVideo = (tl as { background?: { videoId?: string } }).background?.videoId;
   const brollIds = Array.from(new Set([...tl.tracks.v2.map((c) => (c as { videoId?: string }).videoId), bgVideo].filter(Boolean) as string[]));
   const vids = brollIds.length ? await prisma.video.findMany({ where: { id: { in: brollIds }, userId, proxyKey: { not: null } } }) : [];
+  // The user's own audio files the edit uses (own music, the voice): the plan needs their keys and lengths, the
+  // player their links.
+  const soundIds = Array.from(new Set([...tl.tracks.a2.map((c) => (c as { soundId?: string }).soundId), (tl as { voice?: { soundId?: string } | null }).voice?.soundId].filter((x): x is string => !!x)));
+  const own = soundIds.length ? await prisma.sound.findMany({ where: { id: { in: soundIds }, userId, status: "ready" } }) : [];
   return {
+    sounds: Object.fromEntries(own.map((s) => [s.id, { key: s.key, seconds: s.seconds, name: s.name }])),
     brollMedia: Object.fromEntries(await Promise.all(vids.map(async (v) => [v.id, { url: await signGet(v.proxyKey!, 6 * 3600), seconds: v.seconds }] as const))),
     graphicClipMedia: Object.fromEntries(await Promise.all((await graphicPlacements(userId, tl)).filter((x) => "key" in x).map(async (x) => [x.clipId, { url: await signGet((x as { key: string }).key, 6 * 3600), width: x.width, height: x.height, seconds: x.seconds }] as const))),
     audioMedia: Object.fromEntries(await Promise.all(Array.from(new Set([
       ...tl.tracks.a2.map((c) => catalogMusic(c as { trackId?: string; assetKey?: string })?.key),
       ...tl.tracks.a3.map((c) => catalogSfx(c as { sfxId?: string; assetKey?: string })?.key),
+      ...own.map((s) => s.key),
     ].filter((k): k is string => !!k))).map(async (k) => [k, await signGet(k, 6 * 3600)] as const))),
   };
 }

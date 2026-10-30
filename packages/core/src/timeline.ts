@@ -38,6 +38,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
   const videos = await tx.video.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
   const graphics = await tx.graphic.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] }, select: { id: true, name: true, durationSec: true, status: true, kind: true, paramsSchema: true } });
   const lutRows = await tx.lut.findMany({ where: { userId }, select: { id: true, name: true } });
+  const soundRows = await tx.sound.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
   const onV1 = Array.from(new Set([...((timeline as Timeline | undefined)?.tracks?.v1 ?? []).map((c) => (c as { sourceVideoId?: string }).sourceVideoId), ...alsoIds].filter((v): v is string => !!v && v !== video.id)));
   const others = onV1.length ? await tx.video.findMany({ where: { id: { in: onV1 }, userId }, include: { analysis: true } }) : [];
   let markIds: Set<string> | null = null;
@@ -57,6 +58,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
       return { id: g.id, name: g.name, durationSec: g.durationSec, ...(custom ? { custom, params: graphicDefaults(g.paramsSchema) } : {}) };
     },
     getLut: (id) => lutRows.find((l) => l.id === id),
+    getSound: (id) => { const s = soundRows.find((x) => x.id === id); return s ? { id: s.id, name: s.name, seconds: s.seconds, ready: s.status === "ready" } : undefined; },
     lutData: (id) => luts[id],
     // Rendrr's marks on the edit's videos, worked out only when an op names one.
     rendrrMarkIds: () => (markIds ??= new Set([video, ...others].flatMap((v) => footageMarks(footageInputOf(v.id, v.analysis, v.seconds)).map((m) => m.id)))),

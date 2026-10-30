@@ -110,7 +110,11 @@ export const PREFIX = {
   fonts: "fonts/",
   tests: "tests/", // test_graphic clips and frames, swept after a day
   canvas: "canvas/", // the blank canvas of an edit made from scratch (no footage)
+  sounds: "sounds/", // the user's own audio files (add_audio): a voice made better outside Rendrr, their own music
 } as const;
+/** The user's own audio files: the longest kept, and the biggest file taken. */
+export const SOUND_MAX_SECONDS = 4 * 3600;
+export const SOUND_MAX_BYTES = 500 * 1024 * 1024;
 /** An edit from scratch: its blank canvas (a solid colour, silent) lasts up to an hour of edit, and twice the length asked
  *  for (at least a minute more) so the edit can grow with trim_clip. */
 export const CANVAS_MAX_SECONDS = 3600;

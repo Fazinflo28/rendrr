@@ -181,7 +181,10 @@ export function audioAt(plan: RenderPlan, t: number): { dialogue: number; music:
   const mix = plan.audioMix;
   const T = plan.outputSeconds;
   const mixFade = mix ? fadeFactor(t, 0, T + 1e-9, mix.fadeIn, mix.fadeOut > 0 ? mix.fadeOut : 0) : 1;
-  const dialogue = (mix ? dialogueGain(mix.dialogue, t) : 1) * mixFade;
+  // The user's own voice file in place of the clips' sound (set_voice): the footage is silent all through; the file
+  // plays like a sound effect (once, at its own level, not ducked).
+  const voiced = plan.audio.some((a) => a.kind === "voice");
+  const dialogue = voiced ? 0 : (mix ? dialogueGain(mix.dialogue, t) : 1) * mixFade;
   const music: { clipId: string; assetKey: string; src: number; gain: number }[] = [];
   const sfx: { clipId: string; assetKey: string; src: number; gain: number }[] = [];
   for (const a of plan.audio) {

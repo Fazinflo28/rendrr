@@ -43,6 +43,7 @@ model User {
   luts        Lut[]
   fonts       Font[]
   styleFiles  StyleFile[]
+  sounds      Sound[]
 }
 
 // More logins that open the same Rendrr account: for example the Google account someone used for the AI connector
@@ -511,6 +512,22 @@ model StyleFile {
   data      Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+/// The user's own audio files (add_audio): a voice made better outside Rendrr, their own music. Kept as AAC 48 kHz.
+model Sound {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  key       String   @default("") // sounds/<userId>/<id>.m4a once made
+  status    String   @default("processing") // processing | ready | failed
+  error     String?
+  seconds   Float    @default(0)
+  sizeBytes BigInt   @default(0)
+  createdAt DateTime @default(now())
 
   @@index([userId, createdAt])
 }

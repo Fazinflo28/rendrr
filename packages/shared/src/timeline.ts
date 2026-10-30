@@ -67,6 +67,8 @@ export const V3ClipSchema = ClipSchema.extend({
 export const A2ClipSchema = ClipSchema.extend({
   assetKey: z.string().max(400).optional(),
   trackId: z.string().max(80).optional(),
+  /** The user's own audio file (add_audio) instead of a library track. */
+  soundId: z.string().max(80).optional(),
   gainDb: z.number().min(-60).max(12).optional(),
 });
 
@@ -205,6 +207,13 @@ export const TimelineSchema = z.object({
   /** The project bin: library videos kept with this edit to use (the editor's Media panel), besides the ones it
    *  already uses. Ids, in the order added. */
   media: z.array(z.string().min(1).max(80)).max(200).optional(),
+  /**
+   * The edit's whole sound replaced by the user's own file (add_audio; set_voice): a voice made better outside Rendrr
+   * (Adobe Podcast Enhance, a mix) from this edit's exported sound. It plays from `start` (edit seconds) in place of
+   * every clip's own sound; editSeconds: the edit's length when it was set (a later cut makes them differ: said in the
+   * checks).
+   */
+  voice: z.object({ soundId: z.string().min(1).max(80), start: time.default(0), gainDb: z.number().min(-30).max(12).optional(), editSeconds: z.number().min(0).optional() }).nullable().optional(),
 });
 
 export type Clip = z.infer<typeof ClipSchema>;

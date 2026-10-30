@@ -144,7 +144,11 @@ export async function renderJob(ctx: Ctx) {
     for (const l of lutIds.length ? await prisma.lut.findMany({ where: { id: { in: lutIds }, userId: video.userId } }) : []) {
       try { luts[l.id] = parseCube(await getText(l.key)); } catch (e) { console.error("[render] LUT skipped:", l.id, (e as Error).message.slice(0, 200)); }
     }
-    const planBase = { kind, snapshot, transcript, source: sourceInfo, videoId: video.id, sources, transcripts, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])), luts, hdrFootage };
+    // The user's own audio files the edit uses (own music, the voice): only theirs, only ready ones.
+    const soundIds = Array.from(new Set([...(snapshot.timeline.tracks.a2 as { soundId?: string }[]).map((c) => c.soundId), (snapshot.timeline as { voice?: { soundId?: string } | null }).voice?.soundId].filter((x): x is string => !!x)));
+    const soundRows = soundIds.length ? await prisma.sound.findMany({ where: { id: { in: soundIds }, userId: video.userId, status: "ready" } }) : [];
+    const sounds = Object.fromEntries(soundRows.map((s) => [s.id, { key: s.key, seconds: s.seconds, name: s.name }]));
+    const planBase = { kind, snapshot, transcript, source: sourceInfo, videoId: video.id, sources, transcripts, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])), luts, hdrFootage, sounds };
 
     // A first plan tells us the output size, so graphics can be drawn at the right resolution.
     const first = planRender(planBase);
@@ -185,6 +189,15 @@ export async function renderJob(ctx: Ctx) {
       files.looks![name] = p;
     }
     for (const a of plan.audio) {
+      // The user's own file: the one found for this user above (its key from the database, not the edit).
+      if (a.soundId) {
+        const own = soundRows.find((s) => s.id === a.soundId);
+        if (!own) throw new JobError("This edit uses an audio file that is not in your Rendrr. Remove it and try again.", "bad-audio", false);
+        const p = join(ctx.dir, `sound-${own.id}.m4a`);
+        await cachedCopy(own.key, p);
+        files.audio![a.clipId] = p;
+        continue;
+      }
       // Built-in music and sound effects only (the plan takes keys from the catalog; this is a second lock).
       if (!a.assetKey.startsWith(PREFIX.assets)) throw new JobError("This edit uses a sound that is not in the library. Remove it and try again.", "bad-audio", false);
       files.audio![a.clipId] = await cachedAsset(a.assetKey);

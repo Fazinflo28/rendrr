@@ -60,7 +60,8 @@ const EDIT_OPS = [
   // look: back to that look's preset style. styleId: the captions of that style (its full caption style if it has one).
   z.object({ op: z.literal("set_captions"), on: z.boolean(), look: CaptionLookSchema.optional(), styleId: z.string().max(80).optional() }),
   z.object({ op: z.literal("edit_caption"), lineId: z.string().max(40), text: z.string().max(2000) }),
-  z.object({ op: z.literal("add_music"), trackId: z.string().max(80), gainDb: z.number().min(-40).max(6).optional(), start: t.optional(), end: t.optional(), edit }),
+  z.object({ op: z.literal("add_music"), trackId: z.string().max(80).optional(), soundId: z.string().max(80).optional(), gainDb: z.number().min(-40).max(6).optional(), start: t.optional(), end: t.optional(), edit }),
+  z.object({ op: z.literal("set_voice"), soundId: z.string().max(80).nullable(), start: t.optional(), gainDb: z.number().min(-30).max(12).optional() }),
   // from: seconds into a custom graphic where this placement starts (one recording placed many times). params: a
   // template's fields, or values for a custom graphic's window.params (each new set is recorded once, then cached).
   z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), from: z.number().min(0).max(4 * 3600).optional(), label: z.string().max(200).optional(), edit }),
@@ -207,6 +208,8 @@ export type EditContext = {
   /** The user's imported LUTs (Phase 6): their names, and their numbers where an op needs them (match_color). */
   getLut?: (id: string) => { id: string; name: string } | undefined;
   lutData?: (id: string) => Lut | undefined;
+  /** The user's own audio files (add_audio), for add_music soundId and set_voice. */
+  getSound?: (id: string) => { id: string; name: string; seconds: number; ready: boolean } | undefined;
   /** The ids of Rendrr's own marks on the videos of this edit (for update_mark and delete_mark); missing: not checked. */
   rendrrMarkIds?: () => Set<string>;
 };
@@ -614,15 +617,40 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, timeline: { ...tl, captionText: { ...tl.captionText, [op.lineId]: op.text } } }, summary: `edited caption at ${fmtClock(line.start)}` };
     }
     case "add_music": {
-      const track = findMusic(op.trackId);
-      if (!track) throw new EditError(`No music track or mood called "${op.trackId}". Moods: ${Array.from(new Set(MUSIC_TRACKS.map((m) => m.mood))).join(", ")}.`);
-      const base = { id: rid("m"), start: 0, end: 0, label: track.name, trackId: track.id, assetKey: track.key, gainDb: op.gainDb ?? -18 };
+      // The user's own file (add_audio), or a library track or mood.
+      let base: Record<string, unknown> & { id: string; label: string; start: number; end: number };
+      let track: { name: string } | undefined;
+      if (op.soundId) {
+        if (op.trackId) throw new EditError("add_music takes trackId (a library track or mood) or soundId (your own file from add_audio), not both.");
+        const s = ctx.getSound?.(op.soundId);
+        if (!s) throw new EditError(`There is no audio file "${op.soundId}" of yours. add_audio brings one in.`);
+        if (!s.ready) throw new EditError(`"${s.name}" is still being prepared. Try again in a moment.`);
+        track = { name: s.name };
+        base = { id: rid("m"), start: 0, end: 0, label: s.name, soundId: s.id, gainDb: op.gainDb ?? -18 };
+      } else {
+        if (!op.trackId) throw new EditError("add_music needs trackId (a library track or mood) or soundId (your own file from add_audio).");
+        const t = findMusic(op.trackId);
+        if (!t) throw new EditError(`No music track or mood called "${op.trackId}". Moods: ${Array.from(new Set(MUSIC_TRACKS.map((m) => m.mood))).join(", ")}.`);
+        track = t;
+        base = { id: rid("m"), start: 0, end: 0, label: t.name, trackId: t.id, assetKey: t.key, gainDb: op.gainDb ?? -18 };
+      }
       // A bed under the whole edit replaces the old one; a ranged clip is added next to what is there.
       if (op.start == null && op.end == null) return { snap: { ...snap, timeline: withTracks(tl, "a2", [{ ...base, end: r2(view().total), fill: true } as Clip]) }, summary: `added music: ${track.name} (clip ${base.id})` };
       const s = op.start == null ? 0 : toEdit(op.start, op.edit), e = op.end == null ? view().total : toEdit(op.end, op.edit);
       if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
       const keep = (tl.tracks.a2 as Attached[]).filter((c) => { const p = placeOf(view(), c); return p.e <= s || p.s >= e; });
       return { snap: { ...snap, timeline: withTracks(tl, "a2", [...keep, attachAt(view(), base as Clip, s, e)]) }, summary: `added music: ${track.name} (clip ${base.id})` };
+    }
+    case "set_voice": {
+      if (op.soundId === null) { const { voice: _v, ...rest } = tl; return { snap: { ...snap, timeline: rest as Timeline }, summary: "the edit plays its clips' own sound again" }; }
+      const s = ctx.getSound?.(op.soundId);
+      if (!s) throw new EditError(`There is no audio file "${op.soundId}" of yours. add_audio brings one in.`);
+      if (!s.ready) throw new EditError(`"${s.name}" is still being prepared. Try again in a moment.`);
+      const total = view().total, start = rT(Math.max(0, op.start ?? 0));
+      const voice = { soundId: s.id, start, ...(op.gainDb != null ? { gainDb: op.gainDb } : {}), editSeconds: rT(total) };
+      const off = rT(start + s.seconds - total);
+      const fit = Math.abs(off) <= 0.05 ? "it lines up with the edit's end" : off > 0 ? `it runs ${at2(off)}s past the edit's end (that part is not heard)` : `it ends ${at2(-off)}s before the edit does (silence after it)`;
+      return { snap: { ...snap, timeline: { ...tl, voice } }, summary: `the edit's sound is now "${s.name}" (${at2(s.seconds)}s, from ${at2(start)}s of the edit, ${at2(total)}s long): ${fit}. Every clip's own sound is off; later cuts are not in the file, so make it last` };
     }
     case "add_graphic": {
       const g = ctx.getGraphic?.(op.graphicId);

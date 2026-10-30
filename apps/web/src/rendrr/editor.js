@@ -494,7 +494,7 @@ const CLEANUP_NAME = Object.fromEntries(VOICE_PRESETS.map((v) => [v.id, v.name])
 const LOUDNESS = [[-14, "-14 LUFS (online)"], [-16, "-16 LUFS (podcast)"], [-23, "-23 LUFS (broadcast)"]];
 const dB = (x) => (x > 0 ? "+" : "") + (Math.round(x * 10) / 10) + " dB";
 // The Audio tab: the whole edit's sound (set_audio) and the selected clip's level and fades (set_clip_audio).
-function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp }) {
+function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp, voice }) {
   const loud = a.loudness == null ? "off" : String(a.loudness);
   const loudOpts = LOUDNESS.some(([v]) => v === a.loudness) || a.loudness == null ? LOUDNESS : [...LOUDNESS, [a.loudness, a.loudness + " LUFS"]];
   const v1 = track === "v1" || track === "a1";
@@ -506,6 +506,7 @@ function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp }) {
   const clipOp = (k) => (x) => ({ op: "set_clip_audio", track: v1 ? "v1" : track, clipId: clip.id, [k]: x });
   const sl = { H, liveOp };
   return html`<div class="pb" id="audio-panel" style="padding-top:16px"><div class="col" style="gap:16px">
+    ${voice && html`<div class="card flat col" id="voice-file" style="gap:8px;padding:12px"><b class="t-label">Your voice file</b><p class="t-small muted">${voice.name ? `"${voice.name}"` : "Your audio file"} plays in place of every clip's own sound${voice.start ? ` from ${voice.start}s` : ""}. Cuts made after it was set are not in the file.</p><div class="row"><${Btn} kind="secondary" size="sm" id="voice-off" onClick=${() => doOp({ op: "set_voice", soundId: null })}>Use the clips' sound<//></div></div>`}
     <div class="col" style="gap:10px">
       <b class="t-label">Whole edit</b>
       <div class="col" style="gap:6px" id="voice-presets"><span class="t-small">Voice preset <span class="muted">(Essential Sound)</span></span>
@@ -586,12 +587,12 @@ function EditorInner({ project, reload, ai, keep }) {
   const footDur = project.timeline.duration;
   // The edit is a sequence. A project stored before Phase 2 is shown converted (the server stores it so at the next save).
   const tl = useMemo(() => asSequence(project.timeline, words, project.videoId, project.video?.seconds || footDur), [project, words]);
-  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, captionStyle: tl.captionStyle, audio: tl.audio, export: tl.export, media: tl.media });
+  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, captionStyle: tl.captionStyle, audio: tl.audio, export: tl.export, media: tl.media, voice: tl.voice ?? null });
   const S = H.state;
   // The edit as the server and the renderer see it, the place of every clip in it, and the render plan the live
   // player draws from. Times on the timeline and in the player are EDIT seconds.
   const initial = useRef(S).current;
-  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio, export: s.export, media: s.media });
+  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio, export: s.export, media: s.media, voice: s.voice ?? null });
   const timeline = useMemo(() => tlOf(S), [S]);
   const lay = useMemo(() => layoutTimeline(timeline, words), [timeline, words]);
   const view = useMemo(() => sequenceView(lay, words), [lay, words]);
@@ -652,7 +653,9 @@ function EditorInner({ project, reload, ai, keep }) {
         transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript || []])),
         brollSeconds: Object.fromEntries(Object.entries(media.broll).map(([id, b]) => [id, b.seconds])),
         // Templates draw live; a custom graphic shows once its recorded file is there (as in the render).
-        graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, !!findTemplate(c.graphicId) || !!media.graphicClips[c.id]])), luts });
+        graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, !!findTemplate(c.graphicId) || !!media.graphicClips[c.id]])), luts,
+        // The user's own audio files (own music, the voice in place of the clips' sound), as the render reads them.
+        sounds: project.sounds || {} });
     } catch { return null; } // everything is cut
   }, [timeline, S.aspect, captionRules, media, others, luts]);
   const clock = useMemo(() => sequenceClock(plan || { parts: [], sound: [], outputSeconds: 0 }), [plan]);
@@ -681,9 +684,10 @@ function EditorInner({ project, reload, ai, keep }) {
   const ectx = useMemo(() => ({ videoId: project.videoId, transcript, silences: project.silences || [], sceneCuts: [], duration: footDur, getStyle: () => undefined,
     getVideo: (id) => { if (others[id]) return { id, name: others[id].name, seconds: others[id].seconds || 0, ready: true }; const v = (lib.library || []).find((x) => x.id === id); return v ? { id, name: v.name, seconds: v.seconds || 0, ready: v.status === "ready" } : undefined; },
     getGraphic: (id) => { const g = findTemplate(id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
+    getSound: (id) => { const x = (project.sounds || {})[id]; return x ? { id, name: x.name, seconds: x.seconds, ready: true } : undefined; },
     sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others, lib.library]);
   const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
-  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export, media: t.media, aspect: r.snap.aspect, name: r.snap.name }, summary: r.summary }; };
+  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export, media: t.media, voice: t.voice ?? null, aspect: r.snap.aspect, name: r.snap.name }, summary: r.summary }; };
   const say = (t) => t.charAt(0).toUpperCase() + t.slice(1);
   const doOp = (op, tell = true) => { try { const r = opOn(H.state, op); H.commit(r.state); if (tell) toast(say(r.summary), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
   const liveOp = (base, op) => { try { H.replace(opOn(base, op).state); return true; } catch { return false; } };
@@ -1076,7 +1080,7 @@ function EditorInner({ project, reload, ai, keep }) {
         </div>`}
         ${rtab === "clip" && html`<${ClipTab} clip=${sel && isV1(sel.track) ? selV1 : selClip} track=${sel?.track} plan=${plan} first=${!!selV1 && lay.tracks.v1.find((c) => c.end - c.start > 0.01)?.id === selV1.id} at=${pb.time} srcAt=${(id, t) => view.editToSource(id, t)} onSeek=${(t) => pb.seek(t)} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "color" && html`<${ColorTab} clip=${colorClip} track=${sel?.track} projectId=${project.id} clips=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")]} lutList=${lutQ.data || []} reloadLuts=${() => lutQ.reload()} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mode=${colorMode} setMode=${setColorMode} draft=${pathDraft} setDraft=${setPathDraft} toast=${toast} />`}
-        ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
+        ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} voice=${S.voice ? { ...S.voice, name: (project.sounds || {})[S.voice.soundId]?.name } : null} />`}
         ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "style" && html`<div class="pb" style="padding-top:16px"><div class="col" style="gap:16px">
           <div class="col" style="gap:8px"><b class="t-label">Reference</b><p class="t-small muted">Attached for your AI to read. Nothing from it is applied to the edit.</p>
