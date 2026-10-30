@@ -1106,11 +1106,26 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .cbox-text::placeholder { color: var(--ink-ghost); }
 @media (hover: none) { .cmt-acts { opacity: 1; } }
 
-/* The right panel, like Premiere's: its tabs in two rows that always fit (nothing cut short), each tab's sections
-   under small upper-case headings with a line between them. */
-.panel > .tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; margin: var(--s3) var(--s4) 0; padding: 3px; overflow: visible; flex: none; }
-.panel > .tabs button { height: 30px; padding: 0 4px; font-size: 12px; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+/* The right panel, like Higgsfield's: two tabs (Edit, Comments). Edit lists the tools in rounded cards; a tool opens on
+   its own page under a back arrow, its icon and its name; each of its sections is a rounded card with a small
+   upper-case heading. */
+.panel > .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: var(--s3) var(--s4) 0; padding: 4px; overflow: visible; flex: none; }
+.panel > .tabs button { height: 34px; padding: 0 8px; font-size: 13px; letter-spacing: 0; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .panel > .tabs button .n { font-size: 10.5px; line-height: 16px; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--raised-strong); color: var(--ink); }
 .panel > .tabs button.on .n { background: var(--accent); color: var(--on-accent); }
+.rp-head { display: flex; align-items: center; gap: 10px; padding: var(--s3) var(--s4) 2px; flex: none; min-height: 50px; }
+.rp-head b { font-size: 15px; line-height: 20px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-back { width: 32px; height: 32px; border-radius: var(--pill); display: grid; place-items: center; flex: none; background: var(--raised); color: var(--ink-faint); transition: background-color .15s var(--ease), color .15s var(--ease); }
+.rp-back:hover { background: var(--raised-strong); color: var(--ink); }
+.rp-ico { width: 30px; height: 30px; border-radius: var(--pill); display: grid; place-items: center; flex: none; background: var(--white-button); color: var(--button-ink); }
+#edit-tools { padding-top: var(--s3); display: flex; flex-direction: column; gap: 10px; }
+.rp-card { background: var(--raised); border-radius: var(--r-lg); padding: 4px 6px 6px; }
+.rp-card-h { display: flex; align-items: center; gap: 6px; padding: 9px 8px 5px; font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.rp-row { display: flex; align-items: center; gap: 12px; width: 100%; height: 40px; padding: 0 8px; border-radius: var(--r-sm); color: var(--ink); font-size: 14px; line-height: 20px; font-weight: 500; text-align: left; transition: background-color .15s var(--ease); }
+.rp-row:hover, .rp-row:focus-visible { background: var(--raised-strong); }
+.rp-row .grow { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-row .hint { font-size: 12px; font-weight: 400; color: var(--muted); white-space: nowrap; }
+.rp-row > .gi:last-child { color: var(--ink-ghost); flex: none; }
 .panel .pb > .col > .col > b.t-label:first-child, .panel .pb > .col > b.t-label:first-child, .panel .pb > .col > .col > .row.between:first-child > b.t-label, .panel .pb .sec-h { font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.panel .pb > .col > .col + .col, .panel .pb > .col > .col + details, .panel .pb > .col > details + .col { border-top: 1px solid var(--hair-strong); padding-top: 14px; }
+.panel .pb:not(.cmts) > .col { gap: 10px !important; }
+.panel .pb > .col > .col, .panel .pb > .col > details, .panel .pb > .col > label#hdr-row { background: var(--raised); border-radius: var(--r-lg); padding: 12px; }

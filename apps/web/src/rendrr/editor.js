@@ -64,6 +64,10 @@ const styleCode = (st, S) => [
 const TOOL_ICON = { select: "select", razor: "razor", ripple: "ripple", roll: "roll", slip: "slip", slide: "slide" };
 const TOOLS = [["select", "V", "Select", "Click to select, drag a clip to reorder it, drag an edge to trim"], ["razor", "C", "Razor", "Click a clip to split it there"], ["ripple", "B", "Ripple", "Drag an edge: the clip gets longer or shorter and the edit closes up"], ["roll", "N", "Rolling", "Drag a cut: one clip gets longer, the next shorter"], ["slip", "Y", "Slip", "Drag a clip: same place and length, other footage"], ["slide", "U", "Slide", "Drag a clip between its neighbours"]];
 const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "Pause"], ["L", "Forward 5 seconds"], ...TOOLS.map(([, k, l, d]) => [k, `${l}: ${d.charAt(0).toLowerCase() + d.slice(1)}`]), ["S", "Snapping on or off"], ["Shift Z", "Zoom the timeline to fit"], ["Cmd K", "Split at the playhead"], ["Alt drag", "Drag a dialogue edge: J or L cut"], ["Delete", "Cut selected words or clip"], ["Cmd Z", "Undo"], ["Cmd Shift Z", "Redo"], ["?", "Show shortcuts"]];
+// The right panel, like Higgsfield's: Edit and Comments. Edit lists the tools in two groups, each opens on its own page
+// with a back arrow. Tool key: label, icon.
+const PANEL_TOOLS = { transcript: ["Transcript", "lines"], clip: ["Speed & motion", "gauge"], text: ["Text & captions", "type"], audio: ["Audio", "wave"], color: ["Color", "drop"], style: ["Reference", "image"], ai: ["What your AI did", "spark"] };
+const PANEL_GROUPS = [["Edit video", "edit", ["transcript", "clip", "text", "audio", "color"]], ["Your AI", "spark", ["style", "ai"]]];
 const r2 = (n) => Math.round(n * 100) / 100;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
@@ -293,7 +297,7 @@ function TextTab({ timeline, aspect, captionRules, textClips, selText, onSelect,
       <${StyleControls} kind="caption" idp="cap" style=${style} opFor=${cap} doOp=${doOp} H=${H} liveOp=${liveOp} />
     </div>
     <div class="col" style="gap:10px" id="text-layers">
-      <div class="row between"><b class="t-label">Text layers</b><span class="row" style="gap:4px">${TEXT_PRESETS.map((p) => html`<${Btn} key=${p} kind="ghost" size="xs" id=${"add-text-" + p} onClick=${() => { const had = new Set(textClips.map((c) => c.id)); const r = doOp({ op: "add_text", text: p === "title" ? "Your title" : p === "callout" ? "Look here" : p === "lower-third" ? "Name, role" : "Text", start: Math.max(0, Math.min(at, dur - 0.5)), end: Math.min(dur, at + 3), edit: true, preset: p }); const made = r && r.state.tracks.v3.find((c) => c.kind === "text" && !had.has(c.id)); if (made) onSelect(made.id); }}>+ ${p}<//>`)}</span></div>
+      <div class="row between" style="flex-wrap:wrap;gap:4px 8px"><b class="t-label">Text layers</b><span class="row" style="gap:4px;flex-wrap:wrap">${TEXT_PRESETS.map((p) => html`<${Btn} key=${p} kind="ghost" size="xs" id=${"add-text-" + p} onClick=${() => { const had = new Set(textClips.map((c) => c.id)); const r = doOp({ op: "add_text", text: p === "title" ? "Your title" : p === "callout" ? "Look here" : p === "lower-third" ? "Name, role" : "Text", start: Math.max(0, Math.min(at, dur - 0.5)), end: Math.min(dur, at + 3), edit: true, preset: p }); const made = r && r.state.tracks.v3.find((c) => c.kind === "text" && !had.has(c.id)); if (made) onSelect(made.id); }}>+ ${p}<//>`)}</span></div>
       ${textClips.length === 0 ? html`<p class="t-small muted">No text layers. Add one at the playhead, or select a text clip on V3.</p>`
         : html`<div class="col" style="gap:4px">${textClips.map((c) => html`<button key=${c.id} class=${"tlist" + (selText?.id === c.id ? " on" : "")} data-text-clip=${c.id} onClick=${() => onSelect(c.id)}><span class="mono t-small muted">${fmtTime(c.start)}</span> ${c.text.split("\n")[0]}</button>`)}</div>`}
       ${selText && html`<div class="col card flat" style="gap:8px;padding:12px" id="text-edit">
@@ -568,8 +572,8 @@ function EditorPage({ id }) {
   useEffect(() => api.watchProject(id, (m) => { if (m && m.by !== "user") q.reload(); }), [id]);
   // The AI tab's messages live here, not in EditorInner: an AI's change remounts EditorInner on the new version.
   const [chat, setChat] = useState(null);
-  const keep = useRef({ tab: "comments", time: 0 }); // the open tab and the playhead survive that remount too
-  useEffect(() => { setChat(null); keep.current = { tab: "comments", time: 0 }; }, [id]);
+  const keep = useRef({ tab: "edit", time: 0 }); // the open tab and the playhead survive that remount too
+  useEffect(() => { setChat(null); keep.current = { tab: "edit", time: 0 }; }, [id]);
   // A new version from the AI brings its new messages with it.
   useEffect(() => { if (q.data?.aiChat) setChat(null); }, [q.data?.version]);
   return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version} project=${p} reload=${q.reload} keep=${keep} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])) }} />`}<//>`;
@@ -936,6 +940,8 @@ function EditorInner({ project, reload, ai, keep }) {
   const { chat, setChat } = ai;
   useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, rtab]);
   useEffect(() => { const el = document.getElementById("comment-list"); if (el) el.scrollTop = el.scrollHeight; }, [comments.length, rtab]);
+  // What each tool in the Edit list has going on, in a word or two.
+  const toolHint = { transcript: S.cut.length ? `${S.cut.length} cut` : "", clip: sel ? sel.track.toUpperCase() + " clip" : "", text: S.captionsOn ? "Captions on" : "", audio: S.voice ? "Your voice file" : "", style: reference ? "Attached" : "", ai: chat.length ? String(chat.length) : "" };
   const [draft, setDraft] = useState(""); const [posting, setPosting] = useState(false);
   const postComment = async () => { if (!draft.trim()) return; setPosting(true); try { const c = await api.addProjectComment(project.id, { time: pb.time, text: draft }); setComments((x) => [...x, c].sort((a, b) => a.time - b.time)); setDraft(""); toast("Comment added at " + fmtTime(c.time), { icon: "comment" }); } catch (e) { toast(e.message); } finally { setPosting(false); } };
   const resolve = async (c) => { try { const u = await api.resolveComment(c.id, !c.resolved); setComments((x) => x.map((i) => (i.id === c.id ? { ...i, resolved: u.resolved } : i))); } catch (e) { toast(e.message); } };
@@ -1037,9 +1043,12 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
 
       <div class="panel">
-        <div class="tabs" role="tablist">${[["comments", "Comments"], ["ai", "AI"], ["clip", "Clip"], ["color", "Color"], ["audio", "Audio"], ["text", "Text"], ["style", "Reference"], ["transcript", "Transcript"]].map(([k, l]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}>${l}${k === "comments" && comments.some((c) => !c.resolved) ? html`<span class="n">${comments.filter((c) => !c.resolved).length}</span>` : ""}</button>`)}</div>
+        ${PANEL_TOOLS[rtab] ? html`<div class="rp-head" id="tool-head"><button class="rp-back" id="tool-back" aria-label="Back to the tools" title="Back" onClick=${() => setRtab("edit")}><${Icon} name="back" size="16" /></button><span class="rp-ico"><${Icon} name=${PANEL_TOOLS[rtab][1]} size="15" /></span><b>${PANEL_TOOLS[rtab][0]}</b></div>`
+        : html`<div class="tabs" role="tablist">${[["edit", "Edit", "edit"], ["comments", "Comments", "bubble"]].map(([k, l, ic]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} class=${rtab === k ? "on" : ""} onClick=${() => setRtab(k)}><${Icon} name=${ic} size="15" />${l}${k === "comments" && comments.some((c) => !c.resolved) ? html`<span class="n">${comments.filter((c) => !c.resolved).length}</span>` : ""}</button>`)}</div>`}
+        ${rtab === "edit" && html`<div class="pb" id="edit-tools">${PANEL_GROUPS.map(([g, gi, keys]) => html`<div key=${g} class="rp-card"><div class="rp-card-h"><${Icon} name=${gi} size="13" />${g}</div>
+          ${keys.map((k) => html`<button key=${k} class="rp-row" id=${"tab-" + k} onClick=${() => setRtab(k)}><${Icon} name=${PANEL_TOOLS[k][1]} size="18" /><span class="grow">${PANEL_TOOLS[k][0]}</span>${toolHint[k] && html`<span class="hint">${toolHint[k]}</span>`}<${Icon} name="chev" size="14" /></button>`)}</div>`)}</div>`}
         ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
-          <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted">${S.cut.length} cut</span></div>
+          <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted" style="white-space:nowrap">${S.cut.length} cut</span></div>
           ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
           ${selWords().length > 0 && html`<div class="selpop" id="cut-pop"><span class="t-small">${selWords().length} ${selWords().length === 1 ? "word" : "words"}</span><${Btn} size="xs" icon="scissors" id="cut-selected" onClick=${() => { cutWords(selWords()); setWsel(null); }}>Remove from video<//><${Btn} kind="quiet" size="xs" icon="play" aria-label="Play selection" onClick=${() => { const ids = selWords(); const w = words.find((x) => x.id === ids[0]); if (w) { pb.seek(wordAt(w)); pb.setPlaying(true); } }} /><${Btn} kind="quiet" size="xs" icon="x" aria-label="Clear selection" onClick=${() => setWsel(null)} /></div>`}
         </div>`}
@@ -1053,7 +1062,7 @@ function EditorInner({ project, reload, ai, keep }) {
                 <span class="t-small muted when">${fmtAgo(m.at)}</span>
               </div>`)}
           </div>
-          <p class="t-small muted" style="margin:0">Ask for changes in Claude or ChatGPT. This tab only shows what they did.</p>
+          <p class="t-small muted" style="margin:0">Ask for changes in Claude or ChatGPT. This page only shows what they did.</p>
         </div>`}
         ${rtab === "comments" && html`<div class="pb cmts" id="comments-panel">
           <div class="cm-head"><div class="seg sm" role="tablist" aria-label="Which comments">${[["open", "Open", comments.filter((c) => !c.resolved).length], ["all", "All", comments.length], ["done", "Done", comments.filter((c) => c.resolved).length]].map(([k, l, n]) => html`<button key=${k} role="tab" aria-selected=${cFilter === k} class=${cFilter === k ? "on" : ""} id=${"cm-filter-" + k} onClick=${() => setCFilter(k)}>${l} <span class="muted">${n}</span></button>`)}</div></div>
