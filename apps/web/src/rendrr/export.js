@@ -3,6 +3,7 @@
 // choice is part of the edit, undoable, and what the AI sees in get_project.
 import { html, Btn, Modal } from "./ui";
 import { outputRate, outputSize, rateText } from "@rendrr/shared/renderPlan";
+import { ASPECT_RATIO } from "@rendrr/shared";
 
 const SHAPES = [["9:16", "9:16"], ["16:9", "16:9"], ["1:1", "1:1"], ["4:5", "4:5"]];
 const SIZES = [["720p", "720p"], ["1080p", "1080p"], ["4k", "4K"]];
@@ -27,13 +28,18 @@ export function exportSummary(snap, video) {
   ].filter(Boolean).join(" · ");
 }
 
-export function ExportModal({ snap, video, doOp, onRender, onClose }) {
+export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, reframing = false }) {
   const ex = snap.timeline.export || {};
   const hdrFootage = !!video?.hdr;
+  // Footage of another shape is cut to fit; Follow the speaker keeps the face in view (set_framing focus "face").
+  const footAr = video?.width && video?.height ? video.width / video.height : { Portrait: 9 / 16, Square: 1, Landscape: 16 / 9 }[video?.orientation] || 0;
+  const otherShape = !!footAr && Math.abs(Math.log(footAr / (ASPECT_RATIO[snap.aspect] || 16 / 9))) > 0.05;
+  const reframed = (snap.timeline.tracks?.v1 || []).some((c) => c.framing?.focus);
   const row = (label, child) => html`<div class="row between" style="gap:12px;align-items:center"><span class="t-label">${label}</span>${child}</div>`;
   return html`<${Modal} title="Export" sub="The final is made from your original at these settings." onClose=${onClose}>
     <div class="col" style="gap:14px" id="export-panel">
       ${row("Shape", html`<${Seg} id="export-aspect" value=${snap.aspect} options=${SHAPES} onPick=${(v) => doOp({ op: "set_aspect", aspect: v })} />`)}
+      ${otherShape && onReframe && row("Reframe", html`<div class="row" style="gap:8px;align-items:center"><span class="t-small muted">${reframed ? "Reframed" : "Cut around the middle"}</span><${Btn} kind="secondary" size="xs" icon="spark" id="export-reframe" disabled=${reframing} onClick=${onReframe}>${reframing ? "Finding the speaker…" : "Follow the speaker"}<//></div>`)}
       ${row("Resolution", html`<${Seg} id="export-res" value=${ex.resolution || "1080p"} options=${SIZES} onPick=${(v) => doOp({ op: "set_export", resolution: v })} />`)}
       ${row("Codec", hdrFootage && (ex.hdr || "keep") === "keep"
         ? html`<span class="t-small muted" id="export-codec-hdr">HEVC 10-bit (HDR kept)</span>`

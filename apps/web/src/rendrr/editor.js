@@ -683,7 +683,7 @@ function EditorInner({ project, reload, ai, keep }) {
     getGraphic: (id) => { const g = findTemplate(id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
     sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others, lib.library]);
   const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
-  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export, media: t.media }, summary: r.summary }; };
+  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export, media: t.media, aspect: r.snap.aspect, name: r.snap.name }, summary: r.summary }; };
   const say = (t) => t.charAt(0).toUpperCase() + t.slice(1);
   const doOp = (op, tell = true) => { try { const r = opOn(H.state, op); H.commit(r.state); if (tell) toast(say(r.summary), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
   const liveOp = (base, op) => { try { H.replace(opOn(base, op).state); return true; } catch { return false; } };
@@ -725,8 +725,8 @@ function EditorInner({ project, reload, ai, keep }) {
   const rotNow = lookClip?.rotate || 0; const frNow = lookClip?.framing || { scale: 1, x: 0, y: 0 };
   // Auto reframe: the speaker's face in each clip (from the faces Rendrr measured), kept in the frame's shape.
   const [reframing, setReframing] = useState(false);
-  const reframeFace = async () => {
-    const ids = lookIds || S.tracks.v1.filter((c) => (c.sourceVideoId || main) === main).map((c) => c.id);
+  const reframeFace = async (all = false) => {
+    const ids = all ? S.tracks.v1.map((c) => c.id) : lookIds || S.tracks.v1.filter((c) => (c.sourceVideoId || main) === main).map((c) => c.id);
     const clips = S.tracks.v1.filter((c) => ids.includes(c.id)).map((c) => ({ id: c.id, videoId: c.sourceVideoId || main, srcIn: c.sourceIn, srcOut: c.freeze ? c.sourceIn + 0.04 : c.sourceOut, rotate: c.rotate || 0 }));
     if (!clips.length) return;
     setReframing(true);
@@ -995,7 +995,7 @@ function EditorInner({ project, reload, ai, keep }) {
           <span style="position:relative"><button class="tool icon" id="frame-btn" data-tip=${"Position and scale of " + (selV1 ? "this clip" : "the footage")} aria-label="Frame" onClick=${() => setFrameOpen((o) => !o)}><${Icon} name="image" size="16" /></button>
             ${frameOpen && html`<div class="menu" id="frame-pop" style="left:0;right:auto;top:36px;min-width:240px;padding:12px;display:grid;gap:8px"><span class="t-small muted">${selV1 ? "This clip" : "Every clip of the footage"}</span>${[["scale", "Scale", 0.5, 2, 0.01], ["x", "Left / right", -0.5, 0.5, 0.01], ["y", "Up / down", -0.5, 0.5, 0.01]].map(([k, l, lo, hi, st]) => html`<label key=${k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${frNow[k]}</span><input type="range" data-frame=${k} min=${lo} max=${hi} step=${st} value=${frNow[k]} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => liveOp(H.state, { op: "set_framing", [k]: +e.target.value, clipIds: lookIds })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}<${Btn} kind="ghost" size="xs" onClick=${() => doOp({ op: "set_framing", scale: 1, x: 0, y: 0, focus: null, clipIds: lookIds }, false)}>Reset<//>
               <span class="t-small muted" style="margin-top:6px">Reframe: what the ${S.aspect} frame keeps of the footage</span>
-              <${Btn} kind="secondary" size="xs" icon="spark" id="reframe-face" disabled=${reframing} onClick=${reframeFace}>${reframing ? "Finding the speaker…" : "Follow the speaker"}<//>
+              <${Btn} kind="secondary" size="xs" icon="spark" id="reframe-face" disabled=${reframing} onClick=${() => reframeFace()}>${reframing ? "Finding the speaker…" : "Follow the speaker"}<//>
               ${[["x", "Pan across", 0.5], ["y", "Pan up / down", 0.4]].map(([k, l, d]) => html`<label key=${"f" + k} class="t-small" style="display:grid;gap:2px">${l} <span class="muted">${frNow.focus ? frNow.focus[k] : "middle"}</span><input type="range" data-focus=${k} min="0" max="1" step="0.01" value=${frNow.focus ? frNow.focus[k] : d} onPointerDown=${() => { frameBase.current = H.state; }} onInput=${(e) => liveOp(H.state, { op: "set_framing", focus: { x: frNow.focus?.x ?? 0.5, y: frNow.focus?.y ?? 0.4, [k]: +e.target.value }, clipIds: lookIds })} onChange=${() => frameBase.current && H.commitFrom(frameBase.current)} /></label>`)}</div>`}</span>
           <button class="tool icon" id="delete-clip" data-tip="Delete the selected clip (⌫)" aria-label="Delete" disabled=${!sel} onClick=${removeSel}><${Icon} name="trash" size="16" /></button>
           ${selV1 && html`<button class="tool icon" id="mute-clip" data-tip=${selV1.audioMuted ? "Bring this clip's dialogue back" : "Silence this clip's dialogue"} aria-label=${selV1.audioMuted ? "Unmute" : "Mute"} onClick=${toggleMute}><${Icon} name="mic" size="16" /></button>`}
@@ -1101,7 +1101,7 @@ function EditorInner({ project, reload, ai, keep }) {
         <input type="file" accept="video/*" class="hide" id="original-file" onChange=${(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) sendOriginal(f); }} />
         <div class="row">${render.hasFile ? html`<${Btn} id="upload-original" icon="upload" onClick=${() => sendOriginal(null)}>Upload original and export<//>` : html`<${Btn} id="pick-original" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the original file<//>`}<${Btn} kind="ghost" onClick=${() => setRender(null)}>Not now<//></div></div>`}
     <//>`}
-    ${exportOpen && html`<${ExportModal} snap=${{ timeline, aspect: S.aspect }} video=${project.video} doOp=${doOp} onRender=${() => { setExportOpen(false); startRender("final"); }} onClose=${() => setExportOpen(false)} />`}
+    ${exportOpen && html`<${ExportModal} snap=${{ timeline, aspect: S.aspect }} video=${project.video} doOp=${doOp} onReframe=${() => reframeFace(true)} reframing=${reframing} onRender=${() => { setExportOpen(false); startRender("final"); }} onClose=${() => setExportOpen(false)} />`}
     ${share && html`<${CreateLinkModal} projectId=${project.id} onClose=${() => setShare(false)} onCreated=${() => setStatus("In review")} />`}
     ${addOpen && html`<${AddClipModal} main=${{ id: main, name: project.video?.name || "Footage", seconds: footDur }} at=${pb.time} onAdd=${addClip} onClose=${() => setAddOpen(false)} />`}
     ${help && html`<${Modal} title="Keyboard shortcuts" onClose=${() => setHelp(false)}><div class="list">${SHORTCUTS.map(([k, d]) => html`<div key=${k} class="row between" style="padding:6px 4px"><span>${d}</span><span class="kbd">${k}</span></div>`)}</div><//>`}

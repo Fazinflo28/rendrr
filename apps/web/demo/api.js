@@ -165,6 +165,8 @@ Object.assign(api, {
   lutText: async (id) => demoLuts.find((l) => l.id === id)?.text || "",
   deleteLut: async (id) => { const i = demoLuts.findIndex((l) => l.id === id); if (i >= 0) demoLuts.splice(i, 1); return { ok: true }; },
   colorSamples: async () => { await wait(200); throw Object.assign(new Error("Matching measures frames on the server; the preview has no server."), { friendly: true }); },
+  // Auto reframe: the demo's speaker sits a little left of centre in every clip.
+  speakerCentres: async (_id, clips) => { await wait(150); return { centers: Object.fromEntries(clips.map((c) => [c.id, { x: 0.38, y: 0.42 }])) }; },
 });
 
 // Comments: a note made in the Rendrr app in Claude (a drawing on the picture, a picture, a link) on the demo edit
