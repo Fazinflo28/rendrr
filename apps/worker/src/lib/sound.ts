@@ -23,8 +23,9 @@ export async function measureSound(file: string, joins: number[], o: { dir: stri
   const dir = await mkdtemp(join(o.dir, "sound-"));
   const p48 = join(dir, "a48.raw"), p16 = join(dir, "a16.raw"), pj = join(dir, "joins.json");
   try {
-    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", file, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", p48], { signal });
-    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", p16], { signal });
+    // One decode for both: 48 kHz 16-bit (levels, clicks) and 16 kHz float (speech).
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", file, "-filter_complex", "[0:a]asplit=2[a][b]",
+      "-map", "[a]", "-ac", "1", "-ar", "48000", "-f", "s16le", p48, "-map", "[b]", "-ac", "1", "-ar", "16000", "-f", "f32le", p16], { signal });
     await writeFile(pj, JSON.stringify(joins));
     const { stdout } = await run(PYTHON, [PY, "--pcm48", p48, "--pcm16", p16, "--vad", VAD, "--out", dir, "--joins", pj, "--min-speech", "0.15", "--edges"], {
       signal, onLine: (line) => { const m = /^PROGRESS (\d+)/.exec(line); if (m) o.onProgress?.(Number(m[1]) / 100); },

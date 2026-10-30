@@ -1,5 +1,5 @@
 import { downloadFile, headObject, uploadFile } from "@rendrr/core";
-import { copyFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { copyFile, link, mkdir, readdir, rename, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,46 @@ export async function cachedAsset(key: string, copyTo?: string): Promise<string>
   await p;
   if (copyTo) { await copyFile(local, copyTo); return copyTo; }
   return local;
+}
+
+// Preview copies are reused too: a batch of shorts, or a revision rendered again, reads the same footage. Kept by key
+// and version (the storage's ETag, so a rebuilt copy is fetched again), linked into the render's folder, the least
+// recently used dropped past PROXY_CACHE_GB (default 3).
+const PROXIES = join(tmpdir(), "rendrr-proxy-cache");
+const CAP = () => Math.max(0, Number(process.env.PROXY_CACHE_GB || 3)) * 1e9;
+export async function cachedCopy(key: string, dest: string): Promise<void> {
+  const head = await headObject(key);
+  if (!head || !CAP() || head.size > CAP() / 2) { await downloadFile(key, dest); return; }
+  const local = join(PROXIES, `${key.replace(/[^\w.\-]+/g, "_")}.${(head.etag || String(head.size)).replace(/[^\w]+/g, "")}`);
+  let p = pending.get(local);
+  if (!p) {
+    p = (async () => {
+      await mkdir(PROXIES, { recursive: true });
+      if (await stat(local).then((s) => s.size === head.size).catch(() => false)) return local;
+      const tmp = `${local}.${process.pid}.${Date.now()}.part`;
+      const got = await downloadFile(key, tmp);
+      if (got !== head.size) { await rm(tmp, { force: true }); throw new Error(`incomplete download of ${key}`); }
+      await rename(tmp, local);
+      await trimProxies(local).catch(() => {});
+      return local;
+    })().finally(() => pending.delete(local));
+    pending.set(local, p);
+  }
+  await p;
+  const now = new Date();
+  await utimes(local, now, now).catch(() => {});
+  // A hard link costs nothing; another disk: a copy.
+  await link(local, dest).catch(() => copyFile(local, dest));
+}
+async function trimProxies(keep: string) {
+  const files = await Promise.all((await readdir(PROXIES)).filter((f) => !f.endsWith(".part")).map(async (f) => { const p = join(PROXIES, f); const s = await stat(p); return { p, size: s.size, at: s.mtimeMs }; }));
+  let total = files.reduce((a, f) => a + f.size, 0);
+  for (const f of files.sort((a, b) => a.at - b.at)) {
+    if (total <= CAP()) break;
+    if (f.p === keep) continue;
+    await rm(f.p, { force: true }); // a render that linked it keeps its own link
+    total -= f.size;
+  }
 }
 
 const MAKE_ASSETS = join(dirname(fileURLToPath(import.meta.url)), "../../assets/make-assets.sh");

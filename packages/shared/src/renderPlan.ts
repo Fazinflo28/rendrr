@@ -156,6 +156,8 @@ export const timeBase = (rate: string) => { const [n, d] = rate.split("/"); retu
 /** A rate for people: 29.97, 23.976, 25. */
 export const rateText = (fps: number) => (Math.abs(fps - Math.round(fps)) < 1e-6 ? String(Math.round(fps)) : (Math.round(fps * 1000) / 1000).toString());
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+/** A video's footage further on than this past what its decoder has given is read from a new, seeked input. */
+const WINDOW_GAP = 10;
 
 export function outputSize(aspect: Aspect, kind: RenderKind, resolution?: Resolution | null) {
   // Phase 7: a final's short side follows its export resolution (720, 1080 or 2160); previews stay 540.
@@ -749,6 +751,9 @@ export function zoomAt(zooms: ZoomOp[], t: number): number {
 
 export type FfmpegOpts = {
   threads?: number;
+  /** Seconds past what a video's decoder has given before a new, seeked input reads further on (default WINDOW_GAP);
+   *  Infinity: one input per video read from the start, as before windows (tests compare the two). */
+  windowGap?: number;
   /**
    * Threads of the filter graph, which each scaler also starts: a graded graph has ~70 scalers, so leaving it to the
    * CPU count on a many-core host starts thousands of threads and FFmpeg fails with EAGAIN at the container's limit.
@@ -889,17 +894,45 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     return cur;
   };
 
-  // One input per video.
-  const inOf: Record<string, number> = {};
+  // Each video is read in windows: one input per window, seeked (-ss) to just before the footage it gives and read
+  // forward, its picture and its sound apart. Footage over WINDOW_GAP s past what a window has given, or before it (a
+  // part played out of the footage's order, like a hook from later played first), gets a window of its own: the
+  // decoder never decodes footage nobody uses, nor holds frames in memory for a part that plays later. Timestamps are
+  // put back to the footage's own (setpts), so every trim below keeps footage seconds.
+  const srcPath: Record<string, string> = {};
   for (const vid of plan.sources) {
     const path = vid === main ? files.source : files.videos?.[vid];
     if (!path) throw new RenderPlanError(`The file of a video on V1 is missing (${vid}).`);
-    inputs.push("-i", path);
-    inOf[vid] = idx++;
+    srcPath[vid] = path;
   }
-  const splitOf = (kind: "v" | "a", vid: string, n: number, name: (i: number) => string) => {
-    if (kind === "v") g.push(`[${inOf[vid]}:v]fps=${R}${n > 1 ? `,split=${n}${Array.from({ length: n }, (_, i) => `[${name(i)}]`).join("")}` : `[${name(0)}]`}`);
-    else g.push(`[${inOf[vid]}:a]aresample=48000${n > 1 ? `,asplit=${n}${Array.from({ length: n }, (_, i) => `[${name(i)}]`).join("")}` : `[${name(0)}]`}`);
+  type Win = { vid: string; idx: number; at: number; min: number; max: number; pos: number; made: "v" | "a"; v: string[]; a: string[] };
+  const wins: Win[] = [];
+  const gap = opts.windowGap ?? WINDOW_GAP, oneEach = gap === Infinity;
+  const ssOf = (w: Win) => (oneEach ? 0 : Math.max(0, Math.floor(w.min - 1))); // a whole second (frames stay on the grid), a second to spare
+  const take = (kind: "v" | "a", vid: string, a: number, b: number, label: string) => {
+    // Sound rides on the picture's window when that one reads its footage (the file is read once).
+    const cover = kind === "a" ? wins.find((w) => w.vid === vid && w.made === "v" && (oneEach || (a >= w.min - 1 && b <= w.max + 2))) : undefined;
+    if (cover) { cover.a.push(label); return; }
+    const mine = wins.filter((w) => w.vid === vid && w.made === kind), w = mine[mine.length - 1];
+    if (w && (oneEach || (a >= w.pos - 0.5 && a <= w.pos + gap))) { w.pos = Math.max(w.pos, b); w.min = Math.min(w.min, a); w.max = Math.max(w.max, b); w[kind].push(label); return; }
+    // The seek and length are filled in once the window's footage is known (placeholders, then the input).
+    const at = inputs.length;
+    inputs.push("-ss", "", "-t", "", "-i", srcPath[vid]);
+    wins.push({ vid, idx: idx++, at, min: a, max: b, pos: b, made: kind, v: [], a: [], [kind]: [label] });
+  };
+  /** The windows' seeks and lengths, and their decoders of this kind, split into the branches their parts took. A
+   *  window from the start reads the file as it always did (no seek, no length): the placeholders become no-ops. */
+  const openWindows = (kind: "v" | "a") => {
+    for (const w of wins) {
+      const ss = ssOf(w);
+      if (ss > 0) { inputs[w.at] = "-ss"; inputs[w.at + 1] = String(ss); inputs[w.at + 2] = "-t"; inputs[w.at + 3] = n3(w.max - ss + 2); }
+      else { inputs[w.at] = inputs[w.at + 1] = inputs[w.at + 2] = inputs[w.at + 3] = ""; }
+      const ls = w[kind];
+      if (!ls.length) continue;
+      const back = ss > 0 ? `${kind === "v" ? "setpts" : "asetpts"}=PTS+${ss}/TB,` : "";
+      const n = ls.length, outs = ls.map((l) => `[${l}]`).join("");
+      g.push(kind === "v" ? `[${w.idx}:v]${back}fps=${R}${n > 1 ? `,split=${n}` : ""}${outs}` : `[${w.idx}:a]${back}aresample=48000${n > 1 ? `,asplit=${n}` : ""}${outs}`);
+    }
   };
 
   // 1. Picture (not in the measuring pass): put each video on a 30 fps grid, take its parts and join them in edit
@@ -935,8 +968,9 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     };
     const motion = plan.clipMotion ?? {};
     // Branches of each video's decoder, handed out as segments ask for them (split once all are known).
-    const branches: Record<string, string[]> = {};
-    const branch = (vid: string) => { const l = `sv${Object.values(branches).reduce((a, b) => a + b.length, 0)}`; (branches[vid] ??= []).push(l); return l; };
+    let nBranch = 0;
+    /** A branch of the video's decoder for footage a..b (seconds): from the window that reads there. */
+    const branch = (vid: string, a: number, b: number) => { const l = `sv${nBranch++}`; take("v", vid, a, b, l); return l; };
     const pathOf = (vid: string) => (vid === main ? files.source : files.videos?.[vid])!;
     /**
      * One stretch of picture as exactly round(length x 30) frames at output size: its footage at its rate (reversed in
@@ -965,9 +999,9 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
           parts.push(`[rc${tag}_${j}]`);
         }
         chain = `${parts.join("")}concat=n=${parts.length}:v=1:a=0,${pick(-r)}${pad}`;
-      } else if (r === 0) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
-      else if (r !== 1) chain = `[${branch(x.videoId)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
-      else chain = `[${branch(x.videoId)}]${vt(x)}${exact ? pad : ""},${look}`;
+      } else if (r === 0) chain = `[${branch(x.videoId, x.srcIn, x.srcIn + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
+      else if (r !== 1) chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
+      else chain = `[${branch(x.videoId, x.srcIn, x.srcOut)}]${vt(x)}${exact ? pad : ""},${look}`;
       const clipId = x.clipId ?? (x.clipIds?.length === 1 ? x.clipIds[0] : undefined);
       const m = clipId ? motion[clipId] : undefined;
       // A card is drawn through frame() (its shadow and border), framed or not.
@@ -997,7 +1031,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     // Otherwise each part is drawn on its own first.
     const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
     const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0]));
-    plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
+    plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId, p.srcIn, p.srcOut)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
     // concat's output counts in microseconds, a hair before each frame's exact time; back on the 1/30 s grid so every
     // overlay below lines up with its own frame (else each one shows a frame late).
     g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0${uniform ? "" : `,settb=${TB}`}[vcat]`);
@@ -1060,14 +1094,14 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
       g.push(`[${v}][txo${i}]overlay=${span}${hdr ? `:format=auto,format=${PF}` : ""}[vt${i}]`);
       v = `vt${i}`;
     });
-    // Each video's decoder, split into the branches its segments took.
-    for (const [vid, ls] of Object.entries(branches)) g.push(`[${inOf[vid]}:v]fps=${R}${ls.length > 1 ? `,split=${ls.length}${ls.map((l) => `[${l}]`).join("")}` : `[${ls[0]}]`}`);
+    // Each window's decoder, split into the branches its segments took.
+    openWindows("v");
   }
 
   // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts and parts silent at their speed,
   // joined in edit order. A clip off normal speed plays its stretch through atempo (pitch kept), its speed changing at
   // each step's footage moment. Every unit fades in and out over the declick time (20 ms by default), so no cut clicks.
-  const live = (x: SoundPart) => !x.muted && !x.silent && info(x.videoId).hasAudio && inOf[x.videoId] != null;
+  const live = (x: SoundPart) => !x.muted && !x.silent && info(x.videoId).hasAudio && srcPath[x.videoId] != null;
   const units: SoundPart[][] = [];
   for (const x of plan.sound) {
     const u = units[units.length - 1], prev = u?.[u.length - 1];
@@ -1088,12 +1122,13 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
     const name = `atempo@at${u[0].start.toFixed(3).replace(".", "_")}`;
     return `atrim=start=${n6(a)}:end=${n6(u[u.length - 1].srcOut)},asetpts=PTS-STARTPTS,asetnsamples=n=480${cmds ? `,asendcmd=c='${cmds}'` : ""},${name}=tempo=${rateOf(u[0])},apad,atrim=end_sample=${n},asetpts=PTS-STARTPTS${declick(n / 48000)}`;
   };
-  for (const vid of plan.sources) {
-    const mine = units.map((u, i) => ({ u, i })).filter((y) => y.u[0].videoId === vid && live(y.u[0]));
-    if (!mine.length) continue;
-    splitOf("a", vid, mine.length, (k) => `sa${mine[k].i}`);
-    for (const { u, i } of mine) g.push(`[sa${i}]${u.length === 1 && rateOf(u[0]) === 1 ? at(u[0]) : tempo(u)}[a${i}]`);
-  }
+  // Each sound unit from the window that reads its footage, in edit order.
+  units.forEach((u, i) => {
+    if (!live(u[0])) return;
+    take("a", u[0].videoId, Math.min(...u.map((x) => x.srcIn)), Math.max(...u.map((x) => x.srcOut)), `sa${i}`);
+    g.push(`[sa${i}]${u.length === 1 && rateOf(u[0]) === 1 ? at(u[0]) : tempo(u)}[a${i}]`);
+  });
+  openWindows("a");
   units.forEach((u, i) => { if (!live(u[0])) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${editSamples(u)},asetpts=PTS-STARTPTS[a${i}]`); });
   // The sound ends where the edit does, to the millisecond; the picture on its last frame: the sound is padded or
   // cut to the picture's length (under half a frame).
@@ -1101,7 +1136,8 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
 
   if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null });
   mixAudio(plan, files, g, inputs, () => idx++, opts);
-  return { args: encodeArgs(plan, inputs, files, opts), filterGraph: g.join(";\n") };
+  // Windows that read from the start left empty placeholders where a seek would go (they never move an input's place).
+  return { args: encodeArgs(plan, inputs.filter((a) => a !== ""), files, opts), filterGraph: g.join(";\n") };
 }
 
 /**

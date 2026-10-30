@@ -2,6 +2,7 @@
 // frames and the same sound (decoded and hashed), and a sequence that cuts between two videos with a J cut and a
 // muted clip plays each video and each sound where the plan says. Needs ffmpeg.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,10 +28,14 @@ describe("sequence renders", () => {
   });
   after(async () => { await rm(dir, { recursive: true, force: true }); });
 
-  async function render(plan: RenderPlan, name: string, files: Partial<PlanFiles> = {}, opts: { noLimiter?: boolean } = {}) {
-    const all: PlanFiles = { source: main, output: join(dir, `${name}.mp4`), assPath: join(dir, `${name}.ass`), ...files };
+  async function render(plan: RenderPlan, name: string, files: Partial<PlanFiles> = {}, opts: { noLimiter?: boolean; windowGap?: number; src?: SourceInfo; pcm?: boolean } = {}) {
+    const all: PlanFiles = { source: main, output: join(dir, `${name}.${opts.pcm ? "mkv" : "mp4"}`), assPath: join(dir, `${name}.ass`), ...files };
     if (plan.ass) await writeFile(all.assPath!, plan.ass);
-    const { args, filterGraph } = ffmpegArgs(plan, all, source);
+    const made = ffmpegArgs(plan, all, opts.src ?? source, { windowGap: opts.windowGap });
+    const { filterGraph } = made;
+    let args = made.args;
+    // pcm: the sound kept as mixed (32-bit float), for comparing samples without an encoder in the way.
+    if (opts.pcm) { args = [...args]; args[args.indexOf("-c:a") + 1] = "pcm_f32le"; for (const k of ["-b:a", "-movflags"]) { const i = args.indexOf(k); if (i >= 0) args.splice(i, 2); } }
     // noLimiter: the final safety limiter left out, so two plans' sound can be compared before it (model A's limiter
     // has auto-level on, the sequence's does not since Phase 3).
     await writeFile(join(dir, `${name}.txt`), opts.noLimiter ? filterGraph.replace(/alimiter=limit=0\.95(?::level=disabled)?\[aout\]/, "anull[aout]") : filterGraph);
@@ -72,6 +77,34 @@ describe("sequence renders", () => {
     assert.equal(va.length, vb.length);
     assert.deepEqual(vb, va, "video frames differ");
     assert.deepEqual(await hashes(fb, "a"), await hashes(fa, "a"), "audio differs");
+  });
+
+  it("footage read in windows (a hook from later first, a jump past a long gap, a repeat) renders the same frames and sound as one input read from the start", async () => {
+    // 60 s: a moving pattern with its clock, a rising tone, so a frame or a sample out of place changes the hashes.
+    const long = join(dir, "long.mp4");
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=320x180:r=30:d=60", "-f", "lavfi", "-i", "aevalsrc=0.3*sin(2*PI*(200+4*t)*t):s=48000:d=60", "-c:v", "libx264", "-preset", "ultrafast", "-g", "90", "-c:a", "aac", "-shortest", long]);
+    const src: SourceInfo = { width: 320, height: 180, fps: 30, seconds: 60, hasAudio: true };
+    const ctx: EditContext = { videoId: "v", transcript: [], silences: [], sceneCuts: [], duration: 60, getStyle: () => undefined };
+    let s: Snapshot = { timeline: buildInitialTimeline([], 60, "clean", [], "v"), name: "w", aspect: "16:9", styleId: null };
+    s = applyOp(s, { op: "batch", ops: [
+      { op: "set_clips", track: "v1", clips: [{ start: 45, end: 47.5, label: "hook" }, { start: 3, end: 6, label: "a" }, { start: 7, end: 9, label: "b" }, { start: 31, end: 33, label: "c" }, { start: 31.5, end: 32.5, label: "again" }] },
+      { op: "set_captions", on: false }, { op: "set_audio", loudness: null },
+    ] }, ctx).snap;
+    const plan = planRender({ kind: "preview", snapshot: s, transcript: [], source: src, videoId: "v" });
+    const windowed = ffmpegArgs(plan, { source: long, output: "/x.mp4" }, src);
+    // The hook, the start, the jump to 31 s and the repeat each read from their own place.
+    assert.deepEqual(windowed.args.filter((a, i, all) => all[i - 1] === "-ss"), ["44", "2", "30", "30"]);
+    const fw = await render(plan, "windows", { source: long }, { noLimiter: true, src, pcm: true });
+    const fo = await render(plan, "one-input", { source: long }, { noLimiter: true, windowGap: Infinity, src, pcm: true });
+    const [vw, vo] = [await hashes(fw, "v"), await hashes(fo, "v")];
+    assert.equal(vw.length, 315); // 10.5 s at 30 fps
+    assert.deepEqual(vw, vo, "video frames differ");
+    // The sound, as mixed (before an encoder): the same samples, to float noise (decoding after a seek, 1e-5 at most).
+    const pcm = (f: string) => { const b = execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", f, "-map", "0:a", "-f", "f32le", "-"], { maxBuffer: 64 << 20 }); return new Float32Array(b.buffer, b.byteOffset, b.length / 4); };
+    const [aw, ao] = [pcm(fw), pcm(fo)];
+    assert.equal(aw.length, ao.length);
+    let worst = 0; for (let i = 0; i < aw.length; i++) worst = Math.max(worst, Math.abs(aw[i] - ao[i]));
+    assert.ok(worst < 1e-4, `sound differs by ${worst}`);
   });
 
   it("two videos, a J cut and a muted clip: each picture and each sound plays where the plan says", async () => {

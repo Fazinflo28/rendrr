@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
@@ -9,12 +10,26 @@ export class JobError extends Error {
   constructor(message: string, public code?: string, public retry = true) { super(message); }
 }
 
+/** CPUs this container may use: its cgroup quota when there is one (the host can have many more than we get). */
+export function cpuBudget() {
+  try {
+    const [q, p] = readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim().split(/\s+/);
+    if (q !== "max" && Number(q) > 0 && Number(p) > 0) return Math.max(1, Math.floor(Number(q) / Number(p)));
+  } catch { /* no cgroup v2 quota */ }
+  return availableParallelism();
+}
+
 /**
- * Filter graph threads for renders: FFMPEG_FILTER_THREADS, else the CPU count up to 4. Every scaler in the graph
- * starts this many threads, and the host's CPU count (not the container's share) would start thousands.
+ * Filter graph threads for renders: FFMPEG_FILTER_THREADS, else by the graph. Every scaler in it starts this many
+ * threads, so a heavy graph (each part drawn on its own: scalers by the hundred) stays at 4; a light one (one video
+ * fitted once, one look) uses every CPU the container has (up to 16): the look scales almost linearly with threads.
  */
-export function filterThreads(): number {
-  return Math.max(1, Math.floor(Number(process.env.FFMPEG_FILTER_THREADS || 0)) || Math.min(4, availableParallelism()));
+export function filterThreads(graph?: string): number {
+  const set = Math.floor(Number(process.env.FFMPEG_FILTER_THREADS || 0));
+  if (set > 0) return set;
+  const cpus = Math.min(16, cpuBudget());
+  const scalers = graph == null ? Infinity : (graph.match(/\bz?scale=/g) || []).length;
+  return Math.max(1, scalers <= 12 ? cpus : Math.min(4, cpus));
 }
 
 /** FFmpeg failed because the container could not start another thread. */

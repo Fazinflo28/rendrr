@@ -8,16 +8,8 @@ import { availableParallelism, totalmem } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-core";
-import { JobError, run } from "./ffmpeg";
+import { cpuBudget, JobError, run } from "./ffmpeg";
 
-/** CPUs this container may use: its cgroup quota when there is one (the host can have many more than we get). */
-function cpuBudget() {
-  try {
-    const [q, p] = readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim().split(/\s+/);
-    if (q !== "max" && Number(q) > 0 && Number(p) > 0) return Math.max(1, Math.floor(Number(q) / Number(p)));
-  } catch { /* no cgroup v2 quota */ }
-  return availableParallelism();
-}
 /** Threads this container may start (cgroup pids.max; it counts threads). Chromium uses about 80 per browser. */
 function threadBudget() {
   try { const v = readFileSync("/sys/fs/cgroup/pids.max", "utf8").trim(); if (v !== "max" && Number(v) > 0) return Number(v); } catch { /* no limit */ }

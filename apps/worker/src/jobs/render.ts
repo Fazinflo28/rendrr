@@ -10,7 +10,7 @@ import { gunzipSync } from "node:zlib";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { COVER_SIZE, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run } from "../lib/ffmpeg";
-import { cachedAsset } from "../lib/assets";
+import { cachedAsset, cachedCopy } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
@@ -66,11 +66,11 @@ export async function renderJob(ctx: Ctx) {
     let tempOriginalIds: string[] = [];
     if (kind === "preview") {
       if (!video.proxyKey) throw new JobError("The preview copy of this footage expired. Rebuild it from your Library, then render again.", "expired", false);
-      await downloadFile(video.proxyKey, src);
+      await cachedCopy(video.proxyKey, src);
     } else if (video.sourceKey) {
       // Built-in samples and the fake Drive keep their original in our storage.
-      if (steps[0] === "Fetching raw from Drive") { await send(0, 0.1); await downloadFile(video.sourceKey, src); await send(0, 1); i = 1; }
-      else await downloadFile(video.sourceKey, src);
+      if (steps[0] === "Fetching raw from Drive") { await send(0, 0.1); await cachedCopy(video.sourceKey, src); await send(0, 1); i = 1; }
+      else await cachedCopy(video.sourceKey, src);
     } else if (video.source === "drive") {
       const conn = await prisma.driveConnection.findUnique({ where: { userId: video.userId } });
       const f = conn && video.driveFileId ? await drive.getFile(video.userId, video.driveFileId, conn.stub).catch(() => null) : null;
@@ -121,19 +121,20 @@ export async function renderJob(ctx: Ctx) {
       const main = mainVideoOf(snapshot.timeline);
       const otherIds = Array.from(new Set((snapshot.timeline.tracks.v1 as unknown as { sourceVideoId: string }[]).map((c) => c.sourceVideoId))).filter((id) => id !== main);
       const others = otherIds.length ? await prisma.video.findMany({ where: { id: { in: otherIds }, userId: video.userId }, include: { analysis: true } }) : [];
-      for (const o of others) {
+      // The other videos at once (each from the cache when an earlier render fetched it).
+      await Promise.all(others.map(async (o) => {
         const key = kind === "final" && o.sourceKey ? o.sourceKey : o.proxyKey;
-        if (!key) continue;
+        if (!key) return;
         if (kind === "final" && !o.sourceKey) copies.push(o.name);
         const p = join(ctx.dir, `video-${o.id}`);
-        await downloadFile(key, p);
+        await cachedCopy(key, p);
         const oi = await probe(p, { signal });
         if (!oi.hasVideo) throw new JobError(`"${o.name}" on V1 looks damaged. Remove it from the edit or add it again.`, "damaged", false);
         files.videos![o.id] = p;
         sources[o.id] = { width: oi.width, height: oi.height, fps: oi.fps, seconds: oi.seconds || o.seconds, hasAudio: oi.hasAudio, hdr: !!oi.hdr, ...(oi.transfer ? { transfer: oi.transfer } : {}) };
         if (o.hdr) hdrFootage[o.id] = o.hdr as HdrTransfer;
         transcripts[o.id] = (o.analysis?.transcript as unknown as Transcript) || [];
-      }
+      }));
     }
     // Phase 6: the imported LUTs the grades use (one that is gone renders without it, and the check says so).
     const lutIds = Array.from(new Set([...snapshot.timeline.tracks.v1, ...snapshot.timeline.tracks.v2].map((c) => (c as ClipLook).grade?.lut?.id).filter((x): x is string => !!x)));
@@ -168,11 +169,11 @@ export async function renderJob(ctx: Ctx) {
     if (copies.length) plan.operations.push(`Other videos without an original in Rendrr use their 720p copy: ${copies.join(", ")}`);
     for (const b of [...plan.broll, ...(plan.under ?? [])]) {
       const bv = brollVideos.find((x) => x.id === b.videoId);
-      if (bv?.proxyKey) { const p = join(ctx.dir, `broll-${b.clipId}.mp4`); await downloadFile(bv.proxyKey, p); (plan.under?.includes(b) ? files.under! : files.broll!)[b.clipId] = p; }
+      if (bv?.proxyKey) { const p = join(ctx.dir, `broll-${b.clipId}.mp4`); await cachedCopy(bv.proxyKey, p); (plan.under?.includes(b) ? files.under! : files.broll!)[b.clipId] = p; }
     }
     if (plan.background?.videoId) {
       const bv = brollVideos.find((x) => x.id === plan.background!.videoId);
-      if (bv?.proxyKey) { const p = join(ctx.dir, "background.mp4"); await downloadFile(bv.proxyKey, p); files.background = p; }
+      if (bv?.proxyKey) { const p = join(ctx.dir, "background.mp4"); await cachedCopy(bv.proxyKey, p); files.background = p; }
     }
     // Phase 6: the grades as .cube files and the masks as pictures, at the render's size (and a card's shadow and
     // border, and the background's colour or gradient).
@@ -198,7 +199,8 @@ export async function renderJob(ctx: Ctx) {
     }
     if (measuring) { await send(i, 1); i++; }
     const argsFor = (ft: number) => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || undefined, filterThreads: ft, loudnessGainDb: mixLoudness?.gainDb });
-    const { args, filterGraph } = argsFor(filterThreads());
+    // The graph decides how many filter threads it may have (it is the same text whatever that number).
+    const { args, filterGraph } = argsFor(filterThreads(argsFor(4).filterGraph));
     const graphPath = join(ctx.dir, "graph.txt");
     await writeFile(graphPath, filterGraph);
 
@@ -238,19 +240,31 @@ export async function renderJob(ctx: Ctx) {
     // The rendered file, measured once here so the AI's after-render check compares the file with the edit.
     // A failed measurement is reported in the check (never silently left out).
     let measured: FileMeasure;
+    // The upload and the check frames go while the file is measured (they only read it).
+    const uploaded = uploadFile(`${base}.mp4`, files.output, "video/mp4");
+    uploaded.catch(() => {});
+    const frames = Promise.all([0.15, 0.4, 0.65, 0.9].map(async (f, k) => {
+      const fp = join(ctx.dir, `f${k}.jpg`);
+      await frameAt(files.output, outInfo.seconds * f, fp, kind === "final" ? 960 : 540, signal, !!plan.hdr).catch(() => {});
+      if (!(await stat(fp).then(() => true).catch(() => false))) return null;
+      await uploadFile(`${base}-f${k}.jpg`, fp, "image/jpeg");
+      return `${base}-f${k}.jpg`;
+    }));
+    frames.catch(() => {});
     try {
       // Previews get the full check; a final (no check is shown for it) only its stream lengths and loudness, as before.
-      const base0 = await measureFile(files.output, { signal, timeoutMs: Math.max(60_000, plan.outputSeconds * 1000), picture: kind === "preview" });
       // Engine Part 3: the preview's own sound measured as the footage's is: speech (gaps in it are placed at the
-      // edit's joins by the check), breaths and clicks at the joins.
-      let sound: FileSound | undefined;
-      if (kind === "preview" && base0.audioSeconds) {
-        await send(i, 0.1);
-        sound = await measureSound(files.output, soundJoins(plan.sound).map((j) => j.at), { dir: ctx.dir, seconds: plan.outputSeconds, signal, onProgress: (f) => sendThrottled(i, 0.1 + 0.3 * f) });
-        if (sound.error) console.error("[render] preview sound not measured:", sound.error);
-      }
-      // Where the footage's face is on screen, to say how much of it each graphic covers (previews with graphics).
-      const faceAt = kind === "preview" && plan.graphics.length ? await facesOnScreen(snapshot, transcript, video.id, video.userId, plan).catch((e) => { console.error("[render] faces not read:", (e as Error).message.slice(0, 200)); return null; }) : null;
+      // edit's joins by the check), breaths and clicks at the joins. Where the footage's face is on screen, to say how
+      // much of it each graphic covers (previews with graphics). The three at once.
+      await send(i, 0.1);
+      const [base0, sound, faceAt] = await Promise.all([
+        measureFile(files.output, { signal, timeoutMs: Math.max(60_000, plan.outputSeconds * 1000), picture: kind === "preview" }),
+        kind === "preview" && outInfo.hasAudio
+          ? measureSound(files.output, soundJoins(plan.sound).map((j) => j.at), { dir: ctx.dir, seconds: plan.outputSeconds, signal, onProgress: (f) => sendThrottled(i, 0.1 + 0.3 * f) })
+            .then((x) => { if (x.error) console.error("[render] preview sound not measured:", x.error); return x as FileSound | undefined; })
+          : Promise.resolve(undefined as FileSound | undefined),
+        kind === "preview" && plan.graphics.length ? facesOnScreen(snapshot, transcript, video.id, video.userId, plan).catch((e) => { console.error("[render] faces not read:", (e as Error).message.slice(0, 200)); return null; }) : Promise.resolve(null),
+      ]);
       const graphics: FileMeasure["graphics"] = [];
       for (const gr of plan.graphics) {
         const shown = Math.min(gr.end, base0.videoSeconds ?? gr.end) - gr.start;
@@ -288,14 +302,9 @@ export async function renderJob(ctx: Ctx) {
       measured = { videoSeconds: null, audioSeconds: null, black: [], silences: [], lufs: null, peakDb: null, graphics: [], error: (e as Error).message.slice(0, 200) };
     }
     const loudness = { lufs: measured.lufs, peakDb: measured.peakDb };
-    const size = await uploadFile(`${base}.mp4`, files.output, "video/mp4");
+    const size = await uploaded;
     await send(i, 0.6);
-    const framesKeys: string[] = [];
-    for (const [k, f] of [0.15, 0.4, 0.65, 0.9].entries()) {
-      const fp = join(ctx.dir, `f${k}.jpg`);
-      await frameAt(files.output, outInfo.seconds * f, fp, kind === "final" ? 960 : 540, signal, !!plan.hdr).catch(() => {});
-      if (await stat(fp).then(() => true).catch(() => false)) { await uploadFile(`${base}-f${k}.jpg`, fp, "image/jpeg"); framesKeys.push(`${base}-f${k}.jpg`); }
-    }
+    const framesKeys = (await frames).filter((x): x is string => !!x);
     // An edit from scratch (only its blank canvas on V1) has no words to hear again.
     const wordless = video.kind === "canvas" && plan.sources.every((id) => id === video.id);
     const heard: HeardTranscript | null = kind === "preview" && outInfo.hasAudio && !wordless ? { status: transcriber() ? "queued" : "off", seconds: outInfo.seconds } : null;
