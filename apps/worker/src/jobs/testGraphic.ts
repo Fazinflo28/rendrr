@@ -5,7 +5,7 @@ import { outputSize } from "@rendrr/shared/renderPlan";
 import { gunzipSync } from "node:zlib";
 import { join } from "node:path";
 import { getBytes } from "@rendrr/core";
-import { COVER_SIZE, frameAt, graphicCover, JobError, run } from "../lib/ffmpeg";
+import { COVER_SIZE, cpuBudget, frameAt, graphicCover, JobError, run } from "../lib/ffmpeg";
 import { brandLogoDataUrl, customGraphicHtml, fontWarning, GRAPHIC_FIELDS, recordHtml } from "../lib/graphics";
 import type { Ctx } from "../lib/job";
 
@@ -63,13 +63,15 @@ export async function testGraphicJob(ctx: Ctx): Promise<TestGraphicResult> {
     if (!v || v.userId !== d.userId) throw new JobError("That video is not in the library. Use list_footage for the ids.", "not-found", false);
     if (!v.proxyKey) throw new JobError("That video has no preview copy (still processing, or expired).", "not-ready", false);
     const at = Math.max(0, Math.min(d.over.time, v.seconds - seconds));
-    bg = ["-ss", at.toFixed(3), "-t", String(seconds), "-i", await signGet(v.proxyKey, 600)];
+    bg = ["-threads", "2", "-ss", at.toFixed(3), "-t", String(seconds), "-i", await signGet(v.proxyKey, 600)];
     video = { id: v.id, seconds: at, vision: (v.analysis?.vision as unknown as VisionSummary | null) ?? null };
   }
   const out = join(ctx.dir, "test.mp4");
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", ...bg, "-ss", from.toFixed(3), "-c:v", "libvpx-vp9", "-i", gfile,
+  // Threads set: FFmpeg would start one per CPU of the host for each decoder, the filters and x264 (hundreds).
+  const th = String(cpuBudget());
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-filter_complex_threads", th, ...bg, "-threads", "2", "-ss", from.toFixed(3), "-c:v", "libvpx-vp9", "-i", gfile,
     "-filter_complex", `[0:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1[bg];[1:v]fps=30,format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,tpad=stop_mode=clone:stop=-1[g];[bg][g]overlay=(W-w)/2:(H-h)/2:eof_action=repeat,trim=duration=${seconds},format=yuv420p[v]`,
-    "-map", "[v]", ...(d.over ? ["-map", "0:a?", "-c:a", "aac", "-b:a", "96k"] : []), "-t", String(seconds), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-movflags", "+faststart", out], { signal: ctx.signal });
+    "-map", "[v]", ...(d.over ? ["-map", "0:a?", "-c:a", "aac", "-b:a", "96k"] : []), "-t", String(seconds), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", th, "-movflags", "+faststart", out], { signal: ctx.signal });
 
   // Three frames to look at, and what of the frame and the face it covers (8 moments, as the preview check measures).
   const base = `${PREFIX.tests}${d.userId}/${d.key}`;

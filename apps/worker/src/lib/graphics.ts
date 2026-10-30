@@ -10,16 +10,63 @@ import { PNG } from "pngjs";
 import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-core";
 import { cpuBudget, JobError, run } from "./ffmpeg";
 
-/** Threads this container may start (cgroup pids.max; it counts threads). Chromium uses about 80 per browser. */
+/** Threads this container may start (cgroup pids.max; it counts threads). */
 function threadBudget() {
   try { const v = readFileSync("/sys/fs/cgroup/pids.max", "utf8").trim(); if (v !== "max" && Number(v) > 0) return Number(v); } catch { /* no limit */ }
   return Infinity;
 }
 /**
- * Browsers recording one graphic at once: one CPU each, one CPU left for the rest of the worker, and room left
- * under the thread limit for a render running at the same time (500 threads) at about 100 per browser.
+ * The thread limit (1000 on Railway) is shared by every job. A recording browser costs about 100 threads with its
+ * encoder (Chromium about 80: it sizes its pools by the host's CPUs, not the container's; the VP9 encoder about 10
+ * at encodePiece's caps). 500 are kept for the rest of the worker: a render's FFmpeg starts hundreds.
  */
-export const GRAPHIC_WORKERS = Math.max(1, Math.min(6, Math.floor(Number(process.env.GRAPHIC_WORKERS)) || Math.min(cpuBudget() - 1, Math.floor((threadBudget() - 500) / 100))));
+const THREADS_KEPT = 500, THREADS_PER_BROWSER = 100;
+/** Browsers this worker runs at once, across every job (graphics, tests, a render's graphics, snapshots). */
+export const BROWSER_SLOTS = Math.max(1, Math.floor(Number(process.env.BROWSER_SLOTS)) || Math.min(8, Math.floor((threadBudget() - THREADS_KEPT) / THREADS_PER_BROWSER)));
+/**
+ * Browsers recording one graphic at once: one CPU each, one CPU left for the rest of the worker, and one slot left
+ * so a test or a snapshot is not held up by a long recording.
+ */
+export const GRAPHIC_WORKERS = Math.max(1, Math.min(6, Math.floor(Number(process.env.GRAPHIC_WORKERS)) || Math.min(cpuBudget() - 1, BROWSER_SLOTS - 1)));
+
+let freeSlots = BROWSER_SLOTS;
+/**
+ * Takes up to `want` browser slots: waits for one, and up to 5 s for `want` (a test or a snapshot gives its slots
+ * back in seconds), then takes what is free. A recording that takes fewer runs fewer browsers. giveBrowsers returns
+ * them.
+ */
+async function takeBrowsers(want: number, signal?: AbortSignal): Promise<number> {
+  want = Math.max(1, Math.min(want, BROWSER_SLOTS));
+  const patient = Date.now() + 5_000;
+  while (freeSlots < want && (freeSlots < 1 || Date.now() < patient)) {
+    if (signal?.aborted) throw new JobError("Stopped.");
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const n = Math.min(want, freeSlots);
+  freeSlots -= n;
+  return n;
+}
+const giveBrowsers = (n: number) => { freeSlots += n; };
+/** Browser slots free now (tests). */
+export const freeBrowserSlots = () => freeSlots;
+
+/** The container could not start another process or thread. */
+const threadsGone = (e: unknown) => /EAGAIN|Resource temporarily unavailable|pthread_create/.test(String((e as Error)?.message ?? e));
+const busyError = () => new JobError("The server is too busy to record graphics right now (it ran out of threads). Try again in a minute.", "busy", true);
+
+/** Kills a browser and every process it started (puppeteer starts each browser as its own process group). */
+function killBrowser(b: Browser) {
+  const p = b.process();
+  if (!p?.pid || p.exitCode !== null || p.signalCode !== null) return;
+  try { process.kill(-p.pid, "SIGKILL"); } catch { try { p.kill("SIGKILL"); } catch { /* gone */ } }
+}
+/** Closes a browser, and kills it if it has not closed within 5 s. */
+async function closeBrowser(b: Browser) {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([b.close(), new Promise((r) => { timer = setTimeout(r, 5_000); })]).catch(() => {});
+  clearTimeout(timer);
+  killBrowser(b);
+}
 
 /**
  * Up to `exactSeconds` a graphic is recorded on every frame; longer ones (up to 4 hours: a whole video) are sampled,
@@ -39,11 +86,15 @@ function chromiumPath() {
   return p;
 }
 
-/** A headless Chromium with no network: every request but data: is blocked, WebRTC too, and memory is capped. */
-function launchLocked() {
+/**
+ * A headless Chromium with no network: every request but data: is blocked, WebRTC too, and memory is capped. Out of
+ * threads, it says the server is busy. Each one needs a browser slot (takeBrowsers).
+ */
+async function launchLocked() {
   return puppeteer.launch({
     executablePath: chromiumPath(), headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--mute-audio", "--no-first-run", "--disable-extensions", "--disable-background-networking",
+      "--disable-crash-reporter", "--disable-breakpad", // no crash handler process (more threads, and its fork fails first when they run out)
       "--proxy-server=127.0.0.1:9", "--proxy-bypass-list=<-loopback>", "--host-resolver-rules=MAP * ~NOTFOUND",
       "--webrtc-ip-handling-policy=disable_non_proxied_udp", // WebRTC would otherwise send UDP around the proxy
       "--js-flags=--max-old-space-size=256", "--renderer-process-limit=1",
@@ -52,7 +103,7 @@ function launchLocked() {
       // Every capture shows the page as the clock left it: animations are not run on the compositor thread (whose
       // picture can lag the clock by a frame or two), and images are decoded before they are drawn.
       "--disable-threaded-animation", "--disable-threaded-scrolling", "--disable-checker-imaging"],
-  });
+  }).catch((e) => { throw threadsGone(e) ? busyError() : e; });
 }
 
 /** The graphic loaded in a page at w x h with the virtual clock, fonts ready (every @font-face loaded before the first
@@ -95,13 +146,18 @@ async function shoot(g: GPage, w: number, h: number, scale = 1): Promise<Buffer>
  * the locked browser, the virtual clock stepped frame by frame to `at`. PNG bytes and any errors the page threw.
  */
 export async function snapshotHtml(html: string, o: { width: number; height: number; at: number; transparent?: boolean }): Promise<{ png: Buffer; errors: string[] }> {
-  const browser = await launchLocked();
+  await takeBrowsers(1);
+  let browser: Browser | null = null;
   const errors: string[] = [];
   try {
+    browser = await launchLocked();
     const g = await openGraphicPage(browser, html, o.width, o.height, !!o.transparent, errors);
     await stepTo(g, 0, Math.max(0, Math.round(o.at * GRAPHIC_LIMITS.fps)));
     return { png: await shoot(g, o.width, o.height), errors };
-  } finally { await browser.close().catch(() => {}); }
+  } finally {
+    if (browser) await closeBrowser(browser);
+    giveBrowsers(1);
+  }
 }
 
 /** How many pixels differ between two pictures of the same size (any channel by more than 2 levels). */
@@ -156,19 +212,30 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   const dur = Math.min(GRAPHIC_LIMITS.maxSeconds, Math.max(0.5, o.durationSec));
   const FPS = GRAPHIC_LIMITS.fps, STEP = 15, frames = Math.max(1, Math.round(dur * FPS));
   const sampled = dur > GRAPHIC_LIMITS.exactSeconds;
-  const workers = Math.max(1, Math.min(GRAPHIC_WORKERS, o.workers ?? GRAPHIC_WORKERS));
+  // Browsers: as many as asked for (a lane is at least 2 s), as many as are free in the worker.
+  const workers = await takeBrowsers(Math.min(GRAPHIC_WORKERS, o.workers ?? GRAPHIC_WORKERS, Math.max(1, Math.floor(frames / 60))), o.signal);
   const maxMs = Math.min(GRAPHIC_LIMITS.maxMs, o.maxMs ?? GRAPHIC_LIMITS.maxMs);
   const cost = frameCostMs(w, h);
   const t0 = Date.now();
   const root = join(o.dir, "graphic-" + Math.random().toString(36).slice(2, 7));
-  await mkdir(join(root, "checks"), { recursive: true });
   const checkAt = [0, Math.floor(frames / 3), Math.floor((2 * frames) / 3), frames - 1];
   const checkFiles = checkAt.map((_, i) => join(root, "checks", `c${i}.png`));
 
-  // One kill switch with a deadline that moves: the scan's, then the recording's.
-  const browsers: Browser[] = [];
-  let phase: "scan" | "record" = sampled ? "scan" : "record", timedOut: "scan" | "record" | null = null, stopped = false;
-  const killAll = () => { for (const b of browsers) b.process()?.kill("SIGKILL"); };
+  // Every browser this recording starts (a crashed one's stand-in too), all closed at the end; pooled[k] is pool
+  // branch k's, kept from the scan to the recording. One kill switch with a deadline that moves: the scan's, then
+  // the recording's. Once the recording is ending (stopped, timed out or failed), no browser starts: one started
+  // then would never be closed.
+  const browsers: Browser[] = [], pooled: Browser[] = [];
+  let phase: "scan" | "record" = sampled ? "scan" : "record", timedOut: "scan" | "record" | null = null, stopped = false, failing = false;
+  const killAll = () => { for (const b of browsers) killBrowser(b); };
+  const ending = () => stopped || !!timedOut || failing;
+  const launch = async () => {
+    if (ending()) throw new Error("The recording is ending.");
+    const b = await launchLocked();
+    browsers.push(b);
+    if (ending()) killAll();
+    return b;
+  };
   let deadline = t0 + (sampled ? Math.min(maxMs, 60_000 + Math.round((frames * 10) / workers)) : Math.min(maxMs, 60_000 + Math.round((frames * cost) / workers)));
   const watch = setInterval(() => { if (Date.now() > deadline && !timedOut) { timedOut = phase; killAll(); } }, 250);
   const abort = () => { stopped = true; killAll(); };
@@ -178,14 +245,17 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   const check = () => { if (stopped) throw new JobError("Stopped."); if (errors.length) throw codeError(); };
   let lastP = 0;
   const progress = (p: number) => { p = Math.min(0.99, p); if (p > lastP) { lastP = p; o.onProgress?.(p); } };
-  const pool = async (n: number, jobs: number, run: (browser: Browser, i: number) => Promise<void>) => {
-    let next = 0, failed = false;
+  // `jobs` jobs over up to n browsers. When one fails, the others are stopped (every browser killed) and the pool
+  // returns only once all of them have ended, with the first error: nothing is left running when the browsers close.
+  const pool = async (n: number, jobs: number, work: (browser: Browser, i: number) => Promise<void>) => {
+    let next = 0, first: unknown = null;
     await Promise.all(Array.from({ length: Math.min(n, jobs) }, async (_, k) => {
-      let browser = browsers[k];
-      if (!browser) { browser = await launchLocked(); browsers[k] = browser; if (stopped || timedOut) killAll(); }
-      try { while (next < jobs && !failed) await run(browser, next++); }
-      catch (e) { failed = true; throw e; }
+      try {
+        if (!pooled[k]?.connected) pooled[k] = await launch();
+        while (next < jobs && !failing) await work(pooled[k], next++);
+      } catch (e) { if (!failing) { failing = true; first = e; killAll(); } }
     }));
+    if (failing) throw first;
   };
 
   // Which frames are captured: all of them up to 15 s; for longer graphics, what the scan finds.
@@ -195,6 +265,7 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   const pieces: Piece[] = [];
   let chunkCount = 0, retried = 0;
   try {
+    await mkdir(join(root, "checks"), { recursive: true });
     if (!sampled) capture.fill(1);
     else {
       const samples: number[] = [];
@@ -273,7 +344,7 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
       let browser = browser0, g: GPage | null = null, at = -1; // the page and the last frame its clock stepped to
       const fresh = async () => {
         if (g) await g.page.close().catch(() => {});
-        if (!browser.connected) { browser = await launchLocked(); browsers.push(browser); if (stopped || timedOut) killAll(); }
+        if (!browser.connected) { killBrowser(browser); browser = await launch(); }
         g = await openGraphicPage(browser, html, w, h, o.transparent, errors);
         at = -1;
       };
@@ -329,8 +400,8 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
               await Promise.allSettled(tries);
               for (const p of mine) await rm(p.file, { force: true }).catch(() => {});
               captured -= done;
-              // Only a crash is tried again: not the graphic's own errors, a time limit or a stop.
-              if (attempt >= 1 || e instanceof JobError || stopped || timedOut || errors.length) throw e;
+              // Only a crash is tried again: not the graphic's own errors, a time limit, a stop or another lane's failure.
+              if (attempt >= 1 || e instanceof JobError || ending() || errors.length) throw e;
               retried++;
               console.warn(`[graphic] chunk ${ci + 1} of lane ${li + 1} (frames ${ch.a}-${ch.b}) failed, recording it again: ${(e as Error).message.slice(0, 200)}`);
             }
@@ -345,11 +416,13 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
     if (timedOut === "scan") throw new JobError(`The graphic took too long to step through (${Math.round((lastP / 0.1) * 100)}% scanned in ${Math.round((Date.now() - t0) / 1000)} s): its code is slow to run on every frame. If renderFrame(t) draws the whole frame from t alone, set window.renderFramePure = true so frames that are not recorded skip it.`, "graphic-slow", false);
     if (timedOut === "record") throw new JobError(`The graphic did not finish recording in time (${Math.round(lastP * 100)}% done after ${Math.round((Date.now() - t0) / 1000)} s; ${dense} frames move one by one). Make less of it move at once, draw it smaller, or split it into graphics placed where they are needed.`, "graphic-slow", false);
     if (e instanceof JobError) throw e;
+    if (threadsGone(e)) throw busyError();
     throw new JobError(`The graphic crashed while recording: ${(e as Error).message.slice(0, 200)}`, "graphic", true);
   } finally {
     clearInterval(watch);
     o.signal?.removeEventListener("abort", abort);
-    for (const b of browsers) await b.close().catch(() => b.process()?.kill("SIGKILL"));
+    await Promise.all(browsers.map(closeBrowser));
+    giveBrowsers(workers);
   }
   // The pieces, in time order, joined without re-encoding; each lasts exactly until the next one starts.
   const all = [...pieces].sort((x, y) => x.start - y.start);
@@ -374,7 +447,9 @@ async function encodePiece(list: { frame: number; file: string }[], end: number,
   const txt = out.replace(/\.webm$/, ".txt");
   await writeFile(txt, list.map((x, i) => `file '${x.file}'\nduration ${(((list[i + 1]?.frame ?? end) - x.frame) / FPS).toFixed(6)}`).join("\n") + "\n" + (final ? `file '${list[list.length - 1].file}'\n` : ""));
   // The encoder's clock is the 30 fps grid every picture sits on (its default, 25 fps, moved pictures by up to 20 ms).
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", txt, "-fps_mode", "vfr", "-enc_time_base", `1/${FPS}`,
+  // One thread to decode the pictures and one for the filters: FFmpeg would start one per CPU of the host (48 on
+  // Railway) for each, about 70 threads per piece against the container's limit, for no speed (measured).
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-filter_threads", "1", "-threads", "1", "-f", "concat", "-safe", "0", "-i", txt, "-fps_mode", "vfr", "-enc_time_base", `1/${FPS}`,
     "-c:v", "libvpx-vp9", "-pix_fmt", transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "20", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0",
     "-threads", "2", out], { signal }); // several pieces encode at once; more threads did not make one faster
   await Promise.all(list.map((x) => rm(x.file, { force: true })));
@@ -385,8 +460,9 @@ async function encodePiece(list: { frame: number; file: string }[], end: number,
  * left ghosts of earlier frames wherever the picture stopped changing (a card's old rows showed through the next).
  */
 export async function encodeFrames(fdir: string, fps: number, out: string, transparent: boolean, signal?: AbortSignal) {
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-framerate", String(fps), "-i", join(fdir, "f%05d.png"), "-r", String(GRAPHIC_LIMITS.fps),
-    "-c:v", "libvpx-vp9", "-pix_fmt", transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "20", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0", out], { signal });
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-filter_threads", "1", "-threads", "1", "-framerate", String(fps), "-i", join(fdir, "f%05d.png"), "-r", String(GRAPHIC_LIMITS.fps),
+    "-c:v", "libvpx-vp9", "-pix_fmt", transparent ? "yuva420p" : "yuv420p", "-b:v", "0", "-crf", "20", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-auto-alt-ref", "0",
+    "-threads", String(Math.min(4, cpuBudget())), out], { signal });
 }
 /** Changes when the encoding does, so cached template files are recorded again. */
 export const GRAPHIC_ENCODER = "vp9-crf20";

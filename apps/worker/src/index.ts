@@ -20,11 +20,14 @@ import { framesJob } from "./jobs/frames";
 import { maintenanceJob } from "./jobs/maintenance";
 import { proxyJob } from "./jobs/proxy";
 import { renderFailed, renderJob } from "./jobs/render";
-import { filterThreads } from "./lib/ffmpeg";
-import { GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
+import { cpuBudget, filterThreads } from "./lib/ffmpeg";
+import { BROWSER_SLOTS, GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
 import { guarded } from "./lib/job";
 
 env(); // fail fast on missing settings
+// Python's maths libraries (OpenBLAS) start a thread per CPU of the host (48 on Railway), not of the container (6),
+// and the container's thread limit counts every one: the scripts this worker starts use what the container has.
+for (const k of ["OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS"]) process.env[k] ??= String(cpuBudget());
 
 const videoFailed = async (job: Job, message: string) => {
   const id = (job.data as { videoId?: string }).videoId;
@@ -101,7 +104,7 @@ createServer(async (_req, res) => {
   // The CPUs FFmpeg sees and the container's thread limit, which a render's thread count has to stay under.
   const pids = (() => { try { return readFileSync("/sys/fs/cgroup/pids.max", "utf8").trim(); } catch { return "?"; } })();
   const align = existsSync(process.env.ALIGN_MODEL || "/opt/models/wav2vec2/model_quantized.onnx") ? "wav2vec2 ready" : "wav2vec2 MISSING (word edges from the sound only)";
-  console.log(`[worker] up, health on :${port}; cpus ${availableParallelism()}, pids.max ${pids}, filter threads ${filterThreads()}, graphics browsers ${GRAPHIC_WORKERS}, ${align}`);
+  console.log(`[worker] up, health on :${port}; cpus ${availableParallelism()}, pids.max ${pids}, filter threads ${filterThreads()}, graphics browsers ${GRAPHIC_WORKERS} (${BROWSER_SLOTS} in all), ${align}`);
 });
 
 const stop = async () => { await Promise.all(workers.map((w) => w.close())); await prisma.$disconnect(); process.exit(0); };
