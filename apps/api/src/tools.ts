@@ -1,7 +1,7 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
 // Every response is small text; images only when asked for (images: true, get_frames, get_preview_frames).
 // Every write goes through applyTimelineChange.
-import { AppError, applyTimelineChange, enqueue, notFound, putObject, readGraphic, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
+import { AppError, applyTimelineChange, enqueue, graphicFailedOnServer, notFound, putObject, readGraphic, recordGraphicAgain, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
@@ -347,6 +347,12 @@ function marksLine(v: { id: string; seconds: number; analysis: unknown }, tl: Ti
   const mine = tl.marks?.length ?? 0, notes = Object.keys(tl.markEdits ?? {}).length;
   return `Marks on the footage (list_marks, mark_silences, mark_fillers, get_retakes): ${byKind.map(([k, n]) => `${k} ${n}`).join(", ") || "none"}${mine ? `; ${mine} of yours` : ""}${notes ? `; your notes on ${notes} of Rendrr's` : ""}.`;
 }
+/** What to do after a graphic failed: record it again when Rendrr's side gave out, else fix the code. */
+function failedNext(id: string, error: string | null) {
+  return graphicFailedOnServer(error)
+    ? `That was a problem on Rendrr's side, not in the code: get_graphic {graphicId: "${id}", retry: true} records it again (nothing to send again).`
+    : "Fix the code and call create_graphic again.";
+}
 const warningsText = (w: unknown) => (Array.isArray(w) && w.length ? ` Warning: ${w.join(" ")}` : "");
 /** A custom graphic's params and their default values, for list_graphics ("" when it has none). */
 const defaultsText = (schema: unknown) => { const d = graphicDefaults(schema); return Object.keys(d).length ? ` | ${JSON.stringify(d).slice(0, 300)}` : ""; };
@@ -631,7 +637,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: [
       "Graphic templates (id | name | seconds | params):",
       ...GRAPHIC_TEMPLATES.map((t) => `${t.id} | ${t.name} | ${t.durationSec}s | ${params(t.paramsSchema)}`),
-      "Custom graphics (id | name | status | seconds | size | params = defaults): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${progress[g.id] ? ` ${progress[g.id]}` : ""}${g.error ? " (" + g.error + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}${defaultsText(g.paramsSchema)}${warningsText(g.warnings)}`).join("\n") : "none (create_graphic)"),
+      "Custom graphics (id | name | status | seconds | size | params = defaults): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${progress[g.id] ? ` ${progress[g.id]}` : ""}${g.error ? " (" + g.error.replace(/\s+/g, " ").trim() + (graphicFailedOnServer(g.error) ? "; get_graphic retry: true records it again" : "") + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}${defaultsText(g.paramsSchema)}${warningsText(g.warnings)}`).join("\n") : "none (create_graphic)"),
       "Your fonts (add_font; use by name): " + (fonts.length ? fontsText(fonts) : "none"),
       "Music (trackId | name | mood): " + MUSIC_TRACKS.map((m) => `${m.id} | ${m.name} | ${m.mood}`).join("; "),
       "Sound effects for a3 (set_clips clip with sfxId): " + SFX.map((x) => `${x.id} ${x.seconds}s`).join(", "),
@@ -853,7 +859,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       const p = await readGraphic(g.id);
       return { text: `Graphic ${g.id} is recording${p ? `: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : " (queued)"}. It keeps going: get_graphic shows how far it got${p?.etaSec ? ` (look again in about ${fmtLeft(Math.min(p.etaSec, 300))})` : ""}. You can place it with apply_edits add_graphic now; renders include it once it is ready.`, data: { graphicId: g.id, status: "rendering" } };
     }
-    if (done.status === "failed") return { text: `The graphic did not render: ${done.error}. Fix the code and call create_graphic again.` };
+    if (done.status === "failed") return { text: `The graphic did not render: ${(done.error || "unknown error").replace(/\.$/, "")}. ${failedNext(done.id, done.error)}` };
     const images = i.images === true ? await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
     return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}).${images.length ? " 4 check frames attached." : ""}${warningsText(done.warnings)} Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };
   },
@@ -898,10 +904,15 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   async get_graphic(c, i) {
-    const g = await prisma.graphic.findUnique({ where: { id: i.graphicId } });
+    let g = await prisma.graphic.findUnique({ where: { id: i.graphicId } });
     if (!g || g.ownerId !== c.userId) throw notFound("That graphic does not exist. list_graphics shows yours.");
+    if (i.retry && g.status === "failed") {
+      // Recorded again from its own code, then answered like create_graphic: done within the wait, or still recording.
+      await recordGraphicAgain(c.userId, g.id);
+      g = (await waitFor(async () => { const x = await prisma.graphic.findUnique({ where: { id: g!.id } }); return x && (x.status === "ready" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS, 500)) ?? (await prisma.graphic.findUniqueOrThrow({ where: { id: g.id } }));
+    }
     const head = `${g.id} | ${g.name}`, size = `${+g.durationSec.toFixed(2)}s | ${g.width}x${g.height}${g.transparent ? ", transparent" : ""}`;
-    if (g.status === "failed") return { text: `${head} | failed: ${(g.error || "unknown error").replace(/\.$/, "")}. Fix the code and call create_graphic again.` };
+    if (g.status === "failed") return { text: `${head} | failed: ${(g.error || "unknown error").replace(/\.$/, "")}. ${failedNext(g.id, g.error)}` };
     if (g.status !== "ready") {
       const p = await readGraphic(g.id);
       return { text: `${head} | ${p ? `recording: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : g.status} | ${size}. Look again in a little while; add_graphic can place it now.` };

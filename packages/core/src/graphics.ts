@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@rendrr/db";
 import { canonicalJson, findTemplate, graphicDefaults, PREFIX, type Timeline, type V3Clip } from "@rendrr/shared";
-import { enqueue, redis, type GraphicJob } from "./queue";
+import { enqueue, queue, redis, type GraphicJob } from "./queue";
 import { headObject } from "./storage";
 
 /**
@@ -76,4 +76,21 @@ export async function placementMedia(g: GraphicRow & { status: string; renderedK
   if (err) return { state: "failed", error: err };
   const p = await redis().get(`graphic:${v.progressId}:progress`).catch(() => null);
   return p ? { state: "recording", percent: (JSON.parse(p) as { percent: number }).percent } : { state: "queued" };
+}
+
+/** A failure on Rendrr's side (the browser or the server gave out), not in the graphic's code: recording it again can work. */
+export const graphicFailedOnServer = (error: string | null | undefined) => /crashed while recording|too busy|not installed|ran out of threads/i.test(error || "");
+
+/**
+ * A failed custom graphic recorded again from its own code (nothing to send again): queued as it was first. Its old
+ * job is taken off the queue first, since a failed job keeps its id and would stop the new one.
+ */
+export async function recordGraphicAgain(userId: string, graphicId: string) {
+  const g = await prisma.graphic.findFirst({ where: { id: graphicId, ownerId: userId, kind: "custom" }, select: { id: true, status: true, code: true } });
+  if (!g || !g.code) return null;
+  if (g.status !== "failed") return { id: g.id, status: g.status, queued: false };
+  await queue("graphic").remove(g.id).catch(() => {});
+  await prisma.graphic.update({ where: { id: g.id }, data: { status: "queued", error: null, attempts: 0 }, select: { id: true } });
+  await enqueue<GraphicJob>("graphic", { graphicId: g.id }, { jobId: g.id });
+  return { id: g.id, status: "queued", queued: true };
 }
