@@ -6,10 +6,11 @@ import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
-  ASPECT_RATIO, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
+  ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
 } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
+import { createCanvas } from "./services/canvas";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
@@ -297,7 +298,8 @@ async function renderOut(renderId: string): Promise<ToolOut> {
 }
 
 /** The footage facts the Export line needs (Phase 7). */
-const footageOf = (v: { fps: number | null; width: number | null; height: number | null; hdr: string | null }) => ({ fps: v.fps, width: v.width, height: v.height, hdr: !!v.hdr });
+// A blank canvas has no picture to scale up: its size is not the final's limit.
+const footageOf = (v: { fps: number | null; width: number | null; height: number | null; hdr: string | null; kind?: string }) => ({ fps: v.fps, width: v.kind === "canvas" ? null : v.width, height: v.kind === "canvas" ? null : v.height, hdr: !!v.hdr });
 /** 40 s, 3 min, 1 h 05 min. */
 /** Custom graphic placements that have no file to play yet (renders leave them out until they do). */
 async function placementLine(userId: string, tl: Timeline): Promise<string[]> {
@@ -344,7 +346,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   async list_footage(c, i) {
-    const vs = await prisma.video.findMany({ where: { userId: c.userId, ...(i.kind ? { kind: i.kind } : {}) }, orderBy: { createdAt: "desc" }, take: 500 });
+    const vs = await prisma.video.findMany({ where: { userId: c.userId, ...(i.kind ? { kind: i.kind } : { kind: { not: "canvas" } }) }, orderBy: { createdAt: "desc" }, take: 500 });
     const recipes = i.kind === "reference" ? await prisma.reference.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 }) : [];
     const acct = await accountLine(c.userId);
     if (!vs.length && !recipes.length) return { text: i.kind ? `${acct} No ${i.kind === "reference" ? "reference videos" : "footage"} yet.` : `${acct} No footage yet: the user adds videos in Rendrr (Library > Add footage). ${EMPTY_HINT}` };
@@ -705,6 +707,16 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
 
   async create_project(c, i) {
     const actor = { actorKind: c.ai === "chatgpt" ? "chatgpt" as const : "claude" as const };
+    if (i.blank) {
+      if (i.videoId || i.videoIds?.length || i.fromProjectId || i.clips?.length) throw new AppError("blank starts an edit with no footage: send it without videoId, videoIds, fromProjectId or clips.", 400, "invalid-input");
+      const name = (i.name || "").trim() || "New video";
+      const aspect = (i.aspect ?? "16:9") as Aspect;
+      const canvas = await createCanvas(c.userId, { seconds: i.blank.seconds, aspect, color: i.blank.color, name });
+      const p = await createProject(c.userId, { videoId: canvas.id, name, folderId: i.folderId, aspect, length: i.blank.seconds, styleId: i.styleId }, actor);
+      const v1 = (p.timeline as unknown as Timeline).tracks.v1 as { id: string }[];
+      const { width, height } = aspectSize(aspect, 1080);
+      return { text: `Created edit "${p.name}" (${p.id}) from scratch: a blank ${i.blank.seconds}s canvas, ${(i.blank.color || "#000000").toUpperCase()}, ${aspect} (final ${width}x${height}), silent; V1 is the canvas clip ${v1[0]?.id} (trim_clip it to change the length, up to ${canvas.seconds.toFixed(0)}s). Nothing else is in it. Build the video on it: create_graphic for the animated scenes (transparent false for a full-frame scene; params to reuse one graphic with other words), then one apply_edits with add_graphic placements, add_text, add_library_item pieces, add_music and sfx, set_transition and set_keyframes. test_graphic shows a few seconds of a scene before a full preview. Then check_edit and render_preview once.`, data: { projectId: p.id } };
+    }
     if (i.fromProjectId) {
       if (i.videoId || i.videoIds?.length) throw new AppError("Send fromProjectId (a copy of an edit) or videoId / videoIds (a new edit from footage), not both.", 400, "invalid-input");
       const src = await getOwnedProject(c.userId, i.fromProjectId);

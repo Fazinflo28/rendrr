@@ -125,7 +125,7 @@ export async function deepFailed(videoId: string, message: string) {
  */
 export async function queueMissingDeep(): Promise<number> {
   const rows = await prisma.footageAnalysis.findMany({
-    where: { video: { status: "ready", proxyKey: { not: null } }, OR: [{ deepVersion: null }, { deepVersion: { lt: DEEP_VERSION } }] },
+    where: { video: { status: "ready", proxyKey: { not: null }, kind: { not: "canvas" } }, OR: [{ deepVersion: null }, { deepVersion: { lt: DEEP_VERSION } }] },
     select: { videoId: true }, take: 50, orderBy: { createdAt: "desc" },
   });
   const day = new Date().toISOString().slice(0, 10);

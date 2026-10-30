@@ -383,6 +383,7 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | Where the speaker is | From the faces measured at 10 fps when the video came in (no new job, no waiting): over each clip, the face on screen at least a third of the time whose mouth moves most (the biggest when there are no mouth readings), its median centre. A clip with no face keeps its fit and is named. |
 | Shorts | One edit per short (each its own versions, comments, renders), made in one call so Claude does not need 4 calls per short. Captions default to bold for footage (a short without captions is rare); from an edit, its own caption style. Reframe defaults on for shorts, off for create_project (it changes the picture, so it is asked for). Stretches are seconds of the original footage, like every other time Claude sends; map_time converts from an edit. |
 | 4:5 sizes | 1080x1350 final, 540x676 preview (even sizes for the encoder). Caption sizes as square: both are sized on the short side, the width. |
+| An edit from scratch | A real blank video (the canvas) on V1 rather than an empty sequence: the editor, the render, checks, transitions and everything that hangs on V1 clips work unchanged. Two seconds are encoded and looped with stream copy (an hour in seconds, about 13 MB), BT.709 limited range so the colour lands exactly. It lasts twice the length asked (at least a minute more) so the edit can grow with trim_clip; it never expires and is not listed as footage. No preview transcription for it (no words). |
 
 ## Engine Part 6: the user interface (28 October)
 

@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { availableParallelism } from "node:os";
 import { analyzeJob } from "./jobs/analyze";
 import { breakdownJob, queueMissingBreakdowns } from "./jobs/breakdown";
+import { canvasJob } from "./jobs/canvas";
 import { deepFailed, deepJob, queueMissingDeep } from "./jobs/deep";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
 import { heardFailed, heardJob } from "./jobs/heard";
@@ -62,7 +63,7 @@ const workers = [
   new Worker(QUEUES.heard.name, guarded("heard", QUEUES.heard.timeoutMs, "Transcribing the preview", heardJob, (job, msg) => heardFailed((job.data as { renderId: string }).renderId, msg), renderUser), { connection: newRedis(), concurrency: conc("heard", 2), lockDuration: 60_000 }),
   // test_graphic (and the library's preview frames and icon sheets): its own queue so a render or a long recording
   // does not hold it up.
-  new Worker(QUEUES.test.name, guarded("test", QUEUES.test.timeoutMs, "Testing the graphic", (ctx): Promise<unknown> => ((ctx.job.data as { kind?: string }).kind === "snapshot" ? snapshotJob(ctx) : testGraphicJob(ctx)), async () => {}), { connection: newRedis(), concurrency: conc("test", 2), lockDuration: 60_000 }),
+  new Worker(QUEUES.test.name, guarded("test", QUEUES.test.timeoutMs, "Testing the graphic", (ctx): Promise<unknown> => { const k = (ctx.job.data as { kind?: string }).kind; return k === "snapshot" ? snapshotJob(ctx) : k === "canvas" ? canvasJob(ctx) : testGraphicJob(ctx); }, async () => {}), { connection: newRedis(), concurrency: conc("test", 2), lockDuration: 60_000 }),
   // analyze_reference: a reference video measured into a style file.
   new Worker(QUEUES.style.name, guarded("style", styleLimit, "Measuring the reference", styleJob, (job, msg) => styleFailed((job.data as { styleFileId: string }).styleFileId, msg), styleUser), { connection: newRedis(), concurrency: conc("style", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),

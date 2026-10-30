@@ -10,6 +10,7 @@ export const MCP_INSTRUCTIONS = [
   "Render once per revision: put every change in one apply_edits, run check_edit (no render) and fix what it shows in one more apply_edits, then render_preview ONCE. Every render is a version the user sees: never render after each small fix or to compare options.",
   "Comments: get_comments, fix each spot and the same kind of mistake everywhere, one render, then resolve_comment.",
   "Shorts from a long video: create_shorts (one edit per short, cut, 9:16, reframed on the speaker, captioned). Another shape of an edit: create_project fromProjectId with aspect and reframe. New client or series: create_folder.",
+  "No footage (a SaaS promo, an explainer, animated type): create_project blank {seconds, color} is a blank canvas; build the video with create_graphic scenes, add_graphic, add_text, music and sound effects.",
   "open_projects shows the user's edits, previews and comments inside the chat. Guide: rendrr://how-to-edit.",
 ].join(" ");
 
@@ -99,6 +100,16 @@ Every render_preview makes a version the user sees. Six previews for one request
 - **Shorts from a long video.** Read the whole transcript first (get_footage). Pick moments that stand alone: one complete idea each, a hook in the first 2 seconds (a strong line from later in the clip can open it), 15 to 60 s, ending on a full stop, not mid-thought. Then create_shorts with every short at once (stretches in footage seconds, edges on the sound as in rule 2). It makes one edit per short: cut, 9:16 (or the shape asked), reframed on the speaker, captioned. From a finished long edit use fromProjectId: the shorts keep its grade, LUT, sound and the words it cut. folderName keeps a batch together. Then polish each short with the same rules as any edit (fillers, pauses, look-downs inside the stretches), check_edit, and render_preview once per short.
 - **Another shape of an edit** (a 9:16 or 4:5 cut of a 16:9 video): create_project fromProjectId with aspect and reframe true, so the first edit stays as it is. To reshape the same edit: set_aspect, then set_framing focus "face" (the speaker kept in view in every clip). Look at a few frames of the preview: a two-person shot may need focus {x, y} by hand on some clips.
 - **Folders.** create_folder for a new client or series; list_folders shows them. Every new edit takes folderId.
+
+## From scratch (no footage): motion graphics like After Effects
+
+For a video with no camera footage (a SaaS launch, a product explainer, kinetic type, an animated ad): create_project blank {seconds, color} at the shape asked. It is a blank canvas: the whole video is yours to build.
+
+1. **Script and storyboard first.** Write the scenes with their times (hook in the first 2 seconds, one idea per scene, a clear ending and call to action) and show the user before building when the brief is open.
+2. **Scenes as graphics.** create_graphic draws anything a browser can: HTML, CSS, SVG, canvas 2D, any of the installed fonts, easing, springs, masks, 3D CSS transforms. Make full-frame scenes with transparent false at the output size (1920x1080, 1080x1920, 1080x1080 or 1080x1350). Reuse one graphic for scenes that differ only in words or numbers (params), and place each with add_graphic at its time. Keep motion purposeful: ease in and out, stagger elements, hold each message long enough to read (about 0.3 s a word).
+3. **Product shots.** Screenshots or screen recordings the user uploads go in as b-roll (add_broll) or inside a graphic as data: URLs; frame them with set_keyframes (push in, slide) and set_card (rounded, shadow).
+4. **Type, music and sound.** add_text for simple titles, the library (list_library) for ready lower thirds, callouts, stats and transitions; add_music under it all and sound effects on the big moments; set_transition between scenes.
+5. **Check every scene.** test_graphic shows 3 to 5 s of a scene in seconds: look at each new scene before the full preview. Then check_edit and render_preview once, and look at the preview frames (get_preview_frames) for text that is cut off, overlaps or is too small on a phone.
 
 ## Comments loop
 

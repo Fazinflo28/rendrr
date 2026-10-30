@@ -107,7 +107,12 @@ export const PREFIX = {
   luts: "luts/",
   fonts: "fonts/",
   tests: "tests/", // test_graphic clips and frames, swept after a day
+  canvas: "canvas/", // the blank canvas of an edit made from scratch (no footage)
 } as const;
+/** An edit from scratch: its blank canvas (a solid colour, silent) lasts up to an hour of edit, and twice the length asked
+ *  for (at least a minute more) so the edit can grow with trim_clip. */
+export const CANVAS_MAX_SECONDS = 3600;
+export const canvasFileSeconds = (seconds: number) => Math.min(2 * CANVAS_MAX_SECONDS, Math.max(seconds + 60, seconds * 2));
 
 export const FILLER_WORDS = ["um", "uh", "like", "basically", "honestly"] as const;
 // Drawn-out spellings the transcriber writes for the same sounds: umm, uhh, erm, hmm.

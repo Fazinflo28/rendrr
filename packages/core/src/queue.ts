@@ -49,6 +49,8 @@ export type DeepJob = { videoId: string; force?: boolean };
  *  `${PREFIX.tests}${userId}/${key}.png`. Sent on the test queue: `kind` tells it from a TestGraphicJob. */
 /** Engine Part 4.4: measure a reference video into the style file row styleFileId. */
 export type StyleJob = { styleFileId: string };
+/** A blank canvas for an edit made from scratch: a solid colour, silent, at the edit's shape (the test queue). */
+export type CanvasJob = { kind: "canvas"; videoId: string; width: number; height: number; seconds: number; color: string };
 export type SnapshotJob = { kind: "snapshot"; userId: string; key: string; html: string; width: number; height: number; at: number };
 export type SnapshotResult = { image: string; width: number; height: number; errors: string[]; ms: number };
 export type TestGraphicJob = { userId: string; key: string; graphicId: string; params?: Record<string, unknown>; at: number; seconds: number; length?: number; aspect: Aspect; over?: { videoId: string; time: number } };

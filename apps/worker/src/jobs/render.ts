@@ -296,7 +296,9 @@ export async function renderJob(ctx: Ctx) {
       await frameAt(files.output, outInfo.seconds * f, fp, kind === "final" ? 960 : 540, signal, !!plan.hdr).catch(() => {});
       if (await stat(fp).then(() => true).catch(() => false)) { await uploadFile(`${base}-f${k}.jpg`, fp, "image/jpeg"); framesKeys.push(`${base}-f${k}.jpg`); }
     }
-    const heard: HeardTranscript | null = kind === "preview" && outInfo.hasAudio ? { status: transcriber() ? "queued" : "off", seconds: outInfo.seconds } : null;
+    // An edit from scratch (only its blank canvas on V1) has no words to hear again.
+    const wordless = video.kind === "canvas" && plan.sources.every((id) => id === video.id);
+    const heard: HeardTranscript | null = kind === "preview" && outInfo.hasAudio && !wordless ? { status: transcriber() ? "queued" : "off", seconds: outInfo.seconds } : null;
     // Final: the original is deleted straight away (the daily cleanup is only the safety net).
     if (kind === "final" && tempOriginalIds.length) {
       const origs = await prisma.tempOriginal.findMany({ where: { id: { in: tempOriginalIds } } });

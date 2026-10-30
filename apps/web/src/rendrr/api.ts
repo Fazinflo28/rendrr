@@ -230,10 +230,10 @@ export const api: any = {
   getProjectMarks: async (id: string) => emptyIf(await get(`/projects/${enc(id)}/marks`)),
   // A new edit is the raw footage. `reference` ({ kind: style | recipe | video, id }) is attached for the AI, never applied.
   // videoIds: several videos in order (a video filmed in parts); the first is the edit's footage.
-  createProject: async ({ videoId, videoIds, reference, name, folderId, cut, aspect }: any) => {
+  createProject: async ({ videoId, videoIds, reference, name, folderId, cut, aspect, blank }: any) => {
     const ids = Array.isArray(videoIds) && videoIds.length ? videoIds : videoId ? [videoId] : [];
-    if (!ids.length) throw fail("Pick footage first.");
-    const p = await post("/projects", { ...(ids.length > 1 ? { videoIds: ids } : { videoId: ids[0] }), reference: reference ? { kind: reference.kind, id: reference.id } : undefined, name: name || undefined, folderId: folderId || undefined, cut: Array.isArray(cut) ? cut : undefined, aspect: aspect || undefined });
+    if (!ids.length && !blank) throw fail("Pick footage first.");
+    const p = await post("/projects", { ...(blank ? { blank } : ids.length > 1 ? { videoIds: ids } : { videoId: ids[0] }), reference: reference ? { kind: reference.kind, id: reference.id } : undefined, name: name || undefined, folderId: folderId || undefined, cut: Array.isArray(cut) ? cut : undefined, aspect: aspect || undefined });
     versions[p.id] = p.version;
     return p;
   },

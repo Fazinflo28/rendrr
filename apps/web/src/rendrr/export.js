@@ -24,7 +24,7 @@ export function exportSummary(snap, video) {
     `${width}x${height}`,
     hdr ? "HEVC 10-bit HDR" : ex.codec === "hevc" ? "HEVC" : "H.264",
     !r ? "your footage's frame rate" : r.capped ? `60 fps (your footage is ${rateText(video.fps)})` : `${rateText(r.fps)} fps, kept from your footage`,
-    short && Math.min(width, height) > short * 1.05 ? `scaled up from ${video.width}x${video.height}` : null,
+    short && video?.kind !== "canvas" && Math.min(width, height) > short * 1.05 ? `scaled up from ${video.width}x${video.height}` : null,
   ].filter(Boolean).join(" · ");
 }
 
@@ -32,7 +32,7 @@ export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, r
   const ex = snap.timeline.export || {};
   const hdrFootage = !!video?.hdr;
   // Footage of another shape is cut to fit; Follow the speaker keeps the face in view (set_framing focus "face").
-  const footAr = video?.width && video?.height ? video.width / video.height : { Portrait: 9 / 16, Square: 1, Landscape: 16 / 9 }[video?.orientation] || 0;
+  const footAr = video?.kind === "canvas" ? 0 : video?.width && video?.height ? video.width / video.height : { Portrait: 9 / 16, Square: 1, Landscape: 16 / 9 }[video?.orientation] || 0;
   const otherShape = !!footAr && Math.abs(Math.log(footAr / (ASPECT_RATIO[snap.aspect] || 16 / 9))) > 0.05;
   const reframed = (snap.timeline.tracks?.v1 || []).some((c) => c.framing?.focus);
   const row = (label, child) => html`<div class="row between" style="gap:12px;align-items:center"><span class="t-label">${label}</span>${child}</div>`;

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ASPECTS, PROJECT_STATUSES } from "./constants";
+import { ASPECTS, CANVAS_MAX_SECONDS, PROJECT_STATUSES } from "./constants";
 import { TimelineSchema } from "./timeline";
 
 // Input checks shared by the API server and the MCP server. Messages are plain English.
@@ -25,7 +25,9 @@ export const CreateProjectInput = z.object({
   folderId: id.optional().nullable(),
   cut: z.array(z.string().max(40)).max(50_000).optional(),
   aspect: z.enum(ASPECTS).optional(),
-}).refine((x) => !!x.videoId || !!x.videoIds?.length, { message: "Pick footage first.", path: ["videoId"] });
+  /** From scratch: no footage, a blank canvas of that length and colour (graphics, text and music go on top). */
+  blank: z.object({ seconds: z.number().min(1, "At least 1 second.").max(CANVAS_MAX_SECONDS, "Up to an hour."), color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "A colour like #0B0B10.").optional() }).optional(),
+}).refine((x) => !!x.videoId || !!x.videoIds?.length || !!x.blank, { message: "Pick footage first.", path: ["videoId"] });
 
 export const UpdateProjectInput = z.object({
   name: z.string().trim().min(1).max(200).optional(),

@@ -4,6 +4,7 @@ import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolde
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { speakerCentres } from "../services/color";
+import { createCanvas } from "../services/canvas";
 import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
@@ -95,6 +96,12 @@ export default async function projects(app: FastifyInstance) {
 
   app.post("/projects", async (req) => {
     const input = CreateProjectInput.parse(req.body);
+    if (input.blank) {
+      // From scratch: the blank canvas first, then the edit on it.
+      const name = (input.name || "").trim() || "New video", aspect = input.aspect ?? "16:9";
+      const canvas = await createCanvas(req.user!.id, { seconds: input.blank.seconds, aspect, color: input.blank.color, name });
+      return projectOut(await createProject(req.user!.id, { videoId: canvas.id, name, folderId: input.folderId, aspect, length: input.blank.seconds, reference: input.reference }));
+    }
     const p = await createProject(req.user!.id, input);
     return projectOut(p);
   });

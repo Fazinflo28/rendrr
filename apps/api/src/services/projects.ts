@@ -1,7 +1,7 @@
 import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, signGet } from "@rendrr/core";
 import { deleteEditCommentFiles } from "./commentMedia";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, asSequence, aspectFor, buildRawSequence, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
 import { otherVideoIds, playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
@@ -82,7 +82,7 @@ export async function resolveReference(userId: string, ref: { kind: ReferenceRef
  * the connector is a style reference) is attached for the user's AI to read. Rendrr never applies it. Several videos
  * (videoIds, in order): the first is the edit's footage, the others follow it whole on V1.
  */
-export async function createProject(userId: string, input: { videoId?: string; videoIds?: string[]; styleId?: string | null; reference?: { kind: ReferenceRef["kind"]; id: string } | null; name?: string | null; folderId?: string | null; cut?: string[]; aspect?: string }, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}) {
+export async function createProject(userId: string, input: { videoId?: string; videoIds?: string[]; styleId?: string | null; reference?: { kind: ReferenceRef["kind"]; id: string } | null; name?: string | null; folderId?: string | null; cut?: string[]; aspect?: string; length?: number }, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}) {
   // One video, or several in order (a video filmed in parts): the first is the edit's footage.
   const ids = Array.from(new Set(input.videoIds?.length ? input.videoIds : input.videoId ? [input.videoId] : []));
   if (!ids.length) throw new AppError("Pick footage first.", 400, "no-footage");
@@ -98,11 +98,16 @@ export async function createProject(userId: string, input: { videoId?: string; v
   const reference = asked ? await resolveReference(userId, asked) : null;
   const folderId = (await ownFolder(userId, input.folderId)) ?? (await defaultFolderId(userId));
   const transcript = v.analysis!.transcript as unknown as Transcript;
-  const timeline = buildRawSequence(transcript, v.seconds, Array.isArray(input.cut) ? input.cut : [], v.id, more.map((m) => ({ id: m.id, name: m.name, seconds: m.seconds, ready: true })));
+  let timeline = buildRawSequence(transcript, v.seconds, Array.isArray(input.cut) ? input.cut : [], v.id, more.map((m) => ({ id: m.id, name: m.name, seconds: m.seconds, ready: true })));
+  // A blank canvas (an edit from scratch) is longer than the edit asked for, so the edit can grow: V1 plays the length.
+  if (input.length && input.length < v.seconds) {
+    const ctx: EditContext = { videoId: v.id, transcript, silences: [], sceneCuts: [], duration: v.seconds, getStyle: () => undefined };
+    timeline = applyOp({ timeline, name: "", aspect: "16:9", styleId: null }, { op: "set_clips", track: "v1", clips: [{ start: 0, end: input.length, label: "Canvas" }] } as Op, ctx).snap.timeline;
+  }
   const aspect = input.aspect || aspectFor(v.orientation);
   const name = (input.name || "").trim() || (more.length ? `${v.name} + ${more.length} more` : v.name + " edit");
   const snap: Snapshot = { timeline, name, aspect: aspect as Snapshot["aspect"], styleId: null };
-  const note = more.length ? `${vids.length} videos as recorded, back to back` : input.cut?.length ? `First cut (${input.cut.length} words removed)` : "Footage as recorded";
+  const note = v.kind === "canvas" ? `Blank canvas, ${Math.round((input.length ?? v.seconds) * 10) / 10} s` : more.length ? `${vids.length} videos as recorded, back to back` : input.cut?.length ? `First cut (${input.cut.length} words removed)` : "Footage as recorded";
   const p = await prisma.project.create({
     data: {
       userId, folderId, videoId: v.id, styleId: null, ...(reference ? { reference } : {}), name, aspect, status: "Draft", art: v.art,
