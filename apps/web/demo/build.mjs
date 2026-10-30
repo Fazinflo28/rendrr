@@ -35,6 +35,7 @@ const js = res.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 const css = readFileSync(resolve(web, "src/rendrr/styles.css"), "utf8");
 
 const html = `<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Rendrr</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

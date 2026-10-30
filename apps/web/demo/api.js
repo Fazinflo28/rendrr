@@ -73,7 +73,8 @@ Object.assign(api, {
   restoreVersion: async () => { await wait(400); return { ok: true }; },
   // The review page plays a rendered file; the demo has none, so it draws the design's preview instead.
   getReview: async (t) => {
-    const r = await getReview(t);
+    // globalThis.__demoVersions: as many versions as a long-running edit has; __demoLocked: a password on it (the page's checks set them).
+    const r = { ...(await getReview(t)) }; if (globalThis.__demoVersions) r.version = globalThis.__demoVersions; if (globalThis.__demoLocked) r.locked = true;
     const clip = { url: null, poster: null, download: null, kind: "preview", quality: "540p", seconds: 32 };
     const versions = Object.fromEntries(Array.from({ length: Math.max(1, r.version || 1) }, (_, i) => [i + 1, clip]));
     const ids = r.folder ? (r.items || []).map((i) => i.id) : [r.project?.id];

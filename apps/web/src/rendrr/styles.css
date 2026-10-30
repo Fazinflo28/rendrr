@@ -102,6 +102,8 @@ html.scaled .toasts { right: 24px; bottom: 24px; }
 .input:focus { background: var(--raised-strong); box-shadow: 0 0 0 2px var(--accent-ring); }
 .input.sm { height: 36px; padding: 0 var(--s3); font-size: 14px; border-radius: var(--r-btn); }
 select.input option { background: var(--surface); color: var(--ink); }
+/* .input.sm's padding would put the text under the arrow: room for it, and the arrow centred in 36px */
+select.input.sm { padding-right: 34px; background-position: calc(100% - 22px) 15px, calc(100% - 16px) 15px; }
 textarea.input { height: auto; min-height: 96px; padding: var(--s3); border-radius: var(--r-md); resize: vertical; line-height: 22px; }
 select.input { appearance: none; padding-right: 44px; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 26px) 21px, calc(100% - 20px) 21px; background-size: 6px 6px; background-repeat: no-repeat; }
 .toggle { position: relative; width: 36px; height: 16px; border-radius: var(--pill); background: var(--toggle-off); transition: background-color .2s var(--ease); flex: none; }
@@ -451,7 +453,11 @@ tr td:last-child { border-top-right-radius: var(--r-sm); border-bottom-right-rad
 .rv-top { display: flex; align-items: center; justify-content: space-between; padding: var(--s4) var(--s8); }
 .rv-body { display: grid; grid-template-columns: 1fr 380px; gap: var(--s6); padding: 0 var(--s8) var(--s8); max-width: 1400px; width: 100%; margin: 0 auto; }
 
-.rv-pw { display: grid; place-items: center; height: 100%; }
+.rv-pw { display: grid; place-items: center; height: 100%; padding: var(--s4); }
+.rv-pw-back { position: absolute; top: 16px; right: 32px; }
+.rv-body > * { min-width: 0; }
+.rv-decide { display: flex; align-items: center; justify-content: space-between; gap: var(--s6); }
+#rv-version { width: auto; min-width: 150px; }
 .compose { position: absolute; left: 50%; bottom: 60px; transform: translateX(-50%); width: 420px; padding: var(--s3); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow-pop); display: flex; gap: var(--s2); align-items: center; z-index: 5; animation: pop .2s var(--ease); }
 
 /* theme switch */
@@ -941,6 +947,18 @@ a { color: var(--accent-ink); }
   .rv-top { padding: 12px var(--gutter-r) 12px var(--gutter-l); flex-wrap: wrap; gap: 8px; }
   .rv-top .row { flex-wrap: wrap; row-gap: 8px; }
   .rv-body { grid-template-columns: 1fr; gap: 16px; padding: 0 var(--gutter-r) calc(24px + env(safe-area-inset-bottom, 0px)) var(--gutter-l); }
+  .rv-pw-back { right: var(--gutter-r); }
+  .rv-top > .row:first-child { min-width: 0; }
+  .rv-top > .row:first-child .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  /* Approve under the question, the two buttons sharing the width */
+  .rv-decide { flex-direction: column; align-items: stretch; gap: 16px; }
+  .rv-acts { width: 100%; flex-wrap: nowrap; }
+  .rv-acts > .btn { flex: 1 1 0; min-width: 0; }
+  /* the comment box over the video: time, Add and close on top, the text field the full width under them */
+  .rv .compose { flex-wrap: wrap; row-gap: 8px; }
+  .rv .compose #rv-send { order: 1; margin-left: auto; }
+  .rv .compose > :last-child { order: 2; }
+  .rv .compose #rv-comment { order: 3; flex: 1 1 100%; }
 }
 @media (max-width: 1023px) {
   .card { padding: 18px; }

@@ -23,7 +23,11 @@ const run = Math.random().toString(36).slice(2, 8);
 describe("fonts in graphics", { skip: (!has || !exe) && "needs the worker image's fonts and Chromium" }, () => {
   let dir = "";
   before(async () => { dir = await mkdtemp(join(tmpdir(), "graphic-fonts-")); });
-  after(async () => { await rm(dir, { recursive: true, force: true }); });
+  after(async () => {
+    await rm(dir, { recursive: true, force: true });
+    // The graphic job's progress opened Redis: closed, or the test never ends.
+    if (db) { const { redis } = await import("@rendrr/core"); await redis().quit().catch(() => {}); }
+  });
 
   it("'Open Sans' 700 is the real bold: wider letters, unlike a font with one weight made bolder", async () => {
     // A real bold has its own, wider letters; the browser's fake bold (a font with no bold) keeps the regular widths.
