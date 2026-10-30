@@ -2,7 +2,7 @@
 // set_clips keeps V3 graphics at their edit times when their V1 clip is replaced, and says so; delete_clip finds the
 // track from the clip id; a graphic placement takes data (any JSON) without declaring it.
 import { describe, expect, it } from "vitest";
-import { applyOp, buildInitialTimeline, buildTranscript, customParamsSchema, graphicDefaults, outputDuration, allWords, type EditContext, type Op, type Snapshot } from "../src/index";
+import { applyOp, buildInitialTimeline, buildTranscript, customParamsSchema, graphicDefaults, outputDuration, allWords, MCP_TOOLS, type EditContext, type Op, type Snapshot } from "../src/index";
 
 const tr = buildTranscript([Array.from({ length: 40 }, (_, i) => ({ text: `w${i}`, start: 0.5 + i * 0.5, end: 0.9 + i * 0.5 }))], { maxWordsPerLine: 8 }).map((l) => ({ ...l, words: l.words.map((w) => ({ ...w, filler: false })) }));
 const words = allWords(tr);
@@ -70,5 +70,22 @@ describe("a graphic placement's data", () => {
     const s = edit(base(), { op: "add_graphic", graphicId: "gc", start: 1, end: 3, params: { word: "Yo" }, data } as Op).snap;
     expect((s.timeline.tracks.v3 as { kind?: string; params?: Record<string, unknown> }[]).find((c) => c.kind === "graphic")!.params).toEqual({ word: "Yo", data });
     expect(() => edit(base(), { op: "add_graphic", graphicId: "gc", start: 1, end: 3, params: { colour: "red" } } as Op)).toThrow(/has no param "colour"/);
+  });
+});
+
+describe("new tool fields sent as text by a chat with an older tool list", () => {
+  const input = (n: string) => MCP_TOOLS.find((t) => t.name === n)!.input;
+  it("create_graphic edits as JSON text, replace and upload as \"true\"", () => {
+    const r = input("create_graphic").parse({ codeFrom: "g1", edits: '[{"find":"#FFC400","replace":"#38E07B"}]', replace: "true", upload: "false" });
+    expect(r).toMatchObject({ codeFrom: "g1", edits: [{ find: "#FFC400", replace: "#38E07B" }], replace: true, upload: false });
+    expect(() => input("create_graphic").parse({ codeFrom: "g1", edits: "[{bad" })).toThrow(/Expected array/);
+  });
+  it("wait_seconds as text; test_graphic data as JSON text, rerecord as \"true\"", () => {
+    expect(input("get_render").parse({ renderId: "r", wait_seconds: "90" }).wait_seconds).toBe(90);
+    expect(input("get_graphic").parse({ graphicId: "g", wait_seconds: "30" }).wait_seconds).toBe(30);
+    expect(() => input("get_render").parse({ renderId: "r", wait_seconds: "500" })).toThrow();
+    const t = input("test_graphic").parse({ graphicId: "g", data: '{"words":[1,2]}', rerecord: "true" });
+    expect(t).toMatchObject({ data: { words: [1, 2] }, rerecord: true });
+    expect(input("test_graphic").parse({ graphicId: "g", data: "plain text" }).data).toBe("plain text");
   });
 });

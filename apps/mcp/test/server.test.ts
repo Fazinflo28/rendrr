@@ -19,6 +19,7 @@ const api = createServer(async (req, res) => {
   if (req.url === "/internal/tools/open_projects") return res.end(JSON.stringify({ text: "Showing the Rendrr app with 1 edit.", data: { projects: [{ id: "p1", name: "Reel" }], total: 1, offset: 0, open: null, webUrl: "https://app.rendrr.live" } }));
   if (req.url === "/internal/tools/app_add_comment") return res.end(JSON.stringify({ text: "Comment added.", data: { project: { id: "p1" }, comments: [{ id: "c1", time: 1.5, text: (body as { text: string }).text }] } }));
   if (req.url === "/internal/tools/get_editing_skill") return res.end(JSON.stringify({ text: "# Fazinflo Editing Skill (Rendrr edition)" }));
+  if (req.url === "/internal/tools/create_graphic") return res.end(JSON.stringify({ text: "Graphic g1 is recording." }));
   if (req.url === "/internal/tools/check_edit") return res.end(JSON.stringify({ text: "Check of v2", data: { ignored: true } }));
   res.statusCode = 404;
   res.end(JSON.stringify({ error: { message: "There is no tool called that." } }));
@@ -37,6 +38,18 @@ describe("the connector", () => {
     await Promise.all([server.connect(a), client.connect(b)]);
   });
   after(async () => { await client.close(); api.close(); });
+
+  it("new fields keep their types for a new chat, and take text from a chat with an older tool list", async () => {
+    const { tools } = await client.listTools();
+    const p = tools.find((t) => t.name === "create_graphic")!.inputSchema.properties as Record<string, { type?: string }>;
+    assert.equal(p.edits.type, "array");
+    assert.equal(p.replace.type, "boolean");
+    assert.equal((tools.find((t) => t.name === "get_render")!.inputSchema.properties as Record<string, { type?: string }>).wait_seconds.type, "number");
+    // An older tool list does not know edits or replace, so the chat sends them as text.
+    const r = await client.callTool({ name: "create_graphic", arguments: { codeFrom: "g1", edits: '[{"find":"#FFC400","replace":"#38E07B"}]', replace: "true" } });
+    assert.ok(!r.isError, JSON.stringify(r.content));
+    assert.deepEqual(calls.at(-1)!.body, { codeFrom: "g1", edits: [{ find: "#FFC400", replace: "#38E07B" }], replace: true });
+  });
 
   it("comes with the editing skill: instructions, a tool, a resource and a prompt", async () => {
     const ins = client.getInstructions() || "";
