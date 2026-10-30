@@ -1,6 +1,6 @@
-import { downloadFile, getBytes, graphicVariant, headObject, queue, readGraphic, setVariantWarnings, signGet, uploadFile, type GraphicVariant } from "@rendrr/core";
+import { clearVariantError, downloadFile, getBytes, graphicVariant, headObject, queue, readGraphic, setVariantWarnings, signGet, uploadFile, type GraphicVariant } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { findTemplate, GRAPHIC_FONT_WATCH, PREFIX, templateHtml, templateSize, withClock, withEarly, withParams, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
+import { findTemplate, graphicDefaults, GRAPHIC_FONT_WATCH, PREFIX, templateHtml, templateSize, withClock, withEarly, withParams, wrapGraphicHtml, type V3Clip } from "@rendrr/shared";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -40,6 +40,8 @@ async function takeBrowsers(want: number, signal?: AbortSignal): Promise<number>
   const patient = Date.now() + 5_000;
   while (freeSlots < want && (freeSlots < 1 || Date.now() < patient)) {
     if (signal?.aborted) throw new JobError("Stopped.");
+    // Kept browsers hold slots: when too few are free, one is closed for its slot (else it is reused: browserFor).
+    if (idle.length && (await closeOneIdle())) continue;
     await new Promise((r) => setTimeout(r, 200));
   }
   const n = Math.min(want, freeSlots);
@@ -47,8 +49,75 @@ async function takeBrowsers(want: number, signal?: AbortSignal): Promise<number>
   return n;
 }
 const giveBrowsers = (n: number) => { freeSlots += n; };
-/** Browser slots free now (tests). */
-export const freeBrowserSlots = () => freeSlots;
+
+/**
+ * Browsers kept for the next recording (starting Chromium takes a second, and starting many at once is what fails on
+ * a busy worker): a browser a recording ended with cleanly, its pages closed, kept a minute. Each keeps a browser slot
+ * while it waits; a recording that needs slots takes it (reused) or closes it (its slot freed).
+ */
+const idle: { b: Browser; uses: number; born: number; timer: NodeJS.Timeout }[] = [];
+const IDLE_MS = 60_000, MAX_USES = 20, MAX_AGE_MS = 10 * 60_000;
+const uses = new WeakMap<Browser, { uses: number; born: number }>();
+/** A kept browser, its slot given to the recording that takes it (null: none kept). */
+function reuseBrowser(): Browser | null {
+  while (idle.length) {
+    const x = idle.pop()!;
+    clearTimeout(x.timer);
+    freeSlots += 1; // its slot back: the recording's own slot covers it now
+    if (x.b.connected) return x.b;
+    killBrowser(x.b);
+  }
+  return null;
+}
+/** A browser a recording is done with: kept if it is healthy, young and a slot is free for it; else closed. */
+async function keepOrClose(b: Browser) {
+  const u = uses.get(b) ?? { uses: 0, born: Date.now() };
+  if (!b.connected || u.uses >= MAX_USES || Date.now() - u.born > MAX_AGE_MS || freeSlots < 1 || idle.length >= GRAPHIC_WORKERS) return closeBrowser(b);
+  try { for (const pg of await b.pages()) await pg.close().catch(() => {}); } catch { return closeBrowser(b); }
+  freeSlots -= 1;
+  const x = { b, uses: u.uses, born: u.born, timer: setTimeout(() => { const i = idle.indexOf(x); if (i >= 0) { idle.splice(i, 1); freeSlots += 1; void closeBrowser(b); } }, IDLE_MS) };
+  x.timer.unref?.();
+  idle.push(x);
+}
+/** A kept browser closed to free its slot for someone waiting. */
+async function closeOneIdle() {
+  const x = idle.shift();
+  if (!x) return false;
+  clearTimeout(x.timer);
+  freeSlots += 1;
+  await closeBrowser(x.b);
+  return true;
+}
+/** A browser for a recording: a kept one, else a new one. */
+async function browserFor(): Promise<Browser> {
+  const b = reuseBrowser() ?? (await launchLocked());
+  const u = uses.get(b) ?? { uses: 0, born: Date.now() };
+  u.uses++;
+  uses.set(b, u);
+  return b;
+}
+
+/**
+ * Recordings at once in this worker (graphics, placements a render records, tests): the rest wait their turn, in the
+ * order they came. Each recording runs its own browsers (up to GRAPHIC_WORKERS) within the browser slots.
+ */
+export const RECORD_SLOTS = Math.max(1, Math.floor(Number(process.env.RECORD_SLOTS)) || 2);
+let recording = 0;
+const recordQueue: (() => void)[] = [];
+async function takeRecording(signal?: AbortSignal) {
+  while (recording >= RECORD_SLOTS) {
+    if (signal?.aborted) throw new JobError("Stopped.");
+    await new Promise<void>((r) => { recordQueue.push(r); setTimeout(r, 1000); });
+  }
+  recording++;
+}
+const giveRecording = () => { recording--; recordQueue.shift()?.(); };
+/** Recordings running now, and waiting (tests). */
+export const recordingsNow = () => ({ running: recording, waiting: recordQueue.length });
+/** Browser slots free now, kept browsers counted as free (tests). */
+export const freeBrowserSlots = () => freeSlots + idle.length;
+/** Every kept browser closed (shutdown, tests). */
+export async function closeIdleBrowsers() { while (idle.length) await closeOneIdle(); }
 
 /** The container could not start another process or thread. */
 const threadsGone = (e: unknown) => /EAGAIN|Resource temporarily unavailable|pthread_create/.test(String((e as Error)?.message ?? e));
@@ -91,8 +160,9 @@ function chromiumPath() {
  * threads, it says the server is busy. Each one needs a browser slot (takeBrowsers).
  */
 async function launchLocked() {
+  // Waits longer than puppeteer's 30 s (a busy worker starts Chromium slowly) and lets one call take 5 min.
   return puppeteer.launch({
-    executablePath: chromiumPath(), headless: true,
+    executablePath: chromiumPath(), headless: true, timeout: 90_000, protocolTimeout: 300_000,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--mute-audio", "--no-first-run", "--disable-extensions", "--disable-background-networking",
       "--disable-crash-reporter", "--disable-breakpad", // no crash handler process (more threads, and its fork fails first when they run out)
       "--proxy-server=127.0.0.1:9", "--proxy-bypass-list=<-loopback>", "--host-resolver-rules=MAP * ~NOTFOUND",
@@ -108,8 +178,18 @@ async function launchLocked() {
 
 /** The graphic loaded in a page at w x h with the virtual clock, fonts ready (every @font-face loaded before the first
  *  frame, so nothing draws with a fallback while a font loads), the font watch, transparent when asked. */
+/** A new page: puppeteer waits 30 s for it (not settable); a busy worker can take longer, so up to three times. */
+async function newPage(browser: Browser) {
+  for (let i = 0; ; i++) {
+    try { return await browser.newPage(); }
+    catch (e) {
+      if (i >= 2 || !/Timed out after waiting/i.test(String((e as Error)?.message)) || !browser.connected) throw e;
+      console.warn(`[graphic] a new page took over 30 s; waiting for it again (${i + 1} of 2)`);
+    }
+  }
+}
 async function openGraphicPage(browser: Browser, html: string, w: number, h: number, transparent: boolean, errors: string[]) {
-  const page = await browser.newPage();
+  const page = await newPage(browser);
   await page.setViewport({ width: w, height: h, deviceScaleFactor: 1 });
   await page.setRequestInterception(true);
   page.on("request", (req) => { const u = req.url(); if (u.startsWith("data:") || u === "about:blank") req.continue(); else req.abort("blockedbyclient"); });
@@ -207,6 +287,11 @@ function encodeSlots(w: number, h: number, workers: number) {
  * long as the graphic. Missed: something that appears and goes within one half second of an otherwise still graphic.
  */
 export async function recordHtml(html: string, o: { width: number; height: number; durationSec: number; transparent: boolean; dir: string; signal?: AbortSignal; onProgress?: (frac: number) => void; workers?: number; maxMs?: number }) {
+  // One of RECORD_SLOTS recordings at once in this worker; the others wait their turn.
+  await takeRecording(o.signal);
+  try { return await recordNow(html, o); } finally { giveRecording(); }
+}
+async function recordNow(html: string, o: { width: number; height: number; durationSec: number; transparent: boolean; dir: string; signal?: AbortSignal; onProgress?: (frac: number) => void; workers?: number; maxMs?: number }) {
   const w = Math.round(o.width / 2) * 2, h = Math.round(o.height / 2) * 2;
   if (Math.max(w, h) > GRAPHIC_LIMITS.maxLong || Math.min(w, h) > GRAPHIC_LIMITS.maxShort) throw new JobError("Graphics can be 1080x1920 at most.", "too-big", false);
   const dur = Math.min(GRAPHIC_LIMITS.maxSeconds, Math.max(0.5, o.durationSec));
@@ -231,7 +316,7 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   const ending = () => stopped || !!timedOut || failing;
   const launch = async () => {
     if (ending()) throw new Error("The recording is ending.");
-    const b = await launchLocked();
+    const b = await browserFor();
     browsers.push(b);
     if (ending()) killAll();
     return b;
@@ -400,10 +485,12 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
               await Promise.allSettled(tries);
               for (const p of mine) await rm(p.file, { force: true }).catch(() => {});
               captured -= done;
-              // Only a crash is tried again: not the graphic's own errors, a time limit, a stop or another lane's failure.
-              if (attempt >= 1 || e instanceof JobError || ending() || errors.length) throw e;
+              // Only a crash is tried again, up to 3 times after a pause that grows (2, 5, 10 s): not the graphic's own
+              // errors, a time limit, a stop or another lane's failure.
+              if (attempt >= 3 || e instanceof JobError || ending() || errors.length) throw e;
               retried++;
-              console.warn(`[graphic] chunk ${ci + 1} of lane ${li + 1} (frames ${ch.a}-${ch.b}) failed, recording it again: ${(e as Error).message.slice(0, 200)}`);
+              console.warn(`[graphic] chunk ${ci + 1} of lane ${li + 1} (frames ${ch.a}-${ch.b}) failed, recording it again in ${[2, 5, 10][attempt]} s: ${(e as Error).message.slice(0, 200)}`);
+              await new Promise((r) => setTimeout(r, [2000, 5000, 10000][attempt]));
             }
           }
         }
@@ -421,8 +508,10 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   } finally {
     clearInterval(watch);
     o.signal?.removeEventListener("abort", abort);
-    await Promise.all(browsers.map(closeBrowser));
+    // A recording that ended cleanly keeps its browsers for the next one; one that failed or was stopped closes them.
+    const clean = !failing && !stopped && !timedOut;
     giveBrowsers(workers);
+    await Promise.all(browsers.map((b) => (clean ? keepOrClose(b) : closeBrowser(b))));
   }
   // The pieces, in time order, joined without re-encoding; each lasts exactly until the next one starts.
   const all = [...pieces].sort((x, y) => x.start - y.start);
@@ -431,7 +520,8 @@ export async function recordHtml(html: string, o: { width: number; height: numbe
   else {
     const list = join(root, "pieces.txt");
     await writeFile(list, all.map((p) => `file '${p.file}'\nduration ${((p.end - p.start) / FPS).toFixed(6)}`).join("\n") + "\n");
-    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", out], { signal: o.signal });
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", out], { signal: o.signal })
+      .catch((e) => { throw threadsGone(e) ? busyError() : e; });
   }
   o.onProgress?.(1);
   return { path: out, checkFrames: checkFiles, seconds: frames / FPS, width: w, height: h, pictures, dense, missingFonts: Array.from(missingFonts).sort(), chunks: chunkCount, retried };
@@ -501,23 +591,71 @@ export async function renderGraphicClip(clip: V3Clip, o: { width: number; height
     await uploadFile(key, r.path, "video/webm");
     return { path: r.path, seconds: r.seconds };
   }
-  const g = await prisma.graphic.findUnique({ where: { id }, select: GRAPHIC_FIELDS });
-  if (!g || (g.ownerId && g.ownerId !== o.userId) || g.status !== "ready" || !g.renderedKey) return null;
+  let g = await prisma.graphic.findUnique({ where: { id }, select: GRAPHIC_FIELDS });
+  if (!g || (g.ownerId && g.ownerId !== o.userId)) return null;
+  const limit = recordLimitMs(g.durationSec, g.width, g.height);
+  const params = clip.params && Object.keys(clip.params).length ? clip.params : null;
+  /** Nothing to play for this placement: the render stops and says which one, with its params. */
+  const fail = (why: string) => new JobError(`Graphic placement ${clip.id} (${g!.id}${params ? `, params ${JSON.stringify(params).slice(0, 300)}` : ""}) could not be recorded: ${why.replace(/\.$/, "")}. Nothing was lost: retry_graphic records it again, or fix its code (create_graphic codeFrom + edits, replace: true) and render again.`, "graphic-placement", false);
+  // The graphic's own recording: wait while the queue records it; if it failed or is missing, record it here.
+  if (g.status === "queued" || g.status === "rendering") {
+    g = await waitForGraphic(g.id, limit, o.signal, o.onProgress) ?? g;
+  }
+  if (g.status !== "ready" || !g.renderedKey || !(await headObject(g.renderedKey))) {
+    if (!g.code) throw fail("it has no code");
+    const r = await withRetries(async () => recordHtml(await customGraphicHtml(g!.code!, graphicDefaults(g!.paramsSchema), g!.ownerId), { width: g!.width, height: g!.height, durationSec: g!.durationSec, transparent: g!.transparent, dir: o.dir, signal: o.signal, onProgress: o.onProgress, workers: 2 }), o.signal).catch((e) => { throw fail((e as Error).message); });
+    const key = `${PREFIX.graphics}${g.ownerId}/${g.id}.webm`;
+    await uploadFile(key, r.path, "video/webm");
+    // Kept for the graphic itself (the next render and the editor have it), unless its code changed meanwhile.
+    await prisma.graphic.updateMany({ where: { id: g.id, code: g.code }, data: { status: "ready", renderedKey: key, error: null, durationSec: r.seconds } });
+    g = { ...g, status: "ready", renderedKey: key };
+    if (!(g.code && graphicVariant(g, clip.params))) return { path: r.path, seconds: r.seconds };
+  }
   // A placement with its own params plays its own recording: from storage, from the job recording it now, or
-  // recorded here (then kept, so the next render and the editor have it).
+  // recorded here (then kept, so the next render and the editor have it). A job still waiting is taken over.
   const v = g.code ? graphicVariant(g, clip.params) : null;
   if (v && !(await headObject(v.key))) {
-    await waitForVariant(v, recordLimitMs(g.durationSec, g.width, g.height), o.signal, o.onProgress);
+    await waitForVariant(v, limit, o.signal, o.onProgress);
     if (!(await headObject(v.key))) {
-      const r = await recordHtml(await customGraphicHtml(g.code!, v.params, g.ownerId), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: o.dir, signal: o.signal, onProgress: o.onProgress, workers: 2 });
+      const r = await withRetries(async () => recordHtml(await customGraphicHtml(g!.code!, v.params, g!.ownerId), { width: g!.width, height: g!.height, durationSec: g!.durationSec, transparent: g!.transparent, dir: o.dir, signal: o.signal, onProgress: o.onProgress, workers: 2 }), o.signal).catch((e) => { throw fail((e as Error).message); });
       await uploadFile(v.key, r.path, "video/webm");
       await setVariantWarnings(v.progressId, fontWarning(r.missingFonts)).catch(() => {});
+      await clearVariantError(v.progressId).catch(() => {});
       return { path: r.path, seconds: r.seconds };
     }
   }
-  await downloadFile(v ? v.key : g.renderedKey, local);
+  await downloadFile(v ? v.key : g.renderedKey!, local);
   // A custom graphic plays as recorded; a clip longer than that holds its last frame (as the player does).
   return { path: local, seconds: g.durationSec };
+}
+
+/**
+ * A recording tried up to 3 times when it fails on the server's side (a crash, the server busy), after 5 then 15 s.
+ * The graphic's own errors (its code threw, too slow) fail at once.
+ */
+async function withRetries<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  for (let i = 0; ; i++) {
+    try { return await work(); }
+    catch (e) {
+      const again = !(e instanceof JobError) || (e as JobError).retry !== false;
+      if (i >= 2 || !again || signal?.aborted) throw e;
+      console.warn(`[graphic] a placement's recording failed, trying again in ${[5, 15][i]} s: ${(e as Error).message.slice(0, 200)}`);
+      await new Promise((r) => setTimeout(r, [5000, 15000][i]));
+    }
+  }
+}
+
+/** While the graphic queue records the graphic itself, wait for it (up to its time limit). Its row once it ends. */
+async function waitForGraphic(id: string, limitMs: number, signal?: AbortSignal, onProgress?: (frac: number) => void) {
+  const end = Date.now() + limitMs;
+  while (Date.now() < end && !signal?.aborted) {
+    const g = await prisma.graphic.findUnique({ where: { id }, select: GRAPHIC_FIELDS });
+    if (!g || (g.status !== "queued" && g.status !== "rendering")) return g;
+    const p = await readGraphic(id);
+    if (p) onProgress?.(p.percent / 100);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return null;
 }
 
 /**
@@ -547,12 +685,17 @@ export async function userFontsTag(userId: string | null, text: string): Promise
 /** What the AI is told when fonts drew with a fallback. */
 export const fontWarning = (missing: string[]) => (missing.length ? [`Fonts not installed, drawn with a fallback: ${missing.join(", ")}. Use an installed font (create_graphic lists them) or add the file with add_font.`] : []);
 
-/** While the graphic queue is recording this variant (prewarmed by the edit), wait for it rather than record it twice. */
+/**
+ * While the graphic queue is recording this variant (prewarmed by the edit), wait for it rather than record it twice;
+ * one still waiting in the queue is taken off it (the render records it now, in its turn).
+ */
 async function waitForVariant(v: GraphicVariant, limitMs: number, signal?: AbortSignal, onProgress?: (frac: number) => void) {
   const end = Date.now() + limitMs;
   while (Date.now() < end && !signal?.aborted) {
     const job = await queue("graphic").getJob(v.jobId).catch(() => null);
-    if (!job || (await job.getState()) !== "active" || (await headObject(v.key))) return;
+    const state = job ? await job.getState().catch(() => "unknown") : null;
+    if (job && (state === "waiting" || state === "delayed" || state === "prioritized")) { await job.remove().catch(() => {}); return; }
+    if (!job || state !== "active" || (await headObject(v.key))) return;
     const p = await readGraphic(v.progressId);
     if (p) onProgress?.(p.percent / 100);
     await new Promise((r) => setTimeout(r, 2000));

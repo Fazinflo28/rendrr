@@ -803,6 +803,57 @@ export function removeSourceRange(tl: Timeline, videoId: string, a: number, b: n
   return next;
 }
 
+/**
+ * Puts footage a..b of a video back where a range cut took it out (restore_words from/to): each stretch of it that no
+ * clip plays now goes back on the clip that ends where it starts (made longer), else on the one that starts where it
+ * ends (it starts earlier), else as a clip of its own after the clip of that video before it in the footage. Two clips
+ * that meet again are joined when nothing else tells them apart (the second's tracks move onto the first). How many
+ * seconds came back.
+ */
+export function restoreSourceRange(tl: Timeline, videoId: string, a: number, b: number): { timeline: Timeline; seconds: number } {
+  const EPS = 0.05;
+  let seq = [...seqOf(tl)];
+  const mine = () => seq.filter((c) => c.sourceVideoId === videoId);
+  // What of a..b no clip of this video plays.
+  const playing = mergeRanges(mine().map((c) => ({ start: c.sourceIn, end: c.sourceOut })));
+  const missing = subtractRanges([{ start: a, end: b }], playing).filter((r) => r.end - r.start >= 0.001);
+  if (!missing.length) return { timeline: tl, seconds: 0 };
+  const ids = freshIds(tl);
+  const moves: [string, string][] = [];
+  let back = 0;
+  for (const m of missing) {
+    const before = mine().filter((c) => c.sourceOut <= m.start + EPS).sort((x, y) => y.sourceOut - x.sourceOut)[0];
+    const after = mine().filter((c) => c.sourceIn >= m.end - EPS).sort((x, y) => x.sourceIn - y.sourceIn)[0];
+    if (before && Math.abs(before.sourceOut - m.start) <= EPS) seq = seq.map((c) => (c.id === before.id ? { ...c, sourceOut: r3(m.end) } : c));
+    else if (after && Math.abs(after.sourceIn - m.end) <= EPS) seq = seq.map((c) => (c.id === after.id ? { ...c, sourceIn: r3(m.start) } : c));
+    else {
+      const like = before ?? after ?? mine()[0];
+      if (!like) continue;
+      const piece = secondHalf({ ...like, id: ids(like.id), sourceIn: r3(m.start), sourceOut: r3(m.end), label: like.label });
+      const at = before ? seq.findIndex((c) => c.id === before.id) + 1 : after ? seq.findIndex((c) => c.id === after.id) : seq.length;
+      seq.splice(at, 0, piece);
+    }
+    back += m.end - m.start;
+  }
+  // Clips of this video that meet again, one right after the other, joined when they are alike.
+  // Alike: the same look, framing, speed and sound (where it sits, its name, ids and layout aside).
+  const SKIP = new Set(["id", "sourceIn", "sourceOut", "label", "audioStart", "audioEnd", "transition", "start", "end", "timelineStart", "timelineEnd", "linkId", "length"]);
+  const look = (c: SeqClip) => JSON.stringify(Object.fromEntries(Object.entries(c).filter(([k]) => !SKIP.has(k)).sort(([a], [b]) => (a < b ? -1 : 1))));
+  const same = (x: SeqClip, y: SeqClip) => look(x) === look(y) && !y.audioStart && !y.transition && !x.audioEnd;
+  for (let i = 0; i + 1 < seq.length; i++) {
+    const x = seq[i], y = seq[i + 1];
+    if (x.sourceVideoId === videoId && y.sourceVideoId === videoId && Math.abs(x.sourceOut - y.sourceIn) <= 0.001 && same(x, y)) {
+      seq[i] = { ...x, sourceOut: y.sourceOut };
+      seq.splice(i + 1, 1);
+      moves.push([y.id, x.id]);
+      i--;
+    }
+  }
+  let next = withV1(tl, seq);
+  for (const [from, to] of moves) next = moveAnchors(next, from, to, -Infinity);
+  return { timeline: next, seconds: Math.round(back * 1000) / 1000 };
+}
+
 /** Takes a stretch of the edit (edit seconds) out of whatever plays there. */
 export function removeEditRange(tl: Timeline, words: Word[], a: number, b: number): Timeline {
   const view = sequenceView(tl, words);

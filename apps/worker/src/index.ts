@@ -22,7 +22,7 @@ import { maintenanceJob } from "./jobs/maintenance";
 import { proxyJob } from "./jobs/proxy";
 import { renderFailed, renderJob } from "./jobs/render";
 import { cpuBudget, filterThreads } from "./lib/ffmpeg";
-import { BROWSER_SLOTS, GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
+import { BROWSER_SLOTS, closeIdleBrowsers, GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
 import { guarded } from "./lib/job";
 
 env(); // fail fast on missing settings
@@ -110,6 +110,6 @@ createServer(async (_req, res) => {
   console.log(`[worker] up, health on :${port}; cpus ${availableParallelism()}, pids.max ${pids}, filter threads ${filterThreads()}, graphics browsers ${GRAPHIC_WORKERS} (${BROWSER_SLOTS} in all), ${align}`);
 });
 
-const stop = async () => { await Promise.all(workers.map((w) => w.close())); await prisma.$disconnect(); process.exit(0); };
+const stop = async () => { await Promise.all(workers.map((w) => w.close())); await closeIdleBrowsers().catch(() => {}); await prisma.$disconnect(); process.exit(0); };
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);

@@ -63,4 +63,5 @@ export type AppProjectCard = {
 };
 export type AppProjectsPage = { projects: AppProjectCard[]; total: number; offset: number };
 /** open_projects' structured result: the page of projects, and the edit to open when it was asked for. */
-export type AppOpen = AppProjectsPage & { open: AppProjectView | null; webUrl: string | null };
+/** With an edit open, the list is left out (the app loads it with app_list_projects when the user goes back to it). */
+export type AppOpen = Partial<AppProjectsPage> & { open: AppProjectView | null; webUrl: string | null };

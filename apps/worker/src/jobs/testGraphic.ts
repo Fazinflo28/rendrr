@@ -42,17 +42,18 @@ export async function testGraphicJob(ctx: Ctx): Promise<TestGraphicResult> {
   } else {
     const g = await prisma.graphic.findUnique({ where: { id: d.graphicId }, select: GRAPHIC_FIELDS });
     if (!g || (g.ownerId && g.ownerId !== d.userId)) throw new JobError("That graphic does not exist. list_graphics shows the templates and yours.", "not-found", false);
-    if (g.status !== "ready" || !g.renderedKey) throw new JobError(g.status === "failed" ? "That graphic failed to record: get_graphic says why." : "That graphic is still recording: get_graphic shows how far it got. Test it once it is ready.", "not-ready", false);
+    if (!d.fresh && (g.status !== "ready" || !g.renderedKey)) throw new JobError(g.status === "failed" ? "That graphic failed to record: get_graphic says why." : "That graphic is still recording: get_graphic shows how far it got. Test it once it is ready.", "not-ready", false);
     from = Math.max(0, Math.min(d.at, g.durationSec - seconds));
-    const v = g.code ? graphicVariant(g, d.params) : null;
-    if (v && !(await headObject(v.key))) {
+    // rerecord: drawn from its code now (its own values, or these params), not from a kept recording.
+    const v = g.code ? (graphicVariant(g, d.params) ?? (d.fresh ? { params: { ...graphicDefaults(g.paramsSchema), ...(d.params ?? {}) }, key: "" } : null)) : null;
+    if (v && (d.fresh || !(await headObject(v.key)))) {
       if (from + seconds > RECORD_UP_TO) throw new JobError(`These params have no recording yet, and recording them for a test is done only up to ${RECORD_UP_TO} s in: test from at ${RECORD_UP_TO - seconds} or less, or place it with add_graphic (the render records it).`, "too-far", false);
       const t1 = Date.now();
       const r = await recordHtml(await customGraphicHtml(g.code!, v.params, g.ownerId), { width: g.width, height: g.height, durationSec: from + seconds, transparent: g.transparent, dir: ctx.dir, signal: ctx.signal });
       recordedMs = Date.now() - t1;
       gfile = r.path;
       warnings.push(...fontWarning(r.missingFonts));
-    } else gfile = await signGet(v ? v.key : g.renderedKey, 600);
+    } else gfile = await signGet(v ? v.key : g.renderedKey!, 600);
   }
 
   // The footage under it: the stretch from `over.time`, fitted as the render fits V1 (cover, 40% down).

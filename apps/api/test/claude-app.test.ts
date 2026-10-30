@@ -114,15 +114,17 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
     await assert.rejects(APP_HANDLERS.app_resolve_comment(c(otherId), { projectId, commentId: id }), /could not find|not found|does not exist|gone/i);
   });
 
-  it("open_projects tells the AI what the user sees and gives the app the page (and the edit asked for)", async () => {
+  it("open_projects tells the AI what the user sees and gives the app the page, or only the edit asked for", async () => {
     const all = await tool("open_projects", {});
     assert.match(all.text, /^Showing the Rendrr app with 1 edit\. Newest: Reel \w+ \(\w+, v2, 1 open comments\)\./);
     assert.equal((all.data as any).open, null);
     const one = await tool("open_projects", { projectId });
     console.log(one.text);
-    assert.match(one.text, /Open: "Reel \w+" \(\w+\), v2; preview v1, rendering v2 \(0%\); 1 open comment \(get_comments reads them\)\./);
+    assert.match(one.text, /^Showing "Reel \w+" \(\w+\) in the Rendrr app, v2; preview v1, rendering v2 \(0%\); 1 open comment \(get_comments reads them\)\./);
     assert.equal((one.data as any).open.project.id, projectId);
-    assert.equal((one.data as any).projects.length, 1);
+    // Only that edit: not the list and its picture links (the app loads the list when the user goes back).
+    assert.equal((one.data as any).projects, undefined);
+    assert.ok(JSON.stringify(one.data).length < JSON.stringify(all.data).length + JSON.stringify((one.data as any).open).length);
   });
 
   it("the app's tools go through the internal route as the user; its polling is not logged as tool calls", async () => {

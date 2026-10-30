@@ -171,9 +171,10 @@ export async function renderJob(ctx: Ctx) {
         if (got) { files.graphics![c.id] = got.path; files.graphicSeconds![c.id] = got.seconds; graphicsReady[c.id] = true; }
       } catch (e) {
         if (signal.aborted) throw e;
-        // Left out, and said so in the plan (the check repeats it), never silently.
-        console.error("[render] graphic skipped:", c.graphicId, (e as Error).message.slice(0, 200));
-        graphicErrors.push(`Graphic ${c.id} left out: ${(e as Error).message.slice(0, 300)}`);
+        // A placement that could not be recorded (tried again first) stops the render, naming it and its params.
+        console.error("[render] graphic placement failed:", c.id, c.graphicId, (e as Error).message.slice(0, 300));
+        if (e instanceof JobError && e.code === "graphic-placement") throw e;
+        throw new JobError(`Graphic placement ${c.id} (${c.graphicId}${c.params && Object.keys(c.params).length ? `, params ${JSON.stringify(c.params).slice(0, 300)}` : ""}) could not be drawn: ${(e as Error).message.slice(0, 300).replace(/\.$/, "")}. Nothing was lost.`, "graphic-placement", false);
       }
     }
     const plan = planRender({ ...planBase, graphicsReady });

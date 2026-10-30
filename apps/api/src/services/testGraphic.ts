@@ -1,6 +1,6 @@
 // Engine Part 5: test_graphic. A few seconds of a graphic over the footage at 540p, made by the worker's test queue;
 // the tool waits under 10 s for it. The same test asked again within a day answers from the kept result.
-import { AppError, enqueue, getBytes, newRedis, notFound, signGet, type TestGraphicJob, type TestGraphicResult } from "@rendrr/core";
+import { AppError, dropVariant, enqueue, getBytes, newRedis, notFound, recordGraphicAgain, signGet, type TestGraphicJob, type TestGraphicResult } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { findTemplate, PREFIX, QUEUES, type Aspect } from "@rendrr/shared";
 import { QueueEvents } from "bullmq";
@@ -12,7 +12,9 @@ const VERSION = "t1";
 export const TEST_WAIT_MS = 9_500;
 let events: QueueEvents | null = null;
 
-type Input = { graphicId: string; params?: Record<string, unknown>; at?: number; seconds?: number; length?: number; over?: { videoId: string; time: number }; aspect?: Aspect };
+/** data: any JSON the graphic reads as window.params.data; rerecord: drawn again from its code (not from a kept
+ *  recording or test), and its kept recording for these params dropped so renders record it again too. */
+type Input = { graphicId: string; params?: Record<string, unknown>; data?: unknown; rerecord?: boolean; at?: number; seconds?: number; length?: number; over?: { videoId: string; time: number }; aspect?: Aspect };
 const shape = (w?: number | null, h?: number | null): Aspect | undefined => (w && h ? (w < h ? "9:16" : w === h ? "1:1" : "16:9") : undefined);
 const pc = (x: number) => (x === 0 ? "0" : x < 1 ? x.toFixed(1) : String(Math.round(x)));
 
@@ -21,10 +23,16 @@ export async function testGraphic(userId: string, i: Input): Promise<{ text: str
   const tpl = findTemplate(i.graphicId);
   let name = tpl?.name ?? "", gShape: ReturnType<typeof shape>;
   if (!tpl) {
-    const g = await prisma.graphic.findUnique({ where: { id: i.graphicId }, select: { ownerId: true, name: true, status: true, width: true, height: true, error: true } });
+    const g = await prisma.graphic.findUnique({ where: { id: i.graphicId }, select: { id: true, ownerId: true, name: true, status: true, width: true, height: true, error: true, kind: true, paramsSchema: true } });
     if (!g || (g.ownerId && g.ownerId !== userId)) throw notFound("That graphic does not exist. list_graphics shows the templates and yours.");
-    if (g.status === "failed") return { text: `Graphic ${i.graphicId} failed to record: ${g.error ?? "unknown error"}. Fix the code and call create_graphic again.`, images: [] };
-    if (g.status !== "ready") return { text: `Graphic ${i.graphicId} is still recording: get_graphic shows how far it got. Test it once it is ready.`, images: [] };
+    if (i.rerecord && g.kind === "custom" && g.ownerId) {
+      // Its kept recording for these params dropped (renders record it again); the test draws it from its code.
+      const p = i.data !== undefined ? { ...(i.params ?? {}), data: i.data } : i.params;
+      if (!(await dropVariant({ id: g.id, ownerId: g.ownerId, paramsSchema: g.paramsSchema }, p)) && g.status !== "queued" && g.status !== "rendering") await recordGraphicAgain(userId, g.id, true);
+    } else {
+      if (g.status === "failed") return { text: `Graphic ${i.graphicId} failed to record: ${g.error ?? "unknown error"}. retry_graphic records it again from its code; test_graphic rerecord: true draws this test from its code now.`, images: [] };
+      if (g.status !== "ready") return { text: `Graphic ${i.graphicId} is still recording: get_graphic {wait_seconds} waits for it. Test it once it is ready, or with rerecord: true (drawn from its code now).`, images: [] };
+    }
     name = g.name; gShape = shape(g.width, g.height);
   }
   let videoName = "";
@@ -36,15 +44,16 @@ export async function testGraphic(userId: string, i: Input): Promise<{ text: str
     aspect ??= shape(v.width, v.height);
   }
   aspect ??= gShape ?? "16:9";
-  const job: Omit<TestGraphicJob, "key"> = { userId, graphicId: i.graphicId, ...(i.params && Object.keys(i.params).length ? { params: i.params } : {}), at: i.at ?? 0, seconds: Math.min(5, Math.max(3, i.seconds ?? 4)), ...(i.length ? { length: i.length } : {}), aspect, ...(i.over ? { over: i.over } : {}) };
+  const params = i.data !== undefined ? { ...(i.params ?? {}), data: i.data } : i.params;
+  const job: Omit<TestGraphicJob, "key"> = { userId, graphicId: i.graphicId, ...(params && Object.keys(params).length ? { params } : {}), ...(i.rerecord && !tpl ? { fresh: true } : {}), at: i.at ?? 0, seconds: Math.min(5, Math.max(3, i.seconds ?? 4)), ...(i.length ? { length: i.length } : {}), aspect, ...(i.over ? { over: i.over } : {}) };
   const key = createHash("sha256").update(JSON.stringify([VERSION, job])).digest("hex").slice(0, 24);
   const t0 = Date.now();
   // The same test asked again within a day: the kept result.
-  let r: TestGraphicResult | null = await getBytes(`${PREFIX.tests}${userId}/${key}.json`).then((b) => JSON.parse(b.toString()) as TestGraphicResult).catch(() => null);
+  let r: TestGraphicResult | null = i.rerecord ? null : await getBytes(`${PREFIX.tests}${userId}/${key}.json`).then((b) => JSON.parse(b.toString()) as TestGraphicResult).catch(() => null);
   const kept = !!r;
   if (!r) {
     events ||= new QueueEvents(QUEUES.test.name, { connection: newRedis() });
-    const j = await enqueue<TestGraphicJob>("test", { ...job, key }, { jobId: `test-${key}`, removeOnComplete: true, removeOnFail: true });
+    const j = await enqueue<TestGraphicJob>("test", { ...job, key }, { jobId: `test-${key}${i.rerecord ? `-${Date.now().toString(36)}` : ""}`, removeOnComplete: true, removeOnFail: true });
     try { r = (await j.waitUntilFinished(events, TEST_WAIT_MS)) as TestGraphicResult; }
     catch (e) {
       const msg = (e as Error).message || "";

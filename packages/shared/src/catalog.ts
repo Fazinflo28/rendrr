@@ -81,11 +81,14 @@ export function customParamsSchema(defaults: Record<string, unknown>) {
 }
 /**
  * What one placement of a custom graphic draws with: its defaults, each replaced by the placement's value. A name the
- * graphic did not declare, or a value of another type than the default (null defaults take anything), is refused.
+ * graphic did not declare, or a value of another type than the default (null defaults take anything), is refused;
+ * data takes any JSON (declared or not).
  */
 export function placementParams(name: string, defaults: Record<string, unknown>, params: Record<string, unknown> = {}): { params: Record<string, unknown> } | { error: string } {
   const keys = Object.keys(defaults);
   for (const [k, v] of Object.entries(params)) {
+    // data: any JSON for the graphic to read (window.params.data: a video's words, a scene list), declared or not.
+    if (k === "data") { if (JSON.stringify(v ?? null).length > 256_000) return { error: `${name}: data is 256 KB of JSON at most.` }; continue; }
     if (!(k in defaults)) return { error: keys.length ? `${name} has no param "${k}". Its params: ${keys.join(", ")}.` : `${name} has no params. Declare them in create_graphic params (default values the code reads from window.params).` };
     if (defaults[k] !== null && jsonType(v) !== jsonType(defaults[k])) return { error: `Param "${k}" of ${name} takes a ${jsonType(defaults[k])} (default ${JSON.stringify(defaults[k])}), not a ${jsonType(v)}.` };
   }

@@ -37,7 +37,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
   const styles = await tx.style.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] } });
   const styleMap = new Map<string, StyleLite>(styles.map((s) => [s.id, { id: s.id, name: s.name, captionLook: s.captionLook as StyleLite["captionLook"], rules: StyleRulesSchema.parse(s.rules) }]));
   const videos = await tx.video.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
-  const graphics = await tx.graphic.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] }, select: { id: true, name: true, durationSec: true, status: true, kind: true, paramsSchema: true } });
+  const graphics = await tx.graphic.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] }, select: { id: true, name: true, durationSec: true, status: true, error: true, kind: true, paramsSchema: true } });
   const lutRows = await tx.lut.findMany({ where: { userId }, select: { id: true, name: true } });
   const soundRows = await tx.sound.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
   const onV1 = Array.from(new Set([...((timeline as Timeline | undefined)?.tracks?.v1 ?? []).map((c) => (c as { sourceVideoId?: string }).sourceVideoId), ...alsoIds].filter((v): v is string => !!v && v !== video.id)));
@@ -54,9 +54,11 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
     getVideo: (id) => { const v = videos.find((x) => x.id === id); return v ? { id: v.id, name: v.name, seconds: v.seconds, ready: v.status === "ready" } : undefined; },
     getGraphic: (id) => {
       const g = graphics.find((x) => x.id === id) || findTemplate(id);
-      if (!g || ("status" in g && g.status === "failed")) return undefined;
+      if (!g) return undefined;
       const custom = "kind" in g && g.kind === "custom";
-      return { id: g.id, name: g.name, durationSec: g.durationSec, ...(custom ? { custom, params: graphicDefaults(g.paramsSchema) } : {}) };
+      // A graphic whose recording failed can still be placed (it is recorded again: retry_graphic, or the render).
+      const failed = "status" in g && g.status === "failed" ? (("error" in g && g.error) || "unknown error") as string : undefined;
+      return { id: g.id, name: g.name, durationSec: g.durationSec, ...(custom ? { custom, params: graphicDefaults(g.paramsSchema) } : {}), ...(failed ? { failed } : {}) };
     },
     getLut: (id) => lutRows.find((l) => l.id === id),
     getSound: (id) => { const s = soundRows.find((x) => x.id === id); return s ? { id: s.id, name: s.name, seconds: s.seconds, ready: s.status === "ready" } : undefined; },

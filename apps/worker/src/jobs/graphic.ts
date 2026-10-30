@@ -1,4 +1,4 @@
-import { graphicVariant, publishGraphic, setVariantError, setVariantWarnings, uploadFile, type GraphicJob } from "@rendrr/core";
+import { codeHash, graphicVariant, publishGraphic, setVariantError, setVariantWarnings, uploadFile, type GraphicJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { graphicDefaults, PREFIX } from "@rendrr/shared";
 import { customGraphicHtml, fontWarning, GRAPHIC_FIELDS, recordHtml } from "../lib/graphics";
@@ -28,6 +28,7 @@ export async function graphicJob(ctx: Ctx) {
   await publishGraphic(g.id, { percent: 0, etaSec: null }).catch(() => {});
   const r = await recordHtml(await customGraphicHtml(g.code, graphicDefaults(g.paramsSchema), g.ownerId), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: ctx.dir, signal: ctx.signal, onProgress: progressTo(g.id) });
   console.log(`[graphic] ${g.id}: ${g.durationSec}s at ${g.width}x${g.height} recorded in ${((Date.now() - t0) / 1000).toFixed(1)}s (${r.pictures} pictures, ${r.dense} frames one by one)`);
+  if (await codeChanged(g.id, g.code)) return;
   const base = `${PREFIX.graphics}${g.ownerId}/${g.id}`;
   await uploadFile(`${base}.webm`, r.path, "video/webm");
   const checks: string[] = [];
@@ -44,9 +45,19 @@ async function variantJob(ctx: Ctx, g: { id: string; ownerId: string | null; cod
   const t0 = Date.now();
   await publishGraphic(v.progressId, { percent: 0, etaSec: null }).catch(() => {});
   const r = await recordHtml(await customGraphicHtml(g.code, v.params, g.ownerId), { width: g.width, height: g.height, durationSec: g.durationSec, transparent: g.transparent, dir: ctx.dir, signal: ctx.signal, onProgress: progressTo(v.progressId) });
+  if (await codeChanged(g.id, g.code)) return;
   await uploadFile(v.key, r.path, "video/webm");
   await setVariantWarnings(v.progressId, fontWarning(r.missingFonts)).catch(() => {});
   console.log(`[graphic] ${g.id} variant ${v.hash}: recorded in ${((Date.now() - t0) / 1000).toFixed(1)}s (${r.pictures} pictures)`);
+}
+
+/** The graphic's code changed while it recorded (create_graphic replace): this recording is dropped (the new code's own
+ *  recording was queued with the change). */
+async function codeChanged(id: string, code: string) {
+  const now = await prisma.graphic.findUnique({ where: { id }, select: { code: true } });
+  if (now?.code && codeHash(now.code) === codeHash(code)) return false;
+  console.log(`[graphic] ${id}: its code changed while it recorded; this recording is dropped`);
+  return true;
 }
 
 /** A failed variant is noted for its placements (get_project, the editor); the graphic itself stays as it is. */

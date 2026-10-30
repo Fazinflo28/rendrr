@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 process.env.BROWSER_SLOTS = "3";
-const { BROWSER_SLOTS, freeBrowserSlots, GRAPHIC_WORKERS, recordHtml } = await import("../src/lib/graphics");
+const { BROWSER_SLOTS, closeIdleBrowsers, freeBrowserSlots, GRAPHIC_WORKERS, recordHtml } = await import("../src/lib/graphics");
 
 /** Main Chromium processes the recorder started (its children carry --type=). */
 const browsersRunning = () => readdirSync("/proc").filter((p) => /^\d+$/.test(p)).filter((p) => {
@@ -25,20 +25,23 @@ describe("the recorder's browsers", () => {
   before(async () => { dir = await mkdtemp(join(tmpdir(), "graphic-cleanup-")); assert.deepEqual(browsersRunning(), [], "no browser from before"); });
   after(async () => { await rm(dir, { recursive: true, force: true }); });
 
-  it("a lane whose browser dies twice fails the recording, and no browser is left running", async () => {
+  it("a lane whose browser keeps dying fails the recording (after 3 tries of its chunk), and no browser is left running", async () => {
     assert.ok(GRAPHIC_WORKERS >= 2, `needs 2 lanes (GRAPHIC_WORKERS ${GRAPHIC_WORKERS})`);
     const rec = recordHtml(busy, { width: 720, height: 1280, durationSec: 12, transparent: true, dir });
-    const failed = rec.then(() => null, (e: Error) => e);
-    // Kill one browser once the lanes are recording; then the one started in its place.
-    const kill = async (not: number[]) => {
-      for (let i = 0; i < 100; i++) { const b = browsersRunning().filter((p) => !not.includes(p)); if (b.length) { process.kill(b[0], "SIGKILL"); return [...not, ...browsersRunning()]; } await sleep(100); }
-      throw new Error("no browser to kill");
-    };
+    let settled = false;
+    const failed = rec.then(() => null, (e: Error) => e).finally(() => { settled = true; });
+    // Once the lanes are recording, one browser is killed, then each one started in its place, until it gives up.
     for (let i = 0; i < 50 && browsersRunning().length < GRAPHIC_WORKERS; i++) await sleep(100);
     await sleep(1500);
-    const seen = await kill([]);
-    await sleep(1500);
-    await kill(seen);
+    const first = browsersRunning();
+    let seen = first.slice(1), kills = 0;
+    process.kill(first[0], "SIGKILL"); kills++;
+    for (let i = 0; i < 400 && !settled; i++) {
+      await sleep(100);
+      const fresh = browsersRunning().filter((p) => !seen.includes(p) && !first.includes(p));
+      if (fresh.length) { await sleep(300); process.kill(fresh[0], "SIGKILL"); kills++; seen = [...seen, ...browsersRunning()]; }
+    }
+    console.log(`killed ${kills} browsers`);
     const e = await failed;
     assert.ok(e, "the recording failed");
     console.log(`failed: ${e!.message}`);
@@ -76,6 +79,8 @@ describe("the recorder's browsers", () => {
     on = false; await watch;
     console.log(`both recorded in ${((Date.now() - t0) / 1000).toFixed(1)} s; at most ${most} browsers (slots ${BROWSER_SLOTS}, ${GRAPHIC_WORKERS} per recording)`);
     assert.equal(a.seconds, 6); assert.equal(b.seconds, 6);
+    // Their browsers are kept for the next recording (a minute); closed here.
+    await closeIdleBrowsers();
     assert.ok(most <= BROWSER_SLOTS, `${most} browsers at once`);
     assert.equal(freeBrowserSlots(), BROWSER_SLOTS);
     await sleep(500);

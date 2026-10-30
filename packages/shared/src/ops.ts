@@ -19,7 +19,7 @@ import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard
 import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
-  outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
+  outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, restoreSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
   type Attached, type Range, type SeqClip, type SequenceView,
 } from "./sequence";
 
@@ -44,7 +44,9 @@ const clipId = z.string().max(80);
 const EDIT_OPS = [
   // wordIds cut those words (restore_words brings them back); from/to removes exactly that range, words or not.
   z.object({ op: z.literal("cut_words"), wordIds: z.array(z.string().max(40)).max(50_000).optional(), from: t.optional(), to: t.optional(), edit }),
-  z.object({ op: z.literal("restore_words"), wordIds: z.array(z.string().max(40)).max(50_000) }),
+  // wordIds back (cut ones, or ones a range cut took out); from/to: footage of the main video put back where a range
+  // cut took it (cut_words from/to's undo).
+  z.object({ op: z.literal("restore_words"), wordIds: z.array(z.string().max(40)).max(50_000).optional(), from: t.optional(), to: t.optional() }),
   // Retired: Rendrr no longer cuts on its own. Kept so an older call is answered with what to do instead (mark_silences
   // or mark_fillers, then cut_words); not offered to the AI.
   z.object({ op: z.literal("cut_silences"), overSeconds: z.number().min(0.001).max(30).optional(), keep: z.number().min(0).max(1).optional(), edges: z.boolean().optional() }),
@@ -55,7 +57,8 @@ const EDIT_OPS = [
   // V1 clip times are that clip's own footage (or edit times with edit true).
   z.object({ op: z.literal("split_clip"), track: TrackNameSchema, clipId, at: t, linked: z.boolean().optional(), edit }),
   z.object({ op: z.literal("trim_clip"), track: TrackNameSchema, clipId, start: t, end: t, linked: z.boolean().optional(), edit }),
-  z.object({ op: z.literal("delete_clip"), track: TrackNameSchema, clipId, linked: z.boolean().optional() }),
+  // track: found from the clip id when left out.
+  z.object({ op: z.literal("delete_clip"), track: TrackNameSchema.optional(), clipId, linked: z.boolean().optional() }),
   // Model A only (picture and dialogue linked by matching times); in the sequence dialogue always follows its picture.
   z.object({ op: z.literal("set_link"), track: TrackNameSchema, clipId, linked: z.boolean() }),
   z.object({ op: z.literal("add_zoom"), start: t, end: t, scale: z.number().min(1.01).max(2), edit }),
@@ -67,7 +70,9 @@ const EDIT_OPS = [
   z.object({ op: z.literal("set_voice"), soundId: z.string().max(80).nullable().optional(), ...SOUND_SOURCE, start: t.optional(), gainDb: z.number().min(-30).max(12).optional() }),
   // from: seconds into a custom graphic where this placement starts (one recording placed many times). params: a
   // template's fields, or values for a custom graphic's window.params (each new set is recorded once, then cached).
-  z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), from: z.number().min(0).max(4 * 3600).optional(), label: z.string().max(200).optional(), behind: z.boolean().optional(), edit }),
+  // data: any JSON for the graphic (window.params.data); rerecord: its recording for these params made again (the
+  // server drops the kept one before the edit is saved).
+  z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), data: z.unknown().optional(), rerecord: z.boolean().optional(), from: z.number().min(0).max(4 * 3600).optional(), label: z.string().max(200).optional(), behind: z.boolean().optional(), edit }),
   // Phase 2 (Premiere parity): text layers and graphics behind the person (the person's AI matte over them).
   z.object({ op: z.literal("behind_person"), clipIds: z.array(z.string().max(80)).min(1).max(200), off: z.boolean().optional() }),
   z.object({ op: z.literal("set_aspect"), aspect: AspectSchema }),
@@ -206,7 +211,8 @@ export type Op = z.infer<typeof OpSchema>;
 
 export type StyleLite = { id: string; name: string; captionLook: "clean" | "bold" | "outline"; rules: StyleRules };
 /** custom: made with create_graphic (params: its declared params and their defaults). */
-export type GraphicLite = { id: string; name: string; durationSec: number; custom?: boolean; params?: Record<string, unknown> };
+/** failed: why its recording failed (it can still be placed; retry_graphic records it again). */
+export type GraphicLite = { id: string; name: string; durationSec: number; custom?: boolean; params?: Record<string, unknown>; failed?: string };
 export type VideoLite = { id: string; name: string; seconds: number; ready: boolean };
 export type EditContext = {
   /** The project's footage (the sequence's main video). */
@@ -455,10 +461,21 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, timeline: next }, summary: parts.join("; "), count: added };
     }
     case "restore_words": {
-      const rm = new Set(op.wordIds);
+      if (!op.wordIds?.length && (op.from == null || op.to == null)) throw new EditError("restore_words takes wordIds, or from and to (footage seconds a range cut took out).");
+      const rm = new Set(op.wordIds ?? []);
       const cut = tl.cut.filter((id) => !rm.has(id));
       const n = tl.cut.length - cut.length;
-      return { snap: { ...snap, timeline: { ...tl, cut } }, summary: `restored ${n} ${n === 1 ? "word" : "words"}`, count: n };
+      let next: Timeline = { ...tl, cut }, back = 0, inRange = 0;
+      // Words a range cut took out (not in the cut list): their footage back, a run of them at a time.
+      const v1 = tl.tracks.v1 as SeqClip[];
+      const plays = (w: Word) => v1.some((c) => c.sourceVideoId === main && c.sourceIn <= w.t + 0.02 && c.sourceOut >= w.end - 0.02);
+      const gone = words.filter((w) => rm.has(w.id) && !tl.cut.includes(w.id) && !plays(w));
+      const runs: Word[][] = [];
+      for (const w of gone) { const last = runs[runs.length - 1]; if (last && words.indexOf(w) === words.indexOf(last[last.length - 1]) + 1) last.push(w); else runs.push([w]); }
+      for (const r of runs) { const x = restoreSourceRange(next, main, r[0].t, r[r.length - 1].end); next = x.timeline; back += x.seconds; inRange += r.length; }
+      if (op.from != null && op.to != null) { const x = restoreSourceRange(next, main, rT(Math.min(op.from, op.to)), rT(Math.max(op.from, op.to))); next = x.timeline; back += x.seconds; }
+      const said = [n || (op.wordIds?.length && !back) ? `restored ${n} cut ${n === 1 ? "word" : "words"}` : "", back ? `put back ${back.toFixed(2)}s of footage a range cut took out${inRange ? ` (${inRange} ${inRange === 1 ? "word" : "words"})` : ""}` : op.from != null ? `${at2(Math.min(op.from, op.to!))}s to ${at2(Math.max(op.from, op.to!))}s already plays` : ""].filter(Boolean);
+      return { snap: { ...snap, timeline: next }, summary: said.join("; "), count: n + inRange };
     }
     case "cut_silences":
       throw new EditError("cut_silences is retired: Rendrr no longer cuts on its own. Use mark_silences to list the silences with exact times, then cut the ones you choose with cut_words {from, to}.");
@@ -493,7 +510,27 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
           }
           return out;
         });
-        return { snap: { ...snap, timeline: setSeq(tl, clips) }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on V1${newIds(fresh)}` };
+        // Graphics and text on V3 stay where they were in the edit: one whose V1 clip is gone is put back at its edit
+        // times (over whatever plays there now); one that moved with its clip is named.
+        let next = setSeq(tl, clips);
+        const nv = sequenceView(next, words), v3 = tl.tracks.v3 as (Clip & Attached & { kind?: string })[];
+        const kept: string[] = [], moved: string[] = [];
+        next = withTracks(next, "v3", (next.tracks.v3 as (Clip & Attached & { kind?: string })[]).map((c0) => {
+          const c = v3.find((x) => x.id === c0.id);
+          if (!c || isCaptionMarker("v3", c) || c.fill) return c0;
+          const was = placeOf(view(), c);
+          if (!clips.some((x) => x.id === c.anchorId)) {
+            const s = Math.min(was.s, Math.max(0, nv.total - 0.05)), e = Math.min(was.e, nv.total);
+            if (e - s < 0.05) return c0;
+            kept.push(`${c.id}${Math.abs(e - s - (was.e - was.s)) > 0.01 ? ` (shortened to the edit's end)` : ""}`);
+            return attachAt(nv, c, s, e);
+          }
+          const now = placeOf(nv, c0);
+          if (Math.abs(now.s - was.s) > 0.05) moved.push(`${c.id} ${fmtClock(was.s)} to ${fmtClock(now.s)}`);
+          return c0;
+        }));
+        const notes = [kept.length ? `kept on V3 at their edit times (their V1 clip was replaced): ${kept.join(", ")}` : "", moved.length ? `moved with their V1 clip: ${moved.join(", ")}` : ""].filter(Boolean).join("; ");
+        return { snap: { ...snap, timeline: next }, summary: `set ${clips.length} ${clips.length === 1 ? "clip" : "clips"} on V1${newIds(fresh)}${notes ? `; ${notes}` : ""}` };
       }
       // Another track: each clip hangs on the V1 clip playing at its start.
       let dropped = 0;
@@ -559,6 +596,11 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, timeline: next }, summary: `trimmed ${name(c)} to edit ${fmtClock(s)}–${fmtClock(e)}` };
     }
     case "delete_clip": {
+      if (!op.track) {
+        const on = (["v1", "v2", "v3", "a2", "a3"] as const).find((k) => (tl.tracks[k] as Clip[]).some((c) => c.id === op.clipId));
+        if (!on) throw new EditError(`There is no clip "${op.clipId}" on any track. Read the project again to get the current clip ids. Nothing was changed.`);
+        return applyLeaf(snap, { ...op, track: on }, ctx);
+      }
       if (op.track === "a1" && op.linked === false) {
         const c = findClip(tl, "v1", op.clipId);
         return { snap: { ...snap, timeline: mapClip(tl, c.id, (x) => ({ ...x, audioMuted: true })) }, summary: `muted the dialogue of ${name(c)}` };
@@ -692,12 +734,14 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const from = op.from && op.from >= 0.001 ? rT(op.from) : 0;
       if (from && !g.custom) throw new EditError("from works on custom graphics (create_graphic). A template is drawn for each placement: it always starts at its beginning.");
       if (from && from > g.durationSec - 0.05) throw new EditError(`from ${at2(from)}s is past the end of ${g.name} (${at2(g.durationSec)}s long).`);
-      if (g.custom) { const p = placementParams(g.name, g.params ?? {}, op.params); if ("error" in p) throw new EditError(p.error); }
+      const params = op.data !== undefined ? { ...(op.params ?? {}), data: op.data } : op.params;
+      if (g.custom) { const p = placementParams(g.name, g.params ?? {}, params); if ("error" in p) throw new EditError(p.error); }
       // A library graphic's params are checked against what it takes (names, types, limits).
       const li = libraryItem(g.id);
       if (li) { const p = libraryParams(li, op.params ?? {}); if ("error" in p) throw new EditError(p.error); }
-      const c = attachAt(view(), { id: rid("g"), start: 0, end: 0, label: op.label || g.name, kind: "graphic" as const, graphicId: g.id, params: op.params, ...(from ? { sourceStart: from } : {}), ...(op.behind ? { behind: true } : {}) } as Clip, s, e);
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added graphic ${g.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}${from ? ` from ${at2(from)}s of it` : ""} (clip ${c.id})${op.behind ? `; ${BEHIND_NOTE}` : ""}` };
+      const c = attachAt(view(), { id: rid("g"), start: 0, end: 0, label: op.label || g.name, kind: "graphic" as const, graphicId: g.id, params, ...(from ? { sourceStart: from } : {}), ...(op.behind ? { behind: true } : {}) } as Clip, s, e);
+      const failed = g.failed ? `; its recording failed (${g.failed.replace(/\.$/, "").slice(0, 160)}): retry_graphic records it again, and a render records it before it starts` : "";
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added graphic ${g.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}${from ? ` from ${at2(from)}s of it` : ""} (clip ${c.id})${op.rerecord ? "; recorded again for these params" : ""}${failed}${op.behind ? `; ${BEHIND_NOTE}` : ""}` };
     }
     case "behind_person": {
       const v3 = tl.tracks.v3 as (Clip & { kind?: string; text?: string; behind?: boolean })[];

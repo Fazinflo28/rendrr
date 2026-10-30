@@ -54,7 +54,7 @@ describe("long tool calls answer at once", { skip: !ready && "needs DATABASE_URL
     assert.match(done, /Warning: Fonts not installed, drawn with a fallback: X\./);
     assert.match(done, /Place it with apply_edits add_graphic/);
     await prisma.graphic.update({ where: { id }, data: { status: "failed", error: "The graphic code threw an error: boom" } });
-    assert.match((await TOOL_HANDLERS.get_graphic(c(), { graphicId: id })).text, /failed: The graphic code threw an error: boom\. Fix the code and call create_graphic again\./);
+    assert.match((await TOOL_HANDLERS.get_graphic(c(), { graphicId: id })).text, /failed: The graphic code threw an error: boom\. Fix the code: create_graphic \{codeFrom: \"\w+\", edits: \[\{find, replace\}\], replace: true\}/);
     await assert.rejects(TOOL_HANDLERS.get_graphic({ ...c(), userId: "someone-else" }, { graphicId: id }), /does not exist/);
   });
 

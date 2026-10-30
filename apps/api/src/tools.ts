@@ -1,12 +1,12 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
 // Every response is small text; images only when asked for (images: true, get_frames, get_preview_frames).
 // Every write goes through applyTimelineChange.
-import { AppError, applyTimelineChange, enqueue, graphicFailedOnServer, notFound, putObject, readGraphic, recordGraphicAgain, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
+import { AppError, applyTimelineChange, clearVariantErrors, enqueue, graphicFailedOnServer, notFound, prewarmGraphics, putObject, readGraphic, recordGraphicAgain, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
-  ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind,
+  ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip,
 } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
@@ -22,6 +22,7 @@ import { allMarks, inRange, markScope, retakesOf } from "./services/marks";
 import { audioFramesOf, deepOf, visionDetailsOf } from "./services/deep";
 import { waveformPng } from "./services/waveform";
 import { testGraphic } from "./services/testGraphic";
+import { graphicUploadLink, rerecordFirst, resolveGraphic, saveGraphic } from "./services/graphicCode";
 import { addLibraryItem, getLibraryItem, listLibrary, searchIcons, withIcons } from "./services/library";
 import { analyzeReference, styleFileLines, styleFileOut } from "./services/styleFiles";
 import { openProjects } from "./services/claudeApp";
@@ -193,7 +194,7 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   // The activity log keeps the edits, but long lists (clips, word ids) only as counts.
   const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e.op === "set_grade" && e.lut?.cube ? { ...e, lut: { ...e.lut, cube: `${e.lut.cube.length} characters` } } : e)) };
   // Phase 6: match_color gets the clips' measured frames (the worker reads them; a failure stops here, loudly).
-  const ready = await withMeasurements(projectId, withIcons(await resolveSoundRefs(c.userId, await resolveLutRefs(c.userId, edits), c.ai ?? undefined)));
+  const ready = await withMeasurements(projectId, withIcons(await resolveSoundRefs(c.userId, await resolveLutRefs(c.userId, await rerecordFirst(c.userId, edits)), c.ai ?? undefined)));
   const luts = ready.some((e) => e.op === "match_color") ? await lutsFor(c.userId, p0.timeline as unknown as Timeline) : undefined;
   const r = await applyTimelineChange(projectId, ready.length === 1 ? ready[0] : { op: "batch", ops: ready }, actorFor(c, "apply_edits", logged), { luts });
   const v = await prisma.video.findUniqueOrThrow({ where: { id: p0.videoId }, include: { analysis: true } });
@@ -203,7 +204,9 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   await prisma.aiChatMessage.create({ data: { projectId, userId: c.userId, role: "ai", ai: aiName(c), text: (note?.trim() || `Made ${steps.length === 1 ? "a change" : steps.length + " changes"}.`).slice(0, 600), workflow: steps.map((x) => x.charAt(0).toUpperCase() + x.slice(1)) as unknown as Prisma.InputJsonValue, changed: true } });
   // The edit's own check (no render) rides along, so the AI fixes what it shows before it renders anything.
   const flags = (await checkOf(projectId, r.version, null, null).catch(() => "")).split("\n").find((l) => l.startsWith("Flags:"));
-  return { text: `${refText ? refText + "\n" : ""}Done (v${r.version}, ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s): ${r.summary}.${flags ? `\nEdit check (nothing rendered): ${flags}${flags === "Flags: none" ? "" : " (check_edit lists where)"}.` : ""}`, data: { version: r.version } };
+  // Graphics placed: each placement's recording (ready, waiting its turn, recording N%, failed).
+  const places = edits.some((e) => e.op === "add_graphic" || e.op === "set_clips") ? (await placementStatus(c.userId, r.snapshot.timeline).catch(() => ({ line: "" }))).line : "";
+  return { text: `${refText ? refText + "\n" : ""}Done (v${r.version}, ${out.toFixed(1)}s of ${r.snapshot.timeline.duration.toFixed(1)}s): ${r.summary}.${flags ? `\nEdit check (nothing rendered): ${flags}${flags === "Flags: none" ? "" : " (check_edit lists where)"}.` : ""}${places ? `\n${places}` : ""}`, data: { version: r.version } };
 }
 
 type Stretch = { from: number; to: number; videoId?: string };
@@ -311,7 +314,7 @@ async function renderOut(renderId: string): Promise<ToolOut> {
     const st = await renderStatus(r);
     const left = st.etaSec != null ? `, about ${fmtLeft(st.etaSec)} left` : ", estimating the time left";
     const dl = driveLine(r);
-    return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). Call get_render in a little while.${dl ? `\n${dl}` : ""}` };
+    return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). get_render {renderId: "${r.id}", wait_seconds: 120} waits for it.${dl ? `\n${dl}` : ""}` };
   }
   const res = await renderResult(r);
   const took = res.renderSeconds != null ? `, rendered in ${res.renderSeconds < 60 ? `${Math.round(res.renderSeconds)} s` : `${Math.floor(res.renderSeconds / 60)} min ${Math.round(res.renderSeconds % 60)} s`}` : "";
@@ -338,6 +341,15 @@ async function placementLine(userId: string, tl: Timeline): Promise<string[]> {
   const why = (x: (typeof waiting)[number]) => ("state" in x ? (x.state === "failed" ? `failed: ${x.error ?? "unknown error"}` : x.state === "recording" ? `recording${x.percent != null ? ` ${x.percent}%` : ""}` : "queued") : "");
   return [...out, `Graphic placements with no file yet: ${waiting.map((x) => `${x.clipId} ${why(x)}${x.own ? " (its params)" : ""}`).join(", ")}. A render records a placement's own params if it has to; a graphic still recording is left out until it is ready.`];
 }
+/** Each placement of custom graphics in an edit (of one graphic, or all): ready, waiting, recording N%, or failed. */
+async function placementStatus(userId: string, tl: Timeline, graphicId?: string): Promise<{ line: string; pending: number; failed: number }> {
+  const ids = new Set((tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && (!graphicId || c.graphicId === graphicId)).map((c) => c.id));
+  const all = (await graphicPlacements(userId, tl)).filter((x) => ids.has(x.clipId));
+  if (!all.length) return { line: "", pending: 0, failed: 0 };
+  const st = (x: (typeof all)[number]) => ("key" in x ? "ready" : x.state === "failed" ? `failed: ${(x.error ?? "unknown error").replace(/\.$/, "").slice(0, 160)}` : x.state === "recording" ? `recording${x.percent != null ? ` ${x.percent}%` : ""}` : "waiting");
+  const failed = all.filter((x) => !("key" in x) && x.state === "failed").length, pending = all.filter((x) => !("key" in x) && x.state !== "failed").length;
+  return { line: `Placements: ${all.map((x) => `${x.clipId} ${st(x)}`).join(", ")}${failed ? ". retry_graphic records failed ones again; a render records them before it starts" : ""}.`, pending, failed };
+}
 /** What a graphic's recording noticed (a font that was not there), as one sentence ("" when nothing). */
 /** How many marks the edit's footage has, by kind, and the AI's own (list_marks lists them). */
 function marksLine(v: { id: string; seconds: number; analysis: unknown }, tl: Timeline): string {
@@ -350,11 +362,23 @@ function marksLine(v: { id: string; seconds: number; analysis: unknown }, tl: Ti
 /** What to do after a graphic failed: record it again when Rendrr's side gave out, else fix the code. */
 function failedNext(id: string, error: string | null) {
   return graphicFailedOnServer(error)
-    ? `That was a problem on Rendrr's side, not in the code: get_graphic {graphicId: "${id}", retry: true} records it again (nothing to send again).`
-    : "Fix the code and call create_graphic again.";
+    ? `That was a problem on Rendrr's side, not in the code: retry_graphic {graphicId: "${id}"} records it again (nothing to send again).`
+    : `Fix the code: create_graphic {codeFrom: "${id}", edits: [{find, replace}], replace: true} changes just what is wrong (same id; nothing else to send).`;
 }
 const warningsText = (w: unknown) => (Array.isArray(w) && w.length ? ` Warning: ${w.join(" ")}` : "");
 /** A custom graphic's params and their default values, for list_graphics ("" when it has none). */
+/** A graphic just queued (create_graphic, retry_graphic): its answer if it is done within the wait, else that it is
+ *  recording and how to follow it. */
+async function graphicAnswer(id: string, withImages: boolean, lead = "", waitMs = TOOL_WAIT_MS) {
+  const done = await waitFor(async () => { const x = await prisma.graphic.findUnique({ where: { id } }); return x && (x.status === "ready" || x.status === "failed") ? x : null; }, waitMs, 500);
+  if (!done) {
+    const p = await readGraphic(id);
+    return { text: `${lead}Graphic ${id} is recording${p ? `: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : " (queued)"}. It keeps going: get_graphic {graphicId, wait_seconds} waits for it${p?.etaSec ? ` (about ${fmtLeft(Math.min(p.etaSec, 300))})` : ""}. You can place it with apply_edits add_graphic now; renders include it once it is ready.`, data: { graphicId: id, status: "rendering" } };
+  }
+  if (done.status === "failed") return { text: `${lead}The graphic did not render: ${(done.error || "unknown error").replace(/\.$/, "")}. ${failedNext(done.id, done.error)}`, data: { graphicId: id, status: "failed" } };
+  const images = withImages ? await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
+  return { text: `${lead}Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}).${images.length ? " 4 check frames attached." : ""}${warningsText(done.warnings)} Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };
+}
 const defaultsText = (schema: unknown) => { const d = graphicDefaults(schema); return Object.keys(d).length ? ` | ${JSON.stringify(d).slice(0, 300)}` : ""; };
 /** 1:02.345: comment times to the millisecond (the app in the chat places them that finely). */
 const fmtMs = (t: number) => { const ms = Math.round(Math.max(0, t) * 1000); return `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}.${String(ms % 1000).padStart(3, "0")}`; };
@@ -405,6 +429,15 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       if (saved.length) return { text: `REFERENCE "${v.name}" ${v.id} (${fmtClock(v.seconds)}) was read before. Saved as style ${saved.map((s) => `${s.id} "${s.name}": ${s.cutPace}; ${s.captionRule}; ${s.zoomRules}; ${s.musicVibe}`).join(" | ")}. Apply it with apply_edits [{"op":"apply_style","styleId":"${saved[0].id}"}]. To read the video again, pass detail "sentences".` };
     }
     if (i.detail === "json") { const b = breakdownOf(v); return { text: b ? clip(JSON.stringify(b)) : "The breakdown is not ready yet. Ask again in a minute." }; }
+    // One list of the words with their times in the sound (the transcriber's where a word was not placed): the short form.
+    if (i.detail === "word_times") {
+      const al = alignedMap((await deepOf(c.userId, v.id).catch(() => null))?.alignment ?? (v.analysis.alignment as unknown as Alignment | null));
+      const a0 = i.from ?? 0, b0 = i.to ?? Infinity;
+      const ws = allWords(v.analysis.transcript as unknown as Transcript).filter((w) => (w.end ?? w.t) >= a0 && w.t <= b0);
+      const f2 = (x: number) => x.toFixed(2);
+      const rows = ws.map((w) => { const x = al.get(w.id); return `${w.id} ${w.text}${w.filler ? "*" : ""} ${f2(x?.s ?? w.t)}-${f2(x?.e ?? w.end ?? w.t + 0.3)}`; });
+      return { text: clip(`WORDS "${v.name}" ${ws.length}${i.from != null || i.to != null ? ` in ${a0}-${i.to ?? "end"}s` : ""} (id text start-end in the sound; * filler; ${al.size ? `${al.size} of ${allWords(v.analysis.transcript as unknown as Transcript).length} placed in the sound, the rest the transcriber's times` : "the transcriber's times: not placed in the sound yet"}):\n${rows.join("\n") || "(no speech found)"}`) };
+    }
     const code = await videoAsCode(v, { from: i.from, to: i.to, images: i.images === true });
     let tr = v.analysis.transcript as unknown as Transcript;
     if (i.from != null || i.to != null) tr = tr.filter((l) => l.end >= (i.from ?? 0) && l.start <= (i.to ?? 1e9));
@@ -637,7 +670,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: [
       "Graphic templates (id | name | seconds | params):",
       ...GRAPHIC_TEMPLATES.map((t) => `${t.id} | ${t.name} | ${t.durationSec}s | ${params(t.paramsSchema)}`),
-      "Custom graphics (id | name | status | seconds | size | params = defaults): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${progress[g.id] ? ` ${progress[g.id]}` : ""}${g.error ? " (" + g.error.replace(/\s+/g, " ").trim() + (graphicFailedOnServer(g.error) ? "; get_graphic retry: true records it again" : "") + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}${defaultsText(g.paramsSchema)}${warningsText(g.warnings)}`).join("\n") : "none (create_graphic)"),
+      "Custom graphics (id | name | status | seconds | size | params = defaults): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${progress[g.id] ? ` ${progress[g.id]}` : ""}${g.error ? " (" + g.error.replace(/\s+/g, " ").trim() + (graphicFailedOnServer(g.error) ? "; retry_graphic records it again" : "") + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}${defaultsText(g.paramsSchema)}${warningsText(g.warnings)}`).join("\n") : "none (create_graphic)"),
       "Your fonts (add_font; use by name): " + (fonts.length ? fontsText(fonts) : "none"),
       "Music (trackId | name | mood): " + MUSIC_TRACKS.map((m) => `${m.id} | ${m.name} | ${m.mood}`).join("; "),
       "Sound effects for a3 (set_clips clip with sfxId): " + SFX.map((x) => `${x.id} ${x.seconds}s`).join(", "),
@@ -851,17 +884,15 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   async create_graphic(c, i) {
-    const g0 = CreateGraphicInput.parse(i);
-    const g = await prisma.graphic.create({ data: { ownerId: c.userId, name: (g0.name || "Custom graphic").slice(0, 120), kind: "custom", code: g0.code, paramsSchema: customParamsSchema(g0.params) as Prisma.InputJsonValue, durationSec: g0.durationSec, width: g0.width, height: g0.height, transparent: g0.transparent, status: "queued" } });
-    await enqueue<GraphicJob>("graphic", { graphicId: g.id }, { jobId: g.id });
-    const done = await waitFor(async () => { const x = await prisma.graphic.findUnique({ where: { id: g.id } }); return x && (x.status === "ready" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS, 500);
-    if (!done) {
-      const p = await readGraphic(g.id);
-      return { text: `Graphic ${g.id} is recording${p ? `: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : " (queued)"}. It keeps going: get_graphic shows how far it got${p?.etaSec ? ` (look again in about ${fmtLeft(Math.min(p.etaSec, 300))})` : ""}. You can place it with apply_edits add_graphic now; renders include it once it is ready.`, data: { graphicId: g.id, status: "rendering" } };
+    // The code by a one-time link the AI's code workspace sends the file to (the graphic is made when it comes).
+    if (i.upload) {
+      const u = await graphicUploadLink(c.userId, i);
+      return { text: `Upload link for the graphic's code (one HTML file), for 30 minutes: ${u.url}\nSend it from your code workspace:\n  curl -sS -T "<graphic.html>" "${u.url}"\nThe reply is JSON with the graphic's id once it is queued (the settings sent with upload: true apply); then get_graphic {graphicId, wait_seconds: 60}. ${c.ai === "chatgpt" ? "ChatGPT's code sandbox has no internet: use codeUrl (a share link) or code instead." : `If the workspace cannot reach ${u.host}, the user allows that host in their AI's settings (Claude: Settings > Capabilities, code execution, allowed domains), or use codeUrl or code instead.`}`, data: { uploadUrl: u.url } };
     }
-    if (done.status === "failed") return { text: `The graphic did not render: ${(done.error || "unknown error").replace(/\.$/, "")}. ${failedNext(done.id, done.error)}` };
-    const images = i.images === true ? await Promise.all(((done.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
-    return { text: `Graphic ready: ${done.id} (${done.width}x${done.height}, ${done.durationSec.toFixed(1)}s${done.transparent ? ", transparent" : ""}).${images.length ? " 4 check frames attached." : ""}${warningsText(done.warnings)} Place it with apply_edits add_graphic.`, images, data: { graphicId: done.id } };
+    const r = await resolveGraphic(c.userId, i);
+    const saved = await saveGraphic(c.userId, r, !!i.replace);
+    const how = r.from ? `${saved.replaced ? "Changed" : `Made from ${r.from.id}`}${r.edits ? ` with ${r.edits} ${r.edits === 1 ? "edit" : "edits"}` : ""}${saved.replaced ? `: same id, its placements are recorded again with the new code.` : "."} ` : "";
+    return graphicAnswer(saved.id, i.images === true, how);
   },
 
   test_graphic: async (c, i) => testGraphic(c.userId, i),
@@ -906,19 +937,43 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async get_graphic(c, i) {
     let g = await prisma.graphic.findUnique({ where: { id: i.graphicId } });
     if (!g || g.ownerId !== c.userId) throw notFound("That graphic does not exist. list_graphics shows yours.");
-    if (i.retry && g.status === "failed") {
-      // Recorded again from its own code, then answered like create_graphic: done within the wait, or still recording.
-      await recordGraphicAgain(c.userId, g.id);
-      g = (await waitFor(async () => { const x = await prisma.graphic.findUnique({ where: { id: g!.id } }); return x && (x.status === "ready" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS, 500)) ?? (await prisma.graphic.findUniqueOrThrow({ where: { id: g.id } }));
+    if (i.retry && g.status === "failed") await recordGraphicAgain(c.userId, g.id);
+    // wait_seconds (or a retry): until it is ready or failed, and (with projectId) its placements in that edit too.
+    const tl = i.projectId ? ((await getOwnedProject(c.userId, i.projectId)).timeline as unknown as Timeline) : null;
+    const waitMs = Math.min(120, i.wait_seconds ?? (i.retry ? TOOL_WAIT_MS / 1000 : 0)) * 1000;
+    if (waitMs > 0) {
+      await waitFor(async () => {
+        const x = await prisma.graphic.findUnique({ where: { id: g!.id } });
+        if (!x || (x.status !== "ready" && x.status !== "failed")) return null;
+        return !tl || x.status === "failed" || !(await placementStatus(c.userId, tl, g!.id)).pending ? x : null;
+      }, waitMs, 1000);
+      g = await prisma.graphic.findUniqueOrThrow({ where: { id: g.id } });
     }
+    const places = tl ? (await placementStatus(c.userId, tl, g.id)).line : "";
     const head = `${g.id} | ${g.name}`, size = `${+g.durationSec.toFixed(2)}s | ${g.width}x${g.height}${g.transparent ? ", transparent" : ""}`;
-    if (g.status === "failed") return { text: `${head} | failed: ${(g.error || "unknown error").replace(/\.$/, "")}. ${failedNext(g.id, g.error)}` };
+    const pl = places ? ` ${places}` : "";
+    if (g.status === "failed") return { text: `${head} | failed: ${(g.error || "unknown error").replace(/\.$/, "")}. ${failedNext(g.id, g.error)}${pl}` };
     if (g.status !== "ready") {
       const p = await readGraphic(g.id);
-      return { text: `${head} | ${p ? `recording: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : g.status} | ${size}. Look again in a little while; add_graphic can place it now.` };
+      return { text: `${head} | ${p ? `recording: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : g.status} | ${size}. wait_seconds waits for it (up to 120); add_graphic can place it now.${pl}` };
     }
     const images = i.images === true ? await Promise.all(((g.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
-    return { text: `${head} | ready | ${size}${defaultsText(g.paramsSchema).replace(/^ \| /, " | params ")}.${warningsText(g.warnings)}${images.length ? " 4 check frames attached." : ""} Place it with apply_edits add_graphic.`, images };
+    return { text: `${head} | ready | ${size}${defaultsText(g.paramsSchema).replace(/^ \| /, " | params ")}.${warningsText(g.warnings)}${images.length ? " 4 check frames attached." : ""} Place it with apply_edits add_graphic.${pl}`, images };
+  },
+
+  async retry_graphic(c, i) {
+    const g = await prisma.graphic.findFirst({ where: { id: i.graphicId, ownerId: c.userId, kind: "custom" } });
+    if (!g) throw notFound("That graphic does not exist. list_graphics shows yours.");
+    // Its placements' failures forgotten and their recordings queued again (in the edits that use it).
+    const busy = g.status === "queued" || g.status === "rendering";
+    if (!busy) await recordGraphicAgain(c.userId, g.id, true);
+    const cleared = await clearVariantErrors(g.id);
+    const projects = (await prisma.project.findMany({ where: { userId: c.userId, deletedAt: null, ...(i.projectId ? { id: i.projectId } : {}) }, select: { timeline: true } }))
+      .filter((p) => JSON.stringify(p.timeline).includes(`"graphicId":"${g.id}"`));
+    let queued = 0;
+    for (const p of projects) queued += await prewarmGraphics(c.userId, p.timeline as unknown as Timeline).catch(() => 0);
+    const lead = `${busy ? "It is recording already. " : "Recording it again from its own code. "}${cleared || queued ? `${queued} placement ${queued === 1 ? "recording" : "recordings"} queued again${cleared ? ` (${cleared} had failed)` : ""}. ` : ""}`;
+    return graphicAnswer(g.id, false, lead, Math.min(120, i.wait_seconds ?? TOOL_WAIT_MS / 1000) * 1000);
   },
 
   async link_account(c, i) {
@@ -981,6 +1036,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async get_render(c, i) {
     const r = await prisma.render.findUnique({ where: { id: i.renderId } });
     if (!r || r.userId !== c.userId) throw notFound("That render does not exist.");
+    // wait_seconds: answered as soon as it is done or failed, or when the time is up.
+    if (i.wait_seconds) await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id }, select: { status: true } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, Math.min(120, i.wait_seconds) * 1000, 1000);
     return renderOut(r.id);
   },
   async create_review_link(c, i) {

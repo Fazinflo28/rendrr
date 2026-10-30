@@ -406,7 +406,8 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
   function onToolResult(res) {
     const d = res.structuredContent;
     if (res.isError || !d) { state.err = ((res.content || [])[0] || {}).text || null; if (!state.page) loadList(); return; }
-    state.page = { projects: d.projects || [], total: d.total || 0, offset: 0 };
+    // With an edit open the list is not sent: loaded when the user goes back to it.
+    state.page = d.projects ? { projects: d.projects, total: d.total || 0, offset: 0 } : null;
     state.webUrl = d.webUrl || null;
     const again = !d.open && isFullscreen() ? remembered() : null;
     if (d.open) showProject(d.open); else if (again) openProject(again); else { state.view = "list"; render(); }

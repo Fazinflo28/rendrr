@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { prisma } from "@rendrr/db";
 import { canonicalJson, findTemplate, graphicDefaults, PREFIX, type Timeline, type V3Clip } from "@rendrr/shared";
 import { enqueue, queue, redis, type GraphicJob } from "./queue";
-import { headObject } from "./storage";
+import { deleteObject, deletePrefix, headObject } from "./storage";
 
 /**
  * One placement of a custom graphic plays its own recording when its params differ from the graphic's: a variant,
@@ -14,8 +14,8 @@ type GraphicRow = { id: string; ownerId: string | null; paramsSchema: unknown };
 /** null: the placement plays the graphic's own recording (no params, or the same values as its defaults). */
 export function graphicVariant(g: GraphicRow, clipParams?: Record<string, unknown> | null): GraphicVariant | null {
   const defaults = graphicDefaults(g.paramsSchema);
-  // Only the names the graphic declared (add_graphic refuses others; set_clips does not check).
-  const own = Object.fromEntries(Object.entries(clipParams ?? {}).filter(([k]) => k in defaults));
+  // Only the names the graphic declared (add_graphic refuses others; set_clips does not check), and data (any JSON).
+  const own = Object.fromEntries(Object.entries(clipParams ?? {}).filter(([k]) => k in defaults || k === "data"));
   const params = { ...defaults, ...own };
   if (canonicalJson(params) === canonicalJson(defaults)) return null;
   const hash = createHash("sha256").update(`${g.id}\n${canonicalJson(params)}`).digest("hex").slice(0, 20);
@@ -26,6 +26,9 @@ export function graphicVariant(g: GraphicRow, clipParams?: Record<string, unknow
 const errorKey = (progressId: string) => `graphic:${progressId}:error`;
 export async function setVariantError(progressId: string, message: string) {
   await redis().set(errorKey(progressId), message.slice(0, 500), "EX", 86400);
+}
+export async function clearVariantError(progressId: string) {
+  await redis().del(errorKey(progressId));
 }
 export async function readVariantError(progressId: string): Promise<string | null> {
   return redis().get(errorKey(progressId)).catch(() => null);
@@ -81,16 +84,65 @@ export async function placementMedia(g: GraphicRow & { status: string; renderedK
 /** A failure on Rendrr's side (the browser or the server gave out), not in the graphic's code: recording it again can work. */
 export const graphicFailedOnServer = (error: string | null | undefined) => /crashed while recording|too busy|not installed|ran out of threads/i.test(error || "");
 
+/** The code a recording is made from, short: a recording whose code changed meanwhile (create_graphic replace) is dropped. */
+export const codeHash = (code: string) => createHash("sha256").update(code).digest("hex").slice(0, 16);
+
 /**
- * A failed custom graphic recorded again from its own code (nothing to send again): queued as it was first. Its old
- * job is taken off the queue first, since a failed job keeps its id and would stop the new one.
+ * A custom graphic recorded again from its own code: after a failure (retry_graphic), when asked (rerecord), or after
+ * its code changed (create_graphic replace). A job of its own (a finished or running job keeps its id and would stop a
+ * new one with the same id); its status back to queued.
  */
-export async function recordGraphicAgain(userId: string, graphicId: string) {
+export async function rerecordGraphic(graphicId: string) {
+  await queue("graphic").remove(graphicId).catch(() => {});
+  await prisma.graphic.update({ where: { id: graphicId }, data: { status: "queued", error: null, attempts: 0 }, select: { id: true } });
+  await enqueue<GraphicJob>("graphic", { graphicId }, { jobId: `${graphicId}-r${Date.now().toString(36)}` });
+}
+
+/**
+ * A failed custom graphic recorded again from its own code (nothing to send again): queued as it was first. force: a
+ * graphic that did not fail too (rerecord).
+ */
+export async function recordGraphicAgain(userId: string, graphicId: string, force = false) {
   const g = await prisma.graphic.findFirst({ where: { id: graphicId, ownerId: userId, kind: "custom" }, select: { id: true, status: true, code: true } });
   if (!g || !g.code) return null;
-  if (g.status !== "failed") return { id: g.id, status: g.status, queued: false };
-  await queue("graphic").remove(g.id).catch(() => {});
-  await prisma.graphic.update({ where: { id: g.id }, data: { status: "queued", error: null, attempts: 0 }, select: { id: true } });
-  await enqueue<GraphicJob>("graphic", { graphicId: g.id }, { jobId: g.id });
+  if (g.status !== "failed" && !force) return { id: g.id, status: g.status, queued: false };
+  await rerecordGraphic(g.id);
   return { id: g.id, status: "queued", queued: true };
+}
+
+/** Every placement recording (variant) of a graphic dropped (its code changed): files, notes, queued jobs. */
+export async function dropVariants(ownerId: string, graphicId: string) {
+  await deletePrefix(`${PREFIX.graphics}${ownerId}/${graphicId}-v-`);
+  const r = redis();
+  let cursor = "0";
+  do {
+    const [next, keys] = await r.scan(cursor, "MATCH", `graphic:${graphicId}-v-*`, "COUNT", 200);
+    cursor = next;
+    if (keys.length) await r.del(...keys);
+  } while (cursor !== "0");
+  for (const j of await queue("graphic").getJobs(["waiting", "delayed", "prioritized", "paused"]).catch(() => [])) {
+    if (j?.data?.graphicId === graphicId && j.data.params) await j.remove().catch(() => {});
+  }
+}
+
+/** The failures noted for a graphic's placements forgotten, so they are recorded again (retry_graphic). How many. */
+export async function clearVariantErrors(graphicId: string) {
+  const r = redis();
+  let cursor = "0", n = 0;
+  do {
+    const [next, keys] = await r.scan(cursor, "MATCH", `graphic:${graphicId}-v-*:error`, "COUNT", 200);
+    cursor = next;
+    if (keys.length) { n += keys.length; await r.del(...keys); }
+  } while (cursor !== "0");
+  return n;
+}
+
+/** One placement's recording dropped so it is recorded again (add_graphic rerecord). Null: it plays the graphic's own. */
+export async function dropVariant(g: GraphicRow, params?: Record<string, unknown> | null) {
+  const v = graphicVariant(g, params);
+  if (!v) return null;
+  await deleteObject(v.key).catch(() => {});
+  await redis().del(errorKey(v.progressId), warningsKey(v.progressId), `graphic:${v.progressId}:progress`).catch(() => {});
+  await queue("graphic").remove(v.jobId).catch(() => {});
+  return v;
 }

@@ -59,7 +59,8 @@ export type CanvasJob = { kind: "canvas"; videoId: string; width: number; height
 export type SoundJob = { kind: "sound"; soundId: string; srcKey: string };
 export type SnapshotJob = { kind: "snapshot"; userId: string; key: string; html: string; width: number; height: number; at: number };
 export type SnapshotResult = { image: string; width: number; height: number; errors: string[]; ms: number };
-export type TestGraphicJob = { userId: string; key: string; graphicId: string; params?: Record<string, unknown>; at: number; seconds: number; length?: number; aspect: Aspect; over?: { videoId: string; time: number } };
+/** fresh: a custom graphic drawn from its code for this test (rerecord), not from a kept recording. */
+export type TestGraphicJob = { userId: string; key: string; graphicId: string; params?: Record<string, unknown>; fresh?: boolean; at: number; seconds: number; length?: number; aspect: Aspect; over?: { videoId: string; time: number } };
 /** Storage keys of the clip and its frames (at `times`, test seconds); how long the graphic took to record (0: it had
  *  a recording) and the whole test; what of the frame and of the face it covers (Engine Part 3's measures). */
 export type TestGraphicResult = {

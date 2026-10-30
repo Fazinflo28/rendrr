@@ -58,7 +58,7 @@ describe("test_graphic through the connector", { skip: !ready && "needs DATABASE
 
   it("a wrong id, a graphic still recording, a video not in the library: said at once", async () => {
     await assert.rejects(TOOL_HANDLERS.test_graphic(c(), { graphicId: "nope" }), /does not exist/);
-    assert.match((await TOOL_HANDLERS.test_graphic(c(), { graphicId: busyId })).text, /is still recording: get_graphic shows how far it got/);
+    assert.match((await TOOL_HANDLERS.test_graphic(c(), { graphicId: busyId })).text, /is still recording: get_graphic \{wait_seconds\} waits for it/);
     await assert.rejects(TOOL_HANDLERS.test_graphic(c(), { graphicId: "gt_title_card", over: { videoId: "nope", time: 0 } }), /not in the library/);
     assert.equal(seen.length, 1);
   });

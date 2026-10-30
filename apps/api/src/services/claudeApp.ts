@@ -93,18 +93,25 @@ async function setResolved(userId: string, commentId: string, resolved: boolean)
 }
 
 /** A short line for the AI next to the app (open_projects): what the user sees. */
-function openText(page: AppProjectsPage, open: AppProjectView | null): string {
-  const head = `Showing the Rendrr app with ${page.total} ${page.total === 1 ? "edit" : "edits"}.`;
-  if (!open) return `${head} Newest: ${page.projects.slice(0, 5).map((p) => `${p.name} (${p.id}, v${p.version}${p.openComments ? `, ${p.openComments} open comments` : ""})`).join("; ") || "none"}.`;
+function openText(page: AppProjectsPage | null, open: AppProjectView | null): string {
+  if (!open) return `Showing the Rendrr app with ${page?.total ?? 0} ${page?.total === 1 ? "edit" : "edits"}. Newest: ${(page?.projects ?? []).slice(0, 5).map((p) => `${p.name} (${p.id}, v${p.version}${p.openComments ? `, ${p.openComments} open comments` : ""})`).join("; ") || "none"}.`;
   const o = open.comments.filter((c) => !c.resolved).length;
-  return `${head} Open: "${open.project.name}" (${open.project.id}), v${open.project.version}; ${open.preview ? `preview v${open.preview.version}` : "no preview yet"}${open.rendering ? `, rendering v${open.rendering.version} (${open.rendering.percent}%)` : ""}; ${o} open ${o === 1 ? "comment" : "comments"} (get_comments reads them).`;
+  return `Showing "${open.project.name}" (${open.project.id}) in the Rendrr app, v${open.project.version}; ${open.preview ? `preview v${open.preview.version}` : "no preview yet"}${open.rendering ? `, rendering v${open.rendering.version} (${open.rendering.percent}%)` : ""}; ${o} open ${o === 1 ? "comment" : "comments"} (get_comments reads them).`;
 }
 
+/**
+ * The app with the user's edits, or one edit open (projectId): then only that edit and its preview are sent, not the
+ * list and its picture links (the app loads the list when the user goes back to it).
+ */
 export async function openProjects(c: ToolCtx, i: { projectId?: string }): Promise<ToolOut> {
-  const open = i.projectId ? await appProject(c.userId, i.projectId) : null;
+  if (i.projectId) {
+    const open = await appProject(c.userId, i.projectId);
+    const data: AppOpen = { open, webUrl: WEB() };
+    return { text: openText(null, open), data };
+  }
   const page = await appProjects(c.userId, {});
-  const data: AppOpen = { ...page, open, webUrl: WEB() };
-  return { text: openText(page, open), data };
+  const data: AppOpen = { ...page, open: null, webUrl: WEB() };
+  return { text: openText(page, null), data };
 }
 
 export const APP_HANDLERS: Record<string, (c: ToolCtx, input: any) => Promise<ToolOut>> = {

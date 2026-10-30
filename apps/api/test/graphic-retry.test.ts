@@ -24,16 +24,17 @@ describe("recording a failed graphic again", { skip: !ready && "needs DATABASE_U
   });
   after(async () => {
     for (const id of [crashed, broken]) await queue("graphic").remove(id).catch(() => {});
+    for (const j of await queue("graphic").getJobs(["waiting", "prioritized", "delayed"])) if (j?.data?.graphicId && [crashed, broken].includes(j.data.graphicId)) await j.remove().catch(() => {});
     await prisma.graphic.deleteMany({ where: { ownerId: userId } });
     await prisma.user.deleteMany({ where: { clerkId: `gr_${run}` } });
     await redis().quit().catch(() => {});
   });
 
   it("a server-side failure says it can be recorded again; a code error says to fix the code", async () => {
-    assert.match((await tool("get_graphic", { graphicId: crashed })).text, /problem on Rendrr's side, not in the code: get_graphic \{graphicId: "\w+", retry: true\} records it again/);
-    assert.match((await tool("get_graphic", { graphicId: broken })).text, /foo is not defined\. Fix the code and call create_graphic again\./);
+    assert.match((await tool("get_graphic", { graphicId: crashed })).text, /problem on Rendrr's side, not in the code: retry_graphic \{graphicId: "\w+"\} records it again/);
+    assert.match((await tool("get_graphic", { graphicId: broken })).text, /foo is not defined\. Fix the code: create_graphic \{codeFrom: "\w+", edits: \[\{find, replace\}\], replace: true\}/);
     const list = (await tool("list_graphics", {})).text;
-    assert.match(list, new RegExp(`${crashed} \\| Crashed ${run} \\| failed \\(The graphic crashed while recording: .*; get_graphic retry: true records it again\\)`));
+    assert.match(list, new RegExp(`${crashed} \\| Crashed ${run} \\| failed \\(The graphic crashed while recording: .*; retry_graphic records it again\\)`));
     assert.doesNotMatch(list, /stderr:\n/, "the error is on one line");
     assert.doesNotMatch(list.split("\n").find((l) => l.startsWith(broken))!, /retry/);
   });
@@ -47,8 +48,10 @@ describe("recording a failed graphic again", { skip: !ready && "needs DATABASE_U
     assert.match(out.text, new RegExp(`^${crashed} \\| Crashed ${run} \\| (queued|recording)`));
     const g = await prisma.graphic.findUniqueOrThrow({ where: { id: crashed } });
     assert.deepEqual([g.status, g.error, g.attempts], ["queued", null, 0]);
-    const job = await queue("graphic").getJob(crashed);
-    assert.deepEqual(job!.data, { graphicId: crashed }, "the new job, not the old one");
+    // The new job has an id of its own (the old one, finished, would keep the graphic's id); the stale one is gone.
+    assert.equal(await queue("graphic").getJob(crashed), undefined, "the old job is off the queue");
+    const jobs = (await queue("graphic").getJobs(["waiting", "prioritized"])).filter((j) => j?.data?.graphicId === crashed);
+    assert.deepEqual(jobs.map((j) => j.data), [{ graphicId: crashed }], "one new job, not the old one");
   });
 
   it("retry on a graphic that is not failed changes nothing", async () => {
