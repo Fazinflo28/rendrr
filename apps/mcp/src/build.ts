@@ -56,10 +56,11 @@ async function mediaOrigins(w: Who): Promise<string[]> {
   return list;
 }
 
-/** A tool's _meta: the app it opens (both spellings hosts read), or that only the app may call it. */
+/** A tool's _meta: the app it opens (the MCP Apps keys, and ChatGPT's own names for the same: outputTemplate, a
+ *  widget that may call tools, a private tool), or that only the app may call it. */
 function metaOf(def: ToolDef): Record<string, unknown> | undefined {
-  if (def.ui) return { ui: { resourceUri: APP_URI }, "ui/resourceUri": APP_URI };
-  if (def.app) return { ui: { resourceUri: APP_URI, visibility: ["app"] } };
+  if (def.ui) return { ui: { resourceUri: APP_URI }, "ui/resourceUri": APP_URI, "openai/outputTemplate": APP_URI, "openai/widgetAccessible": true, "openai/toolInvocation/invoking": "Opening Rendrr…", "openai/toolInvocation/invoked": "Rendrr is open" };
+  if (def.app) return { ui: { resourceUri: APP_URI, visibility: ["app"] }, "openai/widgetAccessible": true, "openai/visibility": "private" };
   return undefined;
 }
 
@@ -95,7 +96,12 @@ export function buildServer(w: Who) {
   const appPage = async (uri: URL) => {
     const media = await mediaOrigins(w);
     // The video and pictures from Rendrr's storage; the web app's fonts (Inter, Space Grotesk) from Google Fonts.
-    return { contents: [{ uri: uri.href, mimeType: APP_MIME_TYPE, text: APP_HTML, _meta: { ui: { csp: { resourceDomains: [...media, ...FONT_ORIGINS], connectDomains: [] }, permissions: { clipboardWrite: {} }, prefersBorder: true } } }] };
+    return { contents: [{ uri: uri.href, mimeType: APP_MIME_TYPE, text: APP_HTML, _meta: {
+      ui: { csp: { resourceDomains: [...media, ...FONT_ORIGINS], connectDomains: [] }, permissions: { clipboardWrite: {} }, prefersBorder: true },
+      // ChatGPT's names for the same.
+      "openai/widgetCSP": { resource_domains: [...media, ...FONT_ORIGINS], connect_domains: [] }, "openai/widgetPrefersBorder": true,
+      "openai/widgetDescription": "The user's Rendrr edits: each edit's latest preview to play, and its comments to read, add, resolve and send to the AI.",
+    } }] };
   };
   server.registerResource("projects-app", APP_URI, { title: "Rendrr projects", description: "The user's edits, previews and comments, shown in the chat.", mimeType: APP_MIME_TYPE }, appPage);
   // The first address, for a host still holding a tool list that names it: the newest page there too.

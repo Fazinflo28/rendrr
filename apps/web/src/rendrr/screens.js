@@ -753,7 +753,7 @@ function ConnectPage() {
   const { user } = useApp();
   const toast = useToast(); const q = useAsync(() => api.getConnectStatus(), []); const aq = useAsync(() => api.getAiActivity(), []);
   const [tab, setTab] = useState("claude"); const [busy, setBusy] = useState(false);
-  const steps = { claude: ["Open Claude › Settings › Connectors › Add custom connector", "Paste your connector URL and name it Rendrr", "Say: 'Edit my latest footage in the Clean Podcast style'"], chatgpt: ["Open ChatGPT › Settings › Connectors › Create", "Paste your connector URL and allow all tools", "Say: 'Make a 30 second reel from my gym footage'"] };
+  const steps = { claude: ["Open Claude › Settings › Connectors › Add custom connector", "Paste your connector URL and name it Rendrr", "Say: 'Edit my latest footage in the Clean Podcast style'"], chatgpt: ["Open ChatGPT › Settings › Apps (turn on Developer mode under Advanced if you do not see Create) › Create", "Paste your connector URL, name it Rendrr and sign in with your Rendrr account", "Say: 'Make a 30 second reel from my gym footage'"] };
   const test = async () => { setBusy(true); try { const d = await api.testConnection(tab); q.setData(d); toast((tab === "claude" ? "Claude" : "ChatGPT") + " is connected", { icon: "check", tone: "brand" }); } catch (e) { toast(e.message); } finally { setBusy(false); } };
   const disc = async () => { setBusy(true); try { const d = await api.disconnect(tab); q.setData(d); toast("Disconnected"); } catch (e) { toast(e.message); } finally { setBusy(false); } };
   return html`<div class="page">

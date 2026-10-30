@@ -193,7 +193,9 @@ check(Math.abs(afterSeek - 1.1 - afterKeys) < 0.02, `arrow keys step 0.1 s, with
 await app.locator(".ctrl .step", { hasText: "+0.1" }).click(); await sleep(150);
 const t = await frame().evaluate(() => document.querySelector("video").currentTime);
 check(Math.abs(t - afterKeys - 0.1) < 0.02, `the +0.1 s button steps on (${t.toFixed(3)})`);
-check((await app.locator(".tc").innerText()).startsWith(await frame().evaluate(() => { const x = Math.floor(document.querySelector("video").currentTime * 1000 + 1e-6); return "00:0" + Math.floor(x / 1000) + "." + String(x % 1000).padStart(3, "0"); })), `the time shows the exact moment (${await app.locator(".tc").innerText()})`);
+{ // The shown time is the video's to the ms (2 ms of slack: the clock and the text are read a moment apart).
+  const tc = await app.locator(".tc").innerText(), m = /^(\d+):(\d+)\.(\d{3})/.exec(tc), now = await frame().evaluate(() => document.querySelector("video").currentTime);
+  check(!!m && Math.abs(+m[1] * 60 + +m[2] + +m[3] / 1000 - now) <= 0.002, `the time shows the exact moment (${tc}, video at ${now.toFixed(4)})`); }
 check(/^at 00:0\d\.\d{3}$/.test(await app.locator(".at").innerText()), `the new comment's moment follows the player (${await app.locator(".at").innerText()})`);
 check(/v2 has changes this preview \(v1\) does not show yet/.test(await app.locator("body").innerText()), "it says the latest version has no preview yet");
 check((await app.locator(".seek .mk").count()) === 1, "the client's comment is a pin under the seek bar");

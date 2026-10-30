@@ -66,11 +66,13 @@ describe("the connector", () => {
     const { APP_URI, APP_HTML } = await import("../src/build");
     const { createHash } = await import("node:crypto");
     assert.equal(APP_URI, `ui://rendrr/projects-${createHash("sha256").update(APP_HTML).digest("hex").slice(0, 12)}.html`);
-    assert.deepEqual(open._meta, { ui: { resourceUri: APP_URI }, "ui/resourceUri": APP_URI });
+    // The MCP Apps keys, and ChatGPT's names for the same (its widget template, a widget that may call tools).
+    assert.deepEqual(open._meta, { ui: { resourceUri: APP_URI }, "ui/resourceUri": APP_URI, "openai/outputTemplate": APP_URI, "openai/widgetAccessible": true, "openai/toolInvocation/invoking": "Opening Rendrr…", "openai/toolInvocation/invoked": "Rendrr is open" });
     for (const name of ["app_list_projects", "app_get_project", "app_add_comment", "app_resolve_comment", "app_render_preview"]) {
       const t = tools.find((x) => x.name === name);
       assert.ok(t, name);
       assert.deepEqual((t!._meta as { ui: { visibility: string[] } }).ui.visibility, ["app"], name);
+      assert.equal((t!._meta as Record<string, unknown>)["openai/visibility"], "private", name);
     }
     // Other tools carry no app.
     assert.equal(tools.find((t) => t.name === "apply_edits")!._meta, undefined);
@@ -100,6 +102,8 @@ describe("the connector", () => {
     assert.match(c.text, /<link rel="stylesheet" href="https:\/\/fonts\.googleapis\.com\/css2\?family=Inter:[^"]+&family=Space\+Grotesk:wght@700&display=swap">/);
     assert.doesNotMatch(c.text.replace(/<link rel="stylesheet" href="https:\/\/fonts\.googleapis\.com\/[^"]+">/, ""), /<script[^>]+src=|<link[^>]+href=|(?:src|href)=["']https?:|url\(["']?https?:|@import|\bfetch\(|XMLHttpRequest|new WebSocket/, "no outside scripts, styles or loads in the page");
     assert.deepEqual(c._meta.ui.csp, { resourceDomains: ["https://bucket.storage.example", "https://fonts.googleapis.com", "https://fonts.gstatic.com"], connectDomains: [] });
+    // ChatGPT reads the same as openai/widgetCSP.
+    assert.deepEqual((c._meta as Record<string, unknown>)["openai/widgetCSP"], { resource_domains: ["https://bucket.storage.example", "https://fonts.googleapis.com", "https://fonts.gstatic.com"], connect_domains: [] });
     assert.deepEqual((c._meta.ui as any).permissions, { clipboardWrite: {} }, "it asks to copy (the Share link)");
   });
 
