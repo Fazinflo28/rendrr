@@ -16,6 +16,10 @@ const Env = z.object({
   ASSEMBLYAI_API_KEY: z.string().optional(), // TODO(key): unset = sample transcript
   GOOGLE_CLIENT_ID: z.string().optional(), // TODO(key): unset = fake Drive with sample files
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Tests point these at a stand-in Google (the real ones by default).
+  GOOGLE_API_URL: z.string().optional(),
+  GOOGLE_TOKEN_URL: z.string().optional(),
+  DRIVE_CHUNK_BYTES: z.string().optional(),
   STRIPE_SECRET_KEY: z.string().optional(), // TODO(key): billing is stubbed
   ENCRYPTION_KEY: z.string().optional(), // 32 bytes, base64. Required in production.
   INTERNAL_API_SECRET: z.string().optional(), // shared by the API and the MCP server

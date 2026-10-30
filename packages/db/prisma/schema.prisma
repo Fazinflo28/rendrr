@@ -299,6 +299,7 @@ model Render {
   error      String?
   errorCode  String?
   plan       Json?
+  driveSave  Json?     // a copy into the user's Google Drive: { state, folderId, path, name, fileId, link, error, ... }
   startedAt  DateTime?
   finishedAt DateTime?
   createdAt  DateTime  @default(now())

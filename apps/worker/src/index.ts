@@ -9,6 +9,7 @@ import { analyzeJob } from "./jobs/analyze";
 import { breakdownJob, queueMissingBreakdowns } from "./jobs/breakdown";
 import { canvasJob } from "./jobs/canvas";
 import { deepFailed, deepJob, queueMissingDeep } from "./jobs/deep";
+import { driveSaveFailed, driveSaveJob } from "./jobs/driveSave";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
 import { heardFailed, heardJob } from "./jobs/heard";
 import { snapshotJob } from "./jobs/snapshot";
@@ -66,6 +67,8 @@ const workers = [
   new Worker(QUEUES.test.name, guarded("test", QUEUES.test.timeoutMs, "Testing the graphic", (ctx): Promise<unknown> => { const k = (ctx.job.data as { kind?: string }).kind; return k === "snapshot" ? snapshotJob(ctx) : k === "canvas" ? canvasJob(ctx) : testGraphicJob(ctx); }, async () => {}), { connection: newRedis(), concurrency: conc("test", 2), lockDuration: 60_000 }),
   // analyze_reference: a reference video measured into a style file.
   new Worker(QUEUES.style.name, guarded("style", styleLimit, "Measuring the reference", styleJob, (job, msg) => styleFailed((job.data as { styleFileId: string }).styleFileId, msg), styleUser), { connection: newRedis(), concurrency: conc("style", 1), lockDuration: 60_000 }),
+  // A finished final copied into the user's Google Drive (save_to_drive, render_final driveFolder).
+  new Worker(QUEUES.drive.name, guarded("drive", QUEUES.drive.timeoutMs, "Saving to Google Drive", driveSaveJob, (job, msg, code) => driveSaveFailed((job.data as { renderId: string }).renderId, msg, code), renderUser), { connection: newRedis(), concurrency: conc("drive", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),
 ];
 for (const w of workers) w.on("error", (e) => console.error(`[${w.name}] worker error:`, e.message));

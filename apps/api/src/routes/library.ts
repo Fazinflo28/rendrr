@@ -255,14 +255,17 @@ export default async function library(app: FastifyInstance) {
     a.get("/drive/status", async (req) => {
       const c = await prisma.driveConnection.findUnique({ where: { userId: req.user!.id } });
       const real = c && !c.stub ? c : null;
-      return { connected: !!real, email: real?.googleEmail || null, stub: false, available: features().drive };
+      // saveAnywhere: Google lets Rendrr add files to the user's own folders (finals saved where they say), not only to
+      // folders Rendrr made.
+      return { connected: !!real, email: real?.googleEmail || null, stub: false, available: features().drive, saveAnywhere: !!real && drive.canSaveAnywhere(real.scopes) };
     });
     a.post("/drive/connect", async (req) => {
       const userId = req.user!.id;
       if (features().drive) {
         const origin = webOrigin(req);
         if (!origin) throw new AppError("Open Rendrr from its own address to connect Google Drive.", 400, "drive");
-        return { connected: false, authUrl: drive.authUrl(signState(userId, origin)) };
+        // write: also ask to add files to the user's own folders (saving finals where they say in their Drive).
+        return { connected: false, authUrl: drive.authUrl(signState(userId, origin), (req.body as { write?: unknown } | undefined)?.write === true) };
       }
       // TODO(key): GOOGLE_CLIENT_ID/SECRET unset. No fake Drive: the user is told Drive is not set up yet.
       throw new AppError(DRIVE_OFF, 409, "drive-off");

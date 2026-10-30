@@ -49,6 +49,8 @@ export const QUEUES = {
   test: { name: "test", timeoutMs: 90_000, attempts: 1 },
   // Engine Part 4.4: analyze_reference, a reference video measured into a style file (styleTimeoutMs).
   style: { name: "style", timeoutMs: 30 * 60_000, attempts: 1 },
+  // A final copied into the user's Google Drive (save_to_drive): read from storage and sent in chunks.
+  drive: { name: "drive", timeoutMs: 60 * 60_000, attempts: 2 },
 } as const;
 /** A reference is read at about 7x its speed on the worker; the limit allows 0.5 s a second of video and 4 minutes. */
 export const styleTimeoutMs = (seconds: number) => 4 * 60_000 + Math.round(seconds * 500);

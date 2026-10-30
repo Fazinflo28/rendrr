@@ -1,4 +1,4 @@
-import { deleteObject, downloadFile, drive, enqueue, getBytes, getText, publishRender, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
+import { deleteObject, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import { allWords, asSequence, boxCover, faceOnScreenAt, isSequence, layoutTimeline, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, planRender, RenderPlanError, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
@@ -329,6 +329,9 @@ export async function renderJob(ctx: Ctx) {
     } });
     await usage(video.userId, kind === "final" ? "render_final" : "render_preview", Math.round((outInfo.seconds / 60) * 100) / 100, { projectId: project.id, renderId: r.id });
     await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100 });
+    // A final the user asked to be saved into their Google Drive (render_final driveFolder): the copy starts now.
+    const save = kind === "final" ? driveSaveOf(await prisma.render.findUniqueOrThrow({ where: { id: r.id }, select: { driveSave: true } })) : null;
+    if (save?.state === "waiting") await queueDriveSave(r.id, save).catch((e) => console.error("[render] Drive copy not queued:", (e as Error).message));
     return { url: await signGet(`${base}.mp4`, 3600) };
   } catch (e) {
     if (previewTimedOut) throw new JobError("Preview render took too long. Try again.", "timeout", false);
@@ -370,7 +373,8 @@ async function facesOnScreen(snapshot: Snapshot, transcript: Transcript, mainId:
 export async function renderFailed(renderId: string, message: string, code?: string) {
   const r = await prisma.render.findUnique({ where: { id: renderId } });
   if (!r) return;
-  await prisma.render.update({ where: { id: r.id }, data: { status: "failed", error: message, errorCode: code ?? null, finishedAt: new Date() } });
+  const save = driveSaveOf(r);
+  await prisma.render.update({ where: { id: r.id }, data: { status: "failed", error: message, errorCode: code ?? null, finishedAt: new Date(), ...(save?.state === "waiting" ? { driveSave: { ...save, state: "failed", error: "The final did not finish, so nothing was saved to Google Drive.", at: Date.now() } } : {}) } });
   const p = await prisma.project.findUnique({ where: { id: r.projectId } });
   if (p && p.status === "Rendering") {
     // Back to what the edit had before this render: the best finished render decides.

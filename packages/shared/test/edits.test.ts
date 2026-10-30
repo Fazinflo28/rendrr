@@ -116,7 +116,8 @@ describe("connector tool list", () => {
     // 42: add_lut (a .cube LUT from a link, the user's Drive or its text: a look made outside Rendrr, put on the edit).
     // 44: create_folder (a project folder for a client or series), create_shorts (shorts from a long video in one call:
     // an edit per short, cut, shaped, reframed and captioned).
-    expect(MCP_TOOLS.length).toBeLessThanOrEqual(44);
+    // 45: save_to_drive (a final copied into the folder the user named in their Google Drive).
+    expect(MCP_TOOLS.length).toBeLessThanOrEqual(45);
     const names = MCP_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
     for (const gone of ["cut_silences", "remove_fillers", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);

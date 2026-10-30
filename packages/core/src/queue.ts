@@ -24,6 +24,8 @@ export function queue(name: QueueName): Queue {
 export type ProxyJob = { videoId: string };
 export type AnalyzeJob = { videoId: string };
 export type RenderJob = { renderId: string };
+/** A finished final copied into the user's Google Drive (the render's driveSave says where). */
+export type DriveSaveJob = { renderId: string };
 /** params: record a variant of a custom graphic with these window.params (all of them, defaults filled in). */
 export type GraphicJob = { graphicId: string; params?: Record<string, unknown> };
 export type MaintenanceJob = { task: "cleanup" | "ensure-assets" };

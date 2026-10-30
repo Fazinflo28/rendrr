@@ -25,6 +25,7 @@ import { testGraphic } from "./services/testGraphic";
 import { addLibraryItem, getLibraryItem, listLibrary, searchIcons, withIcons } from "./services/library";
 import { analyzeReference, styleFileLines, styleFileOut } from "./services/styleFiles";
 import { openProjects } from "./services/claudeApp";
+import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, latestFinal } from "./services/driveSave";
 import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
 
 export type ToolOut = { text: string; images?: string[]; data?: unknown };
@@ -278,19 +279,31 @@ async function waitFor<T>(fn: () => Promise<T | null>, ms: number, every = 1000)
 }
 
 /** A finished render as text: a preview comes with the check of the edit; nothing to download into the chat. */
+/** The Drive folder to save into, or what to tell the user instead (not connected, not found, refused). */
+async function driveTargetOrText(userId: string, folder: string | undefined, create: boolean | undefined) {
+  try { return await driveTarget(userId, folder, create); } catch (e) {
+    const err = e as AppError;
+    if (err.code === "drive-write") return `${err.message} Nothing was rendered or saved.\n${allowSavingText()}`;
+    if (err.code === "drive-folder" || err.code === "drive" || err.code === "drive-off") return `${err.message} Nothing was rendered or saved.`;
+    throw e;
+  }
+}
+
 async function renderOut(renderId: string): Promise<ToolOut> {
   const r = await prisma.render.findUniqueOrThrow({ where: { id: renderId } });
-  if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Render final; the app will ask for the original file." : ""}` };
+  if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Render final; the app will ask for the original file." : ""}${driveLine(r) ? `\n${driveLine(r)}` : ""}` };
   if (r.status !== "done") {
     // Phase 7: where it is and the time left (the worker's estimate), so the AI can say when to look again.
     const st = await renderStatus(r);
     const left = st.etaSec != null ? `, about ${fmtLeft(st.etaSec)} left` : ", estimating the time left";
-    return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). Call get_render in a little while.` };
+    const dl = driveLine(r);
+    return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). Call get_render in a little while.${dl ? `\n${dl}` : ""}` };
   }
   const res = await renderResult(r);
   const took = res.renderSeconds != null ? `, rendered in ${res.renderSeconds < 60 ? `${Math.round(res.renderSeconds)} s` : `${Math.floor(res.renderSeconds / 60)} min ${Math.round(res.renderSeconds % 60)} s`}` : "";
   const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s${took}. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
-  if (r.kind === "final") return { text: head, data: { renderId: r.id } };
+  const dl = driveLine(r);
+  if (r.kind === "final") return { text: dl ? `${head}\n${dl}` : head, data: { renderId: r.id } };
   const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number; operations?: string[]; heard?: HeardTranscript } | null;
   // Phase 6: what the render itself said about HDR and missing LUTs goes into the check.
   const notes = (plan?.operations ?? []).filter((l) => l.startsWith("HDR:") || /^Color: LUT .* left out/.test(l) || /^Graphic \S+ left out/.test(l));
@@ -895,6 +908,10 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return renderOut(r.id);
   },
   async render_final(c, i) {
+    // Saving into Drive: the folder is found and checked first, so a wrong name or a refused folder is said now, not
+    // after the render.
+    const target = i.driveFolder != null || i.saveToDrive ? await driveTargetOrText(c.userId, i.driveFolder, i.createFolders) : null;
+    if (typeof target === "string") return { text: target };
     let r;
     try { r = await startRender(c.userId, i.projectId, "final"); } catch (e) {
       const code = (e as AppError).code;
@@ -902,8 +919,29 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       if (code === "drive") return { text: "The original file is no longer reachable in Google Drive. Ask the user to reconnect it in the Rendrr Library." };
       throw e;
     }
+    if (target) await askDriveSave(r, target, fileNameFor(i.fileName, (await renderResult(r)).fileName));
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     return renderOut(r.id);
+  },
+  async save_to_drive(c, i) {
+    await getOwnedProject(c.userId, i.projectId);
+    // The newest final: one still rendering (newer than the last finished one) is saved when it is done.
+    const running = await prisma.render.findFirst({ where: { projectId: i.projectId, userId: c.userId, kind: "final", status: { in: ["queued", "running"] }, ...(i.version ? { version: i.version } : {}) }, orderBy: { createdAt: "desc" } });
+    const done = await latestFinal(c.userId, i.projectId, i.version);
+    const r = running && (!done || running.createdAt > done.createdAt) ? null : done;
+    if (!r) {
+      if (!running) return { text: `This edit has no finished final${i.version ? ` of v${i.version}` : ""} yet. render_final with driveFolder renders it and saves it there when it is done.` };
+      const t = await driveTargetOrText(c.userId, i.folder, i.createFolders);
+      if (typeof t === "string") return { text: t };
+      await askDriveSave(running, t, fileNameFor(i.fileName, (await renderResult(running)).fileName));
+      return renderOut(running.id);
+    }
+    const t = await driveTargetOrText(c.userId, i.folder, i.createFolders);
+    if (typeof t === "string") return { text: t };
+    await askDriveSave(r, t, fileNameFor(i.fileName, (await renderResult(r)).fileName));
+    // A short final is often there within the wait.
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); const s = x && (x.driveSave as { state?: string } | null)?.state; return s === "saved" || s === "failed" ? x : null; }, TOOL_WAIT_MS);
+    return { text: `Final v${r.version} (render id ${r.id}): ${driveLine(await prisma.render.findUniqueOrThrow({ where: { id: r.id } }))}`, data: { renderId: r.id } };
   },
   async get_render(c, i) {
     const r = await prisma.render.findUnique({ where: { id: i.renderId } });

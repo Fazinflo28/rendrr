@@ -145,8 +145,9 @@ export const api: any = {
 
   // ---- Google Drive ----
   getDriveStatus: () => get("/drive/status"),
-  connectDrive: async () => {
-    const r = await post("/drive/connect");
+  // write: also allow saving into the user's own Drive folders (finals saved where they tell their AI).
+  connectDrive: async (write = false) => {
+    const r = await post("/drive/connect", write ? { write: true } : undefined);
     if (!r.authUrl) return r;
     // Real Google consent in a popup; the API's callback page tells us when it is done.
     // The popup hands the Google code back here and we finish with our own login (see /drive/complete).
