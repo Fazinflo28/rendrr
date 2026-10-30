@@ -114,8 +114,6 @@ html.fs .stage.tall video { height: max(220px, min(60vh, calc(100vh - 600px))); 
 .frame { position: relative; width: 100%; display: flex; justify-content: center; }
 .ink { position: absolute; pointer-events: none; }
 .ink.on { pointer-events: auto; cursor: crosshair; touch-action: none; outline: 2px solid var(--accent); outline-offset: -2px; }
-/* The time over the picture, as in the editor's player. */
-.stamp { position: absolute; left: 10px; top: 10px; z-index: 2; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border-radius: var(--r-sm); background: rgba(0,0,0,.55); color: #fff; font-size: 12px; backdrop-filter: blur(4px); pointer-events: none; }
 /* While the preview loads (or stops to load more as it plays): a shimmer over the picture and a word, so it never
    looks stuck. A click goes through to the player. */
 .load, .fail { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 8px; color: rgba(255,255,255,.85); font-size: 13px; opacity: 0; visibility: hidden; transition: opacity .2s, visibility .2s; pointer-events: none; }
@@ -127,7 +125,6 @@ html.fs .stage.tall video { height: max(220px, min(60vh, calc(100vh - 600px))); 
 .frame.failed .fail { opacity: 1; visibility: visible; pointer-events: auto; }
 .frame.failed .load { display: none; }
 @media (prefers-reduced-motion: reduce) { .load, .load .spin { animation: none; } }
-.stamp i { font-style: normal; font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,.18); }
 .pens { display: flex; gap: 6px; }
 .pen { width: 24px; height: 24px; border-radius: 50%; box-shadow: 0 0 0 2px var(--hair-strong); }
 .pen.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ink); }
@@ -586,12 +583,10 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
       }
       const canvas = h("canvas", { class: "ink" + (state.drawMode ? " on" : ""), "aria-label": state.drawMode ? "Draw on the picture" : null });
       inkCanvas(canvas);
-      const stampT = h("span", { class: "mono" });
-      onTime((t) => { stampT.textContent = fmtTime(t); });
+      // Nothing over the picture but the drawing: the time is in the controls, the version in the menu above.
       const frame = h("div", { class: "frame" + loadingClass(player) }, player, canvas,
         h("div", { class: "load", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Loading preview…"),
-        h("div", { class: "fail" }, h("span", {}, "The preview did not load."), h("button", { class: "btn", onClick: retryPreview }, "Try again")),
-        h("span", { class: "stamp", "aria-hidden": "true" }, stampT, h("i", {}, "v" + v.preview.version + (v.preview.kind === "final" ? " final" : ""))));
+        h("div", { class: "fail" }, h("span", {}, "The preview did not load."), h("button", { class: "btn", onClick: retryPreview }, "Try again")));
       stage = h("div", { class: "stage" + (tall ? " tall" : "") }, frame);
     } else {
       player = null;

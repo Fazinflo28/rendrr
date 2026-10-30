@@ -192,6 +192,7 @@ check(calls.some((c) => c.name === "app_get_project" && c.args.projectId === "p1
 await frame().waitForFunction(() => document.querySelector("video").readyState >= 2, null, { timeout: 10000 }).catch(() => {});
 check(await frame().evaluate(() => document.querySelector("video").readyState >= 2), "the preview loads in the player");
 check(await frame().evaluate(() => !document.querySelector("video").controls), "the player has Rendrr's controls, not the browser's (they show whole seconds)");
+check(await frame().evaluate(() => [...document.querySelector(".frame").children].every((e) => ["VIDEO", "CANVAS"].includes(e.tagName) || e.matches(".load, .fail"))), "nothing sits on the picture (no time or version over the video)");
 await app.locator(".ctrl .ibtn").first().click();
 await frame().waitForFunction(() => document.querySelector("video").currentTime > 1.6, null, { timeout: 10000 }).catch(() => {});
 const tcPlaying = await app.locator(".tc").innerText();
@@ -381,7 +382,7 @@ check(opts.join(" | ") === "v2 · Preview | v1 · Final 1080p | v1 · Preview", 
 await app.locator("select.ver").selectOption("rf1");
 await frame().waitForFunction(() => /X-Amz-Signature=f/.test(document.querySelector("video")?.getAttribute("src") || ""), null, { timeout: 5000 }).catch(() => {});
 check(calls.some((c) => c.name === "app_get_project" && c.args.renderId === "rf1") && /X-Amz-Signature=f/.test(await frame().evaluate(() => document.querySelector("video").getAttribute("src"))), "picking the final plays the final");
-check(/v1 final/.test(await app.locator(".stamp").innerText()) && /the final/.test(await app.locator('button[aria-label="Download"]').getAttribute("title")) && await frame().evaluate(() => document.querySelector("video").paused), "the player says it is the final, Download takes the final, nothing plays on its own");
+check(/v1 · Final/.test(await app.locator("select.ver option:checked").innerText()) && /the final/.test(await app.locator('button[aria-label="Download"]').getAttribute("title")) && await frame().evaluate(() => document.querySelector("video").paused), "the player says it is the final, Download takes the final, nothing plays on its own");
 check(!/has changes the latest preview/.test(await app.locator("body").innerText()) && !/Preview v1 is ready/.test(await app.locator("#toast").innerText()), "watching an older render is not news, and no note asks for a render");
 await app.locator("select.ver").selectOption("r2");
 await frame().waitForFunction(() => /v2\.webm\?X-Amz-Signature=c/.test(document.querySelector("video")?.getAttribute("src") || ""), null, { timeout: 5000 }).catch(() => {});
