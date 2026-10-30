@@ -41,7 +41,8 @@ describe("recording a failed graphic again", { skip: !ready && "needs DATABASE_U
   it("retry: queued again from its own code, its old job taken off the queue first", async () => {
     // The first try's job is still on the queue under the graphic's id (BullMQ keeps failed jobs): it would stop a new one.
     await enqueue("graphic", { graphicId: crashed, stale: true }, { jobId: crashed });
-    const out = await tool("get_graphic", { graphicId: crashed, retry: true });
+    // As text, as a chat that loaded the tool list before retry existed sends it.
+    const out = await tool("get_graphic", { graphicId: crashed, retry: "true" });
     // No worker runs here: it is queued, and the answer says so.
     assert.match(out.text, new RegExp(`^${crashed} \\| Crashed ${run} \\| (queued|recording)`));
     const g = await prisma.graphic.findUniqueOrThrow({ where: { id: crashed } });
