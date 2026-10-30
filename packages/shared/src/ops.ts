@@ -354,6 +354,10 @@ function applyStyleLooks(snap: Snapshot, style: StyleLite): { snap: Snapshot; su
 // ---------------------------------------------------------------------------------------------
 type Inner = { snap: Snapshot; summary: string; count?: number };
 
+/** remove_background with nothing set behind V1 (no background, no b-roll under it): the result says what to do. */
+const BLACK_BEHIND = "; behind it: black until set_background (a colour, gradient, pattern, library video or blur) or b-roll with set_under";
+const hasBehind = (tl: Timeline) => !!tl.background || (tl.tracks.v2 as (Clip & { under?: boolean })[]).some((c) => c.under);
+
 function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
   if (op.op === "batch") {
     // One version for the whole list; the first edit that cannot be made stops it, so nothing half-done is saved.
@@ -369,7 +373,8 @@ function applyOpInner(snap: Snapshot, op: Op, ctx: EditContext): Inner {
         throw e;
       }
     });
-    return { snap: cur, summary: did.join("; ") };
+    // remove_background's "black until set_background" is old news once a later edit in the list set what is behind.
+    return { snap: cur, summary: (hasBehind(cur.timeline) ? did.map((d) => d.replace(BLACK_BEHIND, "")) : did).join("; ") };
   }
   const words = allWords(ctx.transcript);
   const r = applyLeaf(snap, op, ctx);
@@ -761,7 +766,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
       }
       const bg = BackgroundSchema.parse({ ...(op.color ? { color: op.color.toUpperCase() } : {}), ...(op.gradient ? { gradient: op.gradient } : {}), ...(op.videoId ? { videoId: op.videoId } : {}), ...(op.blur ? { blur: op.blur } : {}), ...(op.pattern ? { pattern: { ...op.pattern, color: op.pattern.color.toUpperCase(), ink: op.pattern.ink.toUpperCase() } } : {}) });
-      return { snap: { ...snap, timeline: { ...tl, background: bg } }, summary: `background: ${backgroundText(bg, (id) => ctx.getVideo?.(id)?.name)} (it shows where V1 is framed smaller, cropped, rounded, keyed or masked)` };
+      return { snap: { ...snap, timeline: { ...tl, background: bg } }, summary: `background: ${backgroundText(bg, (id) => ctx.getVideo?.(id)?.name)} (it shows where V1 is framed smaller, cropped, rounded, keyed, masked or has its background removed)` };
     }
     case "set_rotation": {
       const ids = targets(tl, op.clipIds);
@@ -1113,7 +1118,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         return { ...rest, subject: sj } as typeof c;
       });
       const sj = lookClip(next, ids[0]).clip.subject;
-      const behind = tl.background || (tl.tracks.v2 as (Clip & { under?: boolean })[]).some((c) => c.under) ? "" : "; behind it: black until set_background (a colour, gradient, pattern, library video or blur) or b-roll with set_under";
+      const behind = hasBehind(tl) ? "" : BLACK_BEHIND;
       return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${sj ? subjectText(sj) + behind : "background back"}` };
     }
     case "set_under": {

@@ -12,11 +12,11 @@ plugin hosting, hardware I/O, localization) are out of scope.
 
 ## Phases, in order of value for talking heads, ads and short-form
 
-1. **Subject mask (this phase).** Cut the person out of their background with an AI matte (Premiere's Object Mask,
-   CapCut's Remove background), on any V1 or b-roll clip; the background changes with what Rendrr already has
+1. **Subject mask (done, 30 October).** Cut the person out of their background with an AI matte (Premiere's Object
+   Mask, CapCut's Remove background), on V1 clips; the background changes with what Rendrr already has
    (set_background: colour, gradient, pattern, library video, blur; set_under: any footage behind). The matte follows
-   the clip's trim, speed, turn and framing. Person subjects first (MediaPipe selfie segmenter, Apache-2.0, in the
-   worker image); any object later with a general model.
+   the clip's trim, speed, turn and framing. Person subjects (MediaPipe selfie segmenter, Apache-2.0, in the worker
+   image). Left for later: b-roll clips, reversed clips, any object with a general model.
 2. **Text behind the subject and track mattes.** The subject drawn again over V3 (titles behind the person); Track
    Matte Key (video inside text, shape wipes).
 3. **Animated and tracked masks.** Mask keyframes, masks that follow a face or the subject, masks that limit one

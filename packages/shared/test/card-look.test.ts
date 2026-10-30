@@ -35,7 +35,7 @@ describe("set_card and set_background", () => {
     const s = start();
     expect(run(s, { op: "set_background", color: "#ff66aa" } as Op).snap.timeline.background).toEqual({ color: "#FF66AA" });
     const g = run(s, { op: "set_background", gradient: { from: "#FF66AA", to: "#FFFFFF", angle: 160 } } as Op);
-    expect(g.summary).toBe("background: gradient #FF66AA to #FFFFFF at 160° (it shows where V1 is framed smaller, cropped, rounded, keyed or masked)");
+    expect(g.summary).toBe("background: gradient #FF66AA to #FFFFFF at 160° (it shows where V1 is framed smaller, cropped, rounded, keyed, masked or has its background removed)");
     expect(run(s, { op: "set_background", videoId: "loop" } as Op).summary).toMatch(/^background: video loop "Loop" \(looped\)/);
     expect(() => run(s, { op: "set_background", videoId: "nope" } as Op)).toThrow(/not in your library/);
     expect(() => run(s, { op: "set_background", videoId: "busy" } as Op)).toThrow(/not ready yet/);

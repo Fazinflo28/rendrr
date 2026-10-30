@@ -198,7 +198,7 @@ export const TimelineSchema = z.object({
   framing: FramingSchema.optional(),
   audio: AudioSettingsSchema.optional(),
   export: ExportSchema.optional(),
-  /** What is behind V1 (shows where it is framed smaller, cropped, rounded, keyed or masked). Missing: black. */
+  /** What is behind V1 (shows where it is framed smaller, cropped, rounded, keyed, masked or has its background removed). Missing: black. */
   background: BackgroundSchema.optional(),
   /** The AI's marks on the footage (Rendrr's own come from the analysis, never stored here). */
   marks: z.array(MarkSchema).max(5000).optional(),

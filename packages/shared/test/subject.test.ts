@@ -29,6 +29,11 @@ describe("the op", () => {
     expect(subj(off.snap, "a")).toBeUndefined();
     expect(off.summary).toMatch(/background back/);
   });
+  it("set in the same call after it, the background is not asked for", () => {
+    const out = edit(base(), { op: "batch", ops: [{ op: "remove_background" }, { op: "set_background", color: "#112233" }] } as Op);
+    expect(out.summary).not.toMatch(/black until/);
+    expect(out.summary).toMatch(/background removed; .*background: #112233 \(it shows where V1 .*has its background removed\)/);
+  });
   it("with a background set, the summary does not ask for one", () => {
     const s = edit(base(), { op: "set_background", color: "#112233" } as Op).snap;
     expect(edit(s, { op: "remove_background", clipId: "b" } as Op).summary).not.toMatch(/black until/);
