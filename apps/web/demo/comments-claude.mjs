@@ -1,6 +1,6 @@
 // Comments made in the Rendrr app in Claude, in the editor: a note shows its picture (opens in a new tab), its link,
 // and its drawing (on the picture at its moment, paused); the user's own note can be edited; any comment deleted after
-// a second click. Runs on the demo build (node demo/build.mjs first) in Playwright's Chromium.
+// a second click; a resolved comment has no marks on the bars. Runs on the demo build (node demo/build.mjs first) in Playwright's Chromium.
 //   node demo/comments-claude.mjs   (from apps/web)
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -49,6 +49,16 @@ await note.locator("button.cmt-act", { hasText: "Edit" }).click();
 await page.locator('input[aria-label="Edit comment"]').fill("Logo 20% smaller");
 await page.locator('input[aria-label="Edit comment"]').press("Enter"); await sleep(300);
 check(/Logo 20% smaller/.test(await note.innerText()) && /edited/.test(await note.innerText()), "the note's words can be edited");
+// Done: a resolved comment's marks leave the player's bar and the timeline; reopened, they come back.
+const marks = () => page.evaluate(() => ({ bar: document.querySelectorAll(".player .mark, .screen ~ * .mark, .mark").length, ruler: document.querySelectorAll("#timeline .cm").length }));
+const before = await marks();
+await note.locator("button.cmt-check").click(); await sleep(300);
+const doneMarks = await marks();
+check(before.bar >= 1 && before.ruler >= 1 && doneMarks.bar === before.bar - 1 && doneMarks.ruler === before.ruler - 1, `a resolved comment's marks leave the bars (player ${before.bar} -> ${doneMarks.bar}, timeline ${before.ruler} -> ${doneMarks.ruler})`);
+await page.locator("#cm-filter-all").click(); await sleep(200);
+await note.locator("button.cmt-check").click(); await sleep(300);
+const back = await marks();
+check(back.bar === before.bar && back.ruler === before.ruler, "reopened, they come back");
 // Delete asks first.
 const del = note.locator('button[aria-label="Delete comment"]');
 await del.click(); await sleep(100);

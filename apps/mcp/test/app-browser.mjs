@@ -254,9 +254,11 @@ check(Math.abs((await frame().evaluate(() => document.querySelector("video").cur
 await app.locator(".cm .chk").first().click(); await sleep(300);
 check(calls.some((c) => c.name === "app_resolve_comment" && c.args.commentId === "c0" && c.args.resolved === true), "resolving asks Rendrr");
 check(/Open 1/.test(await app.locator(".tabs").innerText()) && /All 2/.test(await app.locator(".tabs").innerText()), "the open count goes down");
+check((await app.locator(".seek .mk").count()) === 1 && (await app.locator(".seek .tick").count()) === 1 && (await app.locator(".seek .mk.client").count()) === 0, "a resolved comment's pin leaves the seek bar (the change is done)");
 await app.locator(".tab", { hasText: "All" }).click();
 await app.locator(".cm.done .chk").first().click(); await sleep(300);
 check(calls.some((c) => c.name === "app_resolve_comment" && c.args.resolved === false), "a resolved comment opens again");
+check((await app.locator(".seek .mk").count()) === 2 && (await app.locator(".seek .mk.client").count()) === 1, "and its pin comes back");
 
 // 6. Send to Claude: one message with the open comments and how to work through them.
 await app.locator("button", { hasText: "Send to Claude" }).click(); await sleep(300);
