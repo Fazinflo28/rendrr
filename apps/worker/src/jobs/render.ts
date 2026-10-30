@@ -47,9 +47,14 @@ export async function renderJob(ctx: Ctx) {
   // made up: null (the UI says "Estimating") until one of the two exists.
   const t0 = Date.now();
   const prior = await workPerSecond(video.userId, kind, r.quality);
-  const est = { outSeconds: video.seconds || 0, encStart: 0, encFrac: 0, encEnd: 0 };
+  const est = { outSeconds: video.seconds || 0, encStart: 0, encFrac: 0, encEnd: 0, matte: null as null | { start: number; frac: number } };
   const etaSec = (): number | null => {
     const now = Date.now();
+    // While the person is cut out (remove_background): that work's own pace, then the render as usual.
+    if (est.matte) {
+      const spent = (now - est.matte.start) / 1000;
+      return est.matte.frac > 0.03 ? Math.max(5, Math.round(spent / est.matte.frac - spent + (prior != null ? prior * est.outSeconds : 30))) : null;
+    }
     if (est.encEnd) { const enc = (est.encEnd - est.encStart) / 1000; return Math.max(2, Math.round(enc * 0.12 + 5 - (now - est.encEnd) / 1000)); }
     if (est.encStart && (est.encFrac >= 0.02 || now - est.encStart > 8000) && est.encFrac > 0) {
       const spent = (now - est.encStart) / 1000, total = spent / est.encFrac;
@@ -196,7 +201,12 @@ export async function renderJob(ctx: Ctx) {
     if (plan.mattes) {
       const m0 = Date.now();
       if (pt) clearTimeout(pt);
-      files.mattes = await ensureMattes(plan, video.userId, ctx.dir, signal, (f) => sendThrottled(i, 0.2 + 0.7 * f));
+      const label = steps[i];
+      steps[i] = "Cutting out the person";
+      est.matte = { start: m0, frac: 0 };
+      files.mattes = await ensureMattes(plan, video.userId, ctx.dir, signal, (f) => { est.matte!.frac = f; sendThrottled(i, 0.2 + 0.7 * f); });
+      steps[i] = label;
+      est.matte = null;
       if (pt) pt = armPreview(Math.max(60_000, previewLimit - (m0 - t0)));
       if (Date.now() - m0 > 3000) plan.operations.push(`Background: the person's matte made in ${Math.round((Date.now() - m0) / 1000)} s (kept: the next render reuses it)`);
     }

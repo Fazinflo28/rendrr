@@ -244,14 +244,18 @@ def main():
     size = W * H * 3
     prev_c = prev_g = None
     n, last, t0 = 0, -1, time.time()
+    spent = {"read": 0.0, "model": 0.0, "filter": 0.0, "write": 0.0}  # seconds, for the summary
     r = max(3, int(round(min(W, H) * 0.006)) | 1)  # the filter's window at the work size (half)
     while True:
+        t = time.time()
         buf = rd.stdout.read(size)
+        spent["read"] += time.time() - t
         if len(buf) < size:
             break
         rgb = turn_up(np.frombuffer(buf, np.uint8).reshape(H, W, 3), a.turn)
         uh, uw = rgb.shape[:2]
         h, w = uh // 2, uw // 2  # the work size: the model's map, smoothing and the filter's coefficients
+        t = time.time()
         if follow.box is None:
             # First frame, or no one for a second: the fast model finds them, the fine one draws the box round them.
             found = where(locate, rgb)
@@ -266,10 +270,15 @@ def main():
             w_new = 0.45 + 0.55 * moved
             c = w_new * c + (1 - w_new) * prev_c
         prev_c, prev_g = c, g
+        spent["model"] += time.time() - t
+        t = time.time()
         m = guided(rgb.astype(np.float32) * (1 / 255), smoothstep(0.3, 0.7, islands(c)), r, 1e-4)
         m = smoothstep(0.08, 0.92, m)
         out = (turn_back(m, a.turn) * 255 + 0.5).astype(np.uint8)
+        spent["filter"] += time.time() - t
+        t = time.time()
         wr.stdin.write(np.ascontiguousarray(out).tobytes())
+        spent["write"] += time.time() - t
         n += 1
         p = int(n * 100 / total)
         if p != last:
@@ -281,7 +290,8 @@ def main():
     wr.stdin.close()
     if wr.wait() != 0:
         raise SystemExit("ffmpeg could not write the matte")
-    print(json.dumps({"frames": n, "fps": fps, "width": W, "height": H, "from": a.start, "to": a.end, "seconds": round(time.time() - t0, 2)}))
+    print(json.dumps({"frames": n, "fps": fps, "width": W, "height": H, "from": a.start, "to": a.end, "seconds": round(time.time() - t0, 2),
+                      "msPerFrame": {k: round(v * 1000 / max(1, n), 1) for k, v in spent.items()}}))
 
 
 if __name__ == "__main__":

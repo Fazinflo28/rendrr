@@ -37,8 +37,12 @@ export async function makeMatteBlock(v: MatteVideo, k: number, dir: string, sign
   const from = k * MATTE_BLOCK, to = Math.min(v.seconds, from + MATTE_BLOCK);
   if (to <= from) throw new JobError(`That part of the footage (from ${from}s) is past the video's end.`, "range", false);
   const out = join(dir, `matte-${v.id}-${k}.mp4`);
-  await run(PYTHON, [MATTE_PY, "--input", await signGet(v.proxyKey, 3600), "--from", String(from), "--to", String(to), "--turn", String(v.turn), "--model", MATTE_MODEL, "--locate", MATTE_LOCATE, "--out", out],
+  const t0 = Date.now();
+  const { stdout } = await run(PYTHON, [MATTE_PY, "--input", await signGet(v.proxyKey, 3600), "--from", String(from), "--to", String(to), "--turn", String(v.turn), "--model", MATTE_MODEL, "--locate", MATTE_LOCATE, "--out", out],
     { signal, onLine: (l) => { const m = /^PROGRESS (\d+)/.exec(l); if (m) onProgress?.(Number(m[1]) / 100); } });
+  // Where the time went (reading the footage, the models, the edge, writing), for tuning on the worker's CPUs.
+  const sum = stdout.trim().split("\n").pop() ?? "";
+  console.log(`[matte] ${v.id} block ${k} (${from}-${to}s) made in ${((Date.now() - t0) / 1000).toFixed(1)} s: ${sum.slice(0, 300)}`);
   await uploadFile(matteKey(v.userId, v.id, v.turn, k), out, "video/mp4");
   return out;
 }
