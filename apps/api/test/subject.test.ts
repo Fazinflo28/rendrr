@@ -1,7 +1,7 @@
 // Remove the background through the connector: apply_edits remove_background cuts the person out of every V1 clip,
 // queues the matte of each 10 s block of footage the clips use (one job per block, the turn the footage was measured
 // with), get_project says so, a block already kept is not queued again, and the editor's matte route gives each block's
-// link once it is kept (null while it is being made). Needs a database, Redis and storage (as in .env).
+// link once it is kept (null while it is being made, and queued). Needs a database, Redis and storage (as in .env).
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 
@@ -70,8 +70,11 @@ describe("remove background through the connector", { skip: !ready && "needs DAT
     assert.equal((await queue("matte").getJob(matteJobId(turnedId, 90, 0)))!.data.turn, 90);
   });
 
-  it("the editor's route: a link for each kept block, null while one is being made", async () => {
+  it("the editor's route: a link for each kept block, null while one is being made (and queued)", async () => {
+    for (const j of ids(videoId, 0)) await queue("matte").remove(j);
     const m = await matteBlockUrls(userId, videoId, 0, 25);
+    // An edit made before a new matte version has no blocks of it: asking for them queues the missing ones.
+    assert.deepEqual(await queued(ids(videoId, 0)), ids(videoId, 0).slice(1));
     assert.equal(m!.turn, 0);
     assert.equal(m!.block, 10);
     assert.deepEqual(Object.keys(m!.blocks), ["0", "1", "2"]);
