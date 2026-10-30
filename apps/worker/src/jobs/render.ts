@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { COVER_SIZE, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run } from "../lib/ffmpeg";
+import { COVER_SIZE, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, windowBudget } from "../lib/ffmpeg";
 import { cachedAsset, cachedCopy } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { throttle, type Ctx } from "../lib/job";
@@ -114,6 +114,7 @@ export async function renderJob(ctx: Ctx) {
     // original when Rendrr keeps it, else the preview copy (the operations say so). A video that is gone fails the
     // plan with a plain message.
     const sources: Record<string, SourceInfo> = {};
+    const budgets: Record<string, number> = { [video.id]: windowBudget(info) };
     const transcripts: Record<string, Transcript> = {};
     const hdrFootage: Record<string, HdrTransfer> = video.hdr ? { [video.id]: video.hdr as HdrTransfer } : {};
     const copies: string[] = [];
@@ -131,6 +132,7 @@ export async function renderJob(ctx: Ctx) {
         const oi = await probe(p, { signal });
         if (!oi.hasVideo) throw new JobError(`"${o.name}" on V1 looks damaged. Remove it from the edit or add it again.`, "damaged", false);
         files.videos![o.id] = p;
+        budgets[o.id] = windowBudget(oi);
         sources[o.id] = { width: oi.width, height: oi.height, fps: oi.fps, seconds: oi.seconds || o.seconds, hasAudio: oi.hasAudio, hdr: !!oi.hdr, ...(oi.transfer ? { transfer: oi.transfer } : {}) };
         if (o.hdr) hdrFootage[o.id] = o.hdr as HdrTransfer;
         transcripts[o.id] = (o.analysis?.transcript as unknown as Transcript) || [];
@@ -198,7 +200,7 @@ export async function renderJob(ctx: Ctx) {
       mixLoudness = await measureMix(plan, files, sourceInfo, { dir: ctx.dir, signal, onProgress: measuring ? (f) => sendThrottled(i, f) : undefined });
     }
     if (measuring) { await send(i, 1); i++; }
-    const argsFor = (ft: number) => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || undefined, filterThreads: ft, loudnessGainDb: mixLoudness?.gainDb });
+    const argsFor = (ft: number) => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || undefined, filterThreads: ft, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets });
     // The graph decides how many filter threads it may have (it is the same text whatever that number).
     const { args, filterGraph } = argsFor(filterThreads(argsFor(4).filterGraph));
     const graphPath = join(ctx.dir, "graph.txt");

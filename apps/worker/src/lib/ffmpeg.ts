@@ -74,7 +74,7 @@ export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<{ 
   });
 }
 
-export type Probe = { seconds: number; width: number; height: number; fps: number; hasVideo: boolean; hasAudio: boolean; rotation: number; hdr: boolean; transfer?: "pq" | "hlg"; sizeBytes: number };
+export type Probe = { seconds: number; width: number; height: number; fps: number; hasVideo: boolean; hasAudio: boolean; rotation: number; hdr: boolean; transfer?: "pq" | "hlg"; sizeBytes: number; bits: number };
 
 /** ffprobe with optional HTTP headers (Drive). Width and height are as displayed (rotation applied). */
 export async function probe(input: string, opts: { headers?: string; signal?: AbortSignal } = {}): Promise<Probe> {
@@ -99,7 +99,19 @@ export async function probe(input: string, opts: { headers?: string; signal?: Ab
     hdr: !!v && ["smpte2084", "arib-std-b67"].includes(String(v.color_transfer || "")),
     ...(v && ["smpte2084", "arib-std-b67"].includes(String(v.color_transfer || "")) ? { transfer: v.color_transfer === "smpte2084" ? "pq" as const : "hlg" as const } : {}),
     sizeBytes: Number(j.format?.size || 0),
+    // Bits a sample of its picture (10 or 12 for most HDR and log footage), from the decoder's pixel format.
+    bits: Number(v?.bits_per_raw_sample) || (/p1[02]|p16/.test(String(v?.pix_fmt || "")) ? (/p12/.test(String(v?.pix_fmt)) ? 12 : 10) : 8),
   };
+}
+
+/**
+ * How many picture windows (seeked decoders, see ffmpegArgs windowBudget) a video of this size may have in a render.
+ * FFmpeg runs every input's decoder at once, each holding about two dozen frames; together they keep under ~1.2 GB,
+ * so a 6K original reads in one input (as before windows), 4K in a few, 1080p in about 16, a 540p copy in 64.
+ */
+export function windowBudget(p: { width: number; height: number; bits?: number }): number {
+  const frame = Math.max(1, p.width * p.height) * 1.5 * ((p.bits ?? 8) > 8 ? 2 : 1);
+  return Math.max(1, Math.min(64, Math.floor(1.2e9 / (24 * frame))));
 }
 
 /** Silence ranges from FFmpeg silencedetect (-35 dB, at least 0.4 s). */

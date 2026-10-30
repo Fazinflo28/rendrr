@@ -755,6 +755,12 @@ export type FfmpegOpts = {
    *  Infinity: one input per video read from the start, as before windows (tests compare the two). */
   windowGap?: number;
   /**
+   * Picture windows a video may have at most (by video id). Every window is a decoder of its own, and FFmpeg starts
+   * them all at once, each holding frames: at 4K or 6K a few dozen of them fill the worker's memory. Over its budget,
+   * a video's windows read further through its gaps instead (the smallest gap that fits, else one input as before).
+   */
+  windowBudget?: Record<string, number>;
+  /**
    * Threads of the filter graph, which each scaler also starts: a graded graph has ~70 scalers, so leaving it to the
    * CPU count on a many-core host starts thousands of threads and FFmpeg fails with EAGAIN at the container's limit.
    */
@@ -767,6 +773,17 @@ export type FfmpegOpts = {
 
 export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: FfmpegOpts = {}): { args: string[]; filterGraph: string } {
   if (plan.model === "A") return ffmpegArgsA(plan, files, source, opts);
+  if (opts.windowGap != null || !opts.windowBudget) { const { args, filterGraph } = ffmpegArgsB(plan, files, source, opts); return { args, filterGraph }; }
+  // The smallest gap at which every video keeps to its window budget (Infinity: one input each, always within it).
+  const budget = opts.windowBudget;
+  for (const windowGap of [WINDOW_GAP, 30, 60, 180, 600, Infinity]) {
+    const r = ffmpegArgsB(plan, files, source, { ...opts, windowGap });
+    if (windowGap === Infinity || Object.entries(r.windows).every(([vid, n]) => n <= Math.max(1, budget[vid] ?? Infinity))) return { args: r.args, filterGraph: r.filterGraph };
+  }
+  throw new RenderPlanError("No window layout fits."); // not reached: Infinity always fits
+}
+
+function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: FfmpegOpts): { args: string[]; filterGraph: string; windows: Record<string, number> } {
   const mix = plan.audioMix;
   if (mix && mix.loudness != null && !opts.measure && opts.loudnessGainDb == null) throw new RenderPlanError("This render sets the loudness: measure the mix first (ffmpegArgs with measure: true), then pass loudnessGainDb.");
   const inputs: string[] = [];
@@ -1137,7 +1154,9 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
   if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null });
   mixAudio(plan, files, g, inputs, () => idx++, opts);
   // Windows that read from the start left empty placeholders where a seek would go (they never move an input's place).
-  return { args: encodeArgs(plan, inputs.filter((a) => a !== ""), files, opts), filterGraph: g.join(";\n") };
+  const windows: Record<string, number> = {};
+  for (const w of wins) if (w.made === "v") windows[w.vid] = (windows[w.vid] || 0) + 1;
+  return { args: encodeArgs(plan, inputs.filter((a) => a !== ""), files, opts), filterGraph: g.join(";\n"), windows };
 }
 
 /**
