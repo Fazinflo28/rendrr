@@ -113,6 +113,7 @@ export function transitionNow(plan: RenderPlan, t: number): TransitionNow | null
 }
 
 export type LiveFrame = {
+  t: number;                   // the edit time asked
   videoId: string | null;      // the video whose picture plays
   src: number;                 // the footage moment that plays (seconds in that video)
   part: number;                // the picture part (the player jumps from part to part)
@@ -127,7 +128,7 @@ export type LiveFrame = {
   zoom: number;
   muted: boolean;              // the dialogue is silent here
   broll: { clipId: string; videoId: string; src: number; motion: Motion | null } | null;
-  graphics: { clipId: string; graphicId: string; t: number; start: number; end: number; motion: Motion | null }[];
+  graphics: { clipId: string; graphicId: string; t: number; start: number; end: number; motion: Motion | null; behind: boolean }[];
   /** Phase 5: the picture's rate (1 normal, below 0 reversed, 0 frozen), its V1 keyframe motion, the transition on. */
   rate: number;
   motion: Motion | null;
@@ -152,6 +153,8 @@ export function liveFrame(plan: RenderPlan, t0: number, clock = sequenceClock(pl
   const part = pic ? plan.parts[pic.i] : null;
   const ov = (x: { clipId: string; keys?: Key[]; start: number }, kind: string) => (x.keys?.length ? motionAt(tracksOf(plan, kind + x.clipId, x.keys), t - x.start) : null);
   return {
+    /** The edit time asked (Phase 2: the person layer checks its windows with it). */
+    t: t0,
     videoId: pic ? pic.videoId : null,
     src: pic ? pic.src : 0,
     part: pic ? pic.i : 0,
@@ -162,7 +165,7 @@ export function liveFrame(plan: RenderPlan, t0: number, clock = sequenceClock(pl
     zoom: zoomAt(plan.zooms, t),
     muted: plan.dialogueMutes.some((m) => inside(t, m)),
     broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start), motion: ov(br, "v2:") } : null,
-    graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start + g.sourceStart, start: g.start, end: g.end, motion: ov(g, "v3:") })),
+    graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start + g.sourceStart, start: g.start, end: g.end, motion: ov(g, "v3:"), behind: !!g.behind })),
     rate: pic ? pic.rate : 1,
     motion: part && part.clipIds.length === 1 ? clipMotionAt(plan, part.clipIds[0], t) : null,
     transition: transitionNow(plan, t),

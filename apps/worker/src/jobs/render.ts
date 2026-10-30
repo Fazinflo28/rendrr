@@ -225,6 +225,7 @@ export async function renderJob(ctx: Ctx) {
       files.audio![a.clipId] = await cachedAsset(a.assetKey);
     }
     if (plan.ass) await writeFile(files.assPath!, plan.ass);
+    if (plan.assBehind) { files.assBehindPath = join(ctx.dir, "behind.ass"); await writeFile(files.assBehindPath, plan.assBehind); }
     await send(i, 1);
     i++;
 

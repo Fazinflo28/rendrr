@@ -67,7 +67,9 @@ const EDIT_OPS = [
   z.object({ op: z.literal("set_voice"), soundId: z.string().max(80).nullable().optional(), ...SOUND_SOURCE, start: t.optional(), gainDb: z.number().min(-30).max(12).optional() }),
   // from: seconds into a custom graphic where this placement starts (one recording placed many times). params: a
   // template's fields, or values for a custom graphic's window.params (each new set is recorded once, then cached).
-  z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), from: z.number().min(0).max(4 * 3600).optional(), label: z.string().max(200).optional(), edit }),
+  z.object({ op: z.literal("add_graphic"), graphicId: z.string().max(80), start: t, end: t, params: z.record(z.unknown()).default({}), from: z.number().min(0).max(4 * 3600).optional(), label: z.string().max(200).optional(), behind: z.boolean().optional(), edit }),
+  // Phase 2 (Premiere parity): text layers and graphics behind the person (the person's AI matte over them).
+  z.object({ op: z.literal("behind_person"), clipIds: z.array(z.string().max(80)).min(1).max(200), off: z.boolean().optional() }),
   z.object({ op: z.literal("set_aspect"), aspect: AspectSchema }),
   // Position and scale of the footage in the frame (Premiere's Motion). Leave a field out to keep it.
   // clipIds: those V1 clips (default every clip of the main footage).
@@ -121,8 +123,8 @@ const EDIT_OPS = [
   z.object({ op: z.literal("set_caption_style"), look: CaptionLookSchema.optional(), ...CaptionStylePatchSchema.shape }),
   // A text layer on V3 (title card, callout): text with \n line breaks, a preset to start from, any style field,
   // a full-frame card behind it, an animation. x, y: the point it hangs on.
-  z.object({ op: z.literal("add_text"), text: z.string().min(1).max(1000), start: t, end: t, edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), label: z.string().max(200).optional(), ...TextStylePatchSchema.shape }),
-  z.object({ op: z.literal("set_text"), clipId, text: z.string().min(1).max(1000).optional(), start: t.optional(), end: t.optional(), edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), ...TextStylePatchSchema.shape }),
+  z.object({ op: z.literal("add_text"), text: z.string().min(1).max(1000), start: t, end: t, edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), label: z.string().max(200).optional(), behind: z.boolean().optional(), ...TextStylePatchSchema.shape }),
+  z.object({ op: z.literal("set_text"), clipId, text: z.string().min(1).max(1000).optional(), start: t.optional(), end: t.optional(), edit, preset: z.enum(TEXT_PRESETS).optional(), card: CardSchema.nullable().optional(), anim: z.enum(TEXT_ANIMS).optional(), behind: z.boolean().optional(), ...TextStylePatchSchema.shape }),
   // ---- sound ----
   // The edit's sound: dialogue cleanup preset, loudness target (LUFS, null = off), true-peak ceiling (dBTP), how many
   // dB music goes down under speech (0 = off), fades of the whole mix. Fields left out keep their value.
@@ -353,6 +355,9 @@ function applyStyleLooks(snap: Snapshot, style: StyleLite): { snap: Snapshot; su
 // applyOp
 // ---------------------------------------------------------------------------------------------
 type Inner = { snap: Snapshot; summary: string; count?: number };
+
+/** What going behind the person means, said once with the edit that does it. */
+const BEHIND_NOTE = "the person is drawn over it from an AI matte of the footage (people only), made when the edit is saved; where the clip under it is framed smaller, moved, reversed, or b-roll or a transition plays, it shows in front";
 
 /** remove_background with nothing set behind V1 (no background, no b-roll under it): the result says what to do. */
 const BLACK_BEHIND = "; behind it: black until set_background (a colour, gradient, pattern, library video or blur) or b-roll with set_under";
@@ -611,8 +616,8 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (e0 - s0 < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
       const p = textPreset(op.preset ?? "plain");
       const style = TextStyleSchema.parse({ ...p.style, ...pickStyle(op) });
-      const c = attachAt(view(), { id: rid("t"), start: 0, end: 0, label: op.label || op.text.split("\n")[0].slice(0, 60), kind: "text" as const, text: op.text, style, card: op.card ?? null, anim: op.anim ?? p.anim } as Clip, s0, e0);
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added text "${op.text.split("\n")[0].slice(0, 40)}" at ${op.edit ? "edit " : ""}${fmtClock(op.start)} (clip ${c.id}; ${styleText(style)})` };
+      const c = attachAt(view(), { id: rid("t"), start: 0, end: 0, label: op.label || op.text.split("\n")[0].slice(0, 60), kind: "text" as const, text: op.text, style, card: op.card ?? null, anim: op.anim ?? p.anim, ...(op.behind ? { behind: true } : {}) } as Clip, s0, e0);
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added text "${op.text.split("\n")[0].slice(0, 40)}" at ${op.edit ? "edit " : ""}${fmtClock(op.start)} (clip ${c.id}; ${styleText(style)})${op.behind ? `; ${BEHIND_NOTE}` : ""}` };
     }
     case "set_text": {
       const c = findClip(tl, "v3", op.clipId) as Clip & { kind?: string; text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim };
@@ -620,13 +625,15 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const p = op.preset ? textPreset(op.preset) : null;
       const style = TextStyleSchema.parse({ ...(p ? p.style : c.style ?? textPreset("plain").style), ...pickStyle(op) });
       let x: Clip = { ...c, style, ...(op.text ? { text: op.text, label: op.text.split("\n")[0].slice(0, 60) } : {}), ...(op.card !== undefined ? { card: op.card } : {}), ...(op.anim || p ? { anim: op.anim ?? p!.anim } : {}) } as Clip;
+      if (op.behind === true) (x as { behind?: boolean }).behind = true;
+      else if (op.behind === false) delete (x as { behind?: boolean }).behind;
       if (op.start != null || op.end != null) {
         const cur = placeOf(view(), c as Attached);
         const s0 = op.start != null ? toEdit(op.start, op.edit) : cur.s, e0 = op.end != null ? toEdit(op.end, op.edit) : cur.e;
         if (e0 - s0 < 0.05) throw new EditError("A text layer must end after it starts, inside the edit.");
         x = attachAt(view(), x, s0, e0);
       }
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", (tl.tracks.v3 as Clip[]).map((y) => (y.id === c.id ? x : y))) }, summary: `changed text "${String((x as { text?: string }).text ?? "").split("\n")[0].slice(0, 40)}"` };
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", (tl.tracks.v3 as Clip[]).map((y) => (y.id === c.id ? x : y))) }, summary: `changed text "${String((x as { text?: string }).text ?? "").split("\n")[0].slice(0, 40)}"${op.behind === true ? `; ${BEHIND_NOTE}` : op.behind === false ? "; in front of the person again" : ""}` };
     }
     case "edit_caption": {
       const line = ctx.transcript.find((l) => l.id === op.lineId);
@@ -685,8 +692,21 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       // A library graphic's params are checked against what it takes (names, types, limits).
       const li = libraryItem(g.id);
       if (li) { const p = libraryParams(li, op.params ?? {}); if ("error" in p) throw new EditError(p.error); }
-      const c = attachAt(view(), { id: rid("g"), start: 0, end: 0, label: op.label || g.name, kind: "graphic" as const, graphicId: g.id, params: op.params, ...(from ? { sourceStart: from } : {}) } as Clip, s, e);
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added graphic ${g.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}${from ? ` from ${at2(from)}s of it` : ""} (clip ${c.id})` };
+      const c = attachAt(view(), { id: rid("g"), start: 0, end: 0, label: op.label || g.name, kind: "graphic" as const, graphicId: g.id, params: op.params, ...(from ? { sourceStart: from } : {}), ...(op.behind ? { behind: true } : {}) } as Clip, s, e);
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added graphic ${g.name} at ${op.edit ? "edit " : ""}${fmtClock(op.start)}${from ? ` from ${at2(from)}s of it` : ""} (clip ${c.id})${op.behind ? `; ${BEHIND_NOTE}` : ""}` };
+    }
+    case "behind_person": {
+      const v3 = tl.tracks.v3 as (Clip & { kind?: string; text?: string; behind?: boolean })[];
+      const said: string[] = [];
+      const ids = new Set(op.clipIds);
+      for (const id of ids) {
+        const c = v3.find((x) => x.id === id);
+        if (!c) throw new EditError(`There is no clip "${id}" on V3 (text layers and graphics).`);
+        if (c.kind !== "text" && c.kind !== "graphic") throw new EditError(`Clip "${id}" is a caption: only text layers and graphics go behind the person.`);
+        said.push(c.kind === "text" ? `text "${String(c.text ?? "").split("\n")[0].slice(0, 30)}" (${id})` : `graphic ${c.label || c.id} (${id})`);
+      }
+      const next = v3.map((c) => { if (!ids.has(c.id)) return c; if (op.off) { const { behind: _b, ...rest } = c; return rest as Clip; } return { ...c, behind: true } as Clip; });
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", next) }, summary: op.off ? `in front of the person again: ${said.join(", ")}` : `behind the person: ${said.join(", ")}; ${BEHIND_NOTE}` };
     }
     case "set_aspect":
       return { snap: { ...snap, aspect: op.aspect }, summary: `changed shape to ${op.aspect}` };
@@ -1434,7 +1454,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
       const auto = k === "a2" ? autoMusicFades(c.end - c.start) : { fadeIn: 0, fadeOut: 0 };
       const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
       const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
-      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
+      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
       const lk = k === "v2" ? lookTags(c as Clip & ClipLook) : "";
       const on = (c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "") + (Array.isArray(c.keys) && c.keys.length ? ` keys ${(c.keys as Key[]).map((k) => k.t).join(",")}s` : "") + (c.under ? " under V1" : "") + (lk ? " " + lk : "");
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;

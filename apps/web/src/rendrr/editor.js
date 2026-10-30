@@ -198,16 +198,38 @@ function TemplateFrame({ graphicId, params, start, end, t, aspect }) {
   return html`<div ref=${box} style="position:absolute;inset:0;overflow:hidden;pointer-events:none"><iframe ref=${fr} title="graphic" sandbox="allow-scripts" srcDoc=${doc} onLoad=${post} style=${{ width: w, height: h, border: 0, background: "transparent", colorScheme: "light", transform: `scale(${k})`, transformOrigin: "0 0" }} /></div>`;
 }
 
-// What the render lays over the footage at this moment: b-roll, then graphics, then text layers and captions.
-function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts }) {
+// What the render lays over the footage at this moment: b-roll, then (Phase 2) the graphics and text layers behind the
+// person and the person laid back over them, then the other graphics, text layers and captions.
+function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts, person = null }) {
   if (!frame) return null;
   const b = frame.broll && media.broll[frame.broll.videoId];
   // Keyframed overlays move as the render's perspective filter moves them (Phase 5).
   const moved = (m, child) => (m ? html`<div style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(m) }}>${child}</div>` : child);
+  const gfx = (g) => { const m = media.graphicClips[g.clipId]; const c = clips.find((x) => x.id === g.clipId);
+    return moved(g.motion, m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`); };
+  const backText = frame.texts.some((x) => x.layer.behind);
   return html`${b && moved(frame.broll.motion, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} />`)}
-    ${frame.graphics.map((g) => { const m = media.graphicClips[g.clipId]; const c = clips.find((x) => x.id === g.clipId);
-      return moved(g.motion, m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`); })}
-    ${plan && html`<${TextLayers} plan=${plan} frame=${frame} />`}`;
+    ${frame.graphics.filter((g) => g.behind).map(gfx)}
+    ${plan && backText && html`<${TextLayers} key="behind" plan=${plan} frame=${frame} only="behind" />`}
+    ${person}
+    ${frame.graphics.filter((g) => !g.behind).map(gfx)}
+    ${plan && html`<${TextLayers} key="front" plan=${plan} frame=${frame} only="front" />`}`;
+}
+
+/**
+ * Phase 2: the person laid back over the layers behind them, as the render does: the footage playing now (its own
+ * <video>, not a second copy) drawn by the look canvas with its matte as the alpha, zoomed as the picture is. Only while
+ * a layer behind the person is on screen and that block of the matte is made (else nothing: never the whole picture).
+ */
+function PersonLayer({ plan, frame, mattes, zoom = 1, luts }) {
+  const i = frame?.part, part = i != null ? plan.parts[i] : null;
+  const ref = useMemo(() => ({ get current() { return part ? document.querySelector(`video[data-video="${part.videoId}"][data-on="1"]`) : null; } }), [part?.videoId]);
+  const t = frame?.t ?? 0;
+  const name = part ? plan.person?.parts?.[i] : null, m = name ? mattes[name] : null;
+  const on = !!m && (plan.person?.windows || []).some((w) => t >= w.start && t < w.end) && !!m.urls?.[Math.floor((frame?.src ?? 0) / (m.block || 10))];
+  if (!on) return null;
+  const lk = plan.looks?.[part.clipIds[0]] || null;
+  return html`<div data-person=${name} style=${{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden", transform: `scale(${zoom})`, transformOrigin: "50% 40%" }}><${LookCanvas} videoRef=${ref} look=${lk} W=${plan.width} H=${plan.height} rotate=${part.rotate || 0} fitY=${0.4} focus=${part.framing?.focus || null} luts=${luts} matte=${{ ...m, edge: 0, soft: 10, invert: false }} /></div>`;
 }
 
 // Text layers and captions (Phase 4), drawn from the same layout the render draws with libass: a stage the size of the
@@ -220,14 +242,14 @@ function fontCss(d) {
     ...(d.shadow && !d.box ? { textShadow: `${d.shadow.x}px ${d.shadow.y}px 0 ${rgba(d.shadow.color, d.shadow.opacity)}` } : {}) };
 }
 const boxCss = (d) => (d.box ? { background: rgba(d.box.color, d.box.opacity), padding: `0 ${d.box.pad}px`, boxShadow: `0 ${-d.box.pad}px 0 ${rgba(d.box.color, d.box.opacity)}, 0 ${d.box.pad}px 0 ${rgba(d.box.color, d.box.opacity)}${d.shadow ? `, ${d.shadow.x}px ${d.shadow.y + d.box.pad}px 0 ${rgba(d.shadow.color, d.shadow.opacity)}` : ""}`, boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" } : {});
-function TextLayers({ plan, frame }) {
+function TextLayers({ plan, frame, only = "all" }) {
   const ref = useRef(); const [k, setK] = useState(0);
   useEffect(() => { if (fontsLoaded) return; fontsLoaded = true; const st = document.createElement("style"); st.id = "rc-fonts"; st.textContent = fontFaceCss("/fonts/"); document.head.appendChild(st); }, []);
   useEffect(() => { const el = ref.current; if (!el) return; const f = () => setK(el.clientWidth / plan.width); f(); const ro = new ResizeObserver(f); ro.observe(el); return () => ro.disconnect(); }, [plan.width]);
   const W = plan.width, H = plan.height;
   const cs = plan.captionStyle, cd = cs && drawnOf(cs, W, H);
   return html`<div ref=${ref} class="tlayers" data-k=${k} data-captions=${plan.styledCaptions?.length ?? 0} data-texts=${plan.texts?.length ?? 0}><div class="stage" style=${{ width: W + "px", height: H + "px", transform: `scale(${k})` }}>
-    ${frame.texts.map(({ layer: l, opacity, scale, dy, look }) => { const d = drawnOf(l.style, W, H); const ax = l.style.align === "left" ? 0 : l.style.align === "right" ? 100 : 50;
+    ${frame.texts.filter(({ layer: x }) => only === "all" || (only === "behind") === !!x.behind).map(({ layer: l, opacity, scale, dy, look }) => { const d = drawnOf(l.style, W, H); const ax = l.style.align === "left" ? 0 : l.style.align === "right" ? 100 : 50;
       // A keyframed layer (Phase 5): its anchor, scale, turn and opacity from textLookAt, as the ASS pieces draw it.
       const pos = look ? { left: look.x + "px", top: look.y + "px", transform: `translate(${-ax}%, -50%) rotate(${look.rotation}deg) scale(${look.scale})`, opacity: look.opacity } : { left: l.style.x * W + "px", top: l.style.y * H + dy + "px", transform: `translate(${-ax}%, -50%) scale(${scale})`, opacity };
       return html`<div key=${l.clipId} data-text=${l.clipId}>
@@ -235,7 +257,7 @@ function TextLayers({ plan, frame }) {
         <div class="tblock" style=${{ ...pos, transformOrigin: `${ax}% 50%`, textAlign: l.style.align }}>
           ${l.lines.map((line, i) => html`<div key=${i}><span style=${{ ...fontCss(d), ...boxCss(d) }}>${l.style.case === "upper" ? line.toUpperCase() : l.style.case === "lower" ? line.toLowerCase() : line}</span></div>`)}
         </div></div>`; })}
-    ${frame.captionLines && cd && html`<div class="tblock cap-layer" id="caption-layer" style=${{ left: cs.x * W + "px", top: cs.y * H + "px", transform: "translate(-50%, -100%)", textAlign: "center" }}>
+    ${only !== "behind" && frame.captionLines && cd && html`<div class="tblock cap-layer" id="caption-layer" style=${{ left: cs.x * W + "px", top: cs.y * H + "px", transform: "translate(-50%, -100%)", textAlign: "center" }}>
       ${frame.captionLines.map((line, i) => html`<div key=${i}><span style=${{ ...fontCss(cd), ...boxCss(cd) }}>${line.map((w, j) => html`${j ? " " : ""}<span key=${j} data-active=${w.active ? "1" : null} style=${w.active ? { color: cs.highlight } : null}>${w.text}</span>`)}</span></div>`)}
     </div>`}
   </div></div>`;
@@ -304,6 +326,7 @@ function TextTab({ timeline, aspect, captionRules, textClips, selText, onSelect,
         <textarea class="input" id="text-content" rows="2" value=${draft} onInput=${(e) => setDraft(e.target.value)} onBlur=${() => draft.trim() && draft !== selText.text && doOp(txt({ text: draft }), false)} />
         <div class="row" style="gap:4px">${TEXT_PRESETS.map((p) => html`<${Btn} key=${p} kind="ghost" size="xs" onClick=${() => doOp(txt({ preset: p }), false)}>${p}<//>`)}</div>
         <${StyleControls} kind="text" idp="txt" style=${selText.style || textPreset("plain").style} card=${selText.card} anim=${selText.anim || "fade"} opFor=${txt} doOp=${doOp} H=${H} liveOp=${liveOp} />
+        <label class="t-small row" style="gap:6px" title="The person is drawn over it from an AI matte of the footage (people only), like a title behind the speaker"><input type="checkbox" id="text-behind" checked=${!!selText.behind} onChange=${(e) => doOp(txt({ behind: e.target.checked }))} />Behind the person</label>
         <${Btn} kind="ghost" size="xs" icon="trash" onClick=${() => doOp({ op: "delete_clip", track: "v3", clipId: selText.id })}>Remove this text<//>
       </div>`}
     </div>
@@ -483,6 +506,7 @@ function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek 
   const sl = { H, liveOp };
   return html`<div class="pb" id="clip-panel" style="padding-top:16px"><div class="col" style="gap:16px">
     <div class="t-small muted" id="clip-name">${clip.label || clip.id} · ${len.toFixed(2)}s in the edit${v1 ? " · " + speedText(clip) : ""}</div>
+    ${track === "v3" && (clip.kind === "text" || clip.kind === "graphic") && html`<label class="t-small row" style="gap:6px" title="The person is drawn over it from an AI matte of the footage (people only), like a title behind the speaker"><input type="checkbox" id="clip-behind" checked=${!!clip.behind} onChange=${(e) => doOp({ op: "behind_person", clipIds: [clip.id], off: !e.target.checked })} />Behind the person</label>`}
     ${v1 && html`<div class="col" style="gap:10px" id="speed-panel">
       <b class="t-label">Speed</b>
       ${clip.freeze ? html`<${OpSlider} id="freeze-len" label="Freeze length" value=${clip.freeze} min=${0.1} max=${10} step=${0.1} show=${(v) => v + " s"} opFor=${(x) => sp({ freeze: x })} ...${sl} />`
@@ -1020,7 +1044,7 @@ function EditorInner({ project, reload, ai, keep }) {
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
           : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} />${rtab === "color" && colorClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} />` : null}${inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && colorClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} />` : null}${inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">
@@ -1148,4 +1172,4 @@ function EditorInner({ project, reload, ai, keep }) {
     ${help && html`<${Modal} title="Keyboard shortcuts" onClose=${() => setHelp(false)}><div class="list">${SHORTCUTS.map(([k, d]) => html`<div key=${k} class="row between" style="padding:6px 4px"><span>${d}</span><span class="kbd">${k}</span></div>`)}</div><//>`}
   </div>`;
 }
-export { EditorPage, TextLayers, SeqMedia, LiveOverlays };
+export { EditorPage, TextLayers, SeqMedia, LiveOverlays, PersonLayer };

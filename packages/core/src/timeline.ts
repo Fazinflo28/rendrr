@@ -88,6 +88,7 @@ function stable(v: unknown): string {
 const sameSnapshot = (a: Snapshot, b: Snapshot) => stable({ ...a, timeline: stripLayout(a.timeline) }) === stable({ ...b, timeline: stripLayout(b.timeline) });
 
 export async function applyTimelineChange(projectId: string, change: Op, actor: ChangeActor, opts: { baseVersion?: number; luts?: Record<string, Lut> } = {}): Promise<ChangeResult> {
+  let words: ReturnType<typeof allWords> = [];
   const result = await prisma.$transaction(async (tx) => {
     // Lock the project row so two writers (the editor and an AI) never interleave.
     await tx.$executeRaw`SELECT 1 FROM "Project" WHERE id = ${projectId} FOR UPDATE`;
@@ -103,6 +104,7 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
     }
 
     const ctx = await editContext(tx, p.userId, p.videoId, p.timeline, videosIn(change), opts.luts);
+    words = allWords(ctx.transcript);
     let out: { snap: Snapshot; summary: string };
     try {
       out = applyOp(snapshotOf(p), change, ctx);
@@ -146,7 +148,8 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
   // Custom graphics placed with their own params: their recordings start now (the editor shows them when ready).
   if (!result.unchanged) await prewarmGraphics(actor.userId, result.snapshot.timeline).catch((e) => console.error("[graphics] prewarm:", (e as Error).message));
   // remove_background: the person's matte of each block not made yet starts now (the editor and renders read it).
-  if (!result.unchanged) await prewarmMattes(actor.userId, result.snapshot.timeline).catch((e) => console.error("[matte] prewarm:", (e as Error).message));
+  // Phase 2: and of the clips under a layer behind the person (placed with this edit's words).
+  if (!result.unchanged) await prewarmMattes(actor.userId, result.snapshot.timeline, words).catch((e) => console.error("[matte] prewarm:", (e as Error).message));
   return result;
 }
 

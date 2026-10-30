@@ -229,7 +229,7 @@ export function activeWord(c: StyledCaption, t: number): [number, number] | null
 
 /** A text layer as the render draws it (edit seconds). */
 /** keys (Phase 5): keyframes in seconds from the layer's start; they move, scale, turn and fade the text (not its card). */
-export type TextLayer = { clipId: string; start: number; end: number; lines: string[]; style: TextStyle; card: Card | null; anim: TextAnim; keys?: Key[] };
+export type TextLayer = { clipId: string; start: number; end: number; lines: string[]; style: TextStyle; card: Card | null; anim: TextAnim; keys?: Key[]; behind?: boolean };
 /** Seconds an animation takes in and out. */
 export const ANIM_IN: Record<TextAnim, number> = { none: 0, fade: 0.25, pop: 0.15, slide: 0.25 };
 export const ANIM_OUT: Record<TextAnim, number> = { none: 0, fade: 0.25, pop: 0.25, slide: 0.25 };

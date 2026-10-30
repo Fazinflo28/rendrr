@@ -336,6 +336,16 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A video as a card on a background | set_framing already shrank and placed V1; what was missing was the card look and what shows around it. set_card puts crop and rounded corners on the clip as one more mask (the mask system draws it identically in the render and the player), and the drop shadow and border as greyscale pictures at the output size in the framed place, made by one shared function (a PGM file for FFmpeg, a canvas in the player), filled with their colour. set_background is edit-wide: a colour or gradient (one picture made by the shared code, decoded once and repeated with FFmpeg's loop filter; the player uses the CSS gradient, which the shared picture follows exactly), a library video (looped from the edit's start), or the clip's own picture blurred (Gaussian, scaled up by three blur widths a side in both, so the soft edges each blur makes stay outside the frame). Rendered and compared with the player: 0.5-0.7 levels of 255 apart. The field is cardLook (text layers already have a card). |
 | Footage filmed sideways | The picture measurement samples 8 frames and looks for clear faces at each quarter turn. When faces are clear only when turned (in at least half the frames and twice as often as filmed), the footage is measured turned that way and get_footage, get_vision and create_project say "filmed sideways ... set_rotation {degrees: 90}". The editor offers "Turn it upright" (or "Keep as is"). Rendrr never turns it by itself. |
 
+## Premiere parity, phase 2a: behind the person (30 October, night)
+
+| Question | Decision |
+|---|---|
+| How it is drawn | The person is laid back over the layers behind them rather than the layers being cut by the matte: the picture as it is at that moment (zoomed with it, before b-roll and graphics) with the matte as its alpha, over the behind graphics and the behind text layers. One matte stream over the edit, joined part by part like the picture; a part without one gets black made from a copy of its own picture, so the two cannot drift by a frame. |
+| Text layers | They are drawn by libass from one subtitle file with the captions. Text behind the person goes in a second file drawn before the person; captions always stay in front. |
+| Where it does not apply | Over b-roll and transitions (the person is not on screen as the footage shows them), and for a clip framed smaller, moved, keyframed, drawn as a card or reversed (the matte would not line up). The layer is simply in front there; the plan's line and the result say where. |
+| The matte | The same matte as remove_background (made per 10 s block, kept). It is made when the edit is saved for the clips under a layer behind the person (placed with the edit's words), and a render makes any still missing. |
+| Not in this part | Video inside text (track matte) comes next as phase 2b. |
+
 ## Worker crashes from graphic-heavy renders (30 October, evening)
 
 | Question | Decision |

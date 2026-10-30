@@ -4,7 +4,7 @@
 // Sequences (model B) are planned here; timelines stored in model A go to the unchanged A planner (renderPlanA.ts).
 import { catalogMusic, catalogSfx, findTemplate } from "./catalog";
 import { aspectSize, type Aspect, type CaptionLook } from "./constants";
-import { cutRegions, editOf, isSequence, mainVideoOf, mergeRanges, normalSpeed, rateOf, sequenceView, srcAt, type Attached, type PicturePart, type Range, type SeqClip, type SequenceView, type SoundPart } from "./sequence";
+import { cutRegions, editOf, fmtClock, isSequence, mainVideoOf, mergeRanges, normalSpeed, rateOf, sequenceView, srcAt, subtractRanges, type Attached, type PicturePart, type Range, type SeqClip, type SequenceView, type SoundPart } from "./sequence";
 import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing, Resolution, Codec } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
@@ -49,7 +49,13 @@ export type PlanInput = {
 /** through: the zoom transition (in to the cut, out after it). */
 export type ZoomOp = { start: number; end: number; scale: number; mode: "punch" | "push" | "through" };
 /** keys: keyframes in seconds from the overlay's start (a b-roll clip with keys is a picture-in-picture). */
-export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string; keys?: Key[] };
+export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string; keys?: Key[]; behind?: boolean };
+/**
+ * Phase 2: graphics and text layers behind the person. windows: when the person is laid back over them (output
+ * seconds; not where b-roll or a transition plays). parts: the matte each picture part reads (by its index in
+ * plan.parts); left: V1 clips under them whose person cannot be drawn (framed smaller, moved, reversed), and why.
+ */
+export type PersonOp = { windows: Range[]; parts: Record<number, string>; left: { clipId: string; why: string }[] };
 /** A stretch of one video drawn over an edit window: the same steps as a picture part (speed, turn, fit, framing, the
  *  clip's keyframes). Footage past a part's ends continues at its rate (handles). */
 export type Seg = { videoId: string; srcIn: number; srcOut: number; rate: number; start: number; end: number; rotate: 0 | 90 | 180 | 270; framing: Framing | null; clipId: string };
@@ -138,6 +144,9 @@ export type RenderPlan = {
   styledCaptions?: StyledCaption[];
   texts?: TextLayer[];
   ass: string | null;
+  /** Phase 2: the text layers behind the person, drawn before the person is laid back over them. */
+  assBehind?: string | null;
+  person?: PersonOp;
   operations: string[];
 };
 
@@ -430,7 +439,7 @@ export function planRender(input: PlanInput): RenderPlan {
     const sp = placed(c);
     // A custom graphic can start part way into its recording (add_graphic from); a template is drawn for each clip.
     const from = !findTemplate(c.graphicId) && c.sourceStart ? c.sourceStart : 0;
-    if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: from, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}) });
+    if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: from, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}), ...(c.behind ? { behind: true } : {}) });
   }
   const audio: AudioOp[] = [];
   // Keys come from the catalog only (see catalogMusic), whatever the stored clip says; the user's own files from the
@@ -486,9 +495,11 @@ export function planRender(input: PlanInput): RenderPlan {
     const sp = placed(c);
     if (!sp) continue;
     const def = textPreset("plain");
-    texts.push({ clipId: c.id, start: Math.round(sp.start * 100) / 100, end: Math.round(sp.end * 100) / 100, lines: c.text.split("\n"), style: c.style ?? def.style, card: c.card ?? null, anim: c.anim ?? def.anim, ...(c.keys?.length ? { keys: c.keys } : {}) });
+    texts.push({ clipId: c.id, start: Math.round(sp.start * 100) / 100, end: Math.round(sp.end * 100) / 100, lines: c.text.split("\n"), style: c.style ?? def.style, card: c.card ?? null, anim: c.anim ?? def.anim, ...(c.keys?.length ? { keys: c.keys } : {}), ...(c.behind ? { behind: true } : {}) });
   }
-  const ass = buildStyledAss({ captions: styledCaptions, captionStyle, texts, width, height });
+  // Phase 2: text layers behind the person are drawn in a pass of their own, before the person is laid back over them.
+  const ass = buildStyledAss({ captions: styledCaptions, captionStyle, texts: texts.filter((t) => !t.behind), width, height });
+  const assBehind = texts.some((t) => t.behind) ? buildStyledAss({ captions: [], captionStyle, texts: texts.filter((t) => t.behind), width, height }) : null;
 
   const parts = view.picture.map((p) => ({ ...p, start: r3(p.start), end: r3(p.end) }));
 
@@ -532,6 +543,25 @@ export function planRender(input: PlanInput): RenderPlan {
     };
   };
   for (const c of v1) lookFor(c);
+  // Phase 2: behind the person. The person is laid back over what is behind them where they are on screen as the
+  // footage shows them: not over b-roll or a transition, and not for a part framed smaller, moved or reversed (its matte
+  // would not line up; it says so).
+  const behindAt = mergeRanges([...graphics.filter((x) => x.behind), ...texts.filter((x) => x.behind)].map((x) => ({ start: r3(x.start), end: r3(x.end) })));
+  let person: PersonOp | undefined;
+  if (behindAt.length) {
+    const blocked = mergeRanges([...broll, ...(transitions as { start: number; end: number }[])].map((x) => ({ start: r3(x.start), end: r3(x.end) })));
+    const pparts: Record<number, string> = {}, left: PersonOp["left"] = [];
+    parts.forEach((p, i) => {
+      if (!behindAt.some((w) => w.start < p.end - 1e-6 && w.end > p.start + 1e-6)) return;
+      const id = p.clipIds[0], c = clipById.get(id) as (SeqClip & { cardLook?: CardLook }) | undefined;
+      const moved = !!p.framing && (p.framing.scale !== 1 || !!p.framing.x || !!p.framing.y);
+      const why = rateOf(p) < 0 ? "reversed" : moved ? "framed smaller or moved" : clipMotion[id] ? "keyframed" : hasCard(c?.cardLook) ? "drawn as a card" : "";
+      if (why) { if (!left.some((x) => x.clipId === id)) left.push({ clipId: id, why }); return; }
+      pparts[i] = matteFor({ sourceVideoId: p.videoId, sourceIn: p.srcIn, sourceOut: p.srcOut });
+    });
+    const windows = subtractRanges(behindAt, blocked).filter((w) => w.end - w.start >= 0.5 / out.fps);
+    person = { windows, parts: pparts, left };
+  }
   // Cards: the shadow and border pictures at the output size, where the framing puts the clip.
   const cards: Record<string, CardOp> = {};
   for (const c of v1 as (SeqClip & { cardLook?: CardLook })[]) {
@@ -569,6 +599,7 @@ export function planRender(input: PlanInput): RenderPlan {
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
+    ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
     ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr", background?.text),
     ...(Object.keys(cards).length || v1.some((c) => hasCard((c as { cardLook?: CardLook }).cardLook)) ? [`Cards: ${(v1 as (SeqClip & { cardLook?: CardLook })[]).filter((c) => hasCard(c.cardLook)).slice(0, 4).map((c) => `${c.id} ${cardLookText(c.cardLook!)}`).join("; ")}`] : []),
@@ -586,6 +617,7 @@ export function planRender(input: PlanInput): RenderPlan {
     outputSeconds: total, rotate: parts[0].rotate, framing: parts[0].framing, zooms, broll, graphics, audio, dialogueMutes, captions, captionLook: look, captionStyle, styledCaptions, texts, ass, operations, audioMix,
     transitions, clipMotion,
     looks, lookFiles, under, hdr, ...(hdr && ass ? { ass: hdrAss(ass, hdr.transfer) } : {}),
+    ...(assBehind ? { assBehind: hdr ? hdrAss(assBehind, hdr.transfer) : assBehind } : {}), ...(person ? { person } : {}),
     ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}),
   };
 }
@@ -742,6 +774,8 @@ export type PlanFiles = {
   videos?: Record<string, string>;
   output: string;
   assPath?: string;
+  /** Phase 2: plan.assBehind written out. */
+  assBehindPath?: string;
   fontsDir?: string;
   broll?: Record<string, string>; // by clip id
   graphics?: Record<string, string>; // by clip id
@@ -897,6 +931,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     return `ms${tag}`;
   };
   const mattesFor: Record<string, string> = {};
+  /** Phase 2: each main part's matte for the person laid back over layers behind them (by part index). */
+  const personFor: Record<string, string> = {};
   /**
    * Skin retouch on [inp] (the fitted picture, W x H, still YUV): the skin found by its colour (and inside its area),
    * retouched at the working size (blemishes: spots darker than a closing, filled from the skin around them, then the
@@ -1111,6 +1147,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
   // 1. Picture (not in the measuring pass): put each video on a 30 fps grid, take its parts and join them in edit
   // order. Parts start and end on frames (planRender), so each is a whole number of frames.
   let v = "";
+  /** Phase 2: the person's matte over the whole edit (when layers go behind the person). */
+  let personMatte: string | null = null;
   if (!opts.measure) {
     const vt = (k: { srcIn: number; srcOut: number }) => `trim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},setpts=PTS-STARTPTS`;
     const turnOf = (r: number) => (r === 90 ? "transpose=1," : r === 270 ? "transpose=2," : r === 180 ? "hflip,vflip," : "");
@@ -1177,12 +1215,16 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       else if (r !== 1) chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
       else chain = `[${branch(x.videoId, x.srcIn, x.srcOut)}]${vt(x)}${exact ? pad : ""},${look}`;
       // remove_background: the matte through the same trim, speed, turn and fit (not reversed clips: they keep theirs).
-      if (lk?.subject && r >= 0) {
-        const mt = matteIn(lk.subject.matte, x.srcIn, r === 0 ? x.srcIn + 1 / FPS : x.srcOut + 1 / FPS);
+      // Phase 2: a main part under a layer behind the person reads one too (plan.person.parts), kept apart.
+      const personM = /^\d+$/.test(tag) ? plan.person?.parts[Number(tag)] : undefined;
+      if ((lk?.subject || personM) && r >= 0) {
+        const mt = matteIn(lk?.subject?.matte ?? personM!, x.srcIn, r === 0 ? x.srcIn + 1 / FPS : x.srcOut + 1 / FPS);
         const steps = r === 0 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N}`
           : r !== 1 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(x)}${exact ? pad : ""}`;
-        g.push(`[${mt}]${steps},${turnOf(x.rotate)}${fitFor(x.framing)},format=gray[mf${tag}]`);
-        mattesFor[tag] = `mf${tag}`;
+        const both = !!lk?.subject && !!personM;
+        g.push(`[${mt}]${steps},${turnOf(x.rotate)}${fitFor(x.framing)},format=gray${both ? `,split[mf${tag}][mp${tag}]` : `[${lk?.subject ? "mf" : "mp"}${tag}]`}`);
+        if (lk?.subject) mattesFor[tag] = `mf${tag}`;
+        if (personM) personFor[tag] = `mp${tag}`;
       }
       const clipId = x.clipId ?? (x.clipIds?.length === 1 ? x.clipIds[0] : undefined);
       const m = clipId ? motion[clipId] : undefined;
@@ -1212,11 +1254,21 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     // One video, one look, all at normal speed and still: cut, join, then fit once (the same graph model A used).
     // Otherwise each part is drawn on its own first.
     const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
-    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject);
+    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject) && !Object.keys(plan.person?.parts ?? {}).length;
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId, p.srcIn, p.srcOut)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
+    const withPerson = !!plan.person?.windows.length && Object.keys(personFor).length > 0;
+    const blackFrom = new Set<number>();
+    if (withPerson) plan.parts.forEach((_, i) => {
+      if (personFor[String(i)]) return;
+      g.push(`[v${i}]split[vp${i}][vq${i}];[vq${i}]format=gray,lut=c0=0[mp${i}]`);
+      personFor[String(i)] = `mp${i}`;
+      blackFrom.add(i);
+    });
+    const pic = (i: number) => (blackFrom.has(i) ? `[vp${i}]` : `[v${i}]`);
     // concat's output counts in microseconds, a hair before each frame's exact time; back on the 1/30 s grid so every
     // overlay below lines up with its own frame (else each one shows a frame late).
-    g.push(`${plan.parts.map((_, i) => `[v${i}]`).join("")}concat=n=${N}:v=1:a=0${uniform ? "" : `,settb=${TB}`}[vcat]`);
+    g.push(`${plan.parts.map((_, i) => pic(i)).join("")}concat=n=${N}:v=1:a=0${uniform ? "" : `,settb=${TB}`}[vcat]`);
+    if (withPerson) { g.push(`${plan.parts.map((_, i) => `[${personFor[String(i)]}]`).join("")}concat=n=${N}:v=1:a=0,settb=${TB}[pmatte]`); personMatte = "pmatte"; }
     v = "vcat";
     if (uniform) {
       const p0 = plan.parts[0], lk = looks[p0.clipIds[0]], dom = domOf(p0.videoId, lk);
@@ -1324,7 +1376,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     g.push(`[${vi}:a]atrim=0:${n6(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${voice.gainDb}dB,adelay=delays=${Math.round(voice.start * 1000)}:all=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
   } else g.push(`${units.map((_, i) => `[a${i}]`).join("")}concat=n=${units.length}:v=0:a=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
 
-  if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null });
+  if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null, person: personMatte });
   mixAudio(plan, files, g, inputs, () => idx++, opts);
   // Windows that read from the start left empty placeholders where a seek would go (they never move an input's place).
   const windows: Record<string, number> = {};
@@ -1373,9 +1425,10 @@ export function motionChain(g: string[], inp: string, out: string, keys: Key[], 
   } else g.push(`[${cur}]null[${out}]`);
 }
 
-type ColorCtx = { colorChain: (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string) => { out: string; alpha: boolean }; PF: string; PFA: string; hdrLut: string | null };
+type ColorCtx = { colorChain: (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string) => { out: string; alpha: boolean }; PF: string; PFA: string; hdrLut: string | null; person?: string | null };
 /** Zooms, b-roll, graphics, captions on [v]; returns the label of the finished picture ([vout]). */
-function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string, cc: ColorCtx): string {
+function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string, cc0: ColorCtx): string {
+  let cc = cc0;
   const W = plan.width, H = plan.height;
   const FPS = plan.fps || 30, R = plan.rate || String(FPS), TB = timeBase(R), fr = { fps: FPS, rate: R };
   let v = v0;
@@ -1384,8 +1437,23 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     const z = zoomExpr(plan.zooms);
     // crop's iw/ih are fixed when the filter starts, so the offsets are computed from the zoom itself
     // (centred across, 40% down, the same framing as the fit step).
-    g.push(`[${v}]scale=w='2*trunc(${W}*(${z})/2)':h='2*trunc(${H}*(${z})/2)':eval=frame,crop=${W}:${H}:x='(2*trunc(${W}*(${z})/2)-${W})/2':y='(2*trunc(${H}*(${z})/2)-${H})*0.4'[vzoom]`);
+    const zoom = `scale=w='2*trunc(${W}*(${z})/2)':h='2*trunc(${H}*(${z})/2)':eval=frame,crop=${W}:${H}:x='(2*trunc(${W}*(${z})/2)-${W})/2':y='(2*trunc(${H}*(${z})/2)-${H})*0.4'`;
+    g.push(`[${v}]${zoom}[vzoom]`);
     v = "vzoom";
+    if (cc.person && plan.person?.windows.length) { g.push(`[${cc.person}]${zoom}[pmz]`); cc = { ...cc, person: "pmz" }; }
+  }
+  // Phase 2: the person, cut from the picture as it is now (zoomed, before b-roll and graphics) by their matte, to be
+  // laid back over the layers behind them. 10 bits: the matte goes in as a fourth plane (alphamerge is 8-bit only).
+  let person: string | null = null;
+  if (cc.person && plan.person?.windows.length) {
+    g.push(`[${v}]split[vbase][vpsrc]`);
+    v = "vbase";
+    if (!plan.hdr) g.push(`[vpsrc][${cc.person}]alphamerge[vperson]`);
+    else {
+      g.push(`[${cc.person}]scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd,format=yuv420p10le,lutyuv=y='clip((val-64)*1023/876,0,1023)'[pmhdr]`);
+      g.push(`[vpsrc][pmhdr]mergeplanes=map0s=0:map0p=0:map1s=0:map1p=1:map2s=0:map2p=2:map3s=1:map3p=0:format=yuva420p10le[vperson]`);
+    }
+    person = "vperson";
   }
   // 4. B-roll overlays (video only; the dialogue keeps playing underneath).
   plan.broll.forEach((b, i) => {
@@ -1408,7 +1476,7 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     v = `vb${i}`;
   });
   // 5. Graphics: transparent WebM, decoded with libvpx to keep the alpha channel.
-  plan.graphics.forEach((gr, i) => {
+  const drawGraphic = (gr: OverlayOp, i: number) => {
     const path = files.graphics?.[gr.clipId];
     if (!path) return;
     inputs.push("-threads", plan.graphics.length <= 3 ? "2" : "1", "-c:v", "libvpx-vp9", "-i", path);
@@ -1430,11 +1498,24 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     g.push(`[${gi}:v]${from}${hold ? `fps=${R},tpad=stop_mode=clone:stop=-1,trim=end_frame=${n},` : ""}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease${toHdr},setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n6(gr.start)},${n6(gr.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vg${i}]`);
     v = `vg${i}`;
-  });
+  };
+  const tagHdr = plan.hdr ? `setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${plan.hdr.transfer === "pq" ? "smpte2084" : "arib-std-b67"}:range=tv,` : "";
+  // Phase 2: behind the person: their graphics, their text layers, then the person laid back over them.
+  plan.graphics.forEach((gr, i) => { if (gr.behind) drawGraphic(gr, i); });
+  if (plan.assBehind && files.assBehindPath) {
+    g.push(`[${v}]${tagHdr}ass=filename=${q(files.assBehindPath)}${files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : ""}[vtb]`);
+    v = "vtb";
+  }
+  if (person) {
+    const on = plan.person!.windows.map((w) => `between(t,${n6(w.start)},${n6(w.end - 0.5 / FPS)})`).join("+");
+    g.push(`[${v}][${person}]overlay=enable='${on}':format=auto${plan.hdr ? `,format=${cc.PF}` : ""}[vpl]`);
+    v = "vpl";
+  }
+  plan.graphics.forEach((gr, i) => { if (!gr.behind) drawGraphic(gr, i); });
   // 6. Captions on top of everything.
   if (plan.ass && files.assPath) {
     // HDR: the frame is tagged BT.2020 so libass turns the (already PQ/HLG) caption colours into YUV with that matrix.
-    g.push(`[${v}]${plan.hdr ? `setparams=colorspace=bt2020nc:color_primaries=bt2020:color_trc=${plan.hdr.transfer === "pq" ? "smpte2084" : "arib-std-b67"}:range=tv,` : ""}ass=filename=${q(files.assPath)}${files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : ""}[vcap]`);
+    g.push(`[${v}]${tagHdr}ass=filename=${q(files.assPath)}${files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : ""}[vcap]`);
     v = "vcap";
   }
   g.push(`[${v}]format=${cc.PF}[vout]`);

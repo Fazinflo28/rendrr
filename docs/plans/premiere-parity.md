@@ -17,8 +17,8 @@ plugin hosting, hardware I/O, localization) are out of scope.
    (set_background: colour, gradient, pattern, library video, blur; set_under: any footage behind). The matte follows
    the clip's trim, speed, turn and framing. Person subjects (MediaPipe selfie segmenter, Apache-2.0, in the worker
    image). Left for later: b-roll clips, reversed clips, any object with a general model.
-2. **Text behind the subject and track mattes.** The subject drawn again over V3 (titles behind the person); Track
-   Matte Key (video inside text, shape wipes).
+2. **Text behind the subject and track mattes.** 2a (done, 30 October): text layers and graphics behind the person.
+   2b: Track Matte Key (video inside text, shape wipes).
 3. **Animated and tracked masks.** Mask keyframes, masks that follow a face or the subject, masks that limit one
    effect (face blur that follows, spotlight, grade one area).
 4. **Blend modes and opacity** on overlay layers (Screen, Multiply, Overlay, Add, Soft Light), for light leaks,

@@ -1,5 +1,5 @@
 import { prisma } from "@rendrr/db";
-import { MATTE_BLOCK, matteBlocks, matteJobId, matteKey, type SeqClip, type Timeline, type VisionSummary } from "@rendrr/shared";
+import { clipsUnderBehind, MATTE_BLOCK, matteBlocks, matteJobId, matteKey, type SeqClip, type Timeline, type VisionSummary, type Word } from "@rendrr/shared";
 import { enqueue, type MatteJob } from "./queue";
 import { headObject, signGet } from "./storage";
 
@@ -15,11 +15,13 @@ const queueBlock = (userId: string, videoId: string, turn: number, k: number) =>
 
 /**
  * After an edit is saved: queues the blocks of footage whose matte is not made yet for every V1 clip with
- * remove_background, so the editor can show the cut-out and renders find it ready. One job per block (the job id
+ * remove_background or under a layer behind the person, so the editor can show the cut-out and renders find it ready. One job per block (the job id
  * dedupes). The turn is the footage's measured one (else the clip's), as the render uses.
  */
-export async function prewarmMattes(userId: string, timeline: Timeline) {
-  const clips = (timeline.tracks.v1 as (SeqClip & { subject?: unknown })[]).filter((c) => c.subject && c.sourceVideoId);
+export async function prewarmMattes(userId: string, timeline: Timeline, words: Word[] = []) {
+  // remove_background's clips, and (Phase 2) the clips under a text layer or graphic behind the person.
+  const under = clipsUnderBehind(timeline, words);
+  const clips = (timeline.tracks.v1 as (SeqClip & { subject?: unknown })[]).filter((c) => (c.subject || under.has(c.id)) && c.sourceVideoId);
   if (!clips.length) return 0;
   const videos = await prisma.video.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.sourceVideoId))) }, userId, proxyKey: { not: null } }, select: { id: true, seconds: true, analysis: { select: { vision: true } } } });
   const seen = new Set<string>();

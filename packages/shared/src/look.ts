@@ -139,9 +139,12 @@ export function matteBlocks(srcIn: number, srcOut: number, seconds = Infinity, m
  * render's work. 0 with no remove_background.
  */
 export function matteAllowanceMs(timeline: unknown): number {
-  const v1 = ((timeline as { tracks?: { v1?: unknown } } | null)?.tracks?.v1 ?? []) as { sourceVideoId?: string; sourceIn?: number; sourceOut?: number; subject?: unknown }[];
+  const tracks = (timeline as { tracks?: { v1?: unknown; v3?: unknown } } | null)?.tracks;
+  const v1 = (tracks?.v1 ?? []) as { sourceVideoId?: string; sourceIn?: number; sourceOut?: number; subject?: unknown }[];
+  // Phase 2: a layer behind the person needs the matte of the clips under it: every V1 clip is counted (only a limit).
+  const behind = Array.isArray(tracks?.v3) && (tracks!.v3 as { behind?: boolean }[]).some((c) => c?.behind);
   const blocks = new Set<string>();
-  for (const c of Array.isArray(v1) ? v1 : []) if (c?.subject) for (const k of matteBlocks(c.sourceIn ?? 0, c.sourceOut ?? 0)) blocks.add(`${c.sourceVideoId ?? ""}:${k}`);
+  for (const c of Array.isArray(v1) ? v1 : []) if (c?.subject || behind) for (const k of matteBlocks(c.sourceIn ?? 0, c.sourceOut ?? 0)) blocks.add(`${c.sourceVideoId ?? ""}:${k}`);
   return blocks.size ? matteTimeoutMs(Math.ceil(blocks.size / 2)) : 0;
 }
 

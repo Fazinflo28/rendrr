@@ -877,3 +877,23 @@ export function reattach(before: Timeline, after: Timeline, words: Word[]): Time
   }
   return { ...after, tracks };
 }
+
+/**
+ * Phase 2: the V1 clips under a text layer or graphic behind the person: their footage needs the person's matte.
+ * Edit times from the view with these words (without them, longer: nothing under a layer is missed); a clip within a
+ * second of a layer counts, as a render's view puts cuts on frames.
+ */
+export function clipsUnderBehind(tl: Timeline, words: Word[] = []): Set<string> {
+  const layers = (tl.tracks.v3 as (Attached & { kind?: string; behind?: boolean })[]).filter((c) => c.behind && (c.kind === "text" || c.kind === "graphic"));
+  if (!layers.length) return new Set();
+  const view = sequenceView(tl, words);
+  const at: Range[] = [];
+  for (const c of layers) {
+    if (c.fill) { at.push({ start: 0, end: view.total }); continue; }
+    if (!c.anchorId || !view.clip(c.anchorId)) continue;
+    const s = view.editAt(c.anchorId, Number(c.anchorAt ?? 0));
+    if (s == null) continue;
+    at.push({ start: s - 1, end: s + Number(c.length ?? c.end - c.start) + 1 });
+  }
+  return new Set(view.clips.filter((p) => at.some((w) => w.start < p.end && w.end > p.start)).map((p) => p.id));
+}

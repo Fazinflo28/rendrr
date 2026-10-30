@@ -62,6 +62,8 @@ export const V3ClipSchema = ClipSchema.extend({
   card: CardSchema.nullable().optional(),
   anim: z.enum(TEXT_ANIMS).optional(),
   keys,
+  /** Text layers and graphics: drawn behind the person (their AI matte laid over it), like a title behind the speaker. */
+  behind: z.boolean().optional(),
 });
 
 export const A2ClipSchema = ClipSchema.extend({
