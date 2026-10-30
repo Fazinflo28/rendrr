@@ -240,7 +240,7 @@ describe("render plan and FFmpeg graph", () => {
     const s = edit(three(), { op: "set_grade", clipId: "b", exposure: 0.3 } as Op).snap;
     const p = planRender({ kind: "final", snapshot: s, transcript: tr, source: hdrSrc, videoId: "v" });
     expect(p.hdr?.transfer).toBe("pq");
-    expect(p.operations.join("\n")).toMatch(/HDR: kept \(PQ.*b graded or keyed in SDR/);
+    expect(p.operations.join("\n")).toMatch(/HDR: kept \(PQ.*b graded, keyed or retouched in SDR/);
     const { args, filterGraph: g } = graph(p, hdrSrc);
     expect(args.join(" ")).toMatch(/-c:v libx265 .*-pix_fmt yuv420p10le .*transfer=smpte2084.*-color_trc smpte2084/);
     expect(g).toMatch(/format=yuv420p10le/);

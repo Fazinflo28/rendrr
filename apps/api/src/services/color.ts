@@ -1,6 +1,6 @@
 import { AppError, enqueue, getText, newRedis, type ColorSamples, type FaceSamples, type FramesJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { aspectSize, isSequence, mainVideoOf, parseCube, QUEUES, speakerCentre, type ClipLook, type EditOp, type Lut, type Timeline, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { aspectSize, boxOnScreen, faceSkinArea, isSequence, mainVideoOf, parseCube, QUEUES, speakerCentre, speakerFaceBox, type Area, type ClipLook, type EditOp, type Focus, type Lut, type Timeline, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { visionDetailsOf } from "./deep";
 import { QueueEvents } from "bullmq";
 
@@ -63,7 +63,9 @@ export async function closeColorEvents() { await events?.close(); events = null;
 export async function withMeasurements(projectId: string, edits: EditOp[]): Promise<EditOp[]> {
   const faces = (e: EditOp) => e.op === "set_framing" && !!e.fitFaceTo && !e.faces;
   const speaker = (e: EditOp) => e.op === "set_framing" && e.focus === "face" && !e.centers;
-  if (!edits.some((e) => (e.op === "match_color" && !e.measured) || faces(e) || speaker(e))) return edits;
+  // retouch_skin on the face (its default) for clips that have no skin area yet.
+  const skin = (e: EditOp) => e.op === "retouch_skin" && !e.off && !e.faceAreas && (e.area === "face" || e.area === undefined);
+  if (!edits.some((e) => (e.op === "match_color" && !e.measured) || faces(e) || speaker(e) || skin(e))) return edits;
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timeline: true, aspect: true } });
   const tl = p.timeline as unknown as Timeline;
   const out: EditOp[] = [];
@@ -74,6 +76,11 @@ export async function withMeasurements(projectId: string, edits: EditOp[]): Prom
       const v1 = tl.tracks.v1 as unknown as V1[];
       const ids = e.clipIds ?? v1.filter((c) => (c.sourceVideoId || main) === main).map((c) => c.id);
       out.push({ ...e, centers: await speakerCentres(v1.filter((c) => ids.includes(c.id)).map((c) => ({ id: c.id, videoId: c.sourceVideoId || main, srcIn: c.sourceIn, srcOut: c.freeze ? c.sourceIn + 0.04 : c.sourceOut, rotate: c.rotate ?? 0 }))) });
+    }
+    else if (e.op === "retouch_skin" && skin(e)) {
+      const v1 = tl.tracks.v1 as unknown as V1[];
+      const ids = new Set(e.clipIds ?? (e.clipId ? [e.clipId] : e.video ? v1.filter((c) => (c.sourceVideoId || mainVideoOf(tl)) === (e.video === "main" ? mainVideoOf(tl) : e.video)).map((c) => c.id) : v1.map((c) => c.id)));
+      out.push({ ...e, faceAreas: await skinFaceAreas(v1.filter((c) => ids.has(c.id)), mainVideoOf(tl), p.aspect) });
     }
     else if (e.op === "set_framing" && faces(e)) {
       // The clips it frames: those named, else every clip of the main footage (as set_framing does).
@@ -107,6 +114,32 @@ export async function speakerCentres(clips: { id: string; videoId: string; srcIn
     const pad = c.srcOut - c.srcIn < 0.3 ? 0.15 : 0;
     const at = v ? speakerCentre(v.d, v.turned, c.rotate, c.srcIn - pad, c.srcOut + pad) : null;
     out[c.id] = at ? { x: at.x, y: at.y } : null;
+  }
+  return out;
+}
+
+/**
+ * Skin retouch on the face (retouch_skin area "face"): each clip's skin area, an ellipse around where the speaker's face
+ * is over the clip (from the faces Rendrr measured at 10 fps), forehead to neck, placed as the render fits the clip.
+ * Null: no face there, or no face measurements for that video yet.
+ */
+export async function skinFaceAreas(clips: V1[], main: string, aspect: string): Promise<Record<string, Area | null>> {
+  const ids = Array.from(new Set(clips.map((c) => c.sourceVideoId || main)));
+  const rows = await prisma.footageAnalysis.findMany({ where: { videoId: { in: ids } }, select: { videoId: true, vision: true } });
+  const vis = new Map<string, { d: VisionDetails; turned: number }>();
+  for (const r of rows) {
+    const v = r.vision as unknown as VisionSummary | null;
+    const d = v ? await visionDetailsOf(v).catch(() => null) : null;
+    if (d) vis.set(r.videoId, { d, turned: v!.turned ?? 0 });
+  }
+  const { width: W, height: H } = aspectSize(aspect, 1080);
+  const out: Record<string, Area | null> = {};
+  for (const c of clips) {
+    const v = vis.get(c.sourceVideoId || main);
+    const to = c.freeze ? c.sourceIn + 0.04 : c.sourceOut, pad = to - c.sourceIn < 0.3 ? 0.15 : 0;
+    const box = v ? speakerFaceBox(v.d, c.sourceIn - pad, to + pad) : null;
+    const onScreen = box && v ? boxOnScreen(box, v.turned, v.d.size, W, H, { rotate: c.rotate ?? 0, framing: { scale: 1, x: 0, y: 0, focus: c.framing?.focus ?? undefined } }) : null;
+    out[c.id] = onScreen ? faceSkinArea(onScreen) : null;
   }
   return out;
 }

@@ -233,21 +233,23 @@ function turn(u: number, v: number, deg: number): [number, number] {
  * whose mouth moves most among the faces on screen at least a third of the time (no mouth readings: the biggest),
  * the median over the stretch. Null: no face there.
  */
-export function speakerCentre(d: Pick<VisionDetails, "frames">, measured: number, rotate: number, from: number, to: number): { x: number; y: number; seen: number } | null {
+/** The speaker's track over [from, to] (footage seconds): the steady face that talks most (else the biggest), with
+ *  every box it had then (shares of the measured picture); null when no face was measured there. */
+function speakerTrack(d: Pick<VisionDetails, "frames">, from: number, to: number): { boxes: [number, number, number, number][]; seen: number } | null {
   const fr = d.frames;
   let lo = 0, hi = fr.length;
   while (lo < hi) { const m = (lo + hi) >> 1; if (fr[m][0] < from) lo = m + 1; else hi = m; }
-  type T = { n: number; area: number; talk: number; last: number | null; us: number[]; vs: number[] };
+  type T = { n: number; area: number; talk: number; last: number | null; boxes: [number, number, number, number][] };
   const tracks = new Map<number, T>();
   let n = 0;
   for (let i = lo; i < fr.length && fr[i][0] <= to; i++) {
     n++;
     for (const f of fr[i][1]) {
-      const tr = tracks.get(f[0]) ?? { n: 0, area: 0, talk: 0, last: null, us: [], vs: [] };
+      const tr = tracks.get(f[0]) ?? { n: 0, area: 0, talk: 0, last: null, boxes: [] };
       tr.n++; tr.area += f[3] * f[4];
       const jaw = f[6];
       if (jaw != null) { if (tr.last != null) tr.talk += Math.abs(jaw - tr.last); tr.last = jaw; }
-      tr.us.push(f[1] + f[3] / 2); tr.vs.push(f[2] + f[4] / 2);
+      tr.boxes.push([f[1], f[2], f[3], f[4]]);
       tracks.set(f[0], tr);
     }
   }
@@ -257,11 +259,28 @@ export function speakerCentre(d: Pick<VisionDetails, "frames">, measured: number
   const steady = all.filter((t) => t.n >= Math.max(n / 3, most / 2));
   const talks = steady.some((t) => t.talk > 0);
   const best = steady.reduce((a, b) => ((talks ? b.talk / b.n > a.talk / a.n : b.area / b.n > a.area / a.n) ? b : a));
+  return { boxes: best.boxes, seen: best.n / n };
+}
+
+export function speakerCentre(d: Pick<VisionDetails, "frames">, measured: number, rotate: number, from: number, to: number): { x: number; y: number; seen: number } | null {
+  const best = speakerTrack(d, from, to);
+  if (!best) return null;
   const med = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
-  const [ua, va] = turn(med(best.us), med(best.vs), 360 - measured); // as filmed
+  const [ua, va] = turn(med(best.boxes.map((b) => b[0] + b[2] / 2)), med(best.boxes.map((b) => b[1] + b[3] / 2)), 360 - measured); // as filmed
   const [u, v] = turn(ua, va, rotate); // as the render turns it
   const r3 = (x: number) => Math.round(Math.min(1, Math.max(0, x)) * 1000) / 1000;
-  return { x: r3(u), y: r3(v), seen: Math.round((best.n / n) * 100) / 100 };
+  return { x: r3(u), y: r3(v), seen: Math.round(best.seen * 100) / 100 };
+}
+
+/** Where the speaker's face is over [from, to] (footage seconds), as a box on the measured picture (shares): its edges
+ *  as far as they go, the farthest tenth of the frames left out (a turn of the head, a wrong box). */
+export function speakerFaceBox(d: Pick<VisionDetails, "frames">, from: number, to: number): [number, number, number, number] | null {
+  const best = speakerTrack(d, from, to);
+  if (!best) return null;
+  const at = (xs: number[], q: number) => { const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.max(0, Math.round(q * (s.length - 1))))]; };
+  const x0 = at(best.boxes.map((b) => b[0]), 0.1), y0 = at(best.boxes.map((b) => b[1]), 0.1);
+  const x1 = at(best.boxes.map((b) => b[0] + b[2]), 0.9), y1 = at(best.boxes.map((b) => b[1] + b[3]), 0.9);
+  return x1 > x0 && y1 > y0 ? [x0, y0, x1 - x0, y1 - y0] : null;
 }
 
 export type Placement = { rotate: number; framing?: { scale: number; x: number; y: number; focus?: Focus } | null; motion?: { x: number; y: number; scale: number; rotation: number } | null; zoom?: number };

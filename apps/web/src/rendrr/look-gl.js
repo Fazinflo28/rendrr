@@ -3,6 +3,8 @@
 // 3D LUT, trilinear like lut3d), blur, pixelate and sharpen mixed in by their areas, the masks into the alpha. The canvas is the
 // plan's size, so block sizes, blur sigmas and mask pictures are the render's pixels.
 
+import { SKIN_TONE } from "@rendrr/shared";
+
 const VS = `#version 300 es
 in vec2 p;
 void main() { gl_Position = vec4(p, 0.0, 1.0); }`;
@@ -51,6 +53,62 @@ void main() {
   }
   if (hasLut) c = texture(lut, c * ((lutN - 1.0) / lutN) + 0.5 / lutN).rgb;
   o = vec4(c, a);
+}`,
+  // Skin retouch (before the key and the grade, as the render does it), close to the render's numbers: the skin found by
+  // the same colour test (8-bit BT.709), spots lifted towards the skin around them, an edge-keeping blur, the colour
+  // moved towards its local mean where it differs a little, the gamma, all mixed in by the skin and its area. Sizes
+  // are the render's working pixels times k (canvas pixels per working pixel).
+  skin: `uniform sampler2D pic; uniform sampler2D area; uniform bool hasArea; uniform float k;
+uniform vec4 tone; uniform vec4 sat; uniform vec2 luma;
+uniform float sigS; uniform float sigR; uniform float fillR; uniform vec4 band; uniform float evSig; uniform float evLim; uniform float gam;
+vec3 toYuv(vec3 c) { float y = dot(c, vec3(0.2126, 0.7152, 0.0722)); return vec3(16.0 + 219.0 * y, 128.0 + 224.0 * (c.b - y) / 1.8556, 128.0 + 224.0 * (c.r - y) / 1.5748); }
+vec3 toRgb(vec3 v) { float y = (v.x - 16.0) / 219.0, cb = (v.y - 128.0) / 224.0, cr = (v.z - 128.0) / 224.0; return clamp(vec3(y + 1.5748 * cr, y - 0.18732 * cb - 0.46812 * cr, y + 1.8556 * cb), 0.0, 1.0); }
+vec3 at(vec2 q) { return toYuv(texture(pic, fboUV(clamp(q, vec2(0.5), size - 0.5))).rgb); }
+float skinOf(vec3 v) {
+  float s = length(v.yz - 128.0), h = atan(v.z - 128.0, 128.0 - v.y);
+  return clamp((tone.y + tone.z - abs(h - tone.x)) / tone.z, 0.0, 1.0) * clamp((s - sat.x) / (sat.y - sat.x), 0.0, 1.0) * clamp((sat.w - s) / (sat.w - sat.z), 0.0, 1.0) * clamp((v.x - luma.x) / luma.y, 0.0, 1.0);
+}
+void main() {
+  vec2 q = img();
+  vec4 px = texture(pic, fboUV(q));
+  vec3 c = toYuv(px.rgb), r = c;
+  // Where the skin is (a 3 x 3 average, as the render softens its mask), times the area.
+  float m = 0.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) m += skinOf(at(q + vec2(float(i), float(j)) * 2.0 * k));
+  m = m / 9.0 * tone.w * (hasArea ? texture(area, picUV(q)).r : 1.0);
+  if (m < 0.002) { o = px; return; }
+  // Spots: what stands out from the skin around it by band.x-y (in) to band.z-w (out) of it, moved towards it. Darker
+  // and lighter alike, so the tone stays (the render puts its local brightness back instead).
+  if (fillR > 0.0) {
+    float mean = 0.0;
+    for (int i = 0; i < 12; i++) { float a = float(i) * 0.5236; mean += at(q + vec2(cos(a), sin(a)) * fillR * k).x; }
+    mean /= 12.0;
+    float d = abs(mean - c.x) / max(mean, 1.0) * 1.6;
+    float w = clamp((d - band.x) / (band.y - band.x), 0.0, 1.0) * clamp((band.w - d) / (band.w - band.z), 0.0, 1.0);
+    r.x = mix(r.x, mean, w);
+  }
+  // Smooth: a bilateral blur on each plane (sigma sigS working pixels, range sigR of full scale).
+  if (sigS > 0.0) {
+    vec3 acc = r, ws = vec3(1.0);
+    for (int n = 1; n <= 3; n++) for (int i = 0; i < 8; i++) {
+      // FFmpeg's bilateral is recursive and spreads further than its sigma: rings out to 3 sigma, range 1.5 times.
+      float a = float(i) * 0.7854 + float(n) * 0.3927, rr = float(n) * sigS;
+      vec3 s = at(q + vec2(cos(a), sin(a)) * rr * k), dv = (s - r) / 255.0;
+      vec3 w = exp(-0.5 * (rr * rr) / (4.0 * sigS * sigS)) * exp(-0.5 * dv * dv / (2.25 * sigR * sigR));
+      acc += s * w; ws += w;
+    }
+    r = acc / ws;
+  }
+  // Even: the colour towards its local mean where it differs by less than evLim.
+  if (evSig > 0.0) {
+    vec2 mc = vec2(0.0);
+    for (int n = 1; n <= 2; n++) for (int i = 0; i < 8; i++) { float a = float(i) * 0.7854 + float(n) * 0.3927; mc += at(q + vec2(cos(a), sin(a)) * float(n) * evSig * k).yz; }
+    mc /= 16.0;
+    vec2 dl = mc - r.yz;
+    r.yz += dl * clamp((evLim - abs(dl)) / (evLim / 2.0), 0.0, 1.0);
+  }
+  if (gam != 1.0) r.x = 16.0 + 219.0 * pow(clamp((r.x - 16.0) / 219.0, 0.0, 1.0), gam);
+  o = vec4(toRgb(mix(c, r, m)), px.a);
 }`,
   // One direction of a Gaussian (sigma in pixels), edges clamped; the alpha is kept.
   blur: `uniform sampler2D pic; uniform vec2 dir; uniform float sigma; uniform int radius;
@@ -132,7 +190,7 @@ export function createLookRenderer(canvas) {
     return { t, f, w, h };
   };
   const src = tex();
-  let W = 0, H = 0, fit = null, buf = [], small = null, smallB = 0;
+  let W = 0, H = 0, fit = null, buf = [], small = null, smallB = 0, skinT = null;
   const lut3 = gl.createTexture(); let lutId = null, lutN = 0;
   // A complete 3D texture from the start (an identity), so the look pass never samples an empty one.
   gl.bindTexture(gl.TEXTURE_3D, lut3);
@@ -155,7 +213,7 @@ export function createLookRenderer(canvas) {
     textures.forEach(([u, t, kind], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(kind === 3 ? gl.TEXTURE_3D : gl.TEXTURE_2D, t); gl.uniform1i(gl.getUniformLocation(p, u), i); });
     for (const [k, v] of Object.entries(uniforms)) {
       const l = gl.getUniformLocation(p, k);
-      if (Array.isArray(v)) (v.length === 2 ? gl.uniform2f : gl.uniform3f).call(gl, l, ...v);
+      if (Array.isArray(v)) (v.length === 2 ? gl.uniform2f : v.length === 3 ? gl.uniform3f : gl.uniform4f).call(gl, l, ...v);
       else if (typeof v === "boolean") gl.uniform1i(l, v ? 1 : 0);
       else if (k === "rot" || k === "radius") gl.uniform1i(l, v);
       else gl.uniform1f(l, v);
@@ -188,8 +246,19 @@ export function createLookRenderer(canvas) {
         gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, spec.lut.n, spec.lut.n, spec.lut.n, 0, gl.RGB, gl.FLOAT, spec.lut.data);
         lutId = spec.lut.id; lutN = spec.lut.n;
       }
+      // The skin retouch on the fitted picture, before the key and the grade (as the render does).
+      let fitted = fit;
+      if (spec.skin) {
+        if (!skinT || skinT.w !== W || skinT.h !== H) skinT = target(W, H, true);
+        const p = spec.skin.p, T = SKIN_TONE;
+        use("skin", { hasArea: !!spec.skin.area, k: W / p.ww, tone: [T.hue, T.hueFull, T.hueSoft, T.strength], sat: [...T.sat], luma: [T.lumaFloor, T.lumaSoft],
+          sigS: p.smooth ? p.smooth.sigmaS : 0, sigR: p.smooth ? p.smooth.sigmaR : 0.1, fillR: p.blemishes ? p.blemishes.fill * 1.5 : 0, band: p.blemishes ? [p.blemishes.r1, p.blemishes.r2, p.blemishes.r3, p.blemishes.r4] : [0, 1, 1, 2],
+          evSig: p.even ? p.even.sigma : 0, evLim: p.even ? p.even.limit : 1, gam: p.brighten ? p.brighten.gamma : 1 },
+          [["pic", fit.t], ["area", spec.skin.area ? grey(spec.skin.area.key, spec.skin.area.px, W, H) : src]]);
+        run(skinT); fitted = skinT;
+      }
       const k = spec.key;
-      use("look", { lutN: lutN || 2, hasLut: !!spec.lut, hasKey: !!k, keyRgb: k ? k.rgb : [0, 0, 0], sim: k ? k.sim : 0, blend: k ? k.blend : 0, spill: k ? k.spill : 0, blueKey: !!k?.blue }, [["pic", fit.t], ["lut", lut3, 3]]);
+      use("look", { lutN: lutN || 2, hasLut: !!spec.lut, hasKey: !!k, keyRgb: k ? k.rgb : [0, 0, 0], sim: k ? k.sim : 0, blend: k ? k.blend : 0, spill: k ? k.spill : 0, blueKey: !!k?.blue }, [["pic", fitted.t], ["lut", lut3, 3]]);
       run(buf[0]);
       let cur = 0;
       for (const e of spec.effects || []) {

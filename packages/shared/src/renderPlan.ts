@@ -13,7 +13,7 @@ import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr,
 import { audioSettings, type AudioMixSettings } from "./timeline";
 import { buildStyledAss, captionStyleOf, layoutCaptions, styleText, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
-import { areaPicture, buildLut, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
+import { areaPicture, buildLut, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, type Skin, type SkinParams, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean; transfer?: HdrTransfer };
@@ -71,7 +71,9 @@ export type CaptionEvent = { start: number; end: number; text: string };
  * grade, then SDR into the HDR output), mask = the masks' picture (.pgm), each effect's area picture. px: blur sigma or
  * block size in pixels at the plan's size. alpha: parts of the clip are transparent (key or masks).
  */
-export type LookOp = { grade?: Grade; lut?: string; lutHdr?: string; key?: ChromaKey; masks?: Mask[]; mask?: string; effects?: (Effect & { px: number; file?: string })[]; alpha: boolean };
+/** skin: the retouch's values, its numbers at the plan's size, and its area as a picture (file). */
+export type SkinOp = { skin: Skin; p: SkinParams; file?: string };
+export type LookOp = { grade?: Grade; lut?: string; lutHdr?: string; key?: ChromaKey; masks?: Mask[]; mask?: string; effects?: (Effect & { px: number; file?: string })[]; skin?: SkinOp; alpha: boolean };
 /** What a look file holds; lookFileData() writes it. shadow and border: a card's, in its framed place; gradient: what
  *  is behind V1 (a colour is a gradient from it to itself). */
 export type LookFile = { kind: "lut"; grade: Grade; hdr?: HdrTransfer } | { kind: "hdr"; hdr: HdrTransfer } | { kind: "mask"; masks: Mask[] } | { kind: "area"; area: Area }
@@ -502,12 +504,14 @@ export function planRender(input: PlanInput): RenderPlan {
     const g = grade && gradeIsActive(grade) ? grade : undefined;
     // A card's crop and corners are one more mask (drawn as masks are, in the render and the player).
     const masks = masksWithCard(c.masks, c.cardLook);
-    if (!g && !c.key && !masks?.length && !c.effects?.length) return;
+    const skin = skinActive(c.skin) ? c.skin! : undefined;
+    if (!g && !c.key && !masks?.length && !c.effects?.length && !skin) return;
     looks[c.id] = {
       ...(g ? { grade: g, lut: file({ kind: "lut", grade: g }), ...(hdr ? { lutHdr: file({ kind: "lut", grade: g, hdr: hdr.transfer }) } : {}) } : {}),
       ...(c.key ? { key: c.key } : {}),
       ...(masks?.length ? { masks, mask: file({ kind: "mask", masks }) } : {}),
       ...(c.effects?.length ? { effects: c.effects.map((e) => ({ ...e, px: effectPx(e, width, height), ...(e.area ? { file: file({ kind: "area", area: e.area }) } : {}) })) } : {}),
+      ...(skin ? { skin: { skin, p: skinParams(skin, width, height), ...(skin.area ? { file: file({ kind: "area", area: skin.area }) } : {}) } } : {}),
       alpha: !!c.key || !!masks?.length,
     };
   };
@@ -610,9 +614,11 @@ function colorLines(looks: Record<string, LookOp>, under: OverlayOp[], missingLu
   if (keyed.length) out.push(`Key: ${list(keyed, chromaKeyText)}`);
   if (masked.length) out.push(`Masks: ${list(masked, masksText)}`);
   if (fx.length) out.push(`Effects: ${list(fx, effectsText)}`);
+  const skins = all.filter(([, l]) => l.skin).map(([id, l]) => [id, l.skin!.skin] as [string, Skin]);
+  if (skins.length) out.push(`Skin: ${list(skins, (k) => skinText(k).replace(/^skin retouch: /, ""))}`);
   if (under.length) out.push(`Under V1: ${under.length} b-roll ${under.length === 1 ? "clip" : "clips"} (${under.slice(0, 4).map((u) => u.clipId).join(", ")})`);
-  const sdrGraded = hdrClips.filter((id) => looks[id]?.grade || looks[id]?.key);
-  const gradedNote = sdrGraded.length ? `; ${sdrGraded.slice(0, 6).join(", ")} graded or keyed in SDR (as the editor shows them): no highlights above SDR white there` : "";
+  const sdrGraded = hdrClips.filter((id) => looks[id]?.grade || looks[id]?.key || looks[id]?.skin);
+  const gradedNote = sdrGraded.length ? `; ${sdrGraded.slice(0, 6).join(", ")} graded, keyed or retouched in SDR (as the editor shows them): no highlights above SDR white there` : "";
   if (hdr) out.push(`HDR: kept (${hdr.transfer === "pq" ? "PQ" : "HLG"}, BT.2020, 10-bit); SDR clips, b-roll, graphics and captions at SDR white (203 nits)${gradedNote}`);
   else if (hdrFootage) out.push(kind === "preview" ? `HDR: footage is HDR; this preview and the editor show it tone-mapped to SDR; ${toSdr ? "the final converts it to SDR (as the edit asks)" : `the final keeps HDR${gradedNote}`}` : "HDR: converted to SDR (tone-mapped), as the edit asks");
   return out;
@@ -821,13 +827,72 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     return `lp${tag}`;
   };
   /**
+   * Skin retouch on [inp] (the fitted picture, W x H, still YUV): the skin found by its colour (and inside its area),
+   * retouched at the working size (blemishes: spots darker than a closing, filled from the skin around them, then the
+   * local brightness put back; smooth: bilateral; even: the colour planes moved towards their blur where they differ a
+   * little; brighten: a gamma on luma) and merged in on the skin. Above the working size only its change is added to
+   * the full picture (grainextract / grainmerge), so the texture finer than the working size stays. YUV 4:4:4 out (8-bit;
+   * 10-bit for HDR footage).
+   */
+  const skinChain = (inp: string, so: SkinOp, dom: "sdr" | "hdr", frames: number, tag: string): string => {
+    const p = so.p, t = `${tag}k`, full = p.ww === W && p.wh === H, T = SKIN_TONE;
+    const deep = dom === "hdr", F = deep ? "yuv444p10le" : "yuv444p", M = deep ? 1023 : 255, mid = deep ? 512 : 128, lo = deep ? 64 : 16, span = deep ? 876 : 219;
+    if (full) g.push(`[${inp}]format=${F},split=3[kx${t}][ka${t}][km${t}]`);
+    else {
+      g.push(`[${inp}]format=${F},split[kx${t}][k0${t}]`);
+      g.push(`[k0${t}]scale=${p.ww}:${p.wh}:flags=area,split=4[kl${t}][ka${t}][km${t}][kk${t}]`);
+    }
+    // Where the skin is: its colour (8-bit) at half the working size, small holes closed, softened; times the area.
+    g.push(`[km${t}]scale=${p.mw}:${p.mh}:flags=area,format=yuv444p,extractplanes=y+u+v[kmy${t}][kmu${t}][kmv${t}]`);
+    g.push(`[kmu${t}][kmv${t}]lut2=c0='${skinChromaExpr()}'[kmc${t}]`);
+    g.push(`[kmc${t}][kmy${t}]lut2=c0='x*clip((y-${T.lumaFloor})/${T.lumaSoft},0,1)*${T.strength}'[kmk${t}]`);
+    g.push(`[kmk${t}]dilation=coordinates=90,erosion=coordinates=90,gblur=sigma=1,scale=${p.ww}:${p.wh}:flags=bilinear,setrange=pc[kmw${t}]`);
+    let mk = `kmw${t}`;
+    if (so.file) { g.push(`[${picture(so.file, frames, "k" + t)}]scale=${p.ww}:${p.wh}:flags=area,setrange=pc[kar${t}]`); g.push(`[${mk}][kar${t}]blend=all_mode=multiply[kmx${t}]`); mk = `kmx${t}`; }
+    g.push(`[${mk}]${deep ? "format=gray10le," : ""}split=3[kg0${t}][kg1${t}][kg2${t}];[kg0${t}][kg1${t}][kg2${t}]mergeplanes=0x001020:${F}[kmg${t}]`);
+    // The retouch at the working size.
+    g.push(`[ka${t}]extractplanes=y+u+v[kwy${t}][kwu${t}][kwv${t}]`);
+    let y = `kwy${t}`;
+    if (p.blemishes) {
+      const b = p.blemishes, shape = (f: string) => Array.from({ length: b.passes }, (_, i) => `${f}=coordinates=${i % 2 ? 90 : 255}`).join(",");
+      const dark = `((y-x)/max(y,1))`;
+      // Found on a lightly smoothed copy, so grain and noise are not taken for spots; filled from the skin's blur.
+      g.push(`[${y}]split=3[kbz${t}][kb3${t}][kb4${t}];[kbz${t}]gblur=sigma=1,split=3[kb0${t}][kb1${t}][kb2${t}]`);
+      g.push(`[kb1${t}]scale=${p.hw}:${p.hh}:flags=area,${shape("dilation")},${shape("erosion")},scale=${p.ww}:${p.wh}:flags=bilinear[kbc${t}]`);
+      g.push(`[kb0${t}][kbc${t}]lut2=c0='${M}*clip((${dark}-${b.r1})/${n3(b.r2 - b.r1)},0,1)*clip((${b.r4}-${dark})/${n3(b.r4 - b.r3)},0,1)',dilation,gblur=sigma=0.8[kbs${t}]`);
+      g.push(`[kb2${t}]gblur=sigma=${b.fill}[kbf${t}]`);
+      g.push(`[kb3${t}][kbf${t}][kbs${t}]maskedmerge,split[kbh${t}][kbh1${t}]`);
+      // Filling only ever lifts what is darker, so the skin's local brightness is put back: spots and creases lose their
+      // contrast, the tone stays.
+      g.push(`[kbh1${t}][kb4${t}]lut2=c0='clip(x-y+${mid},0,${M})',gblur=sigma=${b.level}[kbl${t}]`);
+      g.push(`[kbh${t}][kbl${t}]lut2=c0='clip(x-y+${mid},0,${M})'[kbt${t}]`);
+      y = `kbt${t}`;
+    }
+    g.push(`[${y}][kwu${t}][kwv${t}]mergeplanes=0x001020:${F}${p.smooth ? `,bilateral=sigmaS=${p.smooth.sigmaS}:sigmaR=${p.smooth.sigmaR}` : ""}[kws${t}]`);
+    let w = `kws${t}`;
+    if (p.even) {
+      const ev = p.even, lim = Math.round((ev.limit * M) / 255), near = `x+(y-x)*clip((${lim}-abs(y-x))/${lim / 2},0,1)`;
+      g.push(`[${w}]split[ke0${t}][ke1${t}];[ke1${t}]gblur=sigma=${ev.sigma}:planes=6[keb${t}]`);
+      g.push(`[ke0${t}][keb${t}]lut2=c0='x':c1='${near}':c2='${near}'[kev${t}]`);
+      w = `kev${t}`;
+    }
+    const lift = p.brighten ? `lutyuv=y='${lo}+${span}*pow(clip((val-${lo})/${span},0,1),${p.brighten.gamma})'` : "null";
+    // On the skin: at the working size, the retouched picture itself; above it, only the change, onto the full picture.
+    if (full) { g.push(`[${w}]${lift}[kr${t}];[kx${t}][kr${t}][kmg${t}]maskedmerge[ko${t}]`); return `ko${t}`; }
+    g.push(`[${w}]${lift}[kr${t}];[kk${t}][kr${t}][kmg${t}]maskedmerge[kq${t}];[kq${t}][kl${t}]blend=all_mode=grainextract[kd${t}]`);
+    g.push(`[kd${t}]scale=${W}:${H}:flags=bicubic[ku${t}];[kx${t}][ku${t}]blend=all_mode=grainmerge[ko${t}]`);
+    return `ko${t}`;
+  };
+  /**
    * A clip's look on [inp] (fitted, W x H, `frames` long), in this order: the key's alpha from the fitted colours,
    * despill, the grade (lut3d), blur/pixelate mixed in by their areas (maskedmerge), the masks into the alpha. In an
    * HDR output an SDR picture goes through the SDR-into-HDR LUT (with its grade, 16-bit). dom: what [inp] holds.
    */
-  const colorChain = (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string): { out: string; alpha: boolean } => {
+  const colorChain = (input: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string): { out: string; alpha: boolean } => {
     const toHdr = !!hdr && dom === "sdr";
-    if (!look && !toHdr) return { out: inp, alpha: false };
+    if (!look && !toHdr) return { out: input, alpha: false };
+    // The skin retouch first, on the picture's own YUV: the skin is found by its own colour, not the graded one.
+    const inp = look?.skin ? skinChain(input, look.skin, dom, frames, tag) : input;
     // 16-bit RGB after the key: lut3d truncates its output, which at 8 bits would darken a grade by half a level.
     const rgbF = "gbrp16le";
     let rgb = `lc${tag}`, alpha: string | null = null;
@@ -977,7 +1042,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     // (Phase 6: unless the output keeps HDR; a graded or keyed HDR clip is still graded on that SDR picture).
     const toneOf = (vid: string, dom: "sdr" | "hdr" = "sdr") => (info(vid).hdr && dom === "sdr" ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "");
     /** Where a clip's picture lives: HDR (10-bit, the output's transfer) or SDR (graded, keyed, other transfer, or SDR). */
-    const domOf = (vid: string, look: LookOp | undefined): "sdr" | "hdr" => (hdr && info(vid).hdr && (info(vid).transfer ?? "pq") === hdr.transfer && !look?.grade && !look?.key ? "hdr" : "sdr");
+    // A graded, keyed or retouched HDR clip is worked in SDR, as the editor shows it (the skin is found in SDR colours).
+    const domOf = (vid: string, look: LookOp | undefined): "sdr" | "hdr" => (hdr && info(vid).hdr && (info(vid).transfer ?? "pq") === hdr.transfer && !look?.grade && !look?.key && !look?.skin ? "hdr" : "sdr");
     const fit = `fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)/2:(ih-oh)*0.4,setsar=1`;
     // Reframed (a framing's focus): the fit cuts around that point of the footage, as near as its edges allow (fitCrop).
     const fitFor = (f: Framing | null | undefined) => (f?.focus ? `fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:x='clip(${n3(f.focus.x)}*iw-ow/2,0,iw-ow)':y='clip(${n3(f.focus.y)}*ih-oh*0.4,0,ih-oh)',setsar=1` : fit);

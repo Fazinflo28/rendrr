@@ -83,9 +83,31 @@ export const EFFECTS = ["blur", "pixelate", "sharpen"] as const;
 export const EffectSchema = z.object({ type: z.enum(EFFECTS), amount: z.number().min(1).max(100), area: AreaSchema.optional() });
 export type Effect = z.infer<typeof EffectSchema>;
 
+const share100 = z.number().min(0).max(100);
+/**
+ * Skin retouch on a clip's skin (found by its colour, inside `area` when set; Rendrr sets the face's area from the faces
+ * it measured): smooth (pores and fine texture, edges kept), blemishes (small dark spots and marks, filled from the
+ * skin around them), even (blotchy colour evened out; lips keep theirs), brighten (lifts the skin's mid-tones). Each
+ * 0-100. The skin's own tone is kept: nothing lightens or darkens it except brighten.
+ */
+export const SkinSchema = z.object({ smooth: share100, blemishes: share100, even: share100, brighten: share100, area: AreaSchema.optional(), face: z.boolean().optional() });
+export type Skin = z.infer<typeof SkinSchema>;
+/** The skin's area around a face box Rendrr measured: as wide as 1.6 faces, 1.9 tall, its middle a fifth of a face
+ *  lower (cheeks and ears, forehead to neck). */
+export const FACE_AREA = { w: 1.6, h: 1.9, down: 0.2, feather: 0.04 } as const;
+/** The skin's area (an ellipse, feathered) around a face's box on screen ([x0, y0, x1, y1], shares of the frame). */
+export function faceSkinArea(b: [number, number, number, number]): Area {
+  const w = b[2] - b[0], h = b[3] - b[1], cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2 + FACE_AREA.down * h, aw = w * FACE_AREA.w, ah = h * FACE_AREA.h;
+  const r4 = (v: number) => Math.round(v * 10000) / 10000;
+  return { shape: "ellipse", x: r4(cx - aw / 2), y: r4(cy - ah / 2), w: r4(aw), h: r4(ah), feather: FACE_AREA.feather };
+}
+/** A natural retouch: what retouch_skin sets when it is sent without values. */
+export const SKIN_DEFAULTS = { smooth: 35, blemishes: 40, even: 35, brighten: 0 } as const;
+export const skinActive = (s: Skin | undefined) => !!s && (s.smooth > 0 || s.blemishes > 0 || s.even > 0 || s.brighten > 0);
+
 /** Everything Phase 6 adds to a drawn clip (V1, b-roll). */
-export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[] };
-export const hasLook = (c: ClipLook | null | undefined) => !!c && (!!c.grade && gradeIsActive(c.grade) || !!c.key || !!c.masks?.length || !!c.effects?.length);
+export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[]; skin?: Skin };
+export const hasLook = (c: ClipLook | null | undefined) => !!c && (!!c.grade && gradeIsActive(c.grade) || !!c.key || !!c.masks?.length || !!c.effects?.length || skinActive(c.skin));
 export const gradeIsActive = (g: Grade | undefined) => !!g && (!!g.exposure || !!g.contrast || !!g.temperature || !!g.tint || (g.saturation != null && g.saturation !== 100) || !!g.lut || !!g.curves && Object.values(g.curves).some(Boolean));
 
 // ---------------------------------------------------------------------------------------------
@@ -436,6 +458,54 @@ export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape ===
 export const chromaKeyText = (k: ChromaKey) => `${k.color} similarity ${k.similarity} blend ${k.blend}${k.spill ? ` spill ${k.spill}` : ""}`;
 export const masksText = (ms: Mask[]) => ms.map((m, i) => `${i && m.mode && m.mode !== "add" ? m.mode + " " : ""}${areaText(m)}`).join(", ");
 export const effectsText = (es: Effect[]) => es.map((e) => `${e.type} ${e.amount}${e.area ? ` in ${areaText(e.area)}` : ""}`).join(", ");
+/** face: the area is the face Rendrr measured (forehead to neck). */
+export const skinText = (s: Skin) => `skin retouch: smooth ${s.smooth}, blemishes ${s.blemishes}, even ${s.even}, brighten ${s.brighten}${s.area ? (s.face ? ", on the face" : `, in ${areaText(s.area)}`) : ", whole picture"}`;
+
+// ---------------------------------------------------------------------------------------------
+// Skin retouch: the numbers the render's graph and the player's shader both use
+// ---------------------------------------------------------------------------------------------
+/** The skin's colour: a hue band (radians in the Cb/Cr plane, 0 = towards blue-yellow's yellow) and a saturation band,
+ *  both with soft edges, measured on 8-bit BT.709 limited range; a luma floor keeps hair and shadows out. */
+export const SKIN_TONE = { hue: 0.85, hueFull: 0.28, hueSoft: 0.16, sat: [7, 11, 44, 56], lumaFloor: 40, lumaSoft: 30, strength: 0.9 } as const;
+/** How likely an 8-bit (Cb, Cr) pair is skin, 0-1 (the render's lut2 and the player's shader). */
+export function skinChroma(cb: number, cr: number): number {
+  const t = SKIN_TONE, sat = Math.hypot(cb - 128, cr - 128), hue = Math.atan2(cr - 128, 128 - cb);
+  const c = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+  return c((t.hueFull + t.hueSoft - Math.abs(hue - t.hue)) / t.hueSoft) * c((sat - t.sat[0]) / (t.sat[1] - t.sat[0])) * c((t.sat[3] - sat) / (t.sat[3] - t.sat[2]));
+}
+/** The FFmpeg expression of skinChroma (x = Cb, y = Cr), scaled to 0-255. */
+export function skinChromaExpr(): string {
+  const t = SKIN_TONE, sat = "hypot(x-128,y-128)", hue = "atan2(y-128,128-x)";
+  return `255*clip((${t.hueFull + t.hueSoft}-abs(${hue}-${t.hue}))/${t.hueSoft},0,1)*clip((${sat}-${t.sat[0]})/${t.sat[1] - t.sat[0]},0,1)*clip((${t.sat[3]}-${sat})/${t.sat[3] - t.sat[2]},0,1)`;
+}
+/**
+ * A skin retouch's numbers at a W x H picture. The work is done at a working size whose short side is 540 at most (a
+ * preview works at its own size), and only its change is added to the full picture, so the fine texture above that
+ * size is kept and a preview and a final look alike. Sizes are pixels at the working size.
+ */
+export function skinParams(sk: Skin, W: number, H: number) {
+  const s = sk.smooth / 100, b = sk.blemishes / 100, e = sk.even / 100, r = sk.brighten / 100;
+  const k = Math.min(1, 540 / Math.min(W, H)), even2 = (v: number) => Math.max(2, Math.round(v / 2) * 2);
+  const ww = even2(W * k), wh = even2(H * k), ws = Math.min(ww, wh), r3 = (v: number) => Math.round(v * 1000) / 1000;
+  // Sizes follow the face: its height at the working size (from the face's area; else a talking head's, 35% of the
+  // short side). Tuned on faces about 200 px tall.
+  const face = Math.max(24, sk.area && sk.face && sk.area.h ? (sk.area.h / FACE_AREA.h) * H * k : 0.35 * ws);
+  const passes = Math.max(1, Math.round(((0.6 + 1.2 * b) * face) / 245));
+  return {
+    ww, wh, mw: even2(ww / 2), mh: even2(wh / 2), hw: even2(ww / 2), hh: even2(wh / 2),
+    // smooth: an edge-keeping (bilateral) blur, sigma in pixels and its range (shares of full scale)
+    smooth: s > 0 ? { sigmaS: r3(Math.max(0.5, ((0.2 + 0.8 * s) * face) / 54.5)), sigmaR: r3(0.04 + 0.06 * s) } : null,
+    // blemishes: a closing (passes of 3x3 at half the working size) finds what is darker than the skin around it; a
+    // pixel 1-2 (ramp in) to 3-4 (ramp out) shares darker than the closing is a spot (deeper ones, like brows and lash
+    // lines, are left), filled from the skin around it (blur sigma `fill`, the spot itself left out)
+    blemishes: b > 0 ? { passes, fill: r3(passes * 2.2), level: r3(Math.max(6, passes * 6)), r1: r3(0.08 - 0.03 * b), r2: r3(0.13 - 0.03 * b), r3: r3(0.14 + 0.06 * b), r4: r3(0.22 + 0.08 * b) } : null,
+    // even: the colour planes blurred (sigma) and moved towards it only where they differ by less than `limit` (8-bit)
+    even: e > 0 ? { sigma: r3(Math.max(0.5, e * face * 0.044)), limit: Math.round(5 + 10 * e) } : null,
+    // brighten: the skin's luma through a gamma
+    brighten: r > 0 ? { gamma: r3(1 - 0.3 * r) } : null,
+  };
+}
+export type SkinParams = ReturnType<typeof skinParams>;
 
 // ---------------------------------------------------------------------------------------------
 // HDR: SDR pictures placed in an HDR output at SDR white (203 nits, ITU-R BT.2408)

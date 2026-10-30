@@ -166,6 +166,7 @@ Object.assign(api, {
   deleteLut: async (id) => { const i = demoLuts.findIndex((l) => l.id === id); if (i >= 0) demoLuts.splice(i, 1); return { ok: true }; },
   colorSamples: async () => { await wait(200); throw Object.assign(new Error("Matching measures frames on the server; the preview has no server."), { friendly: true }); },
   // Auto reframe: the demo's speaker sits a little left of centre in every clip.
+  skinAreas: async (_id, clips) => { await wait(150); return { areas: Object.fromEntries(clips.map((c) => [c.id, { shape: "ellipse", x: 0.36, y: 0.08, w: 0.28, h: 0.62, feather: 0.04 }])) }; },
   speakerCentres: async (_id, clips) => { await wait(150); return { centers: Object.fromEntries(clips.map((c) => [c.id, { x: 0.38, y: 0.42 }])) }; },
 });
 

@@ -3,7 +3,7 @@ import { prisma, Prisma } from "@rendrr/db";
 import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { speakerCentres } from "../services/color";
+import { skinFaceAreas, speakerCentres } from "../services/color";
 import { createCanvas } from "../services/canvas";
 import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
@@ -30,6 +30,7 @@ async function editThumbs(ps: { id: string; videoId: string }[]): Promise<Map<st
 
 /** Server-sent events on a raw response. Keeps CORS headers that Fastify already set. */
 const SpeakerInput = z.object({ clips: z.array(z.object({ id: z.string().min(1).max(80), videoId: z.string().min(1).max(80), srcIn: z.number().min(0), srcOut: z.number().min(0), rotate: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).default(0) })).min(1).max(400) });
+const SkinAreasInput = z.object({ aspect: z.string().max(8).optional(), clips: z.array(z.object({ id: z.string().max(80), videoId: z.string().max(80), srcIn: z.number(), srcOut: z.number(), rotate: z.number().optional(), focus: z.object({ x: z.number(), y: z.number() }).nullable().optional() })).max(2000) });
 
 export default async function projects(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
@@ -148,6 +149,16 @@ export default async function projects(app: FastifyInstance) {
     const mine = await prisma.video.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.videoId))) }, userId: req.user!.id }, select: { id: true } });
     const ok = new Set(mine.map((v) => v.id));
     return { centers: await speakerCentres(clips.filter((c) => ok.has(c.videoId))) };
+  });
+
+  // Skin retouch in the editor: each clip's face area (the editor's own clips, saved or not), as retouch_skin takes it.
+  app.post("/projects/:id/skin-areas", async (req) => {
+    const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    const { clips, aspect } = SkinAreasInput.parse(req.body);
+    const mine = await prisma.video.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.videoId))) }, userId: req.user!.id }, select: { id: true } });
+    const ok = new Set(mine.map((v) => v.id));
+    const areas = await skinFaceAreas(clips.filter((c) => ok.has(c.videoId)).map((c) => ({ id: c.id, sourceVideoId: c.videoId, sourceIn: c.srcIn, sourceOut: c.srcOut, rotate: c.rotate, framing: c.focus ? { focus: c.focus } : undefined })), "", aspect ?? p.aspect);
+    return { areas };
   });
 
   app.get("/projects/:id/versions", async (req) => {

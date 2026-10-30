@@ -6,7 +6,7 @@ import { useState, useEffect, useRef, useMemo, html, Btn, Icon } from "./ui";
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
 import { createLookRenderer } from "./look-gl";
-import { areaPicture, buildLut, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, LUT_SIZE, maskPicture, parseCube, spillType } from "@rendrr/shared";
+import { areaPicture, buildLut, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, LUT_SIZE, maskPicture, parseCube, SKIN_DEFAULTS, spillType } from "@rendrr/shared";
 
 // ---------------------------------------------------------------------------------------------
 // Imported LUTs: their numbers, loaded once per page.
@@ -31,7 +31,7 @@ export function useLutData(ids) {
 const specs = new Map();
 export function lookSpec(look, W, H, luts = {}) {
   const lutReady = look?.grade?.lut ? !!luts[look.grade.lut.id] : true;
-  const id = look ? hashOf([look.grade, look.key, look.masks, look.effects, W, H, lutReady]) : `plain${W}x${H}`;
+  const id = look ? hashOf([look.grade, look.key, look.masks, look.effects, look.skin?.skin, W, H, lutReady]) : `plain${W}x${H}`;
   if (specs.has(id)) return specs.get(id);
   const g = look?.grade;
   const spec = {
@@ -40,6 +40,7 @@ export function lookSpec(look, W, H, luts = {}) {
     key: look?.key ? { rgb: hexRgb(look.key.color).map((v) => v / 255), sim: look.key.similarity, blend: look.key.blend, spill: look.key.spill, blue: spillType(look.key) === "blue" } : null,
     mask: look?.masks?.length ? { key: hashOf([look.masks, W, H]), px: maskPicture(look.masks, W, H) } : null,
     effects: (look?.effects || []).map((e) => ({ type: e.type, px: e.px, amount: e.amount, area: e.area ? { key: hashOf([e.area, W, H]), px: areaPicture(e.area, W, H) } : null })),
+    skin: look?.skin ? { p: look.skin.p, area: look.skin.skin.area ? { key: hashOf([look.skin.skin.area, W, H]), px: areaPicture(look.skin.skin.area, W, H) } : null } : null,
   };
   specs.set(id, spec);
   if (specs.size > 40) specs.delete(specs.keys().next().value);
@@ -176,13 +177,13 @@ function AreaControls({ idp, a, set, sl }) {
   </div>`;
 }
 
-export function ColorTab({ clip, track, projectId, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast }) {
+export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast }) {
   const [ch, setCh] = useState("master");
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
   if (!clip || !(track === "v1" || track === "a1" || (track === "v2" && clip.kind === "broll"))) {
-    return html`<${WholeEditColor} clips=${clips} lutList=${lutList} reloadLuts=${reloadLuts} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />`;
+    return html`<${WholeEditColor} clips=${clips} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} lutList=${lutList} reloadLuts=${reloadLuts} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />`;
   }
   const sl = { H, liveOp };
   const g = clip.grade || {};
@@ -275,6 +276,7 @@ export function ColorTab({ clip, track, projectId, clips, lutList, reloadLuts, t
         </div>`) : html`<p class="t-small muted">The clip shows only inside its masks. Shapes are on the clip's picture and move with it.</p>`}
     </div>
 
+    ${track === "v1" || clip.sourceIn != null ? html`<${SkinSection} targets=${[clip]} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />` : null}
     <div class="col" style="gap:8px" id="effects-panel">
       <div class="row between"><b class="t-label">Blur, pixelate, sharpen</b><span class="row" style="gap:4px">
         <${Btn} kind="ghost" size="xs" id="fx-add-blur" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "blur", amount: 30 }]))}>+ Blur<//>
@@ -295,9 +297,45 @@ export function ColorTab({ clip, track, projectId, clips, lutList, reloadLuts, t
   </div></div>`;
 }
 
+/**
+ * Skin retouch (retouch_skin) on V1 clips: smooth, blemishes, even tone, brighten. On the face (the area Rendrr builds
+ * from the faces it measured; fetched once when turned on) or the whole picture. Done before the grade.
+ */
+function SkinSection({ targets, projectId, mainVideo, aspect, doOp, H, liveOp, toast }) {
+  const [busy, setBusy] = useState(false);
+  const v1 = targets.filter((c) => c.sourceIn != null);
+  const done = v1.filter((c) => c.skin), first = done[0]?.skin;
+  const vals = first ?? SKIN_DEFAULTS, face = first ? !!first.face : true;
+  const ids = (cs) => cs.map((c) => c.id);
+  // Turned on (or onto the face): every clip gets it, with the faces measured for the face.
+  const turnOn = async (onFace, values = {}) => {
+    setBusy(true);
+    try {
+      let faceAreas;
+      if (onFace) faceAreas = (await api.skinAreas(projectId, v1.map((c) => ({ id: c.id, videoId: c.sourceVideoId || mainVideo, srcIn: c.sourceIn, srcOut: c.sourceOut, rotate: c.rotate || 0, focus: c.framing?.focus ?? null })), aspect)).areas;
+      doOp({ op: "retouch_skin", clipIds: ids(v1), ...(onFace ? { area: "face", faceAreas } : { area: "frame" }), smooth: vals.smooth, blemishes: vals.blemishes, even: vals.even, brighten: vals.brighten, ...values });
+      if (onFace && Object.values(faceAreas).some((a) => !a)) toast("No face measured on some clips: the skin is found over the whole picture there.", { icon: "alert" });
+    } catch (e) { toast(e.message); } finally { setBusy(false); }
+  };
+  const sl = { H, liveOp };
+  const slider = (key, label, idSuffix) => html`<${OpSlider} id=${"skin-" + idSuffix} label=${label} value=${vals[key]} min=${0} max=${100} step=${1} show=${(v) => (v ? String(v) : "off")} opFor=${(v) => ({ op: "retouch_skin", clipIds: ids(done), [key]: v })} ...${sl} />`;
+  return html`<div class="col" style="gap:8px" id="skin-panel">
+    <div class="row between"><b class="t-label">Skin retouch</b>
+      <label class="t-small row" style="gap:6px"><input type="checkbox" id="skin-on" checked=${done.length > 0} disabled=${busy || !v1.length} onChange=${(e) => (e.target.checked ? turnOn(face) : doOp({ op: "retouch_skin", clipIds: ids(done), off: true }))} />${busy ? "Finding faces…" : "On"}</label></div>
+    ${done.length ? html`
+      ${slider("smooth", "Smooth", "smooth")}
+      ${slider("blemishes", "Blemishes", "blemishes")}
+      ${slider("even", "Even tone", "even")}
+      ${slider("brighten", "Brighten", "brighten")}
+      <label class="t-small row" style="gap:6px"><input type="checkbox" id="skin-face" checked=${face} disabled=${busy} onChange=${(e) => turnOn(e.target.checked)} />Face only (forehead to neck)</label>
+      <p class="t-small muted" style="margin:0" id="skin-note">${done.length < v1.length ? `On ${done.length} of ${v1.length} clips. ` : ""}Done before the grade; the skin keeps its tone. The player shows it close to the render.</p>`
+    : html`<p class="t-small muted" style="margin:0">Smoother skin, fewer spots, even tone. Natural by default; your AI can do it too.</p>`}
+  </div>`;
+}
+
 /** The Color tab with no clip selected: the look of the whole edit, every V1 clip at once (set_grade all), like an
  *  adjustment layer: a LUT (pick or import), the basic grade and sharpening. A clip's own controls are one click away. */
-function WholeEditColor({ clips, lutList, reloadLuts, timeline, doOp, H, liveOp, toast }) {
+function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLuts, timeline, doOp, H, liveOp, toast }) {
   const fileRef = useRef(null); const [busy, setBusy] = useState(false);
   const v1 = clips.filter((c) => c.sourceIn != null);
   const g = v1[0]?.grade || {};
@@ -347,6 +385,7 @@ function WholeEditColor({ clips, lutList, reloadLuts, timeline, doOp, H, liveOp,
       ${ownFx ? html`<span class="t-small muted">Some clips have their own effects: sharpen them clip by clip.</span>`
         : html`<${OpSlider} id="whole-sharpen-amount" label="Amount" value=${sharpen} min=${0} max=${100} step=${1} show=${(v) => (v ? String(v) : "off")} opFor=${(v) => ({ op: "set_effects", all: true, effects: v ? [{ type: "sharpen", amount: v }] : [] })} ...${sl} />`}
     </div>
+    <${SkinSection} targets=${v1} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />
     ${hdrRow(timeline, doOp)}
   </div></div>`;
 }

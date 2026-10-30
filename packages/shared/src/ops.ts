@@ -16,7 +16,7 @@ import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDL
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { libraryItem, libraryParams } from "./library";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
-import { ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, type ChromaKey, type ClipLook, type Grade, type Lut } from "./look";
+import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
@@ -151,7 +151,7 @@ const EDIT_OPS = [
     exposure: z.number().min(-4).max(4).nullable().optional(), contrast: z.number().min(-100).max(100).nullable().optional(), temperature: z.number().min(-100).max(100).nullable().optional(), tint: z.number().min(-100).max(100).nullable().optional(), saturation: z.number().min(0).max(200).nullable().optional(),
     curves: z.object({ master: CurveSchema.nullable().optional(), r: CurveSchema.nullable().optional(), g: CurveSchema.nullable().optional(), b: CurveSchema.nullable().optional() }).nullable().optional(), lut: LutInputSchema.nullable().optional() }),
   // A clip's grade onto other clips (with: also its key, masks, blur/pixelate).
-  z.object({ op: z.literal("copy_grade"), from: clipId, to: z.array(clipId).max(2000).optional(), all: z.boolean().optional(), video: z.string().max(80).optional(), with: z.array(z.enum(["grade", "key", "masks", "effects"])).max(4).optional() }),
+  z.object({ op: z.literal("copy_grade"), from: clipId, to: z.array(clipId).max(2000).optional(), all: z.boolean().optional(), video: z.string().max(80).optional(), with: z.array(z.enum(["grade", "key", "masks", "effects", "skin"])).max(5).optional() }),
   // Clips' colour matched to a reference clip from measured frames (the server measures them; the result is a grade).
   z.object({ op: z.literal("match_color"), clipIds: z.array(clipId).min(1).max(200), to: clipId, measured: z.record(z.object({ w: z.number().int().min(1).max(512), h: z.number().int().min(1).max(512), rgb: z.string().max(2_000_000) })).optional() }),
   // Chroma key: color (pick it from the frame), similarity, blend, spill; off removes the key.
@@ -159,6 +159,11 @@ const EDIT_OPS = [
   // A clip's masks (replaces them; [] removes them) and its blur/pixelate effects (same).
   z.object({ op: z.literal("set_masks"), ...lookTargets, masks: z.array(MaskSchema).max(8) }),
   z.object({ op: z.literal("set_effects"), ...lookTargets, effects: z.array(EffectSchema).max(4) }),
+  // Skin retouch (smooth, blemishes, even, brighten 0-100; fields left out keep their value, or the natural defaults).
+  // Default clips: every V1 clip. area: "face" (the default: each clip's face, forehead to neck, from the faces Rendrr
+  // measured into faceAreas; a clip with no face measured gets the whole picture), "frame", or a shape. off removes it.
+  z.object({ op: z.literal("retouch_skin"), ...lookTargets, smooth: z.number().min(0).max(100).optional(), blemishes: z.number().min(0).max(100).optional(), even: z.number().min(0).max(100).optional(), brighten: z.number().min(0).max(100).optional(),
+    area: z.union([z.literal("face"), z.literal("frame"), AreaSchema]).optional(), faceAreas: z.record(AreaSchema.nullable()).optional(), off: z.boolean().optional() }),
   // A b-roll clip behind V1 (shows where V1 is keyed, masked, framed smaller or moved away) or back over it.
   z.object({ op: z.literal("set_under"), clipId, under: z.boolean() }),
   // How the final file is made: hdr keep (HDR footage stays HDR) or sdr (converted).
@@ -1063,6 +1068,33 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const next = mapLook(tl, ids, (c) => { const { effects: _e, ...rest } = c; return (op.effects.length ? { ...rest, effects: op.effects } : rest) as typeof c; });
       return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.effects.length ? effectsText(op.effects) : "no effects"}` };
     }
+    case "retouch_skin": {
+      const ids = op.clipId || op.clipIds || op.all || op.video ? lookIds(tl, op) : lookIds(tl, { all: true });
+      const given = { smooth: op.smooth, blemishes: op.blemishes, even: op.even, brighten: op.brighten };
+      const faceless: string[] = [];
+      const areaFor = (c: Clip & ClipLook): { area?: Area; face?: boolean } => {
+        const want = op.area ?? (c.skin ? (c.skin.area ? "keep" : "frame") : "face");
+        if (want === "keep") return { area: c.skin!.area, face: c.skin!.face };
+        if (want === "frame") return {};
+        if (want !== "face") return { area: want };
+        if (!op.faceAreas) throw new EditError("retouch_skin with area \"face\" needs the faces measured: send it through apply_edits, which measures them (or send area \"frame\" or a shape).");
+        const a = op.faceAreas[c.id];
+        if (!a) faceless.push(c.id);
+        return a ? { area: a, face: true } : {};
+      };
+      const next = mapLook(tl, ids, (c) => {
+        const { skin: _s, ...rest } = c;
+        if (op.off) return rest as typeof c;
+        const base = c.skin ?? SKIN_DEFAULTS;
+        const sk: Skin = { smooth: given.smooth ?? base.smooth, blemishes: given.blemishes ?? base.blemishes, even: given.even ?? base.even, brighten: given.brighten ?? base.brighten };
+        const { area, face } = areaFor(c);
+        if (area) { sk.area = area; if (face) sk.face = true; }
+        return (skinActive(sk) ? { ...rest, skin: sk } : rest) as typeof c;
+      });
+      const sk = lookClip(next, ids[0]).clip.skin;
+      const none = faceless.length ? `; no face measured on ${faceless.length === ids.length ? "them" : faceless.slice(0, 8).join(", ") + (faceless.length > 8 ? ` and ${faceless.length - 8} more` : "")}: the skin is found over the whole picture there` : "";
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${sk ? skinText(sk) : "no skin retouch"}${none}` };
+    }
     case "set_under": {
       const c = findClip(tl, "v2", op.clipId) as V2Clip & { under?: boolean };
       if (c.kind !== "broll") throw new EditError(`Clip "${op.clipId}" on V2 is a zoom: only b-roll can go behind V1.`);
@@ -1390,7 +1422,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
 
 /** A clip's Phase 6 look in a few words: "grade, key, 2 masks, blur". */
 function lookTags(c: Clip & ClipLook): string {
-  const t = [c.grade ? "grade" : "", c.key ? "key" : "", c.masks?.length ? `${c.masks.length} ${c.masks.length === 1 ? "mask" : "masks"}` : "", ...(c.effects ?? []).map((e) => e.type), hasCard((c as { cardLook?: CardLook }).cardLook) ? "card" : ""].filter(Boolean);
+  const t = [c.grade ? "grade" : "", c.key ? "key" : "", c.masks?.length ? `${c.masks.length} ${c.masks.length === 1 ? "mask" : "masks"}` : "", ...(c.effects ?? []).map((e) => e.type), skinActive(c.skin) ? "skin" : "", hasCard((c as { cardLook?: CardLook }).cardLook) ? "card" : ""].filter(Boolean);
   return t.length ? `look: ${t.join(", ")}` : "";
 }
 /** The looks in full, clips with the same one together (get_project). */
@@ -1406,6 +1438,7 @@ export function colorSummary(tl: Timeline, lutName?: (id: string) => string | un
     ...group((c) => (c.key ? `key ${chromaKeyText(c.key)}` : "")),
     ...group((c) => (c.masks?.length ? `masks ${masksText(c.masks)}` : "")),
     ...group((c) => (c.effects?.length ? effectsText(c.effects) : "")),
+    ...group((c) => (skinActive(c.skin) ? skinText(c.skin!) : "")),
     ...group((c) => { const cl = (c as { cardLook?: CardLook }).cardLook; return hasCard(cl) ? `card ${cardLookText(cl)}` : ""; }),
   ];
   if (tl.background) out.push(`behind V1: ${backgroundText(tl.background)}`);
