@@ -67,6 +67,31 @@ export const GradeSchema = z.object({
   lut: LutRefSchema.optional(),
 });
 export type Grade = z.infer<typeof GradeSchema>;
+/** set_grade's fields as a change: a value sets it, null removes it; wheels merge by wheel and field, curves by
+ *  channel; hsl replaces (empty or null removes). */
+export type GradePatch = { [K in keyof Grade]?: unknown };
+export function mergeGrade(base: Grade, patch: GradePatch): Grade {
+  const g: Grade = { ...base }, p = patch as Record<string, unknown>;
+  for (const f of ["exposure", "contrast", "temperature", "tint", "saturation", "lut", "highlights", "shadows", "whites", "blacks", "vibrance", "hueSat"] as const) {
+    const v = p[f];
+    if (v === null) delete g[f]; else if (v !== undefined) (g as Record<string, unknown>)[f] = v;
+  }
+  if (p.wheels === null) delete g.wheels;
+  else if (p.wheels) {
+    const w = { ...(g.wheels ?? {}) } as Record<string, unknown>;
+    for (const [k, v] of Object.entries(p.wheels as Record<string, unknown>)) { if (v === null) delete w[k]; else if (v) w[k] = { ...((w[k] as object) ?? {}), ...(v as object) }; }
+    if (Object.keys(w).length) g.wheels = w as Grade["wheels"]; else delete g.wheels;
+  }
+  const hsl = p.hsl as Grade["hsl"] | null | undefined;
+  if (hsl === null || hsl?.length === 0) delete g.hsl; else if (hsl) g.hsl = hsl;
+  if (p.curves === null) delete g.curves;
+  else if (p.curves) {
+    const cv = { ...(g.curves ?? {}) } as Record<string, unknown>;
+    for (const [ch, pts] of Object.entries(p.curves as Record<string, [number, number][] | null>)) { if (pts === null) delete cv[ch]; else if (pts) cv[ch] = [...pts].sort((a, b) => a[0] - b[0]); }
+    g.curves = cv as Grade["curves"];
+  }
+  return g;
+}
 
 /** Chroma key: the colour to remove, how close a colour must be to go (similarity 0-1, RGB distance), how soft the
  *  edge is (blend 0-1), and how much of the key colour's spill is taken off what stays (spill 0-1). */
@@ -766,4 +791,22 @@ export function hdrLut(t: HdrTransfer, before?: (r: number, g: number, b: number
     out[o++] = h[0]; out[o++] = h[1]; out[o++] = h[2];
   }
   return out;
+}
+
+/**
+ * Phase 9: an adjustment layer's preview in the editor as CSS filter functions on what is under it (backdrop-filter):
+ * exposure as brightness, contrast and saturation as CSS's own (the grade's contrast and saturation are those formulas),
+ * blur at its size on screen, darken as brightness. Near enough to judge; the render draws the layer exactly.
+ */
+export function adjustCss(a: { grade?: Grade; effects?: Effect[] }, W: number, H: number, screenScale: number): string {
+  const g = a.grade ?? {}, out: string[] = [];
+  if (g.exposure) out.push(`brightness(${Math.pow(2, g.exposure / 2.2).toFixed(3)})`);
+  if (g.contrast) out.push(`contrast(${(1 + g.contrast / 100).toFixed(3)})`);
+  if (g.saturation != null && g.saturation !== 100) out.push(`saturate(${(g.saturation / 100).toFixed(3)})`);
+  for (const e of a.effects ?? []) {
+    if (e.area) continue;
+    if (e.type === "blur") out.push(`blur(${(blurSigma(e.amount, W, H) * screenScale).toFixed(2)}px)`);
+    else if (e.type === "darken") out.push(`brightness(${(1 - e.amount / 100).toFixed(3)})`);
+  }
+  return out.join(" ") || "none";
 }

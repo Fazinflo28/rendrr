@@ -54,7 +54,7 @@ export const V2ClipSchema = ClipSchema.extend({
 });
 
 export const V3ClipSchema = ClipSchema.extend({
-  kind: z.enum(["caption", "graphic", "text"]).optional(),
+  kind: z.enum(["caption", "graphic", "text", "adjust"]).optional(),
   lineId: z.string().max(80).optional(),
   graphicId: z.string().max(80).optional(),
   params: z.record(z.unknown()).optional(),
@@ -74,6 +74,10 @@ export const V3ClipSchema = ClipSchema.extend({
   cutout: z.boolean().optional(),  /** Phase 4 (graphics): how it lies over the picture: a blend mode and its opacity (0-1). */
   blend: BlendModeSchema.optional(),
   opacity: z.number().min(0).max(1).optional(),
+  /** Phase 9 (kind "adjust"): an adjustment layer: this grade and these effects on everything under it (footage,
+   *  b-roll, graphics) over its time; text and captions stay as they are. */
+  grade: GradeSchema.optional(),
+  effects: z.array(EffectSchema).max(4).optional(),
 });
 
 /** Phase 6: a music or sound-effect clip's own sound: pan, EQ, reverb, volume keys (t: seconds from the clip's start).

@@ -33,7 +33,10 @@ plugin hosting, hardware I/O, localization) are out of scope.
    the edges. Left for later: stabilizing ramped clips and b-roll, showing it live in the player.
 8. **Morph Cut (done, 31 October)** for jump cuts in talking heads (motion-compensated interpolation). Left for
    later: a face-aware warp, the morph live in the player.
-9. **Adjustment layers** over a time range (affect b-roll and graphics too).
+9. **Adjustment layers (done, 31 October)** over a time range: a grade and effects on everything under them
+   (footage, b-roll, graphics); text and captions stay on top as they are. Left for later: keyframed and masked
+   adjustment layers, their grade in an HDR output, the full grade live in the player (it shows exposure, contrast,
+   saturation, blur and darken).
 10. **Multicam with audio sync** for two-camera podcasts.
 11. **Crop, flip, anchor, drop shadow, motion blur on any clip**; optical-flow slow motion and eased speed ramps.
 12. **Deliverables.** SRT / VTT export, export with transparency, GIF, audio only, bitrate and frame-rate settings,

@@ -6,7 +6,7 @@ import { useState, useEffect, useRef, useMemo, html, Btn, Icon } from "./ui";
 import { api } from "./api";
 import { OpColor, OpSlider, OpWheel } from "./controls";
 import { createLookRenderer } from "./look-gl";
-import { areaAt, areaPicture, buildLut, hueCurveFn, sampleLut, WHEELS, moving, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, lutSizeFor, maskPicture, parseCube, SKIN_DEFAULTS, spillType, SUBJECT_DEFAULTS } from "@rendrr/shared";
+import { areaAt, areaPicture, buildLut, hueCurveFn, sampleLut, WHEELS, moving, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, lutSizeFor, maskPicture, mergeGrade, parseCube, SKIN_DEFAULTS, spillType, SUBJECT_DEFAULTS } from "@rendrr/shared";
 
 // ---------------------------------------------------------------------------------------------
 // Imported LUTs: their numbers, loaded once per page.
@@ -250,7 +250,7 @@ function GradeMore({ idp, g, gop, doOp, sl }) {
       <${OpSlider} id=${idp + "-vibrance"} label="Vibrance" value=${g.vibrance || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ vibrance: v })} ...${sl} /></div>
     <div class="col" style="gap:6px" id=${idp + "-wheels"}><div class="row between"><span class="t-small muted">Colour wheels</span>
       <span style=${{ visibility: g.wheels ? "visible" : "hidden" }}><${Btn} kind="ghost" size="xs" id=${idp + "-wheels-reset"} disabled=${!g.wheels} onClick=${() => doOp(gop({ wheels: null }), false)}>Reset<//></span></div>
-      <div class="row" style="justify-content:space-between;gap:6px">${WHEELS.map((k) => html`<div key=${k} class="col" style="gap:4px;width:31%;align-items:stretch">
+      <div class="row" style="justify-content:space-between;gap:6px">${WHEELS.map((k) => html`<div key=${k} class="col wheel-col" style="gap:4px;width:31%;min-width:0;align-items:stretch">
         <${OpWheel} id=${`${idp}-wheel-${k}`} label=${WHEEL_NAME[k]} value=${g.wheels?.[k]} opFor=${(w) => gop({ wheels: { [k]: w } })} ...${sl} />
         <${OpSlider} id=${`${idp}-wheel-${k}-luma`} label="Luma" value=${g.wheels?.[k]?.luma || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ wheels: { [k]: { luma: v } } })} ...${sl} /></div>`)}</div></div>
     <div class="col" style="gap:4px" id=${idp + "-huesat"}><div class="row between"><span class="t-small muted">Hue vs Sat</span>
@@ -320,14 +320,15 @@ export function Scopes({ idp, grade, luts }) {
       ${err && html`<span class="t-small muted">${err}</span>`}`}</div>`;
 }
 
-export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast, mattes = {} }) {
+export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast, mattes = {}, adjust = { clips: [], sel: null, at: 0, dur: 0, select: () => {} } }) {
   const [ch, setCh] = useState("master");
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
   const [measuring, setMeasuring] = useState(false);
   const fileRef = useRef(null);
+  if (adjust.sel) return html`<${AdjustPanel} c=${adjust.sel} doOp=${doOp} H=${H} liveOp=${liveOp} select=${adjust.select} />`;
   if (!clip || !(track === "v1" || track === "a1" || (track === "v2" && clip.kind === "broll"))) {
-    return html`<${WholeEditColor} clips=${clips} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} lutList=${lutList} reloadLuts=${reloadLuts} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} mattes=${mattes} />`;
+    return html`<${WholeEditColor} clips=${clips} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} lutList=${lutList} reloadLuts=${reloadLuts} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} mattes=${mattes} adjust=${adjust} />`;
   }
   const sl = { H, liveOp };
   const g = clip.grade || {};
@@ -529,7 +530,57 @@ function SkinSection({ targets, projectId, mainVideo, aspect, doOp, H, liveOp, t
 
 /** The Color tab with no clip selected: the look of the whole edit, every V1 clip at once (set_grade all), like an
  *  adjustment layer: a LUT (pick or import), the basic grade and sharpening. A clip's own controls are one click away. */
-function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLuts, timeline, doOp, H, liveOp, toast, mattes }) {
+// ---------------------------------------------------------------------------------------------
+// Phase 9: adjustment layers (V3): a grade and effects on everything under them over their time (footage, b-roll,
+// graphics; text and captions stay as they are). The list and "+ Adjustment layer" in the whole-edit panel; a selected
+// layer's own grade and effects here.
+// ---------------------------------------------------------------------------------------------
+const clock = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
+function AdjustList({ adjust, doOp }) {
+  const add = () => {
+    const had = new Set(adjust.clips.map((c) => c.id));
+    const s = Math.max(0, Math.min(adjust.at, adjust.dur - 0.5)), e = Math.min(adjust.dur, s + 5);
+    const r = doOp({ op: "adjustment_layer", start: s, end: e, edit: true });
+    const made = r && r.state.tracks.v3.find((c) => c.kind === "adjust" && !had.has(c.id));
+    if (made) adjust.select(made.id);
+  };
+  return html`<div class="col" style="gap:8px" id="adjust-list">
+    <div class="row between"><b class="t-label">Adjustment layers</b><${Btn} kind="ghost" size="xs" id="adjust-add" disabled=${adjust.dur < 0.6} onClick=${add}>+ Adjustment layer here<//></div>
+    <span class="t-small muted">A layer on V3 from the playhead: its grade and effects go on everything under it (footage, b-roll, graphics). Text and captions stay as they are.</span>
+    ${adjust.clips.map((c) => html`<button key=${c.id} class="btn ghost sm" style="justify-content:space-between" data-adjust-item=${c.id} onClick=${() => adjust.select(c.id)}>
+      <span>${c.label || "Adjustment"}</span><span class="muted mono">${clock(c.start)}-${clock(c.end)}</span></button>`)}
+  </div>`;
+}
+function AdjustPanel({ c, doOp, H, liveOp, select }) {
+  const g = c.grade || {}, fx = c.effects || [];
+  const amt = (type) => fx.find((e) => e.type === type && !e.area)?.amount ?? 0;
+  const gop = (patch) => ({ op: "adjustment_layer", clipId: c.id, grade: mergeGrade(g, patch) });
+  const fop = (type, v) => ({ op: "adjustment_layer", clipId: c.id, effects: [...fx.filter((e) => e.type !== type || e.area), ...(v ? [{ type, amount: v }] : [])] });
+  const sl = { H, liveOp };
+  return html`<div class="pb" id="color-panel" style="padding-top:16px"><div class="col" style="gap:18px" id="adjust-panel">
+    <div class="row between"><b class="t-label">${c.label || "Adjustment layer"} <span class="muted mono">${clock(c.start)}-${clock(c.end)}</span></b>
+      <${Btn} kind="ghost" size="xs" id="adjust-back" onClick=${() => select(null)}>Whole edit<//></div>
+    <span class="t-small muted">On everything under it over its time (footage, b-roll, graphics); text and captions stay as they are. Drag its edges on V3 to change when.</span>
+    <div class="col" style="gap:8px" id="adjust-grade">
+      <b class="t-label">Grade</b>
+      <${OpSlider} id="adjust-exposure" label="Exposure" value=${g.exposure || 0} min=${-3} max=${3} step=${0.05} show=${(v) => sgn(v, 2) + " stops"} opFor=${(v) => gop({ exposure: v })} ...${sl} />
+      <${OpSlider} id="adjust-contrast" label="Contrast" value=${g.contrast || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ contrast: v })} ...${sl} />
+      <div class="row" style="gap:8px"><div class="grow"><${OpSlider} id="adjust-temperature" label="Temperature" value=${g.temperature || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ temperature: v })} ...${sl} /></div>
+        <div class="grow"><${OpSlider} id="adjust-tint" label="Tint" value=${g.tint || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ tint: v })} ...${sl} /></div></div>
+      <${OpSlider} id="adjust-saturation" label="Saturation" value=${g.saturation ?? 100} min=${0} max=${200} step=${1} show=${(v) => v + "%"} opFor=${(v) => gop({ saturation: v })} ...${sl} />
+      <${GradeMore} idp="adjust" g=${g} gop=${gop} doOp=${doOp} sl=${sl} />
+    </div>
+    <div class="col" style="gap:8px" id="adjust-effects">
+      <b class="t-label">Effects</b>
+      <${OpSlider} id="adjust-blur" label="Blur" value=${amt("blur")} min=${0} max=${100} step=${1} show=${(v) => (v ? String(v) : "off")} opFor=${(v) => fop("blur", v)} ...${sl} />
+      <${OpSlider} id="adjust-darken" label="Darken" value=${amt("darken")} min=${0} max=${100} step=${1} show=${(v) => (v ? v + "%" : "off")} opFor=${(v) => fop("darken", v)} ...${sl} />
+      <${OpSlider} id="adjust-vignette" label="Vignette" value=${amt("vignette")} min=${0} max=${100} step=${1} show=${(v) => (v ? String(v) : "off")} opFor=${(v) => fop("vignette", v)} ...${sl} />
+    </div>
+    <${Btn} kind="ghost" size="xs" icon="trash" id="adjust-delete" onClick=${() => { doOp({ op: "delete_clip", track: "v3", clipId: c.id }); select(null); }}>Remove this adjustment layer<//>
+  </div></div>`;
+}
+
+function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLuts, timeline, doOp, H, liveOp, toast, mattes, adjust }) {
   const fileRef = useRef(null); const [busy, setBusy] = useState(false);
   const v1 = clips.filter((c) => c.sourceIn != null);
   const g = v1[0]?.grade || {};
@@ -583,6 +634,7 @@ function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLu
     </div>
     <${BackgroundSection} targets=${v1} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mattes=${mattes} />
     <${SkinSection} targets=${v1} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />
+    ${adjust && html`<${AdjustList} adjust=${adjust} doOp=${doOp} />`}
     ${hdrRow(timeline, doOp)}
   </div></div>`;
 }

@@ -398,6 +398,12 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .clip:hover { box-shadow: inset 0 0 0 1px var(--ink); }
 .clip.video:hover { box-shadow: 0 0 0 1px var(--surface), 0 0 0 2px var(--ink); }
 .clip.on { box-shadow: 0 0 0 2px var(--ink) !important; z-index: 1; }
+/* Phase 9: an adjustment layer: a band along the top of V3, over the captions and text it lies under on the timeline. */
+.clip.adjust { top: 1px; height: 11px; z-index: 2; padding: 0 6px; font-size: 9px; border-radius: 3px; color: var(--ink); background: color-mix(in srgb, var(--accent) 45%, var(--surface)); box-shadow: inset 0 0 0 1px var(--accent-edge); }
+.clip.adjust.on { z-index: 3; }
+/* A wheel's Luma slider fits its third of the row (a range input is ~130px wide on its own). */
+.wheel-col label { grid-template-columns: minmax(0, 1fr); }
+.wheel-col input[type=range] { width: 100%; min-width: 0; }
 .clip.gone { opacity: .35; padding: 0; }
 .clip.gone .cl, .clip.gone .h { display: none; }
 .clip.unlinked .cl { font-style: italic; }

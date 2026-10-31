@@ -357,6 +357,17 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 9: adjustment layers (31 October)
+
+| Question | Decision |
+|---|---|
+| What it is | A V3 clip of kind "adjust" with a grade (set_grade's fields) and effects (as set_effects): the op adjustment_layer adds one over start..end (edit: true = edit seconds) or changes one by clipId; delete_clip removes it. It moves with the V1 clip it starts on, as graphics do. |
+| What it covers | Everything drawn before it: footage, b-roll, graphics (as Premiere's covers the tracks under it). Text layers and captions go on after it and stay as they are: titles over a graded or blurred stretch stay readable, which is what an editor wants nearly every time. |
+| The render | After the graphics, the picture over the layer's window goes through the clips' own colour chain (its grade as a LUT, then its effects), and is laid back in place (split, trim, colour, overlay with enable). Nothing else in the graph changes; an empty layer changes nothing. |
+| HDR | In an output that keeps HDR the picture there is HDR, and the grade's LUT is SDR: the grade is left out there (said in the plan) and its effects apply. |
+| The editor | Color tab: the whole-edit page lists the layers and adds one at the playhead (5 s); a layer picked on V3 or in the list opens its own page (grade, wheels, HSL, blur, darken, vignette, remove). The player previews it with a CSS backdrop filter (exposure as brightness, contrast, saturation, blur, darken): near enough to judge; the render is exact. On the timeline it is a band along the top of V3, so captions under it do not hide it. |
+| set_grade's change rules | Moved into one function (mergeGrade) that set_grade and the adjustment layer's page both use, so a slider on a layer changes only its own field. |
+
 ## Premiere parity, phase 8: Morph Cut (31 October)
 
 | Question | Decision |

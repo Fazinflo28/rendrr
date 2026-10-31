@@ -92,6 +92,9 @@ export type AudioMix = AudioMixSettings & {
  *  worker into `file` (vidstabdetect), then smoothed over `smoothing` frames in the render (vidstabtransform). */
 export type StabilizeOp = { videoId: string; srcIn: number; srcOut: number; smoothing: number; file: string };
 export const stabilizeKey = (p: { clipIds: string[]; srcIn: number }) => `${p.clipIds[0]}@${p.srcIn.toFixed(3)}`;
+/** Phase 9: an adjustment layer over start..end (edit seconds): its look is plan.looks[clipId]; grade and effects for
+ *  the player's preview. */
+export type AdjustOp = { clipId: string; start: number; end: number; grade?: Grade; effects?: Effect[] };
 export type CaptionEvent = { start: number; end: number; text: string };
 /**
  * A clip's colour and compositing (Phase 6), with the files the render reads: lut = the grade as a .cube (lutHdr: the
@@ -133,6 +136,8 @@ export type RenderPlan = {
   parts: PicturePart[];
   /** Phase 7: stabilized parts (by stabilizeKey). */
   stabilize?: Record<string, StabilizeOp>;
+  /** Phase 9: adjustment layers. */
+  adjust?: AdjustOp[];
   /** The dialogue: parts in edit order covering the whole edit (muted = silent). */
   sound: SoundPart[];
   /** The videos it plays, main footage first. */
@@ -658,6 +663,15 @@ export function planRender(input: PlanInput): RenderPlan {
     : bgIn.videoId ? (input.brollSeconds?.[bgIn.videoId] ? { videoId: bgIn.videoId, seconds: input.brollSeconds[bgIn.videoId], text: backgroundText(bgIn) } : null)
     : (() => { const sg = backgroundSigma(bgIn.blur!, width, height); return { blur: sg, scale: backgroundScale(sg, width, height), text: backgroundText(bgIn) }; })();
   for (const b of [...broll, ...under]) lookFor((tl.tracks.v2 as (V2Clip & ClipLook)[]).find((x) => x.id === b.clipId)!, { from: b.sourceStart, to: b.sourceStart + (b.end - b.start) });
+  // Phase 9: adjustment layers on V3, placed as graphics are; their grade and effects as a look of their own.
+  const adjust: AdjustOp[] = [];
+  for (const c of tl.tracks.v3 as (V3Clip & Attached)[]) {
+    if (c.kind !== "adjust" || (!c.grade && !c.effects?.length)) continue;
+    const sp = placed(c);
+    if (!sp || onFrame(sp.end) - onFrame(sp.start) < 0.05) continue;
+    lookFor({ id: c.id, grade: c.grade, effects: c.effects });
+    adjust.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), ...(c.grade ? { grade: c.grade } : {}), ...(c.effects?.length ? { effects: c.effects } : {}) });
+  }
   const sound = view.sound.map((x) => ({ ...x, start: r3(x.start), end: r3(x.end) }));
   const sources = Array.from(new Set([main, ...parts.map((p) => p.videoId), ...sound.map((x) => x.videoId)])).filter((v) => parts.some((p) => p.videoId === v) || sound.some((x) => x.videoId === v));
   const videos = Object.fromEntries(sources.map((v) => [v, { hasAudio: infoOf(v)!.hasAudio, hdr: !!infoOf(v)!.hdr, ...(infoOf(v)!.hdr ? { transfer: infoOf(v)!.transfer ?? "pq" } : {}), seconds: infoOf(v)!.seconds }]));
@@ -677,6 +691,7 @@ export function planRender(input: PlanInput): RenderPlan {
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
+    ...(adjust.length ? [`Adjustment layers: ${adjust.slice(0, 4).map((a) => `${fmtClock(a.start)}-${fmtClock(a.end)} ${[a.grade ? `grade ${gradeText(a.grade)}` : "", a.effects?.length ? effectsText(a.effects) : ""].filter(Boolean).join(", ")}`).join("; ")} (over the picture, b-roll and graphics; text and captions on top as they are)${hdr && adjust.some((a) => a.grade) ? "; this output keeps HDR: their grades are left out there (their effects apply)" : ""}`] : []),
     ...(Object.keys(stabilize).length || unstabilized.size ? [`Stabilized (Warp Stabilizer, zoomed in to hide the edges): ${Array.from(new Set(Object.values(stabilize).map((x) => Object.keys(stabilize).find((k) => stabilize[k] === x)!.split("@")[0]))).slice(0, 6).join(", ") || "none"}${unstabilized.size ? `; as filmed where a clip plays at another speed: ${Array.from(unstabilized).slice(0, 4).join(", ")}` : ""}`] : []),
     ...([...broll, ...graphics].some((x) => x.blend || x.opacity != null) ? [`Blend: ${[...broll, ...graphics].filter((x) => x.blend || x.opacity != null).slice(0, 6).map((x) => `${x.videoId ? "b-roll" : "graphic"} ${x.clipId} ${blendText(x.blend, x.opacity)}`).join(", ")}`] : []),
     ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
@@ -701,7 +716,7 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(assBehind ? { assBehind: hdr ? hdrAss(assBehind, hdr.transfer) : assBehind } : {}), ...(person ? { person } : {}),
     ...(textMattes.length ? { textMattes: hdr ? textMattes.map((m) => (m.decor ? { ...m, decor: hdrAss(m.decor, hdr.transfer) } : m)) : textMattes } : {}),
     ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}),
-    ...(Object.keys(stabilize).length ? { stabilize } : {}),
+    ...(Object.keys(stabilize).length ? { stabilize } : {}), ...(adjust.length ? { adjust } : {}),
   };
 }
 
@@ -1733,6 +1748,19 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     v = "vpl";
   }
   plan.graphics.forEach((gr, i) => { if (!gr.behind) drawGraphic(gr, i); });
+  // Phase 9: adjustment layers: the picture so far (footage, b-roll, graphics) over each layer's time through its grade
+  // and effects (the clips' own colour chain), laid back in place; text and captions go on after it, untouched.
+  (plan.adjust ?? []).forEach((a, k) => {
+    const look = plan.looks?.[a.clipId];
+    if (!look) return;
+    const n = Math.max(1, Math.round((a.end - a.start) * FPS)), S = n6(a.start), E = n6(a.start + n / FPS);
+    g.push(`[${v}]split[ajo${k}][ajw${k}]`);
+    g.push(`[ajw${k}]trim=start=${S}:end=${E},setpts=PTS-STARTPTS[aji${k}]`);
+    const c = cc.colorChain(`aji${k}`, look, plan.hdr ? "hdr" : "sdr", n, `aj${k}`);
+    g.push(`[${c.out}]format=${cc.PF},setpts=PTS+${S}/TB[ajl${k}]`);
+    g.push(`[ajo${k}][ajl${k}]overlay=enable='between(t,${S},${n6(a.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[ajv${k}]`);
+    v = `ajv${k}`;
+  });
   plan.textMattes?.forEach((m, k) => { if (!m.behind) drawTextMatte(m, k); });
   // 6. Captions on top of everything.
   if (plan.ass && files.assPath) {

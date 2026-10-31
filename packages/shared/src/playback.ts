@@ -3,6 +3,7 @@
 // (it can come from another clip: J/L cuts), the caption on screen, the zoom, the b-roll and graphics on top, and
 // whether the dialogue is muted. Times are edit seconds.
 import type { BlendMode } from "./blend";
+import type { Effect, Grade } from "./look";
 import { editOf, rateOf, srcAt, type PicturePart, type Range, type SoundPart } from "./sequence";
 import type { RenderPlan, Seg, TransitionOp, ZoomOp } from "./renderPlan";
 import { dbToLin, dialogueGain, duckFactor, fadeFactor, keyGainDb } from "./audio";
@@ -131,6 +132,8 @@ export type LiveFrame = {
   /** blend, opacity (Phase 4): how it lies over the picture (CSS mix-blend-mode and opacity in the player). */
   broll: { clipId: string; videoId: string; src: number; motion: Motion | null; blend?: BlendMode; opacity?: number } | null;
   graphics: { clipId: string; graphicId: string; t: number; start: number; end: number; motion: Motion | null; behind: boolean; blend?: BlendMode; opacity?: number }[];
+  /** Phase 9: adjustment layers on now (the player previews their grade and blur with CSS backdrop filters). */
+  adjust?: { clipId: string; grade?: Grade; effects?: Effect[] }[];
   /** Phase 5: the picture's rate (1 normal, below 0 reversed, 0 frozen), its V1 keyframe motion, the transition on. */
   rate: number;
   motion: Motion | null;
@@ -167,6 +170,7 @@ export function liveFrame(plan: RenderPlan, t0: number, clock = sequenceClock(pl
     zoom: zoomAt(plan.zooms, t),
     muted: plan.dialogueMutes.some((m) => inside(t, m)),
     broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start), motion: ov(br, "v2:"), ...(br.blend ? { blend: br.blend } : {}), ...(br.opacity != null ? { opacity: br.opacity } : {}) } : null,
+    adjust: (plan.adjust ?? []).filter((a) => inside(t, a)).map((a) => ({ clipId: a.clipId, ...(a.grade ? { grade: a.grade } : {}), ...(a.effects ? { effects: a.effects } : {}) })),
     graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start + g.sourceStart, start: g.start, end: g.end, motion: ov(g, "v3:"), behind: !!g.behind, ...(g.blend ? { blend: g.blend } : {}), ...(g.opacity != null ? { opacity: g.opacity } : {}) })),
     rate: pic ? pic.rate : 1,
     motion: part && part.clipIds.length === 1 ? clipMotionAt(plan, part.clipIds[0], t) : null,
