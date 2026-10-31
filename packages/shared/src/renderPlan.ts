@@ -15,7 +15,7 @@ import { chapterProblems, GIF_MAX_SECONDS, gifWidth, type Chapter } from "./deli
 import { blendFilter, blendText, type BlendMode } from "./blend";
 import { buildStyledAss, captionStyleOf, isMatted, layoutCaptions, styleText, textMatteAss, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
-import { areaAt, areaPicture, buildLut, lutSizeFor, VIGNETTE_AREA, matteBlocks, moving, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
+import { adjustText, areaAt, areaPicture, buildLut, lutSizeFor, VIGNETTE_AREA, matteBlocks, moving, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean; transfer?: HdrTransfer };
@@ -97,7 +97,7 @@ export type StabilizeOp = { videoId: string; srcIn: number; srcOut: number; smoo
 export const stabilizeKey = (p: { clipIds: string[]; srcIn: number }) => `${p.clipIds[0]}@${p.srcIn.toFixed(3)}`;
 /** Phase 9: an adjustment layer over start..end (edit seconds): its look is plan.looks[clipId]; grade and effects for
  *  the player's preview. */
-export type AdjustOp = { clipId: string; start: number; end: number; grade?: Grade; effects?: Effect[] };
+export type AdjustOp = { clipId: string; start: number; end: number; grade?: Grade; effects?: Effect[]; masks?: Mask[]; opacity?: number; fadeIn?: number; fadeOut?: number };
 export type CaptionEvent = { start: number; end: number; text: string };
 /**
  * A clip's colour and compositing (Phase 6), with the files the render reads: lut = the grade as a .cube (lutHdr: the
@@ -724,8 +724,10 @@ export function planRender(input: PlanInput): RenderPlan {
     if (c.kind !== "adjust" || (!c.grade && !c.effects?.length)) continue;
     const sp = placed(c);
     if (!sp || onFrame(sp.end) - onFrame(sp.start) < 0.05) continue;
-    lookFor({ id: c.id, grade: c.grade, effects: c.effects });
-    adjust.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), ...(c.grade ? { grade: c.grade } : {}), ...(c.effects?.length ? { effects: c.effects } : {}) });
+    // Phase 16: its masks (and its effects' areas) move with keys at seconds from the layer's start.
+    const start = onFrame(sp.start), end = onFrame(sp.end);
+    lookFor({ id: c.id, grade: c.grade, effects: c.effects, masks: c.masks }, { from: 0, to: r3(end - start) });
+    adjust.push({ clipId: c.id, start, end, ...(c.grade ? { grade: c.grade } : {}), ...(c.effects?.length ? { effects: c.effects } : {}), ...(c.masks?.length ? { masks: c.masks } : {}), ...(c.opacity != null && c.opacity < 1 ? { opacity: c.opacity } : {}), ...(c.fadeIn ? { fadeIn: c.fadeIn } : {}), ...(c.fadeOut ? { fadeOut: c.fadeOut } : {}) });
   }
   // Phase 12: chapters from chapter marks, where their footage plays in the edit.
   const chapters: Chapter[] = [];
@@ -760,7 +762,7 @@ export function planRender(input: PlanInput): RenderPlan {
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
-    ...(adjust.length ? [`Adjustment layers: ${adjust.slice(0, 4).map((a) => `${fmtClock(a.start)}-${fmtClock(a.end)} ${[a.grade ? `grade ${gradeText(a.grade)}` : "", a.effects?.length ? effectsText(a.effects) : ""].filter(Boolean).join(", ")}`).join("; ")} (over the picture, b-roll and graphics; text and captions on top as they are)${hdr && adjust.some((a) => a.grade) ? "; this output keeps HDR: their grades are left out there (their effects apply)" : ""}`] : []),
+    ...(adjust.length ? [`Adjustment layers: ${adjust.slice(0, 4).map((a) => `${fmtClock(a.start)}-${fmtClock(a.end)} ${[a.grade ? `grade ${gradeText(a.grade)}` : "", a.effects?.length ? effectsText(a.effects) : "", adjustText(a)].filter(Boolean).join(", ")}`).join("; ")} (over the picture, b-roll and graphics; text and captions on top as they are)${hdr && adjust.some((a) => a.grade) ? "; this output keeps HDR: their grades are left out there (their effects apply)" : ""}`] : []),
     ...(Object.keys(stabilize).length || unstabilized.size ? [`Stabilized (Warp Stabilizer, zoomed in to hide the edges): ${Array.from(new Set(Object.values(stabilize).map((x) => Object.keys(stabilize).find((k) => stabilize[k] === x)!.split("@")[0]))).slice(0, 6).join(", ") || "none"}${unstabilized.size ? `; as filmed where a clip plays at another speed: ${Array.from(unstabilized).slice(0, 4).join(", ")}` : ""}`] : []),
     ...([...broll, ...graphics].some((x) => x.blend || x.opacity != null) ? [`Blend: ${[...broll, ...graphics].filter((x) => x.blend || x.opacity != null).slice(0, 6).map((x) => `${x.videoId ? "b-roll" : "graphic"} ${x.clipId} ${blendText(x.blend, x.opacity)}`).join(", ")}`] : []),
     ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
@@ -1917,8 +1919,13 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     g.push(`[${v}]split[ajo${k}][ajw${k}]`);
     g.push(`[ajw${k}]trim=start=${S}:end=${E},setpts=PTS-STARTPTS[aji${k}]`);
     const c = cc.colorChain(`aji${k}`, look, plan.hdr ? "hdr" : "sdr", n, `aj${k}`);
-    g.push(`[${c.out}]format=${cc.PF},setpts=PTS+${S}/TB[ajl${k}]`);
-    g.push(`[ajo${k}][ajl${k}]overlay=enable='between(t,${S},${n6(a.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[ajv${k}]`);
+    // Phase 16: outside its masks the layer is transparent (the chain's alpha); its strength scales the alpha, and its
+    // fades ramp it in straight lines (adjustStrengthAt is the same numbers in the player).
+    const len = n / FPS, fi = Math.min(a.fadeIn ?? 0, len), fo = Math.min(a.fadeOut ?? 0, len);
+    const ramp = [a.opacity != null && a.opacity < 1 ? `lutyuv=a='val*${n3(a.opacity)}'` : "", fi ? `fade=t=in:st=0:d=${n6(fi)}:alpha=1` : "", fo ? `fade=t=out:st=${n6(len - fo)}:d=${n6(fo)}:alpha=1` : ""].filter(Boolean);
+    const clear = c.alpha || ramp.length > 0;
+    g.push(`[${c.out}]format=${clear ? cc.PFA : cc.PF}${ramp.map((x) => "," + x).join("")},setpts=PTS+${S}/TB[ajl${k}]`);
+    g.push(`[ajo${k}][ajl${k}]overlay=enable='between(t,${S},${n6(a.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : clear ? `,format=${cc.PF}` : ""}[ajv${k}]`);
     v = `ajv${k}`;
   });
   plan.textMattes?.forEach((m, k) => { if (!m.behind) drawTextMatte(m, k); });

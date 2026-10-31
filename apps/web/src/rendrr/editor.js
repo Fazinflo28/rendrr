@@ -26,7 +26,7 @@ import { ExportModal, timeLeft } from "./export";
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
-import { ASPECT_RATIO, BLEND_MODES, adjustCss, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { ASPECT_RATIO, BLEND_MODES, adjustCss, areaAt, hashOf, maskPicture, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 import { applyLiveFx, resumeLiveAudio } from "./liveAudio";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
@@ -202,12 +202,33 @@ function TemplateFrame({ graphicId, params, start, end, t, aspect }) {
 
 // Phase 9: an adjustment layer's preview: a box over the footage, b-roll and graphics (text and captions go on above it)
 // that filters what is under it. Near enough to judge; the render draws the layer exactly.
+// Phase 16: its masks (where they are t seconds into it) as a CSS mask picture with the render's own shapes, and its
+// strength (opacity with its fades) as the box's opacity: what is under it shows through outside the masks.
 function AdjustLayer({ a, plan }) {
   const box = useRef(null);
   const [k, setK] = useState(1);
   useEffect(() => { const el = box.current; if (!el) return; const ro = new ResizeObserver(() => setK(el.clientWidth / plan.width || 1)); ro.observe(el); return () => ro.disconnect(); }, [plan.width]);
   const f = adjustCss(a, plan.width, plan.height, k);
-  return html`<div ref=${box} data-adjust=${a.clipId} style=${{ position: "absolute", inset: 0, pointerEvents: "none", backdropFilter: f, WebkitBackdropFilter: f }} />`;
+  const m = a.masks?.length ? adjustMaskUrl(a.masks, a.t || 0, plan.width, plan.height) : null;
+  const masked = m ? { maskImage: m, WebkitMaskImage: m, maskSize: "100% 100%", WebkitMaskSize: "100% 100%", maskRepeat: "no-repeat", WebkitMaskRepeat: "no-repeat" } : {};
+  const op = a.strength ?? 1;
+  return html`<div ref=${box} data-adjust=${a.clipId} data-strength=${op.toFixed(3)} data-masked=${m ? "1" : null} style=${{ position: "absolute", inset: 0, pointerEvents: "none", backdropFilter: f, WebkitBackdropFilter: f, ...(op < 1 ? { opacity: op } : {}), ...masked }} />`;
+}
+const adjMasks = new Map();
+/** The masks at t as a small picture (alpha = the mask, at most 240 wide; CSS stretches it over the frame), kept. */
+function adjustMaskUrl(masks, t, W, H) {
+  const sw = Math.min(W, 240), sh = Math.max(2, Math.round((H * sw) / W));
+  const now = masks.map((x) => areaAt(x, t)), key = hashOf([now, sw, sh]);
+  if (adjMasks.has(key)) return adjMasks.get(key);
+  const px = maskPicture(now, sw, sh), cv = document.createElement("canvas");
+  cv.width = sw; cv.height = sh;
+  const cx = cv.getContext("2d"), img = cx.createImageData(sw, sh);
+  for (let i = 0; i < px.length; i++) img.data[i * 4 + 3] = px[i];
+  cx.putImageData(img, 0, 0);
+  const url = `url(${cv.toDataURL()})`;
+  adjMasks.set(key, url);
+  if (adjMasks.size > 16) adjMasks.delete(adjMasks.keys().next().value);
+  return url;
 }
 
 // Phase 4: the blend modes by their names in Premiere.
@@ -967,7 +988,10 @@ function EditorInner({ project, reload, ai, keep }) {
   const isOn = (k, c) => !!sel && c.id === sel.id && (k === sel.track || (isV1(k) && isV1(sel.track)));
   // The Color tab's clip (V1 or b-roll), its shapes on the picture, and a click there: a path point or the key colour.
   const colorClip = selV1 || (sel?.track === "v2" && selClip?.kind === "broll" ? selClip : null);
-  const colorShapes = colorClip ? [...(colorClip.masks || []).map((m) => ({ ...m, kind: "mask" })), ...(colorClip.effects || []).filter((e) => e.area).map((e) => ({ ...e.area, kind: "area" }))] : [];
+  // Phase 16: a selected adjustment layer's masks are outlined too (where they are at the playhead).
+  const adjSel = !colorClip && sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "adjust") : null;
+  const shapeClip = colorClip || adjSel;
+  const colorShapes = shapeClip ? [...(shapeClip.masks || []).map((m) => ({ ...(adjSel ? areaAt(m, Math.max(0, pb.time - adjSel.start)) : m), kind: "mask" })), ...(shapeClip.effects || []).filter((e) => e.area).map((e) => ({ ...e.area, kind: "area" }))] : [];
   const onColorPoint = (pt) => {
     if (colorMode === "path") { setPathDraft((d) => [...d, pt]); return; }
     if (colorMode !== "pick" || !colorClip || !plan) return;
@@ -1249,7 +1273,7 @@ function EditorInner({ project, reload, ai, keep }) {
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
           : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && colorClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} />` : null}${inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} />` : null}${inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">

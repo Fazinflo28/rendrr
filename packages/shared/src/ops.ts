@@ -19,7 +19,7 @@ import { libraryItem, libraryParams } from "./library";
 import { BlendModeSchema, blendText, type BlendMode } from "./blend";
 import { AudioKeySchema, clipFxText, EqSchema, ReverbSchema, type AudioKey, type Eq, type Reverb } from "./audio";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
-import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, GradeSchema, gradeIsActive, mergeGrade, type GradePatch, HslSchema, WheelSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
+import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, GradeSchema, gradeIsActive, mergeGrade, type GradePatch, HslSchema, WheelSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, adjustText, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, restoreSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
@@ -204,7 +204,9 @@ const EDIT_OPS = [
   // Phase 9: an adjustment layer on V3 over start..end (edit: true = edit seconds): a grade and effects on everything
   // under it (footage, b-roll, graphics; text and captions stay as they are). clipId changes one (grade and effects
   // replaced); delete_clip removes it.
-  z.object({ op: z.literal("adjustment_layer"), clipId: clipId.optional(), start: z.number().min(0).optional(), end: z.number().min(0).optional(), edit: z.boolean().optional(), grade: GradeSchema.optional(), effects: z.array(EffectSchema).max(4).optional(), label: z.string().max(80).optional() }),
+  z.object({ op: z.literal("adjustment_layer"), clipId: clipId.optional(), start: z.number().min(0).optional(), end: z.number().min(0).optional(), edit: z.boolean().optional(), grade: GradeSchema.optional(), effects: z.array(EffectSchema).max(4).optional(), label: z.string().max(80).optional(),
+    // Phase 16: where (masks; keys at seconds from the layer's start), how strong (opacity 0-1) and fades; null removes.
+    masks: z.array(MaskSchema).max(8).nullable().optional(), opacity: z.number().min(0).max(1).nullable().optional(), fadeIn: z.number().min(0).max(10).nullable().optional(), fadeOut: z.number().min(0).max(10).nullable().optional() }),
   // Phase 10: multicam. angles: other cameras of the same take (library videos), added or changed by videoId; offset:
   // the angle's second at the main video's second 0 (left out: Rendrr's server syncs it by the sound); rotate and
   // framing: the angle's own. audio: "main" keeps the main video's sound under every angle, "follow" plays each
@@ -1408,20 +1410,36 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "adjustment_layer": {
       if (op.grade?.lut && ctx.getLut && !ctx.getLut(op.grade.lut.id)) throw new EditError(`There is no LUT "${op.grade.lut.id}" in your LUTs.`);
+      if (op.masks?.some((m) => m.follow)) throw new EditError(`An adjustment layer has no footage of its own to find a face in: move its mask with keys (at: seconds from the layer's start), or mask the clip itself (set_masks follow "face").`);
       const fx = { ...(op.grade && gradeIsActive(op.grade) ? { grade: op.grade } : {}), ...(op.effects?.length ? { effects: op.effects } : {}) };
-      const say = (f: { grade?: Grade; effects?: Effect[] }) => [f.grade ? `grade ${gradeText(f.grade, (id) => ctx.getLut?.(id)?.name)}` : "", f.effects?.length ? effectsText(f.effects) : ""].filter(Boolean).join(", ") || "nothing yet";
+      type LayerFx = { grade?: Grade; effects?: Effect[]; masks?: Mask[]; opacity?: number; fadeIn?: number; fadeOut?: number };
+      // Phase 16: where (masks), how strong (opacity) and its fades; left out keeps them, null removes them.
+      const r3 = (v: number) => Math.round(v * 1000) / 1000;
+      const place = (cur: LayerFx): LayerFx => {
+        const masks = op.masks === undefined ? cur.masks : op.masks?.length ? op.masks : undefined;
+        const opacity = op.opacity === undefined ? cur.opacity : op.opacity != null && op.opacity < 1 ? r3(op.opacity) : undefined;
+        const fadeIn = op.fadeIn === undefined ? cur.fadeIn : op.fadeIn ? r3(op.fadeIn) : undefined;
+        const fadeOut = op.fadeOut === undefined ? cur.fadeOut : op.fadeOut ? r3(op.fadeOut) : undefined;
+        return { ...(masks ? { masks } : {}), ...(opacity != null ? { opacity } : {}), ...(fadeIn ? { fadeIn } : {}), ...(fadeOut ? { fadeOut } : {}) };
+      };
+      const say = (f: LayerFx) => {
+        const what = [f.grade ? `grade ${gradeText(f.grade, (id) => ctx.getLut?.(id)?.name)}` : "", f.effects?.length ? effectsText(f.effects) : ""].filter(Boolean).join(", ") || "nothing yet";
+        const where = adjustText(f);
+        return where ? `${what}; ${where}` : what;
+      };
       if (op.clipId) {
-        const c = findClip(tl, "v3", op.clipId) as Clip & { kind?: string };
+        const c = findClip(tl, "v3", op.clipId) as Clip & { kind?: string } & LayerFx;
         if (c.kind !== "adjust") throw new EditError(`Clip "${op.clipId}" is not an adjustment layer.`);
-        const { grade: _g, effects: _e, ...rest } = c as Clip & { grade?: unknown; effects?: unknown };
-        const next = { ...rest, ...(op.grade !== undefined ? fx.grade ? { grade: fx.grade } : {} : _g ? { grade: _g } : {}), ...(op.effects !== undefined ? fx.effects ? { effects: fx.effects } : {} : _e ? { effects: _e } : {}) } as Clip;
-        return { snap: { ...snap, timeline: withTracks(tl, "v3", (tl.tracks.v3 as Clip[]).map((x) => (x.id === c.id ? next : x))) }, summary: `adjustment layer ${c.id}: ${say(next as { grade?: Grade; effects?: Effect[] })}` };
+        const { grade: _g, effects: _e, masks: _m, opacity: _o, fadeIn: _fi, fadeOut: _fo, ...rest } = c;
+        const next = { ...rest, ...(op.grade !== undefined ? fx.grade ? { grade: fx.grade } : {} : _g ? { grade: _g } : {}), ...(op.effects !== undefined ? fx.effects ? { effects: fx.effects } : {} : _e ? { effects: _e } : {}), ...place(c) } as Clip;
+        return { snap: { ...snap, timeline: withTracks(tl, "v3", (tl.tracks.v3 as Clip[]).map((x) => (x.id === c.id ? next : x))) }, summary: `adjustment layer ${c.id}: ${say(next as LayerFx)}` };
       }
       if (op.start == null || op.end == null) throw new EditError("A new adjustment layer needs start and end (clipId changes one).");
       const s0 = toEdit(op.start, op.edit), e0 = toEdit(op.end, op.edit);
       if (e0 - s0 < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
-      const c = attachAt(view(), { id: rid("adj"), start: 0, end: 0, label: op.label || "Adjustment", kind: "adjust" as const, ...fx } as Clip, s0, e0);
-      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added an adjustment layer at ${op.edit ? "edit " : ""}${fmtClock(op.start)}-${fmtClock(op.end)} (clip ${c.id}): ${say(fx)}; over the picture, b-roll and graphics` };
+      const all = { ...fx, ...place({}) };
+      const c = attachAt(view(), { id: rid("adj"), start: 0, end: 0, label: op.label || "Adjustment", kind: "adjust" as const, ...all } as Clip, s0, e0);
+      return { snap: { ...snap, timeline: withTracks(tl, "v3", [...tl.tracks.v3, c]) }, summary: `added an adjustment layer at ${op.edit ? "edit " : ""}${fmtClock(op.start)}-${fmtClock(op.end)} (clip ${c.id}): ${say(all)}; over the picture, b-roll and graphics` };
     }
     case "set_blend": {
       const ids = op.clipIds ?? (op.clipId ? [op.clipId] : []);
@@ -1822,7 +1840,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
       const auto = k === "a2" ? autoMusicFades(c.end - c.start) : { fadeIn: 0, fadeOut: 0 };
       const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
       const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
-      const extra = c.kind === "adjust" ? ` adjustment layer: ${[c.grade ? `grade ${gradeText(c.grade as Grade, lutName)}` : "", (c.effects as Effect[] | undefined)?.length ? effectsText(c.effects as Effect[]) : ""].filter(Boolean).join(", ")}` : c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}${blendNote(c)}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}${blendNote(c)}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.inside ? ` video ${(c.inside as TextInside).videoId}@${(c.inside as TextInside).from} inside the letters` : ""}${c.cutout ? " cut out of the card" : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}${soundNote(c)}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}${soundNote(c)}` : "";
+      const extra = c.kind === "adjust" ? ` adjustment layer: ${[c.grade ? `grade ${gradeText(c.grade as Grade, lutName)}` : "", (c.effects as Effect[] | undefined)?.length ? effectsText(c.effects as Effect[]) : "", adjustText(c as { masks?: Mask[]; opacity?: number; fadeIn?: number; fadeOut?: number })].filter(Boolean).join(", ")}` : c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}${blendNote(c)}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}${blendNote(c)}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.inside ? ` video ${(c.inside as TextInside).videoId}@${(c.inside as TextInside).from} inside the letters` : ""}${c.cutout ? " cut out of the card" : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}${soundNote(c)}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}${soundNote(c)}` : "";
       const lk = k === "v2" ? lookTags(c as Clip & ClipLook) : "";
       const on = (c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "") + (Array.isArray(c.keys) && c.keys.length ? ` keys ${(c.keys as Key[]).map((k) => k.t).join(",")}s` : "") + (c.under ? " under V1" : "") + (lk ? " " + lk : "");
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;

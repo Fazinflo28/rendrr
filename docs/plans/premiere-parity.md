@@ -66,7 +66,10 @@ plugin hosting, hardware I/O, localization) are out of scope.
     through a Web Audio chain with the render's filters and room; up to 4 parametric bells (frequency, gain, Q). The
     render's shelves moved from FFmpeg's bass/treble to lowshelf/highshelf (RBJ, Q 0.7071) and the 1 kHz bell to its Q,
     so live and rendered sound are one EQ (measured within 0.01 dB at 9 frequencies).
-16. **Masked and keyframed adjustment layers.**
+16. **Masked and keyframed adjustment layers (done, 31 October).** Layers take masks (rect, ellipse, path, feather,
+    invert, modes) whose rect or ellipse moves with keys from the layer's start, a strength (0-1) and fades in and out.
+    Render: the layer's alpha from its masks, scaled by strength and ramped by the fades; the player masks its preview
+    with the same picture and sets its strength as opacity. Left for later: strength keys over time, follow face.
 17. **Anchor and motion blur on text layers; a border on b-roll cards.**
 18. **Subject mask on b-roll and reversed clips.**
 19. **The newer effects live in the player** (glow, grain, RGB split, shake, mirror).

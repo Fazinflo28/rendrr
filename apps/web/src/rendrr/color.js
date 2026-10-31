@@ -613,8 +613,34 @@ function AdjustPanel({ c, doOp, H, liveOp, select }) {
       <${OpSlider} id="adjust-darken" label="Darken" value=${amt("darken")} min=${0} max=${100} step=${1} show=${(v) => (v ? v + "%" : "off")} opFor=${(v) => fop("darken", v)} ...${sl} />
       <${OpSlider} id="adjust-vignette" label="Vignette" value=${amt("vignette")} min=${0} max=${100} step=${1} show=${(v) => (v ? String(v) : "off")} opFor=${(v) => fop("vignette", v)} ...${sl} />
     </div>
+    <${AdjustWhere} c=${c} doOp=${doOp} sl=${sl} />
     <${Btn} kind="ghost" size="xs" icon="trash" id="adjust-delete" onClick=${() => { doOp({ op: "delete_clip", track: "v3", clipId: c.id }); select(null); }}>Remove this adjustment layer<//>
   </div></div>`;
+}
+
+// Phase 16: where the layer works (masks on the frame) and how strongly (opacity, fades in and out).
+function AdjustWhere({ c, doOp, sl }) {
+  const masks = c.masks || [], len = Math.max(0.1, c.end - c.start);
+  const op = (patch) => ({ op: "adjustment_layer", clipId: c.id, ...patch });
+  const mop = (ms) => op({ masks: ms.length ? ms : null });
+  const setMask = (i) => (m, now) => { const o = mop(masks.map((x, j) => (j === i ? m : x))); if (now) doOp(o, false); return o; };
+  const secs = (v) => (v ? v.toFixed(1) + " s" : "off");
+  return html`<div class="col" style="gap:8px" id="adjust-where">
+    <b class="t-label">Strength and fades</b>
+    <${OpSlider} id="adjust-opacity" label="Strength" value=${Math.round((c.opacity ?? 1) * 100)} min=${0} max=${100} step=${1} show=${(v) => v + "%"} opFor=${(v) => op({ opacity: v >= 100 ? null : v / 100 })} ...${sl} />
+    <div class="row" style="gap:8px">
+      <div class="grow"><${OpSlider} id="adjust-fadein" label="Fade in" value=${c.fadeIn || 0} min=${0} max=${Math.min(10, len)} step=${0.1} show=${secs} opFor=${(v) => op({ fadeIn: v || null })} ...${sl} /></div>
+      <div class="grow"><${OpSlider} id="adjust-fadeout" label="Fade out" value=${c.fadeOut || 0} min=${0} max=${Math.min(10, len)} step=${0.1} show=${secs} opFor=${(v) => op({ fadeOut: v || null })} ...${sl} /></div></div>
+    <div class="row between"><b class="t-label">Masks</b><span class="row" style="gap:4px">
+      <${Btn} kind="ghost" size="xs" id="adjust-mask-rect" disabled=${masks.length >= 8} onClick=${() => doOp(mop([...masks, BOX("rect")]))}>+ Rectangle<//>
+      <${Btn} kind="ghost" size="xs" id="adjust-mask-ellipse" disabled=${masks.length >= 8} onClick=${() => doOp(mop([...masks, BOX("ellipse")]))}>+ Ellipse<//></span></div>
+    ${masks.length ? masks.map((m, i) => html`<div key=${i} class="col card flat" style="gap:6px;padding:10px" data-adjust-mask=${i}>
+        <div class="row between"><span class="t-small">${SHAPE_NAME[m.shape]}${m.shape === "path" ? ` (${m.points.length} points)` : ""}</span><span class="row" style="gap:6px">
+          ${i > 0 && html`<select class="input sm" id=${"adjust-mask-mode-" + i} value=${m.mode || "add"} onChange=${(e) => setMask(i)({ ...m, mode: e.target.value }, true)}><option value="add">Add</option><option value="subtract">Subtract</option><option value="intersect">Intersect</option></select>`}
+          <button class="btn icon sm quiet" aria-label="Remove this mask" id=${"adjust-mask-del-" + i} onClick=${() => doOp(mop(masks.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
+        <${AreaControls} idp=${"adjust-mask-" + i} a=${m} set=${setMask(i)} sl=${sl} follow=${null} />
+      </div>`) : html`<p class="t-small muted" id="adjust-mask-note">On the whole frame. Add a mask to grade or blur only part of it (a sky, a face, a corner); Claude can move it with keys.</p>`}
+  </div>`;
 }
 
 function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLuts, timeline, doOp, H, liveOp, toast, mattes, adjust }) {

@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Masked and keyframed adjustment layers (phase 16, 31 October)
+
+- **Masks.** An adjustment layer can work on part of the frame only: Color tab, the layer's page, + Rectangle / + Ellipse (box, feather, invert, add, subtract, intersect). Grade a sky, blur a corner, darken round a face.
+- **Moving masks.** A layer's rect or ellipse moves with keys at seconds from the layer's start (Claude sends them). Follow face is refused: a layer has no footage of its own.
+- **Strength and fades.** Strength 0-100% and a fade in and out (seconds) ramp the layer's whole effect.
+- **Player = render.** The player masks its preview with the render's own mask picture and sets its strength as opacity. Measured: a moving mask darkened only inside it, on the left 0.1 s in and on the right 1.8 s in; with 50% strength and a 1 s fade in, the rendered grey was within 2 levels of the player's numbers at every point.
+- **Claude.** adjustment_layer `masks`, `opacity`, `fadeIn`, `fadeOut` (null removes; left out keeps).
+- **Tests.** packages/shared/test/adjust16.test.ts, apps/worker/test/adjust16-render.test.ts, apps/web/demo/adjust2.mjs.
+
 ## Audio heard live, parametric EQ (phase 15, 31 October)
 
 - **Live.** The editor now plays each clip's pan, EQ and reverb while you edit (before, only after a render). The player routes a clip's sound through a Web Audio chain only when it has one of them.

@@ -834,6 +834,20 @@ export function hdrLut(t: HdrTransfer, before?: (r: number, g: number, b: number
 }
 
 /**
+ * Phase 16: an adjustment layer's strength `t` seconds into it (`len` long): its opacity, ramped up over fadeIn and down
+ * over fadeOut in straight lines (as the render's fade filter ramps the layer's alpha; the player sets it as opacity).
+ */
+export function adjustStrengthAt(a: { opacity?: number; fadeIn?: number; fadeOut?: number }, t: number, len: number): number {
+  let s = a.opacity ?? 1;
+  if (a.fadeIn) s *= Math.min(1, Math.max(0, t / a.fadeIn));
+  if (a.fadeOut) s *= Math.min(1, Math.max(0, (len - t) / a.fadeOut));
+  return s;
+}
+/** Phase 16: where and how strongly a layer works, in words ("" when everywhere at full strength). */
+export const adjustText = (a: { masks?: Mask[]; opacity?: number; fadeIn?: number; fadeOut?: number }) =>
+  [a.masks?.length ? `only in ${masksText(a.masks)}` : "", a.opacity != null && a.opacity < 1 ? `${Math.round(a.opacity * 100)}% strength` : "", a.fadeIn ? `fades in over ${+a.fadeIn.toFixed(2)} s` : "", a.fadeOut ? `fades out over ${+a.fadeOut.toFixed(2)} s` : ""].filter(Boolean).join(", ");
+
+/**
  * Phase 9: an adjustment layer's preview in the editor as CSS filter functions on what is under it (backdrop-filter):
  * exposure as brightness, contrast and saturation as CSS's own (the grade's contrast and saturation are those formulas),
  * blur at its size on screen, darken as brightness. Near enough to judge; the render draws the layer exactly.

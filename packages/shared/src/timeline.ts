@@ -98,6 +98,12 @@ export const V3ClipSchema = ClipSchema.extend({
    *  b-roll, graphics) over its time; text and captions stay as they are. */
   grade: GradeSchema.optional(),
   effects: z.array(EffectSchema).max(4).optional(),
+  /** Phase 16 (kind "adjust"): the layer works only inside its masks (shapes on the frame; keys at seconds from the
+   *  layer's start), at `opacity` strength (0-1, kept above with graphics' opacity), fading in and out over fadeIn and
+   *  fadeOut seconds. */
+  masks: z.array(MaskSchema).max(8).optional(),
+  fadeIn: z.number().min(0).max(10).optional(),
+  fadeOut: z.number().min(0).max(10).optional(),
 });
 
 /** Phase 6: a music or sound-effect clip's own sound: pan, EQ, reverb, volume keys (t: seconds from the clip's start).
