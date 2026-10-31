@@ -62,7 +62,10 @@ plugin hosting, hardware I/O, localization) are out of scope.
 14. **Colour: hue vs hue, luma vs sat, RGB parade (done, 31 October).** Lumetri's Hue vs Hue (a turn by hue, greys
     left alone) and Luma vs Sat (saturation by brightness), both in the grade's LUT (49 points) so the render and the
     player draw them alike; the Color tab's six-colour and five-brightness sliders; the scopes' RGB parade.
-15. **Audio live in the editor** (pan, EQ and reverb heard while editing, a WebAudio graph) and a parametric EQ.
+15. **Audio live in the editor and a parametric EQ (done, 31 October).** Each clip's pan, EQ and reverb play live
+    through a Web Audio chain with the render's filters and room; up to 4 parametric bells (frequency, gain, Q). The
+    render's shelves moved from FFmpeg's bass/treble to lowshelf/highshelf (RBJ, Q 0.7071) and the 1 kHz bell to its Q,
+    so live and rendered sound are one EQ (measured within 0.01 dB at 9 frequencies).
 16. **Masked and keyframed adjustment layers.**
 17. **Anchor and motion blur on text layers; a border on b-roll cards.**
 18. **Subject mask on b-roll and reversed clips.**

@@ -152,7 +152,8 @@ Object.assign(api, {
   moveVideos: async (ids, fid) => { await wait(150); ids.forEach((id) => { if (fid) inFolder[id] = fid; else delete inFolder[id]; }); return { moved: ids.length }; },
   getProject: async (id) => {
     const p = await getProject(id);
-    const src = playable[p.videoId];
+    // A test can give every demo video a file to play (globalThis.__rendrrDemoMedia: a blob URL).
+    const src = playable[p.videoId] || globalThis.__rendrrDemoMedia;
     // The design's music clips name no catalog track: give them one, as add_music does, so they play and render.
     const a2 = (p.timeline?.tracks?.a2 || []).map((c) => (c.trackId || c.assetKey ? c : { ...c, trackId: "m_lofi" }));
     // Its caption clips (cap0, cap1, ...) name no transcript line: give each its line, as the real timeline does.

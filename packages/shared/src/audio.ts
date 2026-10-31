@@ -183,13 +183,17 @@ export const dbToLin = (db: number) => Math.pow(10, db / 20);
 
 // ---------------------------------------------------------------------------------------------
 // Phase 6: a clip's own sound: volume keys, pan, a three-band EQ and reverb. The render applies them per clip; the live
-// player plays the volume keys (pan, EQ and reverb are heard in the rendered preview, as cleanup is).
+// player plays them too (Phase 15: a WebAudio chain with the same filters and room; cleanup is heard in the preview).
 // ---------------------------------------------------------------------------------------------
 export const AudioKeySchema = z.object({ t: z.number().min(0).max(24 * 3600), gainDb: z.number().min(-60).max(20) });
 export type AudioKey = z.infer<typeof AudioKeySchema>;
 const band = z.number().min(-20).max(20).optional();
-/** low: a shelf at 120 Hz, mid: a bell at 1 kHz (1.5 octaves wide), high: a shelf at 6 kHz; dB each. */
-export const EqSchema = z.object({ low: band, mid: band, high: band });
+/** Phase 15: a parametric band: a bell at f Hz, gain dB, q (width: 0.7 broad, 1 musical, 4+ narrow, a notch). */
+export const EqBandSchema = z.object({ f: z.number().min(20).max(20000), gain: z.number().min(-20).max(20), q: z.number().min(0.1).max(18).optional() });
+export type EqBand = z.infer<typeof EqBandSchema>;
+/** low: a shelf at 120 Hz, mid: a bell at 1 kHz (1.5 octaves wide), high: a shelf at 6 kHz (RBJ, Q 0.7071); dB each; bands: up to 4
+ *  parametric bells (the list replaces them). */
+export const EqSchema = z.object({ low: band, mid: band, high: band, bands: z.array(EqBandSchema).max(4).optional() });
 export type Eq = z.infer<typeof EqSchema>;
 /** amount 0-100 (how much of the room is heard), size 0-100 (how long it rings: 0.3 s to 2.5 s). */
 export const ReverbSchema = z.object({ amount: z.number().min(0).max(100), size: z.number().min(0).max(100).optional() });
@@ -213,7 +217,10 @@ export const panGains = (p: number): [number, number] => [Math.min(1, 1 - p), Ma
 /** The EQ as FFmpeg filters (bands at 0 left out); "" for none. */
 export function eqChain(eq: Eq | undefined): string {
   if (!eq) return "";
-  return [eq.low ? `bass=g=${eq.low}:f=120:w=0.7` : "", eq.mid ? `equalizer=f=1000:t=o:w=1.5:g=${eq.mid}` : "", eq.high ? `treble=g=${eq.high}:f=6000:w=0.7` : ""].filter(Boolean).join(",");
+  // Phase 15: the same RBJ shelves and bells Web Audio's biquads are (lowshelf/highshelf at Q 0.7071, the 1 kHz bell at
+  // Q 0.9198: 1.5 octaves), so the editor's live sound and the render's are one EQ (measured: within 0.1 dB).
+  return [eq.low ? `lowshelf=g=${eq.low}:f=120:t=q:w=0.7071` : "", eq.mid ? `equalizer=f=1000:t=q:w=0.9198:g=${eq.mid}` : "", eq.high ? `highshelf=g=${eq.high}:f=6000:t=q:w=0.7071` : "",
+    ...(eq.bands ?? []).filter((b) => b.gain).map((b) => `equalizer=f=${Math.round(b.f)}:t=q:w=${(b.q ?? 1).toFixed(3)}:g=${b.gain}`)].filter(Boolean).join(",");
 }
 /** Pan and EQ as one FFmpeg chain ("" for none). */
 export function clipFxChain(fx: { pan?: number; eq?: Eq }): string {
@@ -256,9 +263,23 @@ export function clipFxText(fx: { pan?: number; eq?: Eq; reverb?: Reverb; keys?: 
   const sg = (x: number) => (x > 0 ? "+" : "") + x;
   const out: string[] = [];
   if (fx.pan) out.push(`pan ${fx.pan < 0 ? "L" : "R"} ${Math.round(Math.abs(fx.pan) * 100)}%`);
-  const e = fx.eq ? (["low", "mid", "high"] as const).filter((k) => fx.eq![k]).map((k) => `${k} ${sg(fx.eq![k]!)}`) : [];
+  const hz = (f: number) => (f >= 1000 ? `${+(f / 1000).toFixed(1)} kHz` : `${Math.round(f)} Hz`);
+  const e = fx.eq ? [...(["low", "mid", "high"] as const).filter((k) => fx.eq![k]).map((k) => `${k} ${sg(fx.eq![k]!)}`), ...(fx.eq.bands ?? []).filter((b) => b.gain).map((b) => `${hz(b.f)} ${sg(b.gain)} Q${+(b.q ?? 1).toFixed(1)}`)] : [];
   if (e.length) out.push(`EQ ${e.join(" ")} dB`);
   if (fx.reverb?.amount) out.push(`reverb ${fx.reverb.amount} (${reverbSeconds(fx.reverb.size).toFixed(1)} s room)`);
   if (fx.keys?.length) out.push(`${fx.keys.length} volume ${fx.keys.length === 1 ? "key" : "keys"}`);
   return out.join(", ");
+}
+
+/** Phase 15: the EQ as Web Audio biquads, the same RBJ filters FFmpeg's bass, equalizer and treble use: the shelves at
+ *  Q 0.707 (Web Audio's shelves are that slope), the 1 kHz bell 1.5 octaves wide (Q 0.92), each band at its own Q. */
+export function eqBiquads(eq: Eq | undefined): { type: "lowshelf" | "peaking" | "highshelf"; f: number; gain: number; q: number }[] {
+  const out: { type: "lowshelf" | "peaking" | "highshelf"; f: number; gain: number; q: number }[] = [];
+  if (!eq) return out;
+  const octQ = (n: number) => Math.sqrt(Math.pow(2, n)) / (Math.pow(2, n) - 1);
+  if (eq.low) out.push({ type: "lowshelf", f: 120, gain: eq.low, q: 0.7071 });
+  if (eq.mid) out.push({ type: "peaking", f: 1000, gain: eq.mid, q: +octQ(1.5).toFixed(4) });
+  if (eq.high) out.push({ type: "highshelf", f: 6000, gain: eq.high, q: 0.7071 });
+  for (const b of eq.bands ?? []) if (b.gain) out.push({ type: "peaking", f: b.f, gain: b.gain, q: b.q ?? 1 });
+  return out;
 }

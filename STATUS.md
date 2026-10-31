@@ -21,6 +21,14 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Audio heard live, parametric EQ (phase 15, 31 October)
+
+- **Live.** The editor now plays each clip's pan, EQ and reverb while you edit (before, only after a render). The player routes a clip's sound through a Web Audio chain only when it has one of them.
+- **Parametric EQ.** Audio tab: + Parametric band (up to 4): frequency, gain, Q. A notch for a hum: 60 Hz, -18 dB, Q 10.
+- **One EQ.** The render's low and high shelves now use FFmpeg's lowshelf/highshelf (RBJ, Q 0.7071) and the 1 kHz bell its Q, the same filters the browser uses. Measured: tones through the render's chain and the browser's filters agree within 0.01 dB at 9 frequencies. Older renders with a low or high shelf sound up to 0.6 dB different around the shelf.
+- **Claude.** set_clip_audio `eq.bands: [{f, gain, q}]`.
+- **Tests.** packages/shared/test/audio15.test.ts, apps/worker/test/live-eq.test.ts (render against browser), apps/web/demo/audio6.mjs (bands, and the live chain's pan, filters and room on the playing clip).
+
 ## Colour curves and RGB parade (phase 14, 31 October)
 
 - **Hue vs Hue.** Color tab: turn each of six colours toward another (greens toward teal), up to 90° either way; greys stay grey.

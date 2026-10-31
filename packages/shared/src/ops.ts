@@ -1042,7 +1042,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         const y = { ...x } as Record<string, unknown>;
         const put = (k: string, v: unknown) => { if (v === null || v === undefined) delete y[k]; else y[k] = v; };
         if (op.pan !== undefined) put(names.pan, op.pan ? Math.round(op.pan * 100) / 100 : null);
-        if (op.eq !== undefined) { const e = op.eq === null ? null : Object.fromEntries(Object.entries({ ...((y[names.eq] as Eq) ?? {}), ...op.eq }).filter(([, v]) => v)); put(names.eq, e && Object.keys(e).length ? e : null); }
+        if (op.eq !== undefined) { const e = op.eq === null ? null : Object.fromEntries(Object.entries({ ...((y[names.eq] as Eq) ?? {}), ...op.eq }).filter(([, v]) => (Array.isArray(v) ? v.length : v))); put(names.eq, e && Object.keys(e).length ? e : null); }
         if (op.reverb !== undefined) put(names.reverb, op.reverb && op.reverb.amount > 0 ? op.reverb : null);
         if (op.keys !== undefined) put(names.keys, op.keys?.length ? [...op.keys].sort((a, b) => a.t - b.t) : null);
         return y as unknown as C;

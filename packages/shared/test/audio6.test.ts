@@ -30,7 +30,7 @@ describe("the numbers", () => {
     expect(panGains(0)).toEqual([1, 1]);
     expect(panGains(-0.5)).toEqual([1, 0.5]);
     expect(panGains(1)).toEqual([0, 1]);
-    expect(eqChain({ low: 3, high: -2 })).toBe("bass=g=3:f=120:w=0.7,treble=g=-2:f=6000:w=0.7");
+    expect(eqChain({ low: 3, high: -2 })).toBe("lowshelf=g=3:f=120:t=q:w=0.7071,highshelf=g=-2:f=6000:t=q:w=0.7071");
   });
   it("the room: 10 ms of nothing, then a decay as long as the size says, as loud as it lets in, the same every time", () => {
     const [l, r] = reverbIr(40);
@@ -69,7 +69,7 @@ describe("the render", () => {
     expect(p.audioMix!.irs).toEqual({ "ir_20.wav": 20 });
     expect(p.audioMix!.dialogue[0].keys).toEqual([{ t: 4, gainDb: 0 }, { t: 6, gainDb: -10 }]);
     expect(g.filterGraph).toMatch(/\[sxd1\]aformat=sample_fmts=fltp:channel_layouts=stereo,aresample=48000,asplit\[rdd1\]\[rwd1\]/);
-    expect(g.filterGraph).toMatch(/equalizer=f=1000:t=o:w=1\.5:g=-4,pan=stereo\|c0=0\.5000\*c0\|c1=1\.0000\*c1/);
+    expect(g.filterGraph).toMatch(/equalizer=f=1000:t=q:w=0\.9198:g=-4,pan=stereo\|c0=0\.5000\*c0\|c1=1\.0000\*c1/);
     expect(g.filterGraph).toMatch(/afir=dry=1:wet=1:gtype=none,volume=0\.3000/);
     expect(g.filterGraph).toMatch(/pow\(10,\(0\.000\+-10\.000\*clip\(\(t-4\.0000\)\/2\.0000,0,1\)\)\/20\)/);
     expect(g.args.join(" ")).toContain("/tmp/ir_20.wav");

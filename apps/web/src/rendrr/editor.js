@@ -28,6 +28,7 @@ import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
 import { ASPECT_RATIO, BLEND_MODES, adjustCss, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
+import { applyLiveFx, resumeLiveAudio } from "./liveAudio";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
   const [h, setH] = useState({ past: [], present: initial, future: [] });
@@ -539,14 +540,19 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
     // The picture's own element plays the sound when the sound is its own footage, else a sound element does.
     const own = !!(snd && part && snd.videoId === part.videoId && Math.abs(snd.src - pic.src) < 0.08);
     const lv = audioAt(plan, time); const vol = (g) => Math.min(1, Math.max(0, g / head));
+    // Phase 15: the clip's own pan, EQ and reverb heard live (the sound part's clip, as the render applies them).
+    if (playing) resumeLiveAudio();
+    const sp = snd ? plan.sound[snd.i] : null, fx = sp ? plan.audioMix?.clipFx?.[sp.clipId] : null;
     for (const [id, el] of Object.entries(vref.current)) {
       const on = part?.videoId === id;
       el.muted = !(on && own && !snd.muted); el.volume = vol(lv.dialogue);
+      applyLiveFx(el, on && own ? fx : null);
       // At normal speed it plays the sound's own moment (cut to the millisecond); its frame is the one the render shows.
       if (on) follow(el, own && pic.rate === 1 ? snd.src : pic.src, playing, pic.rate); else if (!el.paused) el.pause();
     }
     for (const [id, el] of Object.entries(aref.current)) {
       el.volume = vol(lv.dialogue);
+      applyLiveFx(el, snd && !own && snd.videoId === id ? fx : null);
       if (snd && !own && !snd.muted && snd.videoId === id) follow(el, snd.src, playing, snd.rate); else if (!el.paused) el.pause();
     }
     // Transition sides: on while the window plays, else parked on the frame they start with.
@@ -562,6 +568,8 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
       const x = now.get(id); const d = el.duration || 0;
       const want = x && (el.loop && d ? x.src % d : x.src);
       if (x && (el.loop || !d || want < d - 0.02)) { el.volume = vol(x.gain); follow(el, want, playing); } else if (!el.paused) el.pause();
+      const op = x && plan.audio.find((a) => a.clipId === id);
+      applyLiveFx(el, op ? { pan: op.pan, eq: op.eq, reverb: op.reverb } : null);
     }
   }, [time, playing, part, plan, head, near]);
   const look = tr?.look;
@@ -580,7 +588,7 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
     return html`<div key=${id} style=${{ position: "absolute", inset: 0, visibility: on ? "visible" : "hidden" }}>
       ${urls[id] ? html`<${Footage} id=${id} url=${urls[id]} rotate=${p?.rotate} framing=${p?.framing} flip=${p?.flip} anchor=${on ? fr.motionAnchor : null} motion=${on ? fr.motion : null} aspect=${aspect} on=${on} gl=${glVideo.has(id)} look=${on && fr.lookId ? looks[fr.lookId] : null} matte=${on && fr.lookId ? matteOf(looks[fr.lookId]) : null} plan=${plan} luts=${luts} card=${p ? cards[p.clipIds[0]] : null} refFn=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} />`
         : on && html`<div style="position:absolute;inset:0;display:grid;place-items:center;background:#000;color:#999"><span class="t-small">No preview copy of this video</span></div>`}
-      ${urls[id] && html`<audio ref=${(el) => { if (el) aref.current[id] = el; else delete aref.current[id]; }} data-sound=${id} src=${urls[id]} preload=${jl ? "auto" : "none"} />`}
+      ${urls[id] && html`<audio ref=${(el) => { if (el) aref.current[id] = el; else delete aref.current[id]; }} data-sound=${id} src=${urls[id]} crossOrigin="anonymous" preload=${jl ? "auto" : "none"} />`}
     </div>`;
   })}
     ${near.map((x) => { const active = tr?.op === x;
@@ -593,7 +601,7 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
       return html`<div key=${"tr" + x.clipId} class="tlayer" data-transition=${x.type} style=${{ position: "absolute", inset: 0, overflow: "hidden", background: under.length || plan.background ? "transparent" : "#000", visibility: active ? "visible" : "hidden", filter: active && (look.blur.x || look.blur.y) ? `url(#${blurId})` : "none" }}>${plan.background && !under.length && active ? html`<${BackLayer} plan=${plan} time=${time} playing=${playing} broll=${broll} part=${part} partUrl=${part ? urls[part.videoId] : null} aspect=${aspect} k=${k} />` : null}${side("a")}${side("b")}</div>`; })}
     ${look?.color && html`<div class="tdip" style=${{ position: "absolute", inset: 0, background: look.color.hex, opacity: look.color.opacity }} />`}
     ${look && (look.blur.x || look.blur.y) ? html`<svg width="0" height="0" style="position:absolute"><filter id=${blurId} x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation=${`${look.blur.x * k} ${look.blur.y * k}`} /></filter></svg>` : null}
-  </div>${plan.audio.map((a) => sounds[a.assetKey] && html`<audio key=${a.clipId} ref=${(el) => { if (el) mref.current[a.clipId] = el; else delete mref.current[a.clipId]; }} data-music=${a.clipId} data-kind=${a.kind} src=${sounds[a.assetKey]} loop=${a.kind === "music"} preload="auto" />`)}`;
+  </div>${plan.audio.map((a) => sounds[a.assetKey] && html`<audio key=${a.clipId} ref=${(el) => { if (el) mref.current[a.clipId] = el; else delete mref.current[a.clipId]; }} data-music=${a.clipId} data-kind=${a.kind} src=${sounds[a.assetKey]} crossOrigin="anonymous" loop=${a.kind === "music"} preload="auto" />`)}`;
 }
 
 // The Clip tab (Phase 5): the selected clip's speed, the transition on the cut before it (V1) and its keyframes at the
@@ -713,7 +721,13 @@ function ClipSound({ clip, v1, len, here, gain, clipOp, doOp, sl }) {
   return html`<div class="col" style="gap:10px" id="clip-sound">
     <${OpSlider} id="clip-pan" label="Pan" value=${pan} min=${-1} max=${1} step=${0.05} show=${(x) => (!x ? "centre" : (x < 0 ? "L " : "R ") + Math.round(Math.abs(x) * 100) + "%")} opFor=${(x) => clipOp("pan")(x || null)} ...${sl} />
     <div class="col" style="gap:4px" id="clip-eq"><span class="t-small muted">EQ</span>
-      <div class="row" style="gap:8px">${[["low", "Low"], ["mid", "Mid"], ["high", "High"]].map(([k, l]) => html`<div key=${k} class="grow"><${OpSlider} id=${"clip-eq-" + k} label=${l} value=${eq[k] || 0} min=${-12} max=${12} step=${0.5} show=${db} opFor=${(x) => clipOp("eq")({ [k]: x })} ...${sl} /></div>`)}</div></div>
+      <div class="row" style="gap:8px">${[["low", "Low"], ["mid", "Mid"], ["high", "High"]].map(([k, l]) => html`<div key=${k} class="grow"><${OpSlider} id=${"clip-eq-" + k} label=${l} value=${eq[k] || 0} min=${-12} max=${12} step=${0.5} show=${db} opFor=${(x) => clipOp("eq")({ [k]: x })} ...${sl} /></div>`)}</div>
+      ${(eq.bands || []).map((b, i) => { const setB = (patch) => clipOp("eq")({ bands: eq.bands.map((q, j) => (j === i ? { ...q, ...patch } : q)) }); return html`<div key=${i} class="card flat col" style="gap:4px;padding:8px" data-eq-band=${i}>
+        <div class="row between"><span class="t-small">Band ${i + 1}</span><button class="btn icon sm quiet" aria-label="Remove this band" id=${"clip-eq-band-del-" + i} onClick=${() => doOp(clipOp("eq")({ bands: eq.bands.filter((_, j) => j !== i) }), false)}><${Icon} name="x" size="12" /></button></div>
+        <div class="row" style="gap:8px"><div class="grow"><${OpSlider} id=${"clip-eq-band-f-" + i} label="Frequency" value=${Math.log10(b.f)} min=${Math.log10(20)} max=${Math.log10(20000)} step=${0.01} show=${(x) => { const f = Math.pow(10, x); return f >= 1000 ? (f / 1000).toFixed(1) + " kHz" : Math.round(f) + " Hz"; }} opFor=${(x) => setB({ f: Math.round(Math.pow(10, x)) })} ...${sl} /></div>
+          <div class="grow"><${OpSlider} id=${"clip-eq-band-g-" + i} label="Gain" value=${b.gain} min=${-20} max=${20} step=${0.5} show=${db} opFor=${(x) => setB({ gain: x })} ...${sl} /></div>
+          <div style="width:72px"><${OpSlider} id=${"clip-eq-band-q-" + i} label="Q" value=${b.q ?? 1} min=${0.3} max=${12} step=${0.1} show=${(x) => x.toFixed(1)} opFor=${(x) => setB({ q: x })} ...${sl} /></div></div></div>`; })}
+      ${(eq.bands || []).length < 4 && html`<${Btn} kind="ghost" size="xs" id="clip-eq-band-add" onClick=${() => doOp(clipOp("eq")({ bands: [...(eq.bands || []), { f: 3000, gain: -3, q: 1.4 }] }))}>+ Parametric band<//>`}</div>
     <div class="row" style="gap:8px" id="clip-reverb">
       <div class="grow"><${OpSlider} id="clip-reverb-amount" label="Reverb" value=${rv?.amount || 0} min=${0} max=${100} step=${1} show=${(x) => (x ? String(x) : "off")} opFor=${(x) => clipOp("reverb")(x ? { amount: x, size: rv?.size ?? 40 } : null)} ...${sl} /></div>
       <div class="grow"><${OpSlider} id="clip-reverb-size" label="Room" value=${rv?.size ?? 40} min=${0} max=${100} step=${1} disabled=${!rv?.amount} show=${(x) => reverbSeconds(x).toFixed(1) + " s"} opFor=${(x) => clipOp("reverb")({ amount: rv?.amount || 30, size: x })} ...${sl} /></div></div>
@@ -768,7 +782,7 @@ function AudioTab({ a, clip, track, len, here = 0, planned, doOp, H, liveOp, voi
         <${ClipSound} clip=${clip} v1=${v1} len=${len} here=${here} gain=${gain} clipOp=${clipOp} doOp=${doOp} sl=${sl} />`
         : html`<p class="t-small muted">Select a clip on V1, A1, A2 or A3 to set its level and fades.</p>`}
     </div>
-    <p class="t-small muted" id="audio-note">The live player plays the balance: clip levels, fades, volume keys, ducking, music and sound effects. Cleanup, loudness, pan, EQ, reverb and crossfades are heard in the rendered preview.</p>
+    <p class="t-small muted" id="audio-note">The live player plays clip levels, fades, volume keys, ducking, music and sound effects, and each clip's pan, EQ and reverb (the render's filters and room). Cleanup, loudness and crossfades are heard in the rendered preview.</p>
   </div></div>`;
 }
 

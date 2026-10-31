@@ -27,6 +27,13 @@ await page.goto(`http://localhost:${server.address().port}/`); await sleep(800);
 await page.evaluate(() => globalThis.__rendrrNav.go("/library")); await sleep(500);
 const email = page.locator('input[type="email"]').first();
 if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await sleep(800); }
+// A 30 s tone as the demo footage's file, so the player has an element to play (and route through the live chain).
+await page.evaluate(() => {
+  const rate = 22050, n = rate * 30, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf), str = (o, x) => { for (let i = 0; i < x.length; i++) v.setUint8(o + i, x.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, "data"); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 8000), true);
+  globalThis.__rendrrDemoMedia = URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+});
 await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await sleep(1200);
 await page.locator(".clip.video").first().click(); await sleep(300);
 await page.locator("#tab-audio").click(); await page.locator("#clip-sound").waitFor();
@@ -43,6 +50,22 @@ check(await val("clip-reverb-amount") === "35" && !(await page.locator("#clip-re
 await slide("clip-reverb-size", 80);
 check(await val("clip-reverb-size") === "2.1 s", `the room's length (${await val("clip-reverb-size")})`);
 
+// Phase 15: a parametric band, and the clip's pan, EQ and reverb in the live player's Web Audio chain.
+await page.locator("#clip-eq-band-add").click(); await sleep(300);
+check(await page.locator('[data-eq-band="0"]').count() === 1, "+ Parametric band adds a band");
+await slide("clip-eq-band-g-0", -6); await slide("clip-eq-band-q-0", 2);
+check(await val("clip-eq-band-g-0") === "-6 dB" && await val("clip-eq-band-q-0") === "2.0", "the band's gain and Q change");
+await page.keyboard.press("Escape").catch(() => {}); await page.locator("#timeline").click({ position: { x: 5, y: 5 } }).catch(() => {}); await page.keyboard.press("Space"); await sleep(900); await page.keyboard.press("Space"); await sleep(300);
+if (process.env.DEBUG) console.log(await page.evaluate(() => JSON.stringify({ vids: [...document.querySelectorAll("video")].map((v) => [v.dataset.on, v.dataset.video, !!v.src]), fn: typeof window.__rendrrLiveFx })));
+const live = await page.evaluate(() => { const el = document.querySelector('video[data-on="1"]'); return el && window.__rendrrLiveFx ? window.__rendrrLiveFx(el) : null; });
+check(!!live, "the playing clip's video goes through the live chain");
+if (live) {
+  check(live.left === 1 && live.right === 0.7, `pan L 30%: right side at 0.7 (${live.left}, ${live.right})`);
+  check(JSON.stringify(live.eq.map((b) => [b.type, b.f, b.gain])) === JSON.stringify([["lowshelf", 120, 4], ["highshelf", 6000, -3], ["peaking", 3000, -6]]), `the EQ's filters: ${JSON.stringify(live.eq)}`);
+  check(live.room === 80 && live.wet === 0.21, `reverb 35 in the 2.1 s room (wet ${live.wet}, room ${live.room})`);
+}
+await page.locator(".clip.video").first().click(); await sleep(300);
+if (!(await page.locator("#clip-sound").count())) { await page.locator("#tab-audio").click(); await page.locator("#clip-sound").waitFor(); }
 await page.locator("#clip-key-add").click(); await sleep(300);
 check(await page.locator('#clip-keys [data-key="0"]').count() === 1, "+ Key adds a volume key at the playhead");
 await slide("clip-key-0", -9);
@@ -54,7 +77,7 @@ check(await page.locator('#clip-keys [data-key="0"]').count() === 0, "the key ca
 await page.locator("#audio-fine summary").click(); await sleep(200);
 await slide("audio-crossfade", 60);
 check(await val("audio-crossfade") === "60 ms (in the render)", `Crossfade at every cut (${await val("audio-crossfade")})`);
-check(/pan, EQ, reverb and crossfades are heard in the rendered preview/.test(await page.locator("#audio-note").textContent()), "the note says what the player plays");
+check(/each clip's pan, EQ and reverb .* Cleanup, loudness and crossfades are heard in the rendered preview/.test(await page.locator("#audio-note").textContent()), "the note says what the player plays");
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close();
 console.log(fails.length ? `\n${fails.length} failed` : "\nall passed");
