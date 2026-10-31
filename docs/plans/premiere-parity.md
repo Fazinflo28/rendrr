@@ -46,6 +46,8 @@ plugin hosting, hardware I/O, localization) are out of scope.
     picture-in-picture); the anchor point and motion blur on keyed V1 clips, b-roll and graphics; slow motion by frame
     blending or optical flow; eased ramps. Left for later: anchor and motion blur on text layers, a border on b-roll
     cards, motion blur and optical flow live in the player.
-12. **Deliverables.** SRT / VTT export, export with transparency, GIF, audio only, bitrate and frame-rate settings,
-    YouTube chapters from markers; more effects (glow, grain, vignette, RGB split, camera shake, mirror, corner pin) and
-    transitions (push, wipes, iris, cross zoom, film dissolve).
+12. **Deliverables, more effects and transitions (done, 31 October).** SRT / WebVTT with every final, YouTube
+    chapters from chapter marks, GIF, sound only (.m4a, WAV), the graphics, text and captions on transparency (ProRes
+    4444), bitrate and frame rate; glow, grain, RGB split, camera shake, mirror, corner pin (vignette came in phase 5);
+    push, wipe, iris, cross zoom, film dissolve, clock wipe, barn doors, iris diamond. Left for later: the new effects
+    live in the player, GIF longer than a minute, more shape wipes.

@@ -282,12 +282,12 @@ export function createLookRenderer(canvas) {
           use("dark", { k: 1 - e.amount / 100 }, [["pic", buf[cur].t]]); run(buf[b]);
         } else if (e.type === "sharpen") {
           use("sharp", { k: Math.round(e.amount * 2) / 100, n: e.px }, [["pic", buf[cur].t]]); run(buf[b]);
-        } else {
+        } else if (e.type === "pixelate") {
           const B = e.px, blocks = [Math.ceil(W / B), Math.ceil(H / B)];
           if (!small || smallB !== B) { small = target(blocks[0], blocks[1]); smallB = B; }
           use("pxavg", { B, blocks }, [["pic", buf[cur].t]]); run(small);
           use("pxshow", { B, blocks }, [["pic", buf[cur].t], ["small", small.t]]); run(buf[b]);
-        }
+        } else continue; // Phase 12: glow, grain, RGB split, shake, mirror and corner pin are drawn in the render only.
         if (e.area) {
           use("mix", {}, [["base", buf[cur].t], ["fx", buf[b].t], ["area", grey(e.area.key, e.area.px, e.area.w ?? W, e.area.h ?? H)]]); run(buf[a]);
           cur = a;

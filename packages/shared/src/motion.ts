@@ -182,14 +182,35 @@ export function rampSteps(ramp: RampPoint[], a: number, b: number, reverse = fal
 // ---------------------------------------------------------------------------------------------
 /** morph (Phase 8): Premiere's Morph Cut for a jump cut in a talking head: the last frame before the window flows into the
  *  first frame after it (motion-compensated in the render; the player shows a dissolve). */
-export const TRANSITIONS = ["cut", "dissolve", "dip-black", "dip-white", "whip", "zoom", "slide", "morph"] as const;
+export const TRANSITIONS = ["cut", "dissolve", "dip-black", "dip-white", "whip", "zoom", "slide", "morph", "push", "wipe", "iris", "cross-zoom", "film-dissolve", "clock", "barn-door", "diamond"] as const;
 export type TransitionType = (typeof TRANSITIONS)[number];
 export const DIRS = ["left", "right", "up", "down"] as const;
 export type Dir = (typeof DIRS)[number];
 export const TransitionSchema = z.object({ type: z.enum(TRANSITIONS), duration: z.number().min(0.1).max(4), dir: z.enum(DIRS).optional() });
 export type Transition = z.infer<typeof TransitionSchema>;
 /** These show both sides at once, so they use footage past the cut (handles). */
-export const USES_HANDLES: TransitionType[] = ["dissolve", "whip", "slide"];
+export const USES_HANDLES: TransitionType[] = ["dissolve", "whip", "slide", "push", "wipe", "iris", "cross-zoom", "film-dissolve", "clock", "barn-door", "diamond"];
+/**
+ * Phase 12: the transitions FFmpeg's xfade draws, by its own names (P runs from 1 at the window's start to 0 at its
+ * end in its expressions). push: both sides move; wipe: B uncovered from the side `dir` points away from; iris: B in a
+ * circle opening from the middle; cross-zoom: A zooms in as B fades up; film-dissolve: a dissolve in linear light (as
+ * film exposes); clock: B swept round like a clock hand; barn-door: B in the middle, opening sideways (up/down: from
+ * the middle up and down); diamond: B in a diamond opening from the middle.
+ */
+export function xfadeOf(type: TransitionType, dir: Dir = "left"): string | null {
+  switch (type) {
+    case "push": return `slide${dir}`;
+    case "wipe": return `wipe${dir}`;
+    case "iris": return "circleopen";
+    case "cross-zoom": return "zoomin";
+    case "film-dissolve": return "fade";
+    // A linear sweep clockwise from 12 o'clock (xfade's own radial lags and eases; this matches the player's).
+    case "clock": return "custom:expr='if(lt(mod(atan2(X-W/2,H/2-Y)+2*PI,2*PI),(1-P)*2*PI),B,A)'";
+    case "barn-door": return dir === "up" || dir === "down" ? "horzopen" : "vertopen";
+    case "diamond": return "custom:expr='if(lt(abs(X/W-0.5)+abs(Y/H-0.5),1-P),B,A)'";
+    default: return null;
+  }
+}
 /** How far the zoom transition goes in, and the whip's blur (share of the frame's width or height, at its middle). */
 export const ZOOM_PEAK = 1.6;
 export const WHIP_BLUR = 0.03;
@@ -200,7 +221,9 @@ export const smoothExpr = (p: string) => `(${p})*(${p})*(3-2*(${p}))`;
 export const dirVec = (d: Dir = "left"): [number, number] => (d === "left" ? [-1, 0] : d === "right" ? [1, 0] : d === "up" ? [0, -1] : [0, 1]);
 
 export type SideLook = { x: number; y: number; opacity: number };
-export type TransitionLook = { a: SideLook; b: SideLook; color: { hex: string; opacity: number } | null; zoom: number; blur: { x: number; y: number } };
+/** Phase 12: clip: a CSS clip-path for B (wipes, iris, barn door, diamond); mask: a CSS mask for B (clock); aScale: A's
+ *  zoom (cross zoom). */
+export type TransitionLook = { a: SideLook; b: SideLook; color: { hex: string; opacity: number } | null; zoom: number; blur: { x: number; y: number }; clip?: string; mask?: string; aScale?: number };
 /** What a transition shows at progress p (0 at the window's start, 1 at its end; the cut is at 0.5). B is drawn over A. */
 export function transitionAt(tr: { type: TransitionType; dir?: Dir }, p: number, W: number, H: number): TransitionLook {
   const q = Math.min(1, Math.max(0, p));
@@ -217,5 +240,16 @@ export function transitionAt(tr: { type: TransitionType; dir?: Dir }, p: number,
     look.blur = { x: dx ? W * WHIP_BLUR * s : 0, y: dy ? H * WHIP_BLUR * s : 0 };
   } else if (tr.type === "dip-black" || tr.type === "dip-white") look.color = { hex: tr.type === "dip-black" ? "#000000" : "#FFFFFF", opacity: q < 0.5 ? 2 * q : 2 * (1 - q) };
   else if (tr.type === "zoom") look.zoom = 1 + (ZOOM_PEAK - 1) * (q < 0.5 ? (2 * q) ** 2 : (2 - 2 * q) ** 2);
+  else if (tr.type === "push") { look.a = { x: dx * W * q, y: dy * H * q, opacity: 1 }; look.b = { x: dx * W * (q - 1), y: dy * H * (q - 1), opacity: 1 }; }
+  else if (tr.type === "film-dissolve") look.b = { x: 0, y: 0, opacity: q };
+  else if (tr.type === "cross-zoom") { look.aScale = 1 + q; look.a = { x: 0, y: 0, opacity: 1 }; look.b = { x: 0, y: 0, opacity: q }; }
+  else {
+    const r = Math.round((1 - q) * 1000) / 10, h = Math.round((1 - q) * 500) / 10, k = Math.round(q * 1000) / 10;
+    if (tr.type === "wipe") look.clip = tr.dir === "right" ? `inset(0 ${r}% 0 0)` : tr.dir === "up" ? `inset(${r}% 0 0 0)` : tr.dir === "down" ? `inset(0 0 ${r}% 0)` : `inset(0 0 0 ${r}%)`;
+    else if (tr.type === "iris") look.clip = `circle(${Math.round(q * 710) / 10}% at 50% 50%)`;
+    else if (tr.type === "barn-door") look.clip = tr.dir === "up" || tr.dir === "down" ? `inset(${h}% 0 ${h}% 0)` : `inset(0 ${h}% 0 ${h}%)`;
+    else if (tr.type === "diamond") look.clip = `polygon(50% ${50 - k}%, ${50 + k}% 50%, 50% ${50 + k}%, ${50 - k}% 50%)`;
+    else if (tr.type === "clock") look.mask = `conic-gradient(#000 ${Math.round(q * 3600) / 10}deg, transparent 0)`;
+  }
   return look;
 }

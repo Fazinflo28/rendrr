@@ -357,6 +357,17 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 12b: more effects and transitions (31 October)
+
+| Question | Decision |
+|---|---|
+| Transitions | push, wipe, iris, cross zoom, film dissolve, clock wipe, barn doors and iris diamond, drawn by FFmpeg's xfade from both sides' footage past the cut (handles), on the output's frames. push, wipe and barn doors take a direction. |
+| Film dissolve | The two sides mixed in linear light (gamma 2.2 out, xfade's fade, gamma back): the middle of a red-to-blue dissolve is 160/155, where a plain dissolve gives 125/120, as film exposes. |
+| Clock wipe and diamond | xfade's own radial wipe lags and eases (a quarter of the way through it has swept about 45°), so the clock wipe is a custom expression: a straight sweep clockwise from 12 o'clock that the player's conic mask draws exactly. The diamond is a custom expression too. |
+| The player | Each new transition has its look: a CSS clip-path on B (wipe, iris, barn doors, diamond), a conic mask (clock), both sides moving (push), A zooming as B fades up (cross zoom), an opacity (film dissolve). The render test checks the render splits where the player does. |
+| Effects | glow (the parts above mid-grey blurred and screened back), grain (noise on 8-bit RGB, strong enough to survive the encode), RGB split (rgbashift, red and blue pulled apart), camera shake (zoomed in just enough and moved by two waves each way that never line up), mirror (the left half reflected onto the right), corner pin (perspective to four corners; outside them transparent, so the background or the picture under b-roll shows). They are drawn in the render; the player marks them "(in the render)". |
+| Corner pin's alpha | A white frame with a black 1 px edge, pinned the same way (perspective repeats the edge outside the corners), made full range (a grey frame from a colour source is limited range: 235 inside would show the clip at 92%). |
+
 ## Premiere parity, phase 12a: deliverables (31 October)
 
 | Question | Decision |

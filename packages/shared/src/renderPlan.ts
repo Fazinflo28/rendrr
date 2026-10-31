@@ -5,7 +5,7 @@
 import { catalogMusic, catalogSfx, findTemplate } from "./catalog";
 import { aspectSize, type Aspect, type CaptionLook } from "./constants";
 import { cutRegions, editOf, fmtClock, isSequence, mainVideoOf, mergeRanges, normalSpeed, rateOf, sequenceView, srcAt, subtractRanges, type Attached, type PicturePart, type Range, type SeqClip, type SequenceView, type SoundPart } from "./sequence";
-import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
+import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, xfadeOf, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing, Resolution, Codec } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
@@ -676,7 +676,7 @@ export function planRender(input: PlanInput): RenderPlan {
       ...(c.effects?.length ? { effects: c.effects.map((e0) => { const e = !e0.area && e0.type === "vignette" ? { ...e0, area: VIGNETTE_AREA } : e0; return { ...e, px: effectPx(e, width, height), ...(e.area ? { file: picOf({ area: e.area }) } : {}) }; }) } : {}),
       ...(skin ? { skin: { skin, p: skinParams(skin, width, height), ...(skin.area ? { file: picOf({ area: skin.area }) } : {}) } } : {}),
       ...(subject ? { subject } : {}),
-      alpha: !!c.key || !!masks?.length || !!subject,
+      alpha: !!c.key || !!masks?.length || !!subject || !!c.effects?.some((e) => e.type === "pin"),
     };
   };
   for (const c of v1) lookFor(c);
@@ -1234,10 +1234,47 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     const lut = hdr ? (dom === "sdr" ? look?.lutHdr ?? hdr.lut : undefined) : look?.lut;
     if (lut) { g.push(`[${rgb}]format=${rgbF},lut3d=file=${q(lookPath(lut))}:interp=trilinear[ll${tag}]`); rgb = `ll${tag}`; }
     else if (dom === "sdr") { g.push(`[${rgb}]format=${rgbF}[ll${tag}]`); rgb = `ll${tag}`; }
+    let pinAlpha: string | null = null;
     (look?.effects ?? []).forEach((e, j) => {
+      const t2 = `${tag}_${j}`;
+      // Phase 12: effects that are a small graph of their own (glow, mirror) or move the picture (shake, pin).
+      if (e.type === "glow") {
+        // The parts above mid-grey, blurred, laid back on by screen: the bright parts bloom.
+        g.push(`[${rgb}]split[gw${t2}][gx${t2}]`);
+        g.push(`[gx${t2}]lutrgb=r='clip((val-32768)*2,0,65535)':g='clip((val-32768)*2,0,65535)':b='clip((val-32768)*2,0,65535)',gblur=sigma=${e.px}:steps=3[gy${t2}]`);
+        g.push(`[gw${t2}][gy${t2}]blend=all_mode=screen:all_opacity=${n3(Math.min(1, e.amount / 70))},format=${rgbF}[le${t2}]`);
+        rgb = `le${t2}`; return;
+      }
+      if (e.type === "mirror") {
+        g.push(`[${rgb}]crop=iw/2:ih:0:0,split[ml${t2}][mr${t2}]`);
+        g.push(`[mr${t2}]hflip[mf${t2}]`);
+        g.push(`[ml${t2}][mf${t2}]hstack,scale=${W}:${H},format=${rgbF}[le${t2}]`);
+        rgb = `le${t2}`; return;
+      }
+      if (e.type === "shake") {
+        // Zoomed in just enough, and moved by two waves each way at frequencies that never line up (seconds of the clip).
+        const z = 1 + (2.4 * e.px) / Math.min(W, H), A = e.px;
+        g.push(`[${rgb}]scale=${even(W * z)}:${even(H * z)},crop=${W}:${H}:x='(iw-ow)/2+${A}*(0.6*sin(2*PI*t*5.3)+0.4*sin(2*PI*t*11.7+1.3))':y='(ih-oh)/2+${A}*(0.6*sin(2*PI*t*4.1+0.7)+0.4*sin(2*PI*t*9.9+2.1))',format=${rgbF}[le${t2}]`);
+        rgb = `le${t2}`; return;
+      }
+      if (e.type === "pin") {
+        // Corner pin: the picture's corners to the four points; outside them transparent (an alpha from a white frame
+        // pinned the same way), so what is under the clip shows.
+        const c = e.corners ?? [[0, 0], [1, 0], [0, 1], [1, 1]];
+        const pts = c.map(([x, y], i) => `x${i}=${r3(x * W)}:y${i}=${r3(y * H)}`).join(":");
+        g.push(`[${rgb}]perspective=${pts}:sense=destination,format=${rgbF}[le${t2}]`);
+        // A black edge round the white frame: perspective repeats the edge outside the corners, which must be transparent.
+        // White inside with a black edge (perspective repeats the edge outside the corners), made full range: a grey
+        // frame from a colour source is limited range (235 and 16).
+        g.push(`color=c=white:s=${W - 2}x${H - 2}:r=${plan.rate || "30"}:d=${n6(frames / FPS + 1)},format=gray,pad=${W}:${H}:1:1:black,lut=c0='if(gt(val,128),255,0)',trim=end_frame=${frames},perspective=${pts}:sense=destination[pn${t2}]`);
+        pinAlpha = `pn${t2}`;
+        rgb = `le${t2}`; return;
+      }
       const sk = e.type === "sharpen" ? sharpenKernel(e.amount, e.px) : null, km = sk ? `'${sk.m.join(" ")}'` : "";
       const dk = n3(1 - e.amount / 100);
-      const fx = e.type === "blur" ? `gblur=sigma=${e.px}:steps=4` : e.type === "pixelate" ? `pixelize=width=${e.px}:height=${e.px}:mode=avg` : e.type === "darken" || e.type === "vignette" ? `colorchannelmixer=rr=${dk}:gg=${dk}:bb=${dk}` : `convolution=0m=${km}:1m=${km}:2m=${km}:0rdiv=1/${sk!.div}:1rdiv=1/${sk!.div}:2rdiv=1/${sk!.div}`, t2 = `${tag}_${j}`;
+      const fx = e.type === "blur" ? `gblur=sigma=${e.px}:steps=4` : e.type === "pixelate" ? `pixelize=width=${e.px}:height=${e.px}:mode=avg` : e.type === "darken" || e.type === "vignette" ? `colorchannelmixer=rr=${dk}:gg=${dk}:bb=${dk}`
+        : e.type === "grain" ? `format=gbrp,noise=alls=${Math.round(e.amount * 0.8)}:allf=t,format=${rgbF}` : e.type === "rgbsplit" ? `rgbashift=rh=${-e.px}:bh=${e.px}:edge=smear`
+        : `convolution=0m=${km}:1m=${km}:2m=${km}:0rdiv=1/${sk!.div}:1rdiv=1/${sk!.div}:2rdiv=1/${sk!.div}`;
       if (!e.file) { g.push(`[${rgb}]${fx},format=${rgbF}[le${t2}]`); rgb = `le${t2}`; return; }
       g.push(`[${rgb}]split[la${t2}][lb${t2}]`);
       g.push(`[lb${t2}]${fx},format=${rgbF}[lf${t2}]`);
@@ -1249,6 +1286,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       const mk = picture(look.mask, frames, "m" + tag, steps);
       if (alpha) { g.push(`[${alpha}][${mk}]blend=all_mode=multiply[lq${tag}]`); alpha = `lq${tag}`; } else alpha = mk;
     }
+    if (pinAlpha) { if (alpha) { g.push(`[${alpha}][${pinAlpha}]blend=all_mode=multiply[lp${tag}]`); alpha = `lp${tag}`; } else alpha = pinAlpha; }
     // remove_background: the person's matte (put through the clip's own steps by drawSeg) into the alpha.
     if (look?.subject && mattesFor[tag]) {
       const sm = subjectMatte(mattesFor[tag], look.subject, tag);
@@ -1548,7 +1586,16 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       const a = side(t.a, `ta${i}_`), b = side(t.b, `tb${i}_`);
       const [dx, dy] = dirVec(t.dir);
       const p = `(t/${n6(D)})`;
-      if (t.type === "dissolve") g.push(`[${b}]format=${PFA},fade=t=in:st=0:d=${n6(D)}:alpha=1[tbf${i}];[${a}][tbf${i}]overlay=format=auto,format=${PF}[tx${i}]`);
+      const xf = xfadeOf(t.type, t.dir);
+      if (xf) {
+        // Phase 12: FFmpeg's xfade over the window, both sides on the same frames. A film dissolve mixes in linear light.
+        const n = Math.max(1, Math.round(D * FPS)), film = t.type === "film-dissolve";
+        const lin = (e: string) => `format=gbrp16le,lutrgb=r='${e}':g='${e}':b='${e}'`;
+        g.push(`[${a}]fps=${R},settb=${TB},setpts=PTS-STARTPTS,${film ? lin("pow(val/65535,2.2)*65535") : `format=${PF}`}[xa${i}]`);
+        g.push(`[${b}]fps=${R},settb=${TB},setpts=PTS-STARTPTS,${film ? lin("pow(val/65535,2.2)*65535") : `format=${PF}`}[xb${i}]`);
+        g.push(`[xa${i}][xb${i}]xfade=transition=${xf}:duration=${n6(D)}:offset=0,trim=end_frame=${n}${film ? `,${lin("pow(val/65535,1/2.2)*65535")}` : ""},format=${PF}[tx${i}]`);
+      }
+      else if (t.type === "dissolve") g.push(`[${b}]format=${PFA},fade=t=in:st=0:d=${n6(D)}:alpha=1[tbf${i}];[${a}][tbf${i}]overlay=format=auto,format=${PF}[tx${i}]`);
       else if (t.type === "morph") {
         // Phase 8 (Morph Cut): A's frame at the window's start and B's at its end, D apart, and the frames between made by
         // motion-compensated interpolation (minterpolate: block motion both ways, overlapped blocks), so the head moves

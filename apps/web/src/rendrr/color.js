@@ -444,12 +444,14 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
         <${Btn} kind="ghost" size="xs" id="fx-add-sharpen" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "sharpen", amount: 25 }]))}>+ Sharpen<//>
         <${Btn} kind="ghost" size="xs" id="fx-add-darken" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "darken", amount: 40 }]))}>+ Darken<//>
         <${Btn} kind="ghost" size="xs" id="fx-add-vignette" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "vignette", amount: 35 }]))}>+ Vignette<//>
+        ${[["glow", "Glow", 40], ["grain", "Grain", 30], ["rgbsplit", "RGB split", 40], ["shake", "Camera shake", 30], ["mirror", "Mirror", 100], ["pin", "Corner pin", 100]].map(([t, l, a]) => html`<${Btn} key=${t} kind="ghost" size="xs" id=${"fx-add-" + t} disabled=${effects.length >= 4} title="Drawn in the render" onClick=${() => doOp(eop([...effects, { type: t, amount: a, ...(t === "pin" ? { corners: [[0.1, 0.1], [0.9, 0.05], [0.1, 0.9], [0.9, 0.95]] } : {}) }]))}>+ ${l}<//>`)}
         ${canFollow && html`<${Btn} kind="ghost" size="xs" id="fx-add-spotlight" disabled=${effects.length >= 4 || measuring} title="Darkens everything but the face, following it" onClick=${() => withFaces(eop([...effects, { type: "darken", amount: 55, area: { shape: "ellipse", invert: true, feather: 0.08, follow: "face" } }]))}>+ Spotlight<//>`}</span></div>
       ${effects.map((e, i) => html`<div key=${i} class="col card flat" style="gap:6px;padding:10px" data-effect=${i}>
-        <div class="row between"><span class="t-small">${{ blur: "Blur", pixelate: "Pixelate", sharpen: "Sharpen", darken: "Darken", vignette: "Vignette" }[e.type]}</span>
+        <div class="row between"><span class="t-small">${{ blur: "Blur", pixelate: "Pixelate", sharpen: "Sharpen", darken: "Darken", vignette: "Vignette", glow: "Glow", grain: "Grain", rgbsplit: "RGB split", shake: "Camera shake", mirror: "Mirror", pin: "Corner pin" }[e.type]}${["glow", "grain", "rgbsplit", "shake", "mirror", "pin"].includes(e.type) ? html` <span class="muted">(in the render)</span>` : ""}</span>
           <span class="row" style="gap:6px"><select class="input sm" id=${"fx-area-" + i} value=${e.area?.shape || "all"} onChange=${(ev) => setEffect(i)({ ...e, area: ev.target.value === "all" ? undefined : { ...BOX(ev.target.value), w: 0.3, h: 0.3, x: 0.35, y: 0.25 } }, true)}><option value="all">Whole picture</option><option value="rect">Rectangle</option><option value="ellipse">Ellipse</option></select>
           <button class="btn icon sm quiet" aria-label="Remove" id=${"fx-del-" + i} onClick=${() => doOp(eop(effects.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
-        <${OpSlider} id=${"fx-amount-" + i} label="Amount" value=${e.amount} min=${1} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => setEffect(i)({ ...e, amount: v })} ...${sl} />
+        ${e.type === "pin" ? html`<${PinCorners} i=${i} e=${e} set=${(c, now) => setEffect(i)({ ...e, corners: c }, now)} sl=${sl} />`
+          : e.type !== "mirror" && html`<${OpSlider} id=${"fx-amount-" + i} label="Amount" value=${e.amount} min=${1} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => setEffect(i)({ ...e, amount: v })} ...${sl} />`}
         ${e.area && html`<${AreaControls} idp=${"fx-" + i} a=${e.area} set=${(a, now) => setEffect(i)({ ...e, area: a }, now)} sl=${sl} follow=${followFx(i)} busy=${measuring} />`}
       </div>`)}
     </div>
@@ -458,6 +460,16 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
     ${hdrRow(timeline, doOp)}
     <p class="t-small muted" id="color-note">The picture here is drawn with the render's own numbers: the same LUT, key, masks (moving ones too), blur, sharpen and darken.</p>
   </div></div>`;
+}
+
+// Phase 12: a corner pin's four corners (shares of the frame), each across and down.
+const PIN_NAMES = ["Top left", "Top right", "Bottom left", "Bottom right"];
+function PinCorners({ i, e, set, sl }) {
+  const c = e.corners || [[0, 0], [1, 0], [0, 1], [1, 1]];
+  const at = (k, axis, v) => c.map((p, j) => (j === k ? (axis === 0 ? [v, p[1]] : [p[0], v]) : p));
+  return html`<div class="col" style="gap:6px" id=${"fx-pin-" + i}>${PIN_NAMES.map((n, k) => html`<div key=${k} class="row" style="gap:8px">
+    <div class="grow"><${OpSlider} id=${`fx-pin-${i}-${k}-x`} label=${n + " across"} value=${c[k][0]} min=${-0.5} max=${1.5} step=${0.01} show=${(v) => Math.round(v * 100) + "%"} opFor=${(v) => set(at(k, 0, v))} ...${sl} /></div>
+    <div class="grow"><${OpSlider} id=${`fx-pin-${i}-${k}-y`} label="down" value=${c[k][1]} min=${-0.5} max=${1.5} step=${0.01} show=${(v) => Math.round(v * 100) + "%"} opFor=${(v) => set(at(k, 1, v))} ...${sl} /></div></div>`)}</div>`;
 }
 
 /**

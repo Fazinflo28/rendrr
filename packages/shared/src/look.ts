@@ -137,14 +137,20 @@ export type Area = z.infer<typeof AreaSchema>;
  *  only the overlap. */
 export const MaskSchema = AreaSchema.and(z.object({ mode: z.enum(MASK_MODES).optional() }));
 export type Mask = Area & { mode?: (typeof MASK_MODES)[number] };
-export const EFFECTS = ["blur", "pixelate", "sharpen", "darken", "vignette"] as const;
+export const EFFECTS = ["blur", "pixelate", "sharpen", "darken", "vignette", "glow", "grain", "rgbsplit", "shake", "mirror", "pin"] as const;
+/** Phase 12: the effects drawn in the render only (the player shows the clip without them). */
+export const RENDER_ONLY_EFFECTS = ["glow", "grain", "rgbsplit", "shake", "mirror", "pin"] as const;
 /** Phase 5: a vignette is darken outside a soft ellipse a little larger than the frame (its own area if it has one). */
 export const VIGNETTE_AREA = { shape: "ellipse" as const, x: -0.1, y: -0.1, w: 1.2, h: 1.2, invert: true, feather: 0.3 };
 /** Blur (amount 1-100: 100 = a Gaussian of 5% of the short side), pixelate (amount 1-100: blocks of amount/10 % of the
  *  short side), sharpen (an unsharp mask, amount 1-100: 100 adds twice the detail, 20 is a light touch) or darken
  *  (Phase 3: amount % darker, 100 = black; outside an ellipse on the face it is a spotlight), over the whole picture or
  *  inside an area. */
-export const EffectSchema = z.object({ type: z.enum(EFFECTS), amount: z.number().min(1).max(100), area: AreaSchema.optional() });
+/** Phase 12: glow (the bright parts bloom: amount = strength), grain (film grain), rgbsplit (red and blue pulled apart:
+ *  chromatic aberration), shake (a hand-held camera's jitter), mirror (the left half reflected onto the right), pin
+ *  (corner pin: the picture's corners moved to `corners`, shares of the frame, top left, top right, bottom left,
+ *  bottom right; outside them what is under the clip shows). */
+export const EffectSchema = z.object({ type: z.enum(EFFECTS), amount: z.number().min(1).max(100), area: AreaSchema.optional(), corners: z.array(z.tuple([z.number().min(-1).max(2), z.number().min(-1).max(2)])).length(4).optional() });
 export type Effect = z.infer<typeof EffectSchema>;
 
 const share100 = z.number().min(0).max(100);
@@ -604,7 +610,19 @@ export function sharpenKernel(amount: number, size: number): { m: number[]; div:
   return { m, div };
 }
 /** The effect's size in pixels at W x H: blur sigma, block size, or sharpen's kernel (darken has none). */
-export const effectPx = (e: Effect, W: number, H: number) => (e.type === "blur" ? blurSigma(e.amount, W, H) : e.type === "pixelate" ? pixelBlock(e.amount, W, H) : e.type === "darken" || e.type === "vignette" ? 0 : sharpenSize(W, H));
+export const effectPx = (e: Effect, W: number, H: number) => {
+  const short = Math.min(W, H);
+  switch (e.type) {
+    case "blur": return blurSigma(e.amount, W, H);
+    case "pixelate": return pixelBlock(e.amount, W, H);
+    case "sharpen": return sharpenSize(W, H);
+    // Phase 12: glow's spread (sigma), the RGB split's shift and the shake's reach, in pixels at the plan's size.
+    case "glow": return Math.max(1, Math.round(short * 0.04 * (0.4 + e.amount / 100) * 10) / 10);
+    case "rgbsplit": return Math.max(1, Math.round((short * 0.012 * e.amount) / 100));
+    case "shake": return Math.max(1, Math.round((short * 0.03 * e.amount) / 100));
+    default: return 0;
+  }
+};
 
 // ---------------------------------------------------------------------------------------------
 // Key: FFmpeg's colorkey and despill (the player's shader repeats these)
@@ -711,7 +729,7 @@ const pct = (n: number) => `${Math.round(n * 100)}%`;
 export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}${a.follow === "face" ? ` following the face (${a.keys?.length ?? 0} keys)` : moving(a) ? ` moving (${a.keys!.length} keys, ${+a.keys![0].at.toFixed(2)}-${+a.keys![a.keys!.length - 1].at.toFixed(2)}s)` : ""}`;
 export const chromaKeyText = (k: ChromaKey) => `${k.color} similarity ${k.similarity} blend ${k.blend}${k.spill ? ` spill ${k.spill}` : ""}`;
 export const masksText = (ms: Mask[]) => ms.map((m, i) => `${i && m.mode && m.mode !== "add" ? m.mode + " " : ""}${areaText(m)}`).join(", ");
-export const effectsText = (es: Effect[]) => es.map((e) => `${e.type} ${e.amount}${e.area ? ` in ${areaText(e.area)}` : ""}`).join(", ");
+export const effectsText = (es: Effect[]) => es.map((e) => e.type === "pin" ? `corner pin${e.corners ? ` to ${e.corners.map((c) => `${Math.round(c[0] * 100)}%,${Math.round(c[1] * 100)}%`).join(" ")}` : ""}` : `${e.type === "rgbsplit" ? "RGB split" : e.type} ${e.amount}${e.area ? ` in ${areaText(e.area)}` : ""}`).join(", ");
 /** face: the area is the face Rendrr measured (forehead to neck). */
 export const skinText = (s: Skin) => `skin retouch: smooth ${s.smooth}, blemishes ${s.blemishes}, even ${s.even}, brighten ${s.brighten}${s.area ? (s.face ? ", on the face" : `, in ${areaText(s.area)}`) : ", whole picture"}`;
 
