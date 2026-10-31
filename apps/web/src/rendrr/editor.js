@@ -115,7 +115,9 @@ function BackLayer({ plan, time, playing, broll, part, partUrl, aspect, k }) {
   }
   return null;
 }
-function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = null, luts, style = null }) {
+// Phase 18: remove_background on a clip's look: its matte's block links (useMattes) with its edge, softness and invert.
+const matteFrom = (lk, mattes) => (lk?.subject && mattes?.[lk.subject.matte] ? { ...mattes[lk.subject.matte], edge: lk.subject.edge, soft: lk.subject.soft, invert: !!lk.subject.invert } : null);
+function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = null, luts, style = null, matte = null }) {
   const ref = useRef(null); const [noGl, setNoGl] = useState(false);
   useEffect(() => {
     const el = ref.current; if (!el) return;
@@ -124,7 +126,7 @@ function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = nu
   }, [time, playing]);
   const gl = !!look && !!plan && !noGl;
   return html`<video ref=${ref} src=${src} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: fit, pointerEvents: "none", ...(style || {}), ...(gl ? { opacity: 0 } : {}) }} />
-    ${gl && html`<${LookCanvas} videoRef=${ref} look=${look} W=${plan.width} H=${plan.height} fitY=${0.5} luts=${luts} onFail=${() => setNoGl(true)} />`}`;
+    ${gl && html`<${LookCanvas} videoRef=${ref} look=${look} W=${plan.width} H=${plan.height} fitY=${0.5} luts=${luts} onFail=${() => setNoGl(true)} matte=${matte} />`}`;
 }
 
 // Engine Part 6: the sound's 10 ms peaks for the waveform: each video's measured peaks (4 bytes per 10 ms), a music or
@@ -236,7 +238,7 @@ const BLEND_NAME = { normal: "Normal", multiply: "Multiply", screen: "Screen", o
 
 // What the render lays over the footage at this moment: b-roll, then (Phase 2) the graphics and text layers behind the
 // person and the person laid back over them, then the other graphics, text layers and captions.
-function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts, person = null }) {
+function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts, person = null, mattes = {} }) {
   if (!frame) return null;
   const b = frame.broll && media.broll[frame.broll.videoId];
   // Keyframed overlays move as the render's perspective filter moves them (Phase 5).
@@ -253,7 +255,7 @@ function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts, person
   const backText = frame.texts.some((x) => x.layer.behind);
   // Phase 17: a b-roll card's border over its picture, moving with it.
   const bordered = (br, child) => (br.border && plan?.lookFiles?.[br.border.file] ? html`${child}<div data-border=${br.clipId} style="position:absolute;inset:0;pointer-events:none"><${CardLayer} spec=${plan.lookFiles[br.border.file]} color=${br.border.color} W=${plan.width} H=${plan.height} /></div>` : child);
-  return html`<i ref=${box} style="display:none" />${b && blended(frame.broll, shadowed(frame.broll, moved(frame.broll.motion, bordered(frame.broll, flipped(frame.broll.flip, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} />`)), frame.broll.anchor)))}
+  return html`<i ref=${box} style="display:none" />${b && blended(frame.broll, shadowed(frame.broll, moved(frame.broll.motion, bordered(frame.broll, flipped(frame.broll.flip, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} matte=${matteFrom(plan?.looks?.[frame.broll.clipId], mattes)} />`)), frame.broll.anchor)))}
     ${frame.graphics.filter((g) => g.behind).map(gfx)}
     ${plan && backText && html`<${TextLayers} key="behind" plan=${plan} frame=${frame} only="behind" media=${media} playing=${playing} />`}
     ${person}
@@ -604,7 +606,7 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
   const under = (fr.under || []).filter((u) => broll[u.videoId]);
   const cards = plan.cards || {};
   // remove_background: the clip's matte (its blocks' links) with its edge, softness and invert, for the look canvas.
-  const matteOf = (lk) => (lk?.subject && mattes[lk.subject.matte] ? { ...mattes[lk.subject.matte], edge: lk.subject.edge, soft: lk.subject.soft, invert: !!lk.subject.invert } : null);
+  const matteOf = (lk) => matteFrom(lk, mattes);
   return html`<div ref=${box} style="position:absolute;inset:0"><${BackLayer} plan=${plan} time=${time} playing=${playing} broll=${broll} part=${part} partUrl=${part ? urls[part.videoId] : null} aspect=${aspect} k=${k} />${under.map((u) => html`<div key=${"u" + u.clipId} data-under=${u.clipId} style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(u.motion, u.anchor) }}><div style=${{ position: "absolute", inset: 0, transform: flipCss(u.flip).trim() || "none" }}><${SyncedVideo} src=${broll[u.videoId].url} time=${u.src} playing=${playing} look=${looks[u.clipId]} plan=${plan} luts=${luts} /></div>${u.border && plan?.lookFiles?.[u.border.file] && html`<${CardLayer} spec=${plan.lookFiles[u.border.file]} color=${u.border.color} W=${plan.width} H=${plan.height} />`}</div>`)}
     ${plan.sources.map((id) => {
     const on = part?.videoId === id; const p = on ? part : plan.parts.find((x) => x.videoId === id);
@@ -1282,7 +1284,7 @@ function EditorInner({ project, reload, ai, keep }) {
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
           : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} />` : null}${inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} mattes=${mattes} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} />` : null}${inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">

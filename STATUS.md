@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Remove background on b-roll and reversed clips (phase 18, 31 October)
+
+- **B-roll.** Pick a b-roll clip, Color, Remove background: the person in the b-roll is cut out and the picture under it shows round them. Edge, softness and invert work as on V1. B-roll laid behind V1 is refused (nothing would show it).
+- **Reversed clips.** A reversed clip now loses its background too (before, it kept it). Its matte is read backwards in the same 1 s pieces as its picture. Text behind the person also works over reversed clips now.
+- **Bug fixed on the way.** On a mirrored clip, the cut-out was not mirrored with the picture. It is now.
+- **Measured.** A red box jumping 30 px a frame, with its matte: red to its edges and the right thing just outside (green background, or the blue picture under b-roll) on every frame checked, reversed, mirrored and on b-roll from its own source second.
+- **Claude.** remove_background takes b-roll clip ids.
+- **Tests.** packages/shared/test/phase18.test.ts, apps/worker/test/phase18-render.test.ts, apps/web/demo/phase18.mjs.
+
 ## Text anchor and motion blur, b-roll borders (phase 17, 31 October)
 
 - **Text anchor.** Speed & motion for a text layer now has the 3x3 anchor grid: the point of the text it turns and scales about (its alignment point is lit until you pick another). Turning about a corner swings the text on an arc, as Premiere does.

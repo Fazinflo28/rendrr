@@ -1282,8 +1282,9 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     case "remove_background": {
       const ids = op.clipId || op.clipIds || op.all || op.video ? lookIds(tl, op) : lookIds(tl, { all: true });
       const onV1 = new Set((tl.tracks.v1 as Clip[]).map((c) => c.id));
-      const broll = ids.filter((id) => !onV1.has(id));
-      if (broll.length) throw new EditError(`remove_background works on V1 clips; ${broll.slice(0, 4).join(", ")} ${broll.length === 1 ? "is" : "are"} b-roll.`);
+      // Phase 18: b-roll too (its own video's matte), but not b-roll laid behind V1 (set_under): nothing would show it.
+      const under = ids.filter((id) => !onV1.has(id) && (tl.tracks.v2 as (Clip & { under?: boolean })[]).find((c) => c.id === id)?.under);
+      if (under.length) throw new EditError(`${under.slice(0, 4).join(", ")} ${under.length === 1 ? "is" : "are"} b-roll behind V1 (set_under): cut the person out of b-roll over the picture, or of the V1 clip in front.`);
       const next = mapLook(tl, ids, (c) => {
         const { subject: _s, ...rest } = c;
         if (op.off) return rest as typeof c;
@@ -1293,7 +1294,8 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         return { ...rest, subject: sj } as typeof c;
       });
       const sj = lookClip(next, ids[0]).clip.subject;
-      const behind = hasBehind(tl) ? "" : BLACK_BEHIND;
+      // B-roll cut out shows the picture under it; only V1 clips need something set behind them.
+      const behind = hasBehind(tl) || ids.every((id) => !onV1.has(id)) ? "" : BLACK_BEHIND;
       return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${sj ? subjectText(sj) + behind : "background back"}` };
     }
     case "set_under": {

@@ -92,15 +92,20 @@ describe("the render", () => {
     // Not the one-look shortcut (it would join the clips before the matte could follow each).
     expect(filterGraph).not.toMatch(/\[vfit\]/);
   });
-  it("a clip without it, and a reversed clip, need no matte", () => {
+  it("a reversed clip reads its matte backwards (phase 18; before, it kept its background)", () => {
     const s = edit(edit(base(), { op: "remove_background", clipId: "a" } as Op).snap, { op: "set_speed", clipId: "a", reverse: true } as Op).snap;
     const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source, videoId: "v" });
     const files: PlanFiles = { source: "/x/src.mp4", output: "/x/out.mp4", looks: {}, mattes: { [Object.keys(plan.mattes!)[0]]: "/x/m.txt" } };
-    expect(ffmpegArgs(plan, files, source, { loudnessGainDb: 0 }).args).not.toContain("/x/m.txt");
+    const { args, filterGraph } = ffmpegArgs(plan, files, source, { loudnessGainDb: 0 });
+    expect(args).toContain("/x/m.txt");
+    expect(filterGraph).toMatch(/format=gray,reverse,setpts=PTS-STARTPTS\[mrc0_0\]/);
   });
-  it("refuses b-roll", () => {
+  it("b-roll is cut out over the picture (phase 18); b-roll behind V1 is refused", () => {
     const s = edit(base(), { op: "add_broll", videoId: "br", start: 2, end: 4, sourceStart: 0 } as Op).snap;
     const id = (s.timeline.tracks.v2 as { id: string }[])[0].id;
-    expect(() => edit(s, { op: "remove_background", clipId: id } as Op)).toThrow(/works on V1 clips/);
+    const r = edit(s, { op: "remove_background", clipId: id } as Op);
+    expect(r.summary).not.toMatch(/set_background/);
+    const u = edit(s, { op: "set_under", clipId: id, under: true } as Op).snap;
+    expect(() => edit(u, { op: "remove_background", clipId: id } as Op)).toThrow(/behind V1 \(set_under\)/);
   });
 });

@@ -73,7 +73,9 @@ plugin hosting, hardware I/O, localization) are out of scope.
 17. **Anchor and motion blur on text layers; a border on b-roll cards (done, 31 October).** A text layer turns and scales
     about a point of its text (the anchor grid in Speed & motion), drawn in the render and the player alike; motion blur
     on its keyed movement in the render; b-roll cards take a border that moves with them.
-18. **Subject mask on b-roll and reversed clips.**
+18. **Subject mask on b-roll and reversed clips (done, 31 October).** remove_background on b-roll over the picture (its
+    own video's matte; the picture under it shows round the person) and on reversed clips (the matte read backwards in
+    the picture's pieces); the person behind text works over reversed clips; a mirrored clip's matte is mirrored.
 19. **The newer effects live in the player** (glow, grain, RGB split, shake, mirror).
 20. **More shape wipes; GIFs longer than a minute.**
 21. **Warp Stabilizer on b-roll and ramped clips.**

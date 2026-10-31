@@ -679,7 +679,10 @@ export function planRender(input: PlanInput): RenderPlan {
     // A card's crop and corners are one more mask (drawn as masks are, in the render and the player).
     const masks = masksWithCard(c.masks, c.cardLook);
     const skin = skinActive(c.skin) ? c.skin! : undefined;
-    const subject = c.subject && c.sourceVideoId ? { ...c.subject, matte: matteFor(c as { sourceVideoId: string; sourceIn: number; sourceOut: number }) } : undefined;
+    // Phase 18: b-roll too: its own video's matte over the stretch it plays (range).
+    const mv = c.sourceVideoId ?? (c as { videoId?: string }).videoId;
+    const mspan = c.sourceVideoId && c.sourceIn != null && c.sourceOut != null ? { sourceIn: c.sourceIn, sourceOut: c.sourceOut } : range ? { sourceIn: range.from, sourceOut: range.to } : null;
+    const subject = c.subject && mv && mspan ? { ...c.subject, matte: matteFor({ sourceVideoId: mv, ...mspan }) } : undefined;
     if (!g && !c.key && !masks?.length && !c.effects?.length && !skin && !subject) return;
     looks[c.id] = {
       ...(g ? { grade: g, lut: file({ kind: "lut", grade: g }), ...(hdr ? { lutHdr: file({ kind: "lut", grade: g, hdr: hdr.transfer }) } : {}) } : {}),
@@ -705,7 +708,7 @@ export function planRender(input: PlanInput): RenderPlan {
       if (!behindAt.some((w) => w.start < p.end - 1e-6 && w.end > p.start + 1e-6)) return;
       const id = p.clipIds[0], c = clipById.get(id) as (SeqClip & { cardLook?: CardLook }) | undefined;
       const moved = !!p.framing && (p.framing.scale !== 1 || !!p.framing.x || !!p.framing.y);
-      const why = rateOf(p) < 0 ? "reversed" : moved ? "framed smaller or moved" : clipMotion[id] ? "keyframed" : hasCard(c?.cardLook) ? "drawn as a card" : "";
+      const why = moved ? "framed smaller or moved" : clipMotion[id] ? "keyframed" : hasCard(c?.cardLook) ? "drawn as a card" : "";
       if (why) { if (!left.some((x) => x.clipId === id)) left.push({ clipId: id, why }); return; }
       pparts[i] = matteFor({ sourceVideoId: p.videoId, sourceIn: p.srcIn, sourceOut: p.srcOut });
     });
@@ -785,7 +788,7 @@ export function planRender(input: PlanInput): RenderPlan {
     ...([...broll, ...graphics].some((x) => x.blend || x.opacity != null) ? [`Blend: ${[...broll, ...graphics].filter((x) => x.blend || x.opacity != null).slice(0, 6).map((x) => `${x.videoId ? "b-roll" : "graphic"} ${x.clipId} ${blendText(x.blend, x.opacity)}`).join(", ")}`] : []),
     ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
-    ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr", background?.text),
+    ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr", background?.text, new Set(broll.map((b) => b.clipId))),
     ...(stillMoving.size ? [`Moving masks: held where they are at the clip's start on ${Array.from(stillMoving).slice(0, 4).join(", ")} (reversed)`] : []),
     ...(Object.keys(cards).length || v1.some((c) => hasCard((c as { cardLook?: CardLook }).cardLook)) ? [`Cards: ${(v1 as (SeqClip & { cardLook?: CardLook })[]).filter((c) => hasCard(c.cardLook)).slice(0, 4).map((c) => `${c.id} ${cardLookText(c.cardLook!)}`).join("; ")}`] : []),
     ...(background ? [`Behind V1: ${background.text}`] : bgIn?.videoId ? ["Behind V1: the background video is not in the library or not ready: black instead"] : []),
@@ -841,7 +844,7 @@ function exportNotes(out: { fps: number; capped: boolean }, width: number, heigh
 }
 
 /** The render plan's Phase 6 lines: colour, key, masks, blur, under layers, HDR. */
-function colorLines(looks: Record<string, LookOp>, under: OverlayOp[], missingLuts: Set<string>, hdr: RenderPlan["hdr"], hdrClips: string[], kind: RenderKind, hdrFootage: boolean, toSdr: boolean, behind?: string): string[] {
+function colorLines(looks: Record<string, LookOp>, under: OverlayOp[], missingLuts: Set<string>, hdr: RenderPlan["hdr"], hdrClips: string[], kind: RenderKind, hdrFootage: boolean, toSdr: boolean, behind?: string, brollIds: Set<string> = new Set()): string[] {
   const all = Object.entries(looks);
   const list = <T,>(xs: [string, T][], f: (x: T) => string) => xs.slice(0, 4).map(([id, x]) => `${id} ${f(x)}`).join("; ") + (xs.length > 4 ? `; +${xs.length - 4} more` : "");
   const graded = all.filter(([, l]) => l.grade).map(([id, l]) => [id, l.grade!] as [string, Grade]);
@@ -856,8 +859,12 @@ function colorLines(looks: Record<string, LookOp>, under: OverlayOp[], missingLu
   if (fx.length) out.push(`Effects: ${list(fx, effectsText)}`);
   const skins = all.filter(([, l]) => l.skin).map(([id, l]) => [id, l.skin!.skin] as [string, Skin]);
   if (skins.length) out.push(`Skin: ${list(skins, (k) => skinText(k).replace(/^skin retouch: /, ""))}`);
-  const cutout = all.filter(([, l]) => l.subject).map(([id, l]) => [id, l.subject!] as [string, SubjectOp]);
-  if (cutout.length) out.push(`Background: ${list(cutout, (x) => subjectText(x).replace(/^background removed/, "removed").replace(/^removed$/, "removed"))} (the person cut out by an AI matte); behind: ${under.length ? "b-roll laid under V1" : behind ?? "black (no set_background)"}`);
+  const cutout = all.filter(([id, l]) => l.subject && !brollIds.has(id)).map(([id, l]) => [id, l.subject!] as [string, SubjectOp]);
+  const say = (x: SubjectOp) => subjectText(x).replace(/^background removed/, "removed").replace(/^removed$/, "removed");
+  if (cutout.length) out.push(`Background: ${list(cutout, say)} (the person cut out by an AI matte); behind: ${under.length ? "b-roll laid under V1" : behind ?? "black (no set_background)"}`);
+  // Phase 18: b-roll cut out: the picture under it shows around the person.
+  const brollCut = all.filter(([id, l]) => l.subject && brollIds.has(id)).map(([id, l]) => [id, l.subject!] as [string, SubjectOp]);
+  if (brollCut.length) out.push(`Background: b-roll ${list(brollCut, say)} (the person in the b-roll cut out by an AI matte; the picture under it shows around them)`);
   if (under.length) out.push(`Under V1: ${under.length} b-roll ${under.length === 1 ? "clip" : "clips"} (${under.slice(0, 4).map((u) => u.clipId).join(", ")})`);
   const sdrGraded = hdrClips.filter((id) => looks[id]?.grade || looks[id]?.key || looks[id]?.skin);
   const gradedNote = sdrGraded.length ? `; ${sdrGraded.slice(0, 6).join(", ")} graded, keyed or retouched in SDR (as the editor shows them): no highlights above SDR white there` : "";
@@ -1519,7 +1526,20 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       if ((lk?.subject || personM) && r >= 0) {
         const mt = matteIn(lk?.subject?.matte ?? personM!, x.srcIn, r === 0 ? x.srcIn + 1 / FPS : x.srcOut + 1 / FPS);
         const both = !!lk?.subject && !!personM;
-        g.push(`[${mt}]${steps},${turnOf(x.rotate)}${fitFor(x.framing)},format=gray${both ? `,split[mf${tag}][mp${tag}]` : `[${lk?.subject ? "mf" : "mp"}${tag}]`}`);
+        g.push(`[${mt}]${steps},${turnOf(x.rotate)}${flipFilter(x.flip)}${fitFor(x.framing)},format=gray${both ? `,split[mf${tag}][mp${tag}]` : `[${lk?.subject ? "mf" : "mp"}${tag}]`}`);
+        if (lk?.subject) mattesFor[tag] = `mf${tag}`;
+        if (personM) personFor[tag] = `mp${tag}`;
+      } else if ((lk?.subject || personM) && r < 0) {
+        // Phase 18: a reversed clip: its matte in the same 1 s pieces as its picture, each played backwards, joined.
+        const name = lk?.subject?.matte ?? personM!, ps: string[] = [];
+        for (let b = x.srcOut, j = 0; b > x.srcIn + 1e-6; b -= 1, j++) {
+          const a = Math.max(x.srcIn, b - 1), M = Math.max(1, Math.round((b - a) * FPS));
+          const mt = matteIn(name, a, b + 1 / FPS);
+          g.push(`[${mt}]trim=start=${n6(a)}:end=${n6(b + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},trim=end_frame=${M},${turnOf(x.rotate)}${flipFilter(x.flip)}${fitFor(x.framing)},format=gray,reverse,setpts=PTS-STARTPTS[mrc${tag}_${j}]`);
+          ps.push(`[mrc${tag}_${j}]`);
+        }
+        const both = !!lk?.subject && !!personM;
+        g.push(`${ps.join("")}concat=n=${ps.length}:v=1:a=0,${pick(-r)}${pad},format=gray${both ? `,split[mf${tag}][mp${tag}]` : `[${lk?.subject ? "mf" : "mp"}${tag}]`}`);
         if (lk?.subject) mattesFor[tag] = `mf${tag}`;
         if (personM) personFor[tag] = `mp${tag}`;
       }
@@ -1717,7 +1737,9 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     g.push(`[vdrop]nullsink`);
     v = "vplain";
   }
-  if (!opts.measure) v = overlays(opts.pictureAs ? { ...plan, broll: [], under: [], zooms: [], adjust: undefined, person: undefined } : plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null, person: opts.pictureAs ? null : personMatte });
+  if (!opts.measure) v = overlays(opts.pictureAs ? { ...plan, broll: [], under: [], zooms: [], adjust: undefined, person: undefined } : plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null, person: opts.pictureAs ? null : personMatte,
+    // Phase 18: a b-roll clip's matte, put through its own steps, for its look's subject (by its colour chain's tag).
+    subjectMatte: (name: string, from: number, to: number, steps: string, tag: string) => { const mt = matteIn(name, from, to); g.push(`[${mt}]${steps},format=gray[smf${tag}]`); mattesFor[tag] = `smf${tag}`; } });
   mixAudio(plan, files, g, inputs, () => idx++, opts);
   // Windows that read from the start left empty placeholders where a seek would go (they never move an input's place).
   const windows: Record<string, number> = {};
@@ -1789,7 +1811,7 @@ function dropShadow(g: string[], base: string, layer: string, sh: { color: strin
   return { base: `sdv${tag}`, layer: `sdl${tag}` };
 }
 
-type ColorCtx = { colorChain: (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string) => { out: string; alpha: boolean }; PF: string; PFA: string; hdrLut: string | null; person?: string | null };
+type ColorCtx = { colorChain: (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string) => { out: string; alpha: boolean }; PF: string; PFA: string; hdrLut: string | null; person?: string | null; subjectMatte?: (name: string, from: number, to: number, steps: string, tag: string) => void };
 /** Zooms, b-roll, graphics, captions on [v]; returns the label of the finished picture ([vout]). */
 function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string, cc0: ColorCtx): string {
   let cc = cc0;
@@ -1853,6 +1875,8 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
       // Keyframed b-roll: moved, scaled, turned and faded over the picture (picture-in-picture). Phase 6: its look
       // (grade, key, masks, blur) first; in an HDR output it goes in as SDR.
       g.push(`[${bi}:v]fps=${R},${flipFilter(b.flip)}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[bk${i}]`);
+      // Phase 18: remove_background on b-roll: its own matte through the same trim, mirror and fit as its picture.
+      if (look?.subject && cc.subjectMatte) cc.subjectMatte(look.subject.matte, b.sourceStart, b.sourceStart + n / FPS + 1 / FPS, `trim=start=${n6(b.sourceStart)}:end=${n6(b.sourceStart + n / FPS + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},${flipFilter(b.flip)}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}`, `b${i}`);
       let cur = cc.colorChain(`bk${i}`, look, "sdr", n, `b${i}`).out;
       // Phase 17: a card's border, on its own frame before its keys move it (a ring inside the card: its alpha kept).
       const bp = b.border && files.looks?.[b.border.file];

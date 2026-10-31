@@ -460,8 +460,9 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
         </div>`) : html`<p class="t-small muted">The clip shows only inside its masks. Shapes are on the clip's picture and move with it.</p>`}
     </div>
 
-    ${track === "v1" || clip.sourceIn != null ? html`<${BackgroundSection} targets=${[clip]} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mattes=${mattes} />` : null}
-    ${track === "v1" || clip.sourceIn != null ? html`<${SkinSection} targets=${[clip]} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />` : null}
+    ${clip.kind === "broll" ? (clip.under ? null : html`<${BackgroundSection} targets=${[clip]} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mattes=${mattes} broll=${true} />`)
+      : track === "v1" || clip.sourceIn != null ? html`<${BackgroundSection} targets=${[clip]} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mattes=${mattes} />` : null}
+    ${clip.kind !== "broll" && (track === "v1" || clip.sourceIn != null) ? html`<${SkinSection} targets=${[clip]} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />` : null}
     <div class="col" style="gap:8px" id="effects-panel">
       <div class="row between"><b class="t-label">Blur, pixelate, sharpen, darken</b><span class="row wrap" style="gap:4px;justify-content:flex-end">
         <${Btn} kind="ghost" size="xs" id="fx-add-blur" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "blur", amount: 30 }]))}>+ Blur<//>
@@ -503,8 +504,9 @@ function PinCorners({ i, e, set, sl }) {
  * matte is made on the server the first time (the note says how far); the player shows it as soon as it is there.
  */
 const BACKS = [["none", "Black"], ["color", "A colour"], ["blur", "The room, blurred"], ["gradient", "A gradient"], ["pattern", "A pattern"]];
-function BackgroundSection({ targets, timeline, doOp, H, liveOp, mattes }) {
-  const v1 = targets.filter((c) => c.sourceIn != null && c.kind !== "broll");
+function BackgroundSection({ targets, timeline, doOp, H, liveOp, mattes, broll = false }) {
+  // Phase 18: a b-roll clip over the picture takes it too (the picture under it shows round the person).
+  const v1 = broll ? targets.filter((c) => c.kind === "broll" && !c.under) : targets.filter((c) => c.sourceIn != null && c.kind !== "broll");
   const done = v1.filter((c) => c.subject), first = done[0]?.subject;
   const vals = first ?? SUBJECT_DEFAULTS, ids = (cs) => cs.map((c) => c.id);
   const bg = timeline.background || null;
@@ -520,12 +522,13 @@ function BackgroundSection({ targets, timeline, doOp, H, liveOp, mattes }) {
       <${OpSlider} id="bg-edge" label="Edge" value=${vals.edge} min=${-20} max=${20} step=${1} show=${(v) => (v > 0 ? "+" + v : String(v))} opFor=${(v) => ({ op: "remove_background", clipIds: ids(done), edge: v })} ...${sl} />
       <${OpSlider} id="bg-soft" label="Softness" value=${vals.soft} min=${0} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => ({ op: "remove_background", clipIds: ids(done), soft: v })} ...${sl} />
       <label class="t-small row" style="gap:6px"><input type="checkbox" id="bg-invert" checked=${!!vals.invert} onChange=${(e) => doOp({ op: "remove_background", clipIds: ids(done), invert: e.target.checked })} />Remove the person instead (keep the room)</label>
+      ${broll ? html`<p class="t-small muted" style="margin:0" id="bg-note">${missing ? `Cutting out the person on the server: ${missing} ${missing === 1 ? "part" : "parts"} of 10 s left. The player shows it when ready. ` : ""}The picture under the b-roll shows round the person.</p>` : html`
       <label class="t-small" style="display:grid;gap:4px">Behind the person<select class="input sm" id="bg-behind" value=${kind} onChange=${(e) => setBack(e.target.value)}>
         ${kind === "video" && html`<option value="video">A video from your library</option>`}${BACKS.map(([v, t]) => html`<option key=${v} value=${v}>${t}</option>`)}</select></label>
       ${kind === "color" && html`<${OpColor} id="bg-color" value=${bg.color.toLowerCase()} opFor=${(c) => ({ op: "set_background", color: c.toUpperCase() })} ...${sl} />`}
       ${kind === "blur" && html`<${OpSlider} id="bg-blur" label="Blur" value=${bg.blur} min=${1} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => ({ op: "set_background", blur: v })} ...${sl} />`}
-      <p class="t-small muted" style="margin:0" id="bg-note">${missing ? `Cutting out the person on the server: ${missing} ${missing === 1 ? "part" : "parts"} of 10 s left. The player shows it when ready. ` : ""}${done.length < v1.length ? `On ${done.length} of ${v1.length} clips. ` : ""}People, not objects. B-roll set behind V1 shows there too.</p>`
-    : html`<p class="t-small muted" style="margin:0">Cut the person out and put them on a colour, the room blurred, a gradient or another video. Your AI can do it too.</p>`}
+      <p class="t-small muted" style="margin:0" id="bg-note">${missing ? `Cutting out the person on the server: ${missing} ${missing === 1 ? "part" : "parts"} of 10 s left. The player shows it when ready. ` : ""}${done.length < v1.length ? `On ${done.length} of ${v1.length} clips. ` : ""}People, not objects. B-roll set behind V1 shows there too.</p>`}`
+    : html`<p class="t-small muted" style="margin:0">${broll ? "Cut the person out of this b-roll: the picture under it shows round them. Your AI can do it too." : "Cut the person out and put them on a colour, the room blurred, a gradient or another video. Your AI can do it too."}</p>`}
   </div>`;
 }
 
