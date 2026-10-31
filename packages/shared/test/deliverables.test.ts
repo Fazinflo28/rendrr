@@ -42,7 +42,7 @@ describe("export format, bitrate and frame rate", () => {
   it("set_export stores them and says them; mp4 and null go back to the defaults", () => {
     const r = applyOp(base(), { op: "set_export", format: "gif", fps: 25, bitrate: 12 } as Op, ctx);
     expect(r.snap.timeline.export).toEqual({ format: "gif", fps: 25, bitrate: 12 });
-    expect(r.summary).toBe("export: the final as a GIF (up to 60 s, 15 fps), 12 Mbit/s, 25 fps");
+    expect(r.summary).toBe("export: the final as a GIF (up to 10 min: 15 fps to a minute, 10 fps to three, 6 fps beyond), 12 Mbit/s, 25 fps");
     const back = edit(r.snap, { op: "set_export", format: "mp4", fps: null, bitrate: null } as Op);
     expect(back.timeline.export).toBeUndefined();
   });
@@ -56,13 +56,18 @@ describe("export format, bitrate and frame rate", () => {
     const pv = plan(s, "preview");
     expect([pv.fps, pv.bitrate]).toEqual([30, undefined]);
   });
-  it("sound only writes the mix straight to its file (the picture made and dropped); a GIF over a minute is refused", () => {
+  it("sound only writes the mix straight to its file (the picture made and dropped); a long GIF gets fewer frames, past ten minutes refused", () => {
     const a = args(edit(base(), { op: "set_export", format: "wav" } as Op), "/o.wav").args.join(" ");
     expect(a).toMatch(/-map \[aout\] -c:a pcm_s16le -ar 48000 -t [\d.]+ .*\/o\.wav -map \[vout\] -f null -$/);
     const m = args(edit(base(), { op: "set_export", format: "audio" } as Op), "/o.m4a").args.join(" ");
     expect(m).toMatch(/-map \[aout\] -c:a aac -b:a 256k/);
-    const long = applyOp({ timeline: buildInitialTimeline(tr, 90, "clean", [], "v"), name: "t", aspect: "16:9", styleId: "s2" }, { op: "batch", ops: [{ op: "set_clips", track: "v1", clips: [{ id: "a", start: 0, end: 80, label: "" }] }, { op: "set_export", format: "gif" }] } as never, { ...ctx, duration: 90 }).snap;
-    expect(() => planRender({ kind: "final", snapshot: long, transcript: tr, source: { ...source, seconds: 90 }, videoId: "v" })).toThrow(/A GIF can be up to 60 s; this edit is 80 s/);
+    // Phase 20: a GIF over a minute is made at fewer frames and smaller; over ten minutes it is refused.
+    const gifOf = (secs: number) => applyOp({ timeline: buildInitialTimeline(tr, secs + 10, "clean", [], "v"), name: "t", aspect: "16:9", styleId: "s2" }, { op: "batch", ops: [{ op: "set_clips", track: "v1", clips: [{ id: "a", start: 0, end: secs, label: "" }] }, { op: "set_export", format: "gif" }] } as never, { ...ctx, duration: secs + 10 }).snap;
+    const p80 = planRender({ kind: "final", snapshot: gifOf(80), transcript: tr, source: { ...source, seconds: 90 }, videoId: "v" });
+    expect(p80.operations.join("\n")).toMatch(/Deliverable: GIF 480 px wide, 10 fps .*over a minute: fewer frames and smaller/);
+    const p300 = planRender({ kind: "final", snapshot: gifOf(300), transcript: tr, source: { ...source, seconds: 310 }, videoId: "v" });
+    expect(p300.operations.join("\n")).toMatch(/Deliverable: GIF 360 px wide, 6 fps/);
+    expect(() => planRender({ kind: "final", snapshot: gifOf(700), transcript: tr, source: { ...source, seconds: 710 }, videoId: "v" })).toThrow(/A GIF can be up to 10 minutes; this edit is 11:[34]\d/);
   });
   it("the overlay export: the picture as one colour, b-roll and zooms left out, a lossless pass", () => {
     const s = edit(base(true), { op: "set_export", format: "overlay" } as Op);

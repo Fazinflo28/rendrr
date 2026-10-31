@@ -1132,7 +1132,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (!ids.length) throw new EditError(op.all ? "There is only one clip: no cut to put a transition on." : "Send clipId (the clip after the cut), clipIds, or all: true.");
       for (const id of ids) findClip(tl, "v1", id);
       const dur = op.duration ?? (op.type === "whip" ? 0.3 : 0.5);
-      const tr: Transition | null = op.type === "cut" ? null : { type: op.type, duration: r2(dur), ...(op.dir && (op.type === "whip" || op.type === "slide" || op.type === "push" || op.type === "wipe" || op.type === "barn-door") ? { dir: op.dir } : {}) };
+      const tr: Transition | null = op.type === "cut" ? null : { type: op.type, duration: r2(dur), ...(op.dir && (op.type === "whip" || op.type === "slide" || op.type === "push" || op.type === "wipe" || op.type === "barn-door" || op.type === "blinds") ? { dir: op.dir } : {}) };
       const set = new Set(ids);
       const next = setSeq(tl, v1.map((c) => { if (!set.has(c.id)) return c; const { transition: _t, ...rest } = c; return (tr ? { ...rest, transition: tr } : rest) as SeqClip; }));
       if (!tr) return { snap: { ...snap, timeline: next }, summary: `${ids.length === 1 ? `the cut before ${name(findClip(tl, "v1", ids[0]))} is` : `${ids.length} cuts are`} plain cuts again` };
@@ -1479,7 +1479,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (ex.codec === "h264") delete ex.codec;
       const next: Timeline = { ...tl, export: ex };
       if (!Object.keys(ex).length) delete next.export;
-      const fmt = { mp4: "MP4", gif: "a GIF (up to 60 s, 15 fps)", audio: "sound only (.m4a)", wav: "sound only (WAV)", overlay: "the graphics, text and captions on transparency (ProRes 4444 .mov)" } as const;
+      const fmt = { mp4: "MP4", gif: "a GIF (up to 10 min: 15 fps to a minute, 10 fps to three, 6 fps beyond)", audio: "sound only (.m4a)", wav: "sound only (WAV)", overlay: "the graphics, text and captions on transparency (ProRes 4444 .mov)" } as const;
       const said = [op.format && `the final as ${fmt[op.format]}`, op.resolution && `final ${op.resolution === "4k" ? "4K" : op.resolution}`, op.codec && (op.codec === "hevc" ? "HEVC" : "H.264"), op.hdr && `HDR ${op.hdr === "sdr" ? "converted to SDR" : "kept when the footage is HDR"}`, op.bitrate === null ? "constant quality" : op.bitrate != null && `${ex.bitrate} Mbit/s`, op.fps === null ? "the footage's frame rate" : op.fps != null && `${op.fps} fps`].filter(Boolean);
       return { snap: { ...snap, timeline: next }, summary: `export: ${said.join(", ")}` };
     }

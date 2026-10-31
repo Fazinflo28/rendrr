@@ -9,7 +9,7 @@ const SHAPES = [["9:16", "9:16"], ["16:9", "16:9"], ["1:1", "1:1"], ["4:5", "4:5
 const SIZES = [["720p", "720p"], ["1080p", "1080p"], ["4k", "4K"]];
 const CODECS = [["h264", "H.264"], ["hevc", "HEVC"]];
 // Phase 12: what the final is made as; its frame rate.
-const FORMATS = [["mp4", "MP4 video"], ["gif", "GIF (up to 60 s)"], ["audio", "Sound only (.m4a)"], ["wav", "Sound only (WAV)"], ["overlay", "Titles on transparency (ProRes 4444)"]];
+const FORMATS = [["mp4", "MP4 video"], ["gif", "GIF (up to 10 min)"], ["audio", "Sound only (.m4a)"], ["wav", "Sound only (WAV)"], ["overlay", "Titles on transparency (ProRes 4444)"]];
 const RATES = [["", "Footage"], ["24", "24"], ["25", "25"], ["30", "30"], ["50", "50"], ["60", "60"]];
 /** A text file the browser saves (captions, chapters). */
 function saveText(name, text, type = "text/plain") {

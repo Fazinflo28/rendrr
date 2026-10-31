@@ -69,6 +69,12 @@ describe("deliverables, rendered", () => {
     assert.equal(v.codec_name, "gif");
     assert.equal(v.width, 640);
     assert.equal(v.r_frame_rate, "15/1");
+    // Phase 20: a longer edit's GIF has fewer frames a second and is smaller (gifSpec): 10 fps, 480 wide past a minute.
+    const gif2 = join(dir, "g2.gif");
+    await makeGif(file, gif2, plan.width, plan.height, undefined, 90);
+    const v2 = (await probe(gif2)).streams[0];
+    assert.equal(v2.width, 480);
+    assert.equal(v2.r_frame_rate, "10/1");
   });
 
   it("the overlay export: the text box opaque in its colour, the rest transparent, the footage gone", async () => {

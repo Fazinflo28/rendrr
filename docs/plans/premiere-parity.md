@@ -79,7 +79,8 @@ plugin hosting, hardware I/O, localization) are out of scope.
 19. **The newer effects live in the player (done, 31 October)** (glow, grain, RGB split, shake, mirror): WebGL passes with
     the render's numbers, measured against the render frame by frame. Fixed with it: glow washed colours out in the render
     (FFmpeg's 16-bit screen; now float), and shake or mirror on one clip of several broke the render (non-square pixels).
-20. **More shape wipes; GIFs longer than a minute.**
+20. **More shape wipes; GIFs longer than a minute (done, 31 October).** Iris box, Iris cross, Venetian blinds, Checker
+    wipe and Wedge wipe (render and player from one rule); GIFs up to ten minutes at fewer frames and a smaller size.
 21. **Warp Stabilizer on b-roll and ramped clips.**
 22. **Multicam sync by timecode.**
 

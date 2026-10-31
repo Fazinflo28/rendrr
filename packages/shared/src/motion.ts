@@ -182,25 +182,29 @@ export function rampSteps(ramp: RampPoint[], a: number, b: number, reverse = fal
 // ---------------------------------------------------------------------------------------------
 /** morph (Phase 8): Premiere's Morph Cut for a jump cut in a talking head: the last frame before the window flows into the
  *  first frame after it (motion-compensated in the render; the player shows a dissolve). */
-export const TRANSITIONS = ["cut", "dissolve", "dip-black", "dip-white", "whip", "zoom", "slide", "morph", "push", "wipe", "iris", "cross-zoom", "film-dissolve", "clock", "barn-door", "diamond"] as const;
+export const TRANSITIONS = ["cut", "dissolve", "dip-black", "dip-white", "whip", "zoom", "slide", "morph", "push", "wipe", "iris", "cross-zoom", "film-dissolve", "clock", "barn-door", "diamond", "box", "cross", "blinds", "checker", "wedge"] as const;
 export type TransitionType = (typeof TRANSITIONS)[number];
 export const DIRS = ["left", "right", "up", "down"] as const;
 export type Dir = (typeof DIRS)[number];
 export const TransitionSchema = z.object({ type: z.enum(TRANSITIONS), duration: z.number().min(0.1).max(4), dir: z.enum(DIRS).optional() });
 export type Transition = z.infer<typeof TransitionSchema>;
 /** These show both sides at once, so they use footage past the cut (handles). */
-export const USES_HANDLES: TransitionType[] = ["dissolve", "whip", "slide", "push", "wipe", "iris", "cross-zoom", "film-dissolve", "clock", "barn-door", "diamond"];
+export const USES_HANDLES: TransitionType[] = ["dissolve", "whip", "slide", "push", "wipe", "iris", "cross-zoom", "film-dissolve", "clock", "barn-door", "diamond", "box", "cross", "blinds", "checker", "wedge"];
+/** Phase 20: Venetian blinds' bands, and the checker wipe's columns and rows (cells the frame's shape). */
+export const BLINDS = 8;
+export const CHECKER = { cols: 8, rows: 6 } as const;
 /**
  * Phase 12: the transitions FFmpeg's xfade draws, by its own names (P runs from 1 at the window's start to 0 at its
  * end in its expressions). push: both sides move; wipe: B uncovered from the side `dir` points away from; iris: B in a
  * circle opening from the middle; cross-zoom: A zooms in as B fades up; film-dissolve: a dissolve in linear light (as
  * film exposes); clock: B swept round like a clock hand; barn-door: B in the middle, opening sideways (up/down: from
- * the middle up and down); diamond: B in a diamond opening from the middle.
+ * the middle up and down); diamond: B in a diamond opening from the middle. Phase 20: box (Iris Box), cross (Iris
+ * Cross), blinds (Venetian Blinds), checker (Checker Wipe), wedge (Wedge Wipe).
  */
-export function xfadeOf(type: TransitionType, dir: Dir = "left"): string | null {
+export function xfadeOf(type: TransitionType, dir?: Dir): string | null {
   switch (type) {
-    case "push": return `slide${dir}`;
-    case "wipe": return `wipe${dir}`;
+    case "push": return `slide${dir ?? "left"}`;
+    case "wipe": return `wipe${dir ?? "left"}`;
     case "iris": return "circleopen";
     case "cross-zoom": return "zoomin";
     case "film-dissolve": return "fade";
@@ -208,8 +212,37 @@ export function xfadeOf(type: TransitionType, dir: Dir = "left"): string | null 
     case "clock": return "custom:expr='if(lt(mod(atan2(X-W/2,H/2-Y)+2*PI,2*PI),(1-P)*2*PI),B,A)'";
     case "barn-door": return dir === "up" || dir === "down" ? "horzopen" : "vertopen";
     case "diamond": return "custom:expr='if(lt(abs(X/W-0.5)+abs(Y/H-0.5),1-P),B,A)'";
+    // Phase 20, Premiere's Iris Box, Iris Cross, Venetian Blinds, Checker Wipe and Wedge Wipe (q = 1-P, 0 to 1).
+    case "box": return "custom:expr='if(lt(max(abs(X/W-0.5),abs(Y/H-0.5)),(1-P)/2),B,A)'";
+    case "cross": return "custom:expr='if(lt(min(abs(X/W-0.5),abs(Y/H-0.5)),(1-P)/2)*lt(max(abs(X/W-0.5),abs(Y/H-0.5)),1-P),B,A)'";
+    // Each band opens from its top (left, right: vertical bands opening from their left).
+    case "blinds": return dir === "left" || dir === "right" ? `custom:expr='if(lt(mod(X*${BLINDS}/W,1),1-P),B,A)'` : `custom:expr='if(lt(mod(Y*${BLINDS}/H,1),1-P),B,A)'`;
+    // Every other cell first (left to right inside it, over the first half), then the rest (over the second half).
+    case "checker": return `custom:expr='if(lt(mod(X*${CHECKER.cols}/W,1),if(mod(floor(X*${CHECKER.cols}/W)+floor(Y*${CHECKER.rows}/H),2),2*(1-P)-1,2*(1-P))),B,A)'`;
+    // A wedge from 12 o'clock opening both ways round the middle.
+    case "wedge": return "custom:expr='if(lt(abs(atan2(X-W/2,H/2-Y)),(1-P)*PI),B,A)'";
     default: return null;
   }
+}
+/** Phase 20: whether B shows at pixel centre (x, y) of a W x H frame at progress q, for the shape wipes: the same rule
+ *  as their FFmpeg expressions and their CSS in the player (the tests check both against it). */
+export function wipeCovers(type: "box" | "cross" | "blinds" | "checker" | "wedge", q: number, x: number, y: number, W: number, H: number, dir?: Dir): boolean {
+  const u = Math.abs(x / W - 0.5), v = Math.abs(y / H - 0.5), fr = (n: number) => n - Math.floor(n);
+  if (type === "box") return Math.max(u, v) < q / 2;
+  if (type === "cross") return Math.min(u, v) < q / 2 && Math.max(u, v) < q;
+  if (type === "blinds") return (dir === "left" || dir === "right" ? fr((x * BLINDS) / W) : fr((y * BLINDS) / H)) < q;
+  if (type === "checker") { const cx = (x * CHECKER.cols) / W, cy = (y * CHECKER.rows) / H; return fr(cx) < ((Math.floor(cx) + Math.floor(cy)) % 2 ? 2 * q - 1 : 2 * q); }
+  return Math.abs(Math.atan2(x - W / 2, H / 2 - y)) < q * Math.PI;
+}
+/** Phase 20: the checker wipe at progress q as a CSS mask (an SVG of the cells, each filled from its left: every
+ *  other cell over the first half, the rest over the second), stretched over the frame. */
+export function checkerMask(q: number): string {
+  const { cols, rows } = CHECKER, rects: string[] = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const f = Math.min(1, Math.max(0, (c + r) % 2 ? 2 * q - 1 : 2 * q));
+    if (f > 0) rects.push(`<rect x='${c}' y='${r}' width='${Math.round(f * 1000) / 1000}' height='1'/>`);
+  }
+  return `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${cols} ${rows}' preserveAspectRatio='none' shape-rendering='crispEdges'>${rects.join("")}</svg>`)}")`;
 }
 /** How far the zoom transition goes in, and the whip's blur (share of the frame's width or height, at its middle). */
 export const ZOOM_PEAK = 1.6;
@@ -250,6 +283,16 @@ export function transitionAt(tr: { type: TransitionType; dir?: Dir }, p: number,
     else if (tr.type === "barn-door") look.clip = tr.dir === "up" || tr.dir === "down" ? `inset(${h}% 0 ${h}% 0)` : `inset(0 ${h}% 0 ${h}%)`;
     else if (tr.type === "diamond") look.clip = `polygon(50% ${50 - k}%, ${50 + k}% 50%, 50% ${50 + k}%, ${50 - k}% 50%)`;
     else if (tr.type === "clock") look.mask = `conic-gradient(#000 ${Math.round(q * 3600) / 10}deg, transparent 0)`;
+    // Phase 20: the same shapes as the render's expressions.
+    else if (tr.type === "box") look.clip = `inset(${h}% ${h}% ${h}% ${h}%)`;
+    else if (tr.type === "cross") {
+      const a = 50 - q * 50, b = 50 + q * 50, c = 50 - q * 100, d = 50 + q * 100, f = (v: number) => Math.round(v * 10) / 10;
+      look.clip = `polygon(${[[a, c], [b, c], [b, a], [d, a], [d, b], [b, b], [b, d], [a, d], [a, b], [c, b], [c, a], [a, a]].map(([x, y]) => `${f(x)}% ${f(y)}%`).join(", ")})`;
+    } else if (tr.type === "blinds") {
+      const band = 100 / BLINDS, open = Math.round(q * band * 100) / 100;
+      look.mask = `repeating-linear-gradient(${tr.dir === "left" || tr.dir === "right" ? "to right" : "to bottom"}, #000 0 ${open}%, transparent ${open}% ${band}%)`;
+    } else if (tr.type === "checker") look.mask = checkerMask(q);
+    else if (tr.type === "wedge") { const deg = Math.round(q * 1800) / 10; look.mask = `conic-gradient(from ${-deg}deg at 50% 50%, #000 0 ${2 * deg}deg, transparent 0)`; }
   }
   return look;
 }

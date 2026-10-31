@@ -49,7 +49,16 @@ export function chapterProblems(chapters: Chapter[], total: number): string[] {
 /** A format's file extension and media type. */
 export const formatFile = (f: ExportFormat | undefined): { ext: string; type: string } =>
   f === "gif" ? { ext: "gif", type: "image/gif" } : f === "audio" ? { ext: "m4a", type: "audio/mp4" } : f === "wav" ? { ext: "wav", type: "audio/wav" } : f === "overlay" ? { ext: "mov", type: "video/quicktime" } : { ext: "mp4", type: "video/mp4" };
-/** A GIF's width: 640 across for landscape and square, 480 for portrait. */
-export const gifWidth = (w: number, h: number) => (h > w ? 480 : 640);
-/** The longest GIF Rendrr makes, in seconds (a GIF is a stack of pictures: longer ones get huge). */
-export const GIF_MAX_SECONDS = 60;
+/** The longest GIF Rendrr makes, in seconds (a GIF is a stack of pictures: longer ones get huge). Phase 20: up to ten
+ *  minutes, at fewer frames and a smaller size as it gets longer (gifSpec). */
+export const GIF_MAX_SECONDS = 600;
+/** A GIF's frame rate and width for its length: 15 fps and 640 across (480 portrait) up to a minute, 10 fps and 480
+ *  (360) up to three, 6 fps and 360 (270) beyond: about 900 to 3600 frames, each smaller as there are more. */
+export function gifSpec(seconds: number, w: number, h: number): { fps: number; width: number } {
+  const tall = h > w;
+  if (seconds <= 60.5) return { fps: 15, width: tall ? 480 : 640 };
+  if (seconds <= 180.5) return { fps: 10, width: tall ? 360 : 480 };
+  return { fps: 6, width: tall ? 270 : 360 };
+}
+/** A GIF's width at a minute or less (gifSpec has it for any length). */
+export const gifWidth = (w: number, h: number) => gifSpec(0, w, h).width;

@@ -619,7 +619,7 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
     ${near.map((x) => { const active = tr?.op === x;
       const side = (s) => { const now = active ? tr[s] : null; const seg = x[s][0]; const l = active ? look[s] : { x: 0, y: 0, opacity: 0 };
         // Phase 12: B's clip-path or mask (wipes, iris, barn door, diamond, clock) and A's zoom (cross zoom).
-        const cut = active && s === "b" ? { ...(look.clip ? { clipPath: look.clip, WebkitClipPath: look.clip } : {}), ...(look.mask ? { maskImage: look.mask, WebkitMaskImage: look.mask } : {}) } : {};
+        const cut = active && s === "b" ? { ...(look.clip ? { clipPath: look.clip, WebkitClipPath: look.clip } : {}), ...(look.mask ? { maskImage: look.mask, WebkitMaskImage: look.mask, maskSize: "100% 100%", WebkitMaskSize: "100% 100%", maskRepeat: "no-repeat", WebkitMaskRepeat: "no-repeat" } : {}) } : {};
         const zoomA = active && s === "a" && look.aScale ? ` scale(${look.aScale})` : "";
         return html`<div key=${s} data-side=${s} style=${{ position: "absolute", inset: 0, transform: `translate(${(l.x / plan.width) * 100}%, ${(l.y / plan.height) * 100}%)${zoomA}`, opacity: l.opacity, ...cut }}>
           ${urls[seg.videoId] && html`<${Footage} id=${seg.videoId} url=${urls[seg.videoId]} rotate=${(now || seg).rotate} framing=${(now || seg).framing} motion=${now?.motion} aspect=${aspect} gl=${!!looks[(now || seg).clipId]} look=${looks[(now || seg).clipId] || null} matte=${matteOf(looks[(now || seg).clipId])} plan=${plan} luts=${luts} card=${cards[(now || seg).clipId] || null} refFn=${(el) => { if (el) tref.current[x.clipId + s] = el; else delete tref.current[x.clipId + s]; }} />`}</div>`; };
@@ -635,7 +635,7 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
 const KEY_UI = [["x", "Across", -1, 1, 0.01, (v) => Math.round(v * 100) + "%"], ["y", "Down", -1, 1, 0.01, (v) => Math.round(v * 100) + "%"], ["scale", "Scale", 0.1, 3, 0.01, (v) => Math.round(v * 100) + "%"], ["rotation", "Rotation", -180, 180, 1, (v) => Math.round(v) + "°"], ["opacity", "Opacity", 0, 1, 0.01, (v) => Math.round(v * 100) + "%"]];
 const EASE_NAME = { linear: "Linear", in: "Ease in", out: "Ease out", "in-out": "Ease in and out" };
 // Phase 12: the new transitions by their names in Premiere.
-const TR_NAME = { push: "Push", wipe: "Wipe", iris: "Iris round", "cross-zoom": "Cross zoom", "film-dissolve": "Film dissolve", clock: "Clock wipe", "barn-door": "Barn doors", diamond: "Iris diamond" };
+const TR_NAME = { push: "Push", wipe: "Wipe", iris: "Iris round", "cross-zoom": "Cross zoom", "film-dissolve": "Film dissolve", clock: "Clock wipe", "barn-door": "Barn doors", diamond: "Iris diamond", box: "Iris box", cross: "Iris cross", blinds: "Venetian blinds", checker: "Checker wipe", wedge: "Wedge wipe" };
 // Phase 11: a clip's mirror, crop, rounded corners and drop shadow (V1 clips and b-roll; set_flip and set_card); Phase 17: a border.
 function FrameLook({ clip, doOp, H, liveOp }) {
   const f = clip.flip || "", has = (a) => f === a || f === "both";
@@ -716,7 +716,7 @@ function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek 
       ${first ? html`<p class="t-small muted">The first clip: a dissolve or a dip fades it in from the colour.</p>` : null}
       <label class="t-small" style="display:grid;gap:4px">Type<select class="input sm" id="transition-type" value=${tr?.type || "cut"} onChange=${(e) => doOp(trOp({ type: e.target.value }))}>${TRANSITIONS.map((t) => html`<option key=${t} value=${t}>${t === "cut" ? "Cut" : t === "dip-black" ? "Dip to black" : t === "dip-white" ? "Dip to white" : t === "morph" ? "Morph Cut (jump cuts)" : TR_NAME[t] || t[0].toUpperCase() + t.slice(1)}</option>`)}</select></label>
       ${tr && html`<${OpSlider} id="transition-duration" label="Duration" value=${tr.duration} min=${0.1} max=${2} step=${0.05} show=${(v) => v + " s"} opFor=${(x) => trOp({ duration: x })} ...${sl} />`}
-      ${tr && ["whip", "slide", "push", "wipe", "barn-door"].includes(tr.type) && html`<label class="t-small" style="display:grid;gap:4px">Direction<select class="input sm" id="transition-dir" value=${tr.dir || "left"} onChange=${(e) => doOp(trOp({ dir: e.target.value }), false)}>${DIRS.map((d) => html`<option key=${d} value=${d}>${d}</option>`)}</select></label>`}
+      ${tr && ["whip", "slide", "push", "wipe", "barn-door", "blinds"].includes(tr.type) && html`<label class="t-small" style="display:grid;gap:4px">Direction<select class="input sm" id="transition-dir" value=${tr.dir || "left"} onChange=${(e) => doOp(trOp({ dir: e.target.value }), false)}>${DIRS.map((d) => html`<option key=${d} value=${d}>${d}</option>`)}</select></label>`}
       ${planned?.note && html`<p class="t-small" id="transition-note" style="color:var(--warn, #b45309)">${planned.end > planned.start ? `Plays ${(planned.end - planned.start).toFixed(2)} s: ` : ""}${planned.note}</p>`}
     </div>`}
     ${keyable && html`<div class="col" style="gap:10px" id="keys-panel">

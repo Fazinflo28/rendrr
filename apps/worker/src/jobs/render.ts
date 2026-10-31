@@ -324,7 +324,7 @@ export async function renderJob(ctx: Ctx) {
         await mergeOverlay(black, join(ctx.dir, "out-w.mkv"), files.output, signal);
       } else if (fmt === "gif") {
         const gif = join(ctx.dir, "out.gif");
-        await makeGif(files.output, gif, plan.width, plan.height, signal);
+        await makeGif(files.output, gif, plan.width, plan.height, signal, plan.outputSeconds);
         files.output = gif;
       }
     } catch (e) {

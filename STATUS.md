@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Five more shape wipes, GIFs up to ten minutes (phase 20, 31 October)
+
+- **New transitions** (Speed & motion, Transition): Iris box, Iris cross, Venetian blinds (across, or up and down with a direction), Checker wipe and Wedge wipe, as in Premiere.
+- **Render = player.** Each shape is one rule shared by the render (FFmpeg) and the player (CSS). Measured at the middle of each transition: every grid point away from the edge matched the rule, in the render and in the player.
+- **GIFs up to ten minutes.** Up to a minute: 15 fps, 640 px wide. Up to three minutes: 10 fps, 480 px. Beyond: 6 fps, 360 px. Over ten minutes is refused.
+- **Bug fixed on the way.** Venetian blinds' direction was dropped by the edit; it is kept now.
+- **Claude.** set_transition types box, cross, blinds (dir left/right = vertical bands), checker, wedge; set_export format gif up to 10 minutes.
+- **Tests.** packages/shared/test/phase20.test.ts, apps/worker/test/wipes20-render.test.ts (render and player against the rule), apps/worker/test/deliver-render.test.ts (a long GIF at 10 fps, 480 px), apps/web/demo/phase20.mjs.
+
 ## Glow, grain, RGB split, shake and mirror live in the player (phase 19, 31 October)
 
 - **Live.** These five effects now show in the editor's player while you edit, drawn with the render's own formulas (before, only after a render). Only the corner pin is still render-only.

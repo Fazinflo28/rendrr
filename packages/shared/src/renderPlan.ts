@@ -11,7 +11,7 @@ import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, clipFxChain, clipFxText, dialogueExpr, duckExpr, keyExpr, reverbWet, speechRanges, type AudioKey, type DialogueSpan, type Eq, type Reverb } from "./audio";
 import { audioSettings, sourceVideoIds, type AudioMixSettings, type ExportFormat } from "./timeline";
-import { chapterProblems, GIF_MAX_SECONDS, gifWidth, type Chapter } from "./deliverables";
+import { chapterProblems, GIF_MAX_SECONDS, gifSpec, type Chapter } from "./deliverables";
 import { blendFilter, blendText, type BlendMode } from "./blend";
 import { buildStyledAss, captionStyleOf, isMatted, layoutCaptions, styleText, textMatteAss, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
@@ -426,9 +426,10 @@ export function buildAss(events: CaptionEvent[], look: CaptionLook, width: numbe
 const layerBlend = (c: { blend?: BlendMode; opacity?: number }) => ({ ...(c.blend && c.blend !== "normal" ? { blend: c.blend } : {}), ...(c.opacity != null && c.opacity < 1 ? { opacity: c.opacity } : {}) });
 
 /** Phase 12: what the final is made as. */
-function deliverableLine(ex: NonNullable<Snapshot["timeline"]["export"]>, W: number, H: number, hdr: boolean): string {
+function deliverableLine(ex: NonNullable<Snapshot["timeline"]["export"]>, W: number, H: number, hdr: boolean, seconds = 0): string {
   const f = ex.format ?? "mp4";
-  const what = f === "gif" ? `GIF ${gifWidth(W, H)} px wide, 15 fps (from the ${W}x${H} render)` : f === "audio" ? "sound only, AAC 256 kbit/s (.m4a)" : f === "wav" ? "sound only, WAV 48 kHz 16-bit" : f === "overlay" ? "the graphics, text and captions on transparency (ProRes 4444 .mov with alpha; footage, b-roll and zooms left out)" : "MP4";
+  const gs = gifSpec(seconds, W, H);
+  const what = f === "gif" ? `GIF ${gs.width} px wide, ${gs.fps} fps (from the ${W}x${H} render${seconds > 60.5 ? `; over a minute: fewer frames and smaller, so the file stays a size people can open` : ""})` : f === "audio" ? "sound only, AAC 256 kbit/s (.m4a)" : f === "wav" ? "sound only, WAV 48 kHz 16-bit" : f === "overlay" ? "the graphics, text and captions on transparency (ProRes 4444 .mov with alpha; footage, b-roll and zooms left out)" : "MP4";
   return `Deliverable: ${what}${ex.bitrate && (f === "mp4" || f === "overlay") ? hdr ? "; bitrate left to quality (HDR)" : `, ${ex.bitrate} Mbit/s` : ""}${ex.fps ? `, ${ex.fps} fps` : ""}`;
 }
 
@@ -759,7 +760,7 @@ export function planRender(input: PlanInput): RenderPlan {
     chapters.push({ at: r3(at), title: (m.label || m.note || "Chapter").slice(0, 100) });
   }
   chapters.sort((a, b) => a.at - b.at);
-  if (kind === "final" && tl.export?.format === "gif" && view.total > GIF_MAX_SECONDS + 0.5) throw new RenderPlanError(`A GIF can be up to ${GIF_MAX_SECONDS} s; this edit is ${Math.round(view.total)} s. Export it as MP4, or cut it to under a minute.`);
+  if (kind === "final" && tl.export?.format === "gif" && view.total > GIF_MAX_SECONDS + 0.5) throw new RenderPlanError(`A GIF can be up to ${GIF_MAX_SECONDS / 60} minutes; this edit is ${fmtClock(view.total)}. Export it as MP4, or cut it shorter.`);
   const sound = view.sound.map((x) => ({ ...x, start: r3(x.start), end: r3(x.end) }));
   const sources = Array.from(new Set([main, ...parts.map((p) => p.videoId), ...sound.map((x) => x.videoId)])).filter((v) => parts.some((p) => p.videoId === v) || sound.some((x) => x.videoId === v));
   const videos = Object.fromEntries(sources.map((v) => [v, { hasAudio: infoOf(v)!.hasAudio, hdr: !!infoOf(v)!.hdr, ...(infoOf(v)!.hdr ? { transfer: infoOf(v)!.transfer ?? "pq" } : {}), seconds: infoOf(v)!.seconds }]));
@@ -779,7 +780,7 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(tl.multicam?.angles.length ? [multicamLine(tl.multicam, view, main, total)] : []),
     ...extrasLines(parts, clipMotion, broll, graphics, (tl.tracks.v2 as (V2Clip & { cardLook?: CardLook })[]), texts),
     ...(chapters.length ? [`Chapters: ${chapters.length} (${chapters.slice(0, 5).map((c) => `${fmtClock(c.at)} ${c.title}`).join(", ")})${chapterProblems(chapters, view.total).length ? `; YouTube shows none until there are: ${chapterProblems(chapters, view.total).join("; ")}` : ""}`] : []),
-    ...(kind === "final" && tl.export && (tl.export.format && tl.export.format !== "mp4" || tl.export.bitrate || tl.export.fps) ? [deliverableLine(tl.export, width, height, !!hdr)] : []),
+    ...(kind === "final" && tl.export && (tl.export.format && tl.export.format !== "mp4" || tl.export.bitrate || tl.export.fps) ? [deliverableLine(tl.export, width, height, !!hdr, view.total)] : []),
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
@@ -831,7 +832,7 @@ export function exportText(snap: Snapshot, footage?: FootageInfo): string {
   const fw = footage?.width ?? 0, fh = footage?.height ?? 0;
   const up = fw && fh && Math.min(width, height) > Math.min(fw, fh) * 1.05 ? `, scaled up from the footage's ${fw}x${fh}` : "";
   const res = ex.resolution === "4k" ? "4K" : ex.resolution ?? "1080p";
-  const fmt = ex.format === "gif" ? "; as a GIF (15 fps, up to 60 s)" : ex.format === "audio" ? "; sound only (.m4a)" : ex.format === "wav" ? "; sound only (WAV)" : ex.format === "overlay" ? "; the graphics, text and captions on transparency (ProRes 4444)" : "";
+  const fmt = ex.format === "gif" ? "; as a GIF (up to 10 min: 15 fps to a minute, then fewer frames and smaller)" : ex.format === "audio" ? "; sound only (.m4a)" : ex.format === "wav" ? "; sound only (WAV)" : ex.format === "overlay" ? "; the graphics, text and captions on transparency (ProRes 4444)" : "";
   return `Export (final): ${res} ${width}x${height} ${snap.aspect}, ${codec}${ex.bitrate ? ` ${ex.bitrate} Mbit/s` : ""}, ${rate}${up}${fmt}`;
 }
 
