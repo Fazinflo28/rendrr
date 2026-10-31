@@ -15,7 +15,7 @@ import { chapterProblems, GIF_MAX_SECONDS, gifSpec, type Chapter } from "./deliv
 import { blendFilter, blendText, type BlendMode } from "./blend";
 import { buildStyledAss, captionStyleOf, isMatted, layoutCaptions, styleText, textMatteAss, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
-import { adjustText, areaAt, areaPicture, buildLut, lutSizeFor, VIGNETTE_AREA, matteBlocks, moving, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
+import { adjustText, areaAt, areaPicture, firstKeyAt, buildLut, lutSizeFor, VIGNETTE_AREA, matteBlocks, moving, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean; transfer?: HdrTransfer };
@@ -707,7 +707,7 @@ export function planRender(input: PlanInput): RenderPlan {
     const span = range ?? (c.sourceIn != null && c.sourceOut != null ? { from: c.sourceIn, to: c.sourceOut } : null);
     const still = !span || !!c.reverse;
     if (still && [...(c.masks ?? []), ...(c.effects ?? []).map((e) => e.area), c.skin?.area].some((a) => moving(a))) stillMoving.add(c.id);
-    const fix = <A extends Area>(a: A): A => (still && moving(a) ? areaAt(a, span?.from ?? a.keys![0].at) : a);
+    const fix = <A extends Area>(a: A): A => (still && moving(a) ? areaAt(a, span?.from ?? firstKeyAt(a)) : a);
     const picOf = (spec: { masks: Mask[] } | { area: Area }): string => {
       const mv = "masks" in spec ? spec.masks.some((m) => moving(m)) : moving(spec.area);
       return mv && span && !still ? file({ kind: "moving", ...spec, from: r3(span.from), to: r3(span.to) }) : file("masks" in spec ? { kind: "mask", masks: spec.masks.map(fix) } : { kind: "area", area: fix(spec.area) });

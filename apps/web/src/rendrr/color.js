@@ -209,16 +209,33 @@ const sgn = (v, d = 0) => (v > 0 ? "+" : "") + (d ? v.toFixed(d) : Math.round(v)
 const BOX = (shape) => ({ shape, x: 0.25, y: 0.2, w: 0.5, h: 0.6 });
 const SHAPE_NAME = { rect: "Rectangle", ellipse: "Ellipse", path: "Path" };
 
-/** A shape held still where it is now (its keys and any face it followed dropped). */
-const stillArea = ({ keys: _k, follow: _f, ...a }) => a;
+/** A shape held still where it is now (its keys, shape keys and any face it followed dropped). */
+const stillArea = ({ keys: _k, follow: _f, pathKeys: _p, ...a }) => a;
+/** Mask path keyframes: the path's shape at footage second t added as a key (one there already is replaced); the
+ *  first key also keeps the shape the path had, at its own first moment. */
+export function keyPath(a, t, points) {
+  const r3 = (v) => Math.round(v * 1000) / 1000;
+  const keys = a.pathKeys?.length ? a.pathKeys : [];
+  const others = keys.filter((k) => Math.abs(k.at - t) > 0.02);
+  return { ...a, pathKeys: [...others, { at: r3(t), points }].sort((p, q) => p.at - q.at) };
+}
 
 /** Sliders for a shape's box and feather, and its invert box (masks and effect areas). Phase 3: follow(a, on) makes a
  *  rect or ellipse follow the face (V1 clips; null elsewhere); a shape that moves says so and can be held still. */
-function AreaControls({ idp, a, set, sl, follow, busy }) {
+function AreaControls({ idp, a, set, sl, follow, busy, footAt, redraw }) {
   const mv = moving(a), placed = a.shape !== "path" && !mv;
+  // Mask path keyframes: key the path's shape at the playhead (the clip's footage second), or draw it again there.
+  const pathKeys = a.shape === "path" ? a.pathKeys || [] : null;
+  const here = pathKeys && footAt != null ? areaAt(a, footAt).points : null;
+  const keyHere = () => set(keyPath(a, footAt, here), true);
   return html`<div class="col" style="gap:6px">
     ${a.shape !== "path" && follow && html`<label class="t-small row" style="gap:6px"><input type="checkbox" id=${idp + "-follow"} disabled=${busy} checked=${a.follow === "face"} onChange=${(e) => follow(a, e.target.checked)} />Follow the face${busy ? " (measuring…)" : ""}</label>`}
-    ${mv && html`<div class="row between" id=${idp + "-moving"}><span class="t-small muted">${a.follow === "face" ? `Follows the face (${a.keys.length} keys)` : `Moves (${a.keys.length} keys, ${a.keys[0].at.toFixed(1)}-${a.keys[a.keys.length - 1].at.toFixed(1)}s)`}</span>
+    ${pathKeys && html`<div class="col" style="gap:4px" id=${idp + "-pathkeys"}><div class="row" style="gap:6px;flex-wrap:wrap">
+      <${Btn} kind="ghost" size="xs" id=${idp + "-key-shape"} disabled=${footAt == null} title="Keep the shape it has at the playhead as a key; change it at another moment and it morphs between them" onClick=${keyHere}>◆ Key the shape here<//>
+      ${redraw && html`<${Btn} kind="ghost" size="xs" id=${idp + "-redraw"} disabled=${footAt == null} title="Draw the shape again at the playhead: it becomes a key there" onClick=${() => redraw(footAt)}>Redraw here<//>`}</div>
+      ${footAt == null && html`<span class="t-small muted">Move the playhead onto this clip to key its shape.</span>`}
+      ${pathKeys.length > 0 && html`<span class="t-small muted" id=${idp + "-pathkeys-list"}>Shape keys at ${pathKeys.map((k) => k.at.toFixed(1) + "s").join(", ")}</span>`}</div>`}
+    ${mv && html`<div class="row between" id=${idp + "-moving"}><span class="t-small muted">${a.pathKeys?.length ? `Changes shape (${a.pathKeys.length} keys, ${a.pathKeys[0].at.toFixed(1)}-${a.pathKeys[a.pathKeys.length - 1].at.toFixed(1)}s)` : a.follow === "face" ? `Follows the face (${a.keys.length} keys)` : `Moves (${a.keys.length} keys, ${a.keys[0].at.toFixed(1)}-${a.keys[a.keys.length - 1].at.toFixed(1)}s)`}</span>
       <${Btn} kind="ghost" size="xs" id=${idp + "-still"} onClick=${() => set(stillArea(a), true)}>Hold still<//></div>`}
     ${placed && html`<div class="row" style="gap:8px">
       <div class="grow"><${OpSlider} id=${idp + "-x"} label="Left" value=${a.x} min=${-0.5} max=${1} step=${0.01} show=${pct} opFor=${(v) => set({ ...a, x: v })} ...${sl} /></div>
@@ -348,7 +365,9 @@ export function Scopes({ idp, grade, luts }) {
       ${err && html`<span class="t-small muted">${err}</span>`}`}</div>`;
 }
 
-export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast, mattes = {}, adjust = { clips: [], sel: null, at: 0, dur: 0, select: () => {} } }) {
+export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast, mattes = {}, footAt = null, adjust = { clips: [], sel: null, at: 0, dur: 0, select: () => {} } }) {
+  // Mask path keyframes: a path drawn again at a moment becomes that path's shape key there.
+  const [redrawing, setRedrawing] = useState(null);
   const [ch, setCh] = useState("master");
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
@@ -453,13 +472,17 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
         <${Btn} kind="ghost" size="xs" id="mask-add-ellipse" onClick=${() => doOp(mop([...masks, BOX("ellipse")]))}>+ Ellipse<//>
         <${Btn} kind="ghost" size="xs" id="mask-add-path" onClick=${() => { setDraft([]); setMode("path"); }}>+ Path<//></span></div>
       ${mode === "path" && html`<div class="row" style="gap:6px" id="path-draft"><span class="t-small muted grow">${draft.length} points</span>
-        <${Btn} size="xs" id="path-done" disabled=${draft.length < 3} onClick=${() => { doOp(mop([...masks, { shape: "path", points: draft }])); setMode(null); setDraft([]); }}>Done<//>
-        <${Btn} kind="ghost" size="xs" onClick=${() => { setMode(null); setDraft([]); }}>Cancel<//></div>`}
+        <${Btn} size="xs" id="path-done" disabled=${draft.length < 3} onClick=${() => {
+          // The first redraw of a path keeps the shape it had as a key at the clip's start, so it morphs from it.
+          if (redrawing) { const m = masks[redrawing.i], start = clip.sourceIn ?? clip.sourceStart ?? 0; const base = m.pathKeys?.length || redrawing.at <= start + 0.05 ? m : keyPath(m, start, m.points); doOp(mop(masks.map((x, j) => (j === redrawing.i ? keyPath(base, redrawing.at, draft) : x)))); }
+          else doOp(mop([...masks, { shape: "path", points: draft }]));
+          setMode(null); setDraft([]); setRedrawing(null); }}>${redrawing ? `Key at ${redrawing.at.toFixed(1)}s` : "Done"}<//>
+        <${Btn} kind="ghost" size="xs" onClick=${() => { setMode(null); setDraft([]); setRedrawing(null); }}>Cancel<//></div>`}
       ${masks.length ? masks.map((m, i) => html`<div key=${i} class="col card flat" style="gap:6px;padding:10px" data-mask=${i}>
           <div class="row between"><span class="t-small">${SHAPE_NAME[m.shape]}${m.shape === "path" ? ` (${m.points.length} points)` : ""}</span><span class="row" style="gap:6px">
             ${i > 0 && html`<select class="input sm" id=${"mask-mode-" + i} value=${m.mode || "add"} onChange=${(e) => setMask(i)({ ...m, mode: e.target.value }, true)}><option value="add">Add</option><option value="subtract">Subtract</option><option value="intersect">Intersect</option></select>`}
             <button class="btn icon sm quiet" aria-label="Remove this mask" id=${"mask-del-" + i} onClick=${() => doOp(mop(masks.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
-          <${AreaControls} idp=${"mask-" + i} a=${m} set=${setMask(i)} sl=${sl} follow=${followMask(i)} busy=${measuring} />
+          <${AreaControls} idp=${"mask-" + i} a=${m} set=${setMask(i)} sl=${sl} follow=${followMask(i)} busy=${measuring} footAt=${footAt} redraw=${(at) => { setDraft([]); setRedrawing({ i, at }); setMode("path"); }} />
         </div>`) : html`<p class="t-small muted">The clip shows only inside its masks. Shapes are on the clip's picture and move with it.</p>`}
     </div>
 

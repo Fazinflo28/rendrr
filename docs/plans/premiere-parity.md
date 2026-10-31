@@ -91,5 +91,12 @@ plugin hosting, hardware I/O, localization) are out of scope.
     files carry one; the sound checks it and wins only when it clearly disagrees (a camera not jammed) or timecode is
     missing. The angle keeps how it was synced; the editor and Claude say "by timecode, sound check N%".
 
-Hardest, last: mask path keyframes (bezier masks that change shape), tracking an object other than a face, a
-face-aware Morph Cut.
+Hardest, last:
+
+23. **Mask path keyframes (done, 31 October).** A path mask (or effect area) keys its shape over time (pathKeys): each
+    point moves straight to its place in the next shape; shapes with different point counts are spaced out to the same
+    count along their outline first. One rule (areaAt) for the render's mask video and the player's outline and mask.
+    Editor: "Key the shape here" and "Redraw here" at the playhead. Measured: the rendered mask matched the shape between
+    keys on 100% of pixels away from the edge.
+24. **Tracking an object other than a face.**
+25. **A face-aware Morph Cut.**

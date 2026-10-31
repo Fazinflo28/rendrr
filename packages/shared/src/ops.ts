@@ -19,7 +19,7 @@ import { libraryItem, libraryParams } from "./library";
 import { BlendModeSchema, blendText, type BlendMode } from "./blend";
 import { AudioKeySchema, clipFxText, EqSchema, ReverbSchema, type AudioKey, type Eq, type Reverb } from "./audio";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
-import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, GradeSchema, gradeIsActive, mergeGrade, type GradePatch, HslSchema, WheelSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, adjustText, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
+import { AreaSchema, normalizePath, ChromaKeySchema, CurveSchema, EffectSchema, GradeSchema, gradeIsActive, mergeGrade, type GradePatch, HslSchema, WheelSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, adjustText, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, restoreSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
@@ -1425,7 +1425,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       // Phase 16: where (masks), how strong (opacity) and its fades; left out keeps them, null removes them.
       const r3 = (v: number) => Math.round(v * 1000) / 1000;
       const place = (cur: LayerFx): LayerFx => {
-        const masks = op.masks === undefined ? cur.masks : op.masks?.length ? op.masks : undefined;
+        const masks = op.masks === undefined ? cur.masks : op.masks?.length ? op.masks.map((m) => normalizePath(m)) : undefined;
         const opacity = op.opacity === undefined ? cur.opacity : op.opacity != null && op.opacity < 1 ? r3(op.opacity) : undefined;
         const fadeIn = op.fadeIn === undefined ? cur.fadeIn : op.fadeIn ? r3(op.fadeIn) : undefined;
         const fadeOut = op.fadeOut === undefined ? cur.fadeOut : op.fadeOut ? r3(op.fadeOut) : undefined;
@@ -1630,7 +1630,8 @@ const keyText = (keys: Key[]) => {
 function following(tracks: Record<string, FaceTrack | null> | undefined) {
   const faceless = new Set<string>();
   return {
-    area: <A extends Area>(a: A, clipId: string): A => {
+    area: <A extends Area>(a0: A, clipId: string): A => {
+      const a = normalizePath(a0);
       if (a.follow !== "face") return a;
       if (!tracks) {
         if (a.keys?.length) return a;

@@ -21,6 +21,14 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Mask path keyframes (31 October)
+
+- **What it is.** A path mask can change shape over time, like Premiere's mask path keyframes. Each point moves in a straight line to its place in the next shape. Shapes drawn with a different number of points still morph smoothly.
+- **Editor.** Color, Masks: on a path, "Key the shape here" keeps the shape at the playhead, and "Redraw here" draws a new shape that becomes a key at the playhead. The outline on the player now shows each mask where it is at the playhead (moving rectangles too).
+- **Render = player.** Both use one rule for the in-between shape. Measured: the rendered mask matched it on 100% of pixels away from the soft edge, at the keys and between them.
+- **Claude.** set_masks and set_effects areas take pathKeys: [{at, points}] on a path.
+- **Tests.** packages/shared/test/maskpath.test.ts, apps/worker/test/maskpath-render.test.ts, apps/web/demo/maskpath.mjs.
+
 ## Multicam sync by timecode (phase 22, 31 October)
 
 - **What changed.** Cameras are lined up by their timecode when both files carry one. The sound still checks it: if the two clearly disagree (a camera whose clock was not jammed), the sound wins. With no timecode, the sound syncs as before.

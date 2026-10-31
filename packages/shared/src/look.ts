@@ -114,6 +114,14 @@ export const AreaKeySchema = z.object({ at: z.number().min(0).max(24 * 3600), x:
 export type AreaKey = z.infer<typeof AreaKeySchema>;
 export const MAX_AREA_KEYS = 3000;
 /**
+ * Mask path keyframes: a path's shape at a moment of its clip (`at`, as AreaKey). Between keys every point moves in a
+ * straight line to its place in the next shape (shapes of different point counts are first spaced out to the same
+ * count along their outline); before the first key and after the last the shape stays.
+ */
+export const PathKeySchema = z.object({ at: z.number().min(0).max(24 * 3600), points: z.array(z.tuple([coord, coord])).min(3).max(64) });
+export type PathKey = z.infer<typeof PathKeySchema>;
+export const MAX_PATH_KEYS = 600;
+/**
  * A shape on the clip's picture, in shares of the frame (0,0 top left; 1,1 bottom right), before framing and
  * keyframes move the clip: rect and ellipse by their box (x, y = top left, w, h), path by its points (a polygon).
  * feather: soft edge as a share of the frame's short side; invert: the outside instead.
@@ -130,9 +138,12 @@ export const AreaSchema = z.object({
    *  measured over the clip (the box keeps its place and size against the face). */
   keys: z.array(AreaKeySchema).max(MAX_AREA_KEYS).optional(),
   follow: z.enum(["face"]).optional(),
+  /** Mask path keyframes: a path's shape over time (its points at each key). */
+  pathKeys: z.array(PathKeySchema).max(MAX_PATH_KEYS).optional(),
 }).superRefine((a, ctx) => {
-  if (a.shape === "path" && (a.keys?.length || a.follow)) ctx.addIssue({ code: "custom", message: "keys and follow move a rect or an ellipse, not a path" });
-  if (a.shape === "path" && !a.points) ctx.addIssue({ code: "custom", message: "a path needs points (at least 3)" });
+  if (a.shape === "path" && (a.keys?.length || a.follow)) ctx.addIssue({ code: "custom", message: "keys and follow move a rect or an ellipse; a path changes shape with pathKeys" });
+  if (a.shape !== "path" && a.pathKeys?.length) ctx.addIssue({ code: "custom", message: "pathKeys change a path's shape; a rect or an ellipse moves with keys" });
+  if (a.shape === "path" && !a.points && !a.pathKeys?.length) ctx.addIssue({ code: "custom", message: "a path needs points (at least 3), or pathKeys" });
   // A shape that follows the face may leave its box out: it is an ellipse round the face (forehead to neck).
   if (a.shape !== "path" && a.follow !== "face" && (a.x == null || a.y == null || a.w == null || a.h == null)) ctx.addIssue({ code: "custom", message: `a ${a.shape} needs x, y, w and h` });
 });
@@ -180,9 +191,47 @@ export function faceSkinArea(b: [number, number, number, number]): Area {
 export type FaceTrack = [number, number, number, number, number][];
 export const FaceTracksSchema = z.record(z.array(z.tuple([z.number(), z.number(), z.number(), z.number(), z.number()])).max(200_000).nullable());
 /** Phase 3: an area moves when it has keys at two or more moments. */
-export const moving = (a: Area | undefined): boolean => !!a?.keys && a.keys.length > 1 && a.keys.some((k) => k.at !== a.keys![0].at);
+export const moving = (a: Area | undefined): boolean => (!!a?.keys && a.keys.length > 1 && a.keys.some((k) => k.at !== a.keys![0].at)) || (!!a?.pathKeys && a.pathKeys.length > 1 && a.pathKeys.some((k) => k.at !== a.pathKeys![0].at));
+/** A path's shape keys in time order (one per moment), its points the first key's when it was sent without its own. */
+export function normalizePath<A extends Area>(a: A): A {
+  if (a.shape !== "path" || !a.pathKeys?.length) return a;
+  const ks = [...a.pathKeys].sort((p, q) => p.at - q.at).filter((k, i, arr) => i === arr.length - 1 || arr[i + 1].at - k.at > 1e-6);
+  return { ...a, points: a.points ?? ks[0].points, pathKeys: ks };
+}
+/** When a moving area's keys start (its first key's moment). */
+export const firstKeyAt = (a: Area): number => (a.pathKeys?.length ? a.pathKeys[0].at : a.keys?.[0]?.at ?? 0);
+type Pt = [number, number];
+/**
+ * A closed outline spaced out to n points along its length, starting at its first point (so a shape drawn again with
+ * more or fewer points morphs into the other without turning). Exact for n = its own count.
+ */
+export function resamplePath(points: Pt[], n: number): Pt[] {
+  if (points.length === n) return points.map((p) => [p[0], p[1]] as Pt);
+  const seg = points.map((p, i) => { const q = points[(i + 1) % points.length]; return Math.hypot(q[0] - p[0], q[1] - p[1]); });
+  const total = seg.reduce((a, b) => a + b, 0);
+  if (!(total > 0)) return Array.from({ length: n }, () => [points[0][0], points[0][1]] as Pt);
+  const out: Pt[] = [];
+  let i = 0, run = 0;
+  for (let k = 0; k < n; k++) {
+    const want = (k / n) * total;
+    while (i < seg.length - 1 && run + seg[i] < want - 1e-12) { run += seg[i]; i++; }
+    const p = points[i], q = points[(i + 1) % points.length], u = seg[i] > 0 ? Math.min(1, Math.max(0, (want - run) / seg[i])) : 0;
+    out.push([Math.round((p[0] + (q[0] - p[0]) * u) * 10000) / 10000, Math.round((p[1] + (q[1] - p[1]) * u) * 10000) / 10000]);
+  }
+  return out;
+}
+/** A path's shape at t from its pathKeys (straight between keys, matched point for point). */
+function pathAt(pk: PathKey[], t: number): Pt[] {
+  if (t <= pk[0].at) return pk[0].points as Pt[];
+  const j = pk.findIndex((x) => x.at >= t);
+  if (j < 0) return pk[pk.length - 1].points as Pt[];
+  const p = pk[j - 1], q = pk[j], u = q.at > p.at ? (t - p.at) / (q.at - p.at) : 1;
+  const n = Math.max(p.points.length, q.points.length), a = resamplePath(p.points as Pt[], n), b = resamplePath(q.points as Pt[], n);
+  return a.map((x, k) => [x[0] + (b[k][0] - x[0]) * u, x[1] + (b[k][1] - x[1]) * u] as Pt);
+}
 /** Phase 3: the area at `t` (the clip's footage seconds): its box from its keys (a straight line between them). */
 export function areaAt<A extends Area>(a: A, t: number): A {
+  if (a.shape === "path" && a.pathKeys?.length) return { ...a, points: pathAt(a.pathKeys, t) };
   const ks = a.keys;
   if (!ks?.length) return a;
   let k = ks[0];
@@ -749,7 +798,7 @@ export function gradeText(g: Grade, lutName?: (id: string) => string | undefined
   return out.join(", ") || "none";
 }
 const pct = (n: number) => `${Math.round(n * 100)}%`;
-export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}${a.follow === "face" ? ` following the face (${a.keys?.length ?? 0} keys)` : moving(a) ? ` moving (${a.keys!.length} keys, ${+a.keys![0].at.toFixed(2)}-${+a.keys![a.keys!.length - 1].at.toFixed(2)}s)` : ""}`;
+export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}${a.follow === "face" ? ` following the face (${a.keys?.length ?? 0} keys)` : a.pathKeys?.length && moving(a) ? ` changing shape (${a.pathKeys.length} keys, ${+a.pathKeys[0].at.toFixed(2)}-${+a.pathKeys[a.pathKeys.length - 1].at.toFixed(2)}s)` : moving(a) ? ` moving (${a.keys!.length} keys, ${+a.keys![0].at.toFixed(2)}-${+a.keys![a.keys!.length - 1].at.toFixed(2)}s)` : ""}`;
 export const chromaKeyText = (k: ChromaKey) => `${k.color} similarity ${k.similarity} blend ${k.blend}${k.spill ? ` spill ${k.spill}` : ""}`;
 export const masksText = (ms: Mask[]) => ms.map((m, i) => `${i && m.mode && m.mode !== "add" ? m.mode + " " : ""}${areaText(m)}`).join(", ");
 export const effectsText = (es: Effect[]) => es.map((e) => e.type === "pin" ? `corner pin${e.corners ? ` to ${e.corners.map((c) => `${Math.round(c[0] * 100)}%,${Math.round(c[1] * 100)}%`).join(" ")}` : ""}` : `${e.type === "rgbsplit" ? "RGB split" : e.type} ${e.amount}${e.area ? ` in ${areaText(e.area)}` : ""}`).join(", ");
