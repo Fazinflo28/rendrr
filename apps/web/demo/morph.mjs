@@ -34,6 +34,15 @@ const label = await page.locator('#transition-type option[value="morph"]').textC
 check(label === "Morph Cut (jump cuts)", `the menu offers ${label}`);
 await page.locator("#transition-type").selectOption("morph"); await sleep(500);
 check(await page.locator("#transition-type").inputValue() === "morph", "picked: Morph Cut");
+// Face-aware by default; the switch turns it into a plain morph and back, and the choice stays when the length changes.
+check(await page.locator("#transition-face").isChecked(), "it follows the face by default");
+await page.locator("#transition-face").uncheck(); await sleep(400);
+check(!(await page.locator("#transition-face").isChecked()), "unticked: a plain morph");
+const dur = await page.locator("#transition-duration").boundingBox().catch(() => null);
+if (dur) { await page.mouse.click(dur.x + dur.width * 0.3, dur.y + dur.height / 2); await sleep(400); }
+check(!(await page.locator("#transition-face").isChecked()), "still plain after the duration changes");
+await page.locator("#transition-face").check(); await sleep(400);
+check(await page.locator("#transition-face").isChecked(), "ticked again: face-aware");
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close();
 console.log(fails.length ? `\n${fails.length} failed` : "\nall passed");

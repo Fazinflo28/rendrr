@@ -21,6 +21,14 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Face-aware Morph Cut (31 October)
+
+- **What it is.** Morph Cut now looks for the face. On a jump cut, Rendrr finds the speaker's face in the frame before the cut and the one after, and slides and scales the head from one place to the other while the room behind dissolves. A cut with no face found (or a head that turned or was reframed) gets the plain morph as before.
+- **How good.** On a real face moved 117 px and grown 10% across a cut, every frame of the morph matched the face drawn at its in-between place (0.99 on a 0-1 match). The plain morph smeared at that size (0.12), and a dissolve showed two faces.
+- **Editor.** Speed & motion, Transition: with Morph Cut picked, "Follow the face" (on by default; off = the plain morph). The player still shows a dissolve there; the render draws the morph.
+- **Claude.** set_transition type morph is face-aware; face: false makes it plain. The render plan says which.
+- **Tests.** packages/shared/test/morph.test.ts, apps/worker/test/morph-face-render.test.ts (a real render with a real face), apps/web/demo/morph.mjs.
+
 ## Object tracking (31 October)
 
 - **What it is.** Draw a box round anything (a logo, a licence plate, a product, a face) and Rendrr follows it through the clip, like Premiere's mask tracking. Where it is covered or leaves the frame, Rendrr says so and what follows it holds still there.

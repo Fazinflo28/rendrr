@@ -16,6 +16,7 @@ import { cachedAsset, cachedCopy } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
 import { writeMoving } from "../lib/moving";
+import { morphFaces } from "../lib/morph";
 import { detectShake, makeStableCopy } from "../lib/stabilize";
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
@@ -238,6 +239,8 @@ export async function renderJob(ctx: Ctx) {
       await makeStableCopy(src, st, plan.rate || String(plan.fps || 30), trf, copy, { deep: !!plan.hdr, signal });
       (files.stableCopies ??= {})[clipId] = copy;
     }
+    // Face-aware Morph Cut: the face either side of each morph (a cut with no face found keeps the plain morph).
+    if (plan.transitions?.some((t) => t.type === "morph" && t.face !== false)) files.morphFaces = await morphFaces(plan, files, ctx.dir, signal).catch(() => ({}));
     // Phase 6: each reverb room's impulse response (seeded: the same room as the editor's player hears).
     for (const [name, size] of Object.entries(plan.audioMix?.irs ?? {})) {
       const p = join(ctx.dir, name), [l, r] = reverbIr(size);

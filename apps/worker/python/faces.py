@@ -1,7 +1,8 @@
 """Faces in frames, for set_framing fitFaceTo: YuNet (OpenCV's face detector, MIT) on raw RGB frames.
 
 Usage: faces.py MODEL FRAMES W H N. FRAMES holds N frames of W x H RGB, one after another. Prints JSON: for each
-frame the largest face found, {"x", "y", "w", "h", "score"} in pixels of the frame, or null when there is none.
+frame the largest face found, {"x", "y", "w", "h", "score", "pts"} in pixels of the frame (pts: its five points, the
+eyes, the nose tip and the corners of the mouth), or null when there is none.
 """
 import json
 import sys
@@ -19,5 +20,6 @@ for frame in frames:
         out.append(None)
         continue
     best = max(faces, key=lambda f: f[2] * f[3])
-    out.append({"x": float(best[0]), "y": float(best[1]), "w": float(best[2]), "h": float(best[3]), "score": float(best[14])})
+    pts = [[float(best[4 + 2 * k]), float(best[5 + 2 * k])] for k in range(5)]
+    out.append({"x": float(best[0]), "y": float(best[1]), "w": float(best[2]), "h": float(best[3]), "score": float(best[14]), "pts": pts})
 print(json.dumps(out))

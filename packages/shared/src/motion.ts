@@ -186,7 +186,9 @@ export const TRANSITIONS = ["cut", "dissolve", "dip-black", "dip-white", "whip",
 export type TransitionType = (typeof TRANSITIONS)[number];
 export const DIRS = ["left", "right", "up", "down"] as const;
 export type Dir = (typeof DIRS)[number];
-export const TransitionSchema = z.object({ type: z.enum(TRANSITIONS), duration: z.number().min(0.1).max(4), dir: z.enum(DIRS).optional() });
+/** face (morph only): false = a plain morph, the face not looked for (by default the face either side of the cut is
+ *  found and slid into place). */
+export const TransitionSchema = z.object({ type: z.enum(TRANSITIONS), duration: z.number().min(0.1).max(4), dir: z.enum(DIRS).optional(), face: z.literal(false).optional() });
 export type Transition = z.infer<typeof TransitionSchema>;
 /** These show both sides at once, so they use footage past the cut (handles). */
 export const USES_HANDLES: TransitionType[] = ["dissolve", "whip", "slide", "push", "wipe", "iris", "cross-zoom", "film-dissolve", "clock", "barn-door", "diamond", "box", "cross", "blinds", "checker", "wedge"];

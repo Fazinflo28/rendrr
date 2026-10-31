@@ -31,8 +31,8 @@ plugin hosting, hardware I/O, localization) are out of scope.
    hearing pan, EQ and reverb live in the editor (a WebAudio graph), a parametric EQ.
 7. **Warp Stabilizer (done, 31 October)** for hand-held footage: vidstab's two passes, smoothness, a zoom that hides
    the edges. Left for later: stabilizing ramped clips and b-roll, showing it live in the player.
-8. **Morph Cut (done, 31 October)** for jump cuts in talking heads (motion-compensated interpolation). Left for
-   later: a face-aware warp, the morph live in the player.
+8. **Morph Cut (done, 31 October)** for jump cuts in talking heads (motion-compensated interpolation). A face-aware
+   warp followed (item 25). Left for later: the morph live in the player.
 9. **Adjustment layers (done, 31 October)** over a time range: a grade and effects on everything under them
    (footage, b-roll, graphics); text and captions stay on top as they are. Left for later: keyframed and masked
    adjustment layers, their grade in an HDR output, the full grade live in the player (it shows exposure, contrast,
@@ -105,4 +105,10 @@ Hardest, last:
     the track, kept up to date after every change). Measured: the tracker stayed on a moving, growing patch (worst
     overlap 93%, centre within 0.4% of the width); in a real render the blur took a sliding square's texture from 54
     to 0.4 and a pinned title kept its place on it within 1 px while it moved 250 px.
-25. **A face-aware Morph Cut.**
+25. **A face-aware Morph Cut (done, 31 October).** The worker finds the face (YuNet's five points) in the frame before
+    a jump cut and the one after it, and fits the head's move (shift, scale, turn) to matched ORB features on the head
+    and shoulders. The render holds each frame over the window, moves A's toward B's face and B's back toward A's
+    (FFmpeg perspective, per frame), mixes them, and lays that only over a soft ellipse round the person; the room
+    dissolves. No face either side, or a move too big (a new framing, the head turned): the plain morph. Measured on a
+    real face moved 117 px and grown 10%: every frame of the window matched the face placed at its in-between spot
+    (0.989-0.998); the plain morph scored 0.12 in the middle, a dissolve below 0.

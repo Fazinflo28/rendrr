@@ -11,7 +11,7 @@ const FACES_PY = join(here, "../../python/faces.py");
 const MODEL = join(here, "../../models/yunet/face_detection_yunet_2023mar.onnx");
 const PYTHON = process.env.PYTHON_BIN || "python3";
 
-export type FaceBox = { x: number; y: number; w: number; h: number; score: number };
+export type FaceBox = { x: number; y: number; w: number; h: number; score: number; pts?: [number, number][] };
 /** A face in the fitted frame: its centre (u across, v down, 0-1) and half its height as a share of the frame's. */
 export type FaceAt = { u: number; v: number; r: number; found: number; of: number };
 

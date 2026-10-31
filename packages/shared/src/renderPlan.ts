@@ -79,7 +79,40 @@ export type PersonOp = { windows: Range[]; parts: Record<number, string>; left: 
 export type Seg = { videoId: string; srcIn: number; srcOut: number; rate: number; start: number; end: number; rotate: 0 | 90 | 180 | 270; framing: Framing | null; clipId: string };
 /** A transition on the cut at `at`, over [start, end). a / b: what each side shows over the whole window (dissolve,
  *  slide, whip; dips and zoom draw on the picture itself). asked: the duration the edit asked for. */
-export type TransitionOp = { clipId: string; type: Exclude<TransitionType, "cut">; dir?: Dir; at: number; start: number; end: number; asked: number; a: Seg[]; b: Seg[]; note?: string };
+export type TransitionOp = { clipId: string; type: Exclude<TransitionType, "cut">; dir?: Dir; at: number; start: number; end: number; asked: number; a: Seg[]; b: Seg[]; note?: string; face?: false };
+/**
+ * Face-aware Morph Cut: the face in A's frame at the window's start and in B's at its end, as the render draws them
+ * (shares of the output frame): its five points (eyes, nose tip, mouth corners) and its box [x, y, w, h].
+ */
+export type MorphFace = { a: [number, number][]; b: [number, number][]; aBox: [number, number, number, number]; bBox: [number, number, number, number] };
+/**
+ * The move that takes A's face onto B's (in pixels of a W x H frame): the centres of their points, the scale and the
+ * turn (radians) of the best fit (least squares over the five points). Null when it is too big to slide (the head
+ * turned, a new framing): over 25% bigger or smaller, turned over 20°, or moved over a third of the frame.
+ */
+export function faceWarp(f: MorphFace, W: number, H: number): { ca: [number, number]; cb: [number, number]; s: number; th: number } | null {
+  if (f.a.length < 3 || f.a.length !== f.b.length) return null;
+  const A = f.a.map(([x, y]) => [x * W, y * H]), B = f.b.map(([x, y]) => [x * W, y * H]);
+  const mean = (P: number[][]) => [P.reduce((s, p) => s + p[0], 0) / P.length, P.reduce((s, p) => s + p[1], 0) / P.length] as [number, number];
+  const ca = mean(A), cb = mean(B);
+  let sxx = 0, sxy = 0, aa = 0;
+  for (let i = 0; i < A.length; i++) {
+    const ax = A[i][0] - ca[0], ay = A[i][1] - ca[1], bx = B[i][0] - cb[0], by = B[i][1] - cb[1];
+    sxx += ax * bx + ay * by; sxy += ax * by - ay * bx; aa += ax * ax + ay * ay;
+  }
+  if (!(aa > 0)) return null;
+  const th = Math.atan2(sxy, sxx), s = Math.hypot(sxx, sxy) / aa;
+  if (s < 0.8 || s > 1.25 || Math.abs(th) > (20 * Math.PI) / 180 || Math.hypot(cb[0] - ca[0], cb[1] - ca[1]) > Math.min(W, H) / 3) return null;
+  return { ca, cb, s, th };
+}
+/** The area the head and shoulders slide in (pixels): an ellipse round both faces' upper bodies (2.4 faces wide each
+ *  side, from above the head down well past the shoulders). */
+export function morphArea(f: MorphFace, W: number, H: number): { cx: number; cy: number; rx: number; ry: number } {
+  const body = ([x, y, w, h]: [number, number, number, number]) => { const fw = w * W, fh = h * H, cx = x * W + fw / 2, cy = y * H + fh * 1.6; return [cx - fw * 2.4, cy - fh * 3.2, cx + fw * 2.4, cy + fh * 3.2]; };
+  const p = body(f.aBox), q = body(f.bBox);
+  const x0 = Math.min(p[0], q[0]), y0 = Math.min(p[1], q[1]), x1 = Math.max(p[2], q[2]), y1 = Math.max(p[3], q[3]);
+  return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, rx: (x1 - x0) / 2, ry: (y1 - y0) / 2 };
+}
 /** voice: the user's own file in place of every clip's sound (set_voice); soundId: a user's file (not the library's). */
 /** Phase 6: a clip's own sound: pan, EQ, reverb (ir: the impulse response's file in plan.irs) and volume keys (seconds
  *  from the clip's start). */
@@ -1062,7 +1095,7 @@ export function planTransitions(view: SequenceView, clipById: Map<string, SeqCli
     const tr = clipById.get(pl.id)!.transition;
     if (!tr || tr.type === "cut") return;
     const at = pl.start;
-    const base = { clipId: pl.id, ...(tr.dir ? { dir: tr.dir } : {}), at: r3(at), asked: tr.duration, a: [] as Seg[], b: [] as Seg[] };
+    const base = { clipId: pl.id, ...(tr.dir ? { dir: tr.dir } : {}), ...(tr.face === false ? { face: false as const } : {}), at: r3(at), asked: tr.duration, a: [] as Seg[], b: [] as Seg[] };
     let half = Math.min(f(tr.duration / 2), f((pl.end - pl.start) / (has(live[k + 1]?.id) ? 2 : 1)));
     if (k === 0) {
       // The first clip: a dip or a dissolve fades in from the colour (black for a dissolve).
@@ -1101,7 +1134,7 @@ function speedLines(v1: SeqClip[], view: SequenceView, transitions: TransitionOp
   const keyed = Object.keys(clipMotion).length + [...broll, ...graphics, ...texts].filter((x) => x.keys?.length).length;
   return [
     off.length ? `Speed: ${off.length} ${off.length === 1 ? "clip" : "clips"} (${off.slice(0, 6).map((c) => `${c.id} ${c.freeze ? `freeze ${c.freeze}s` : c.ramp?.length ? "ramp" : `${c.speed ?? 1}x`}${c.reverse ? " reversed" : ""}`).join(", ")}${off.length > 6 ? ", …" : ""}); sound keeps its pitch` : "Speed: all clips at normal speed",
-    tr.length ? `Transitions: ${tr.length} (${tr.slice(0, 6).map((t) => `${t.type} ${(t.end - t.start).toFixed(2)}s`).join(", ")}${tr.length > 6 ? ", …" : ""})` : "Transitions: none (cuts)",
+    tr.length ? `Transitions: ${tr.length} (${tr.slice(0, 6).map((t) => `${t.type}${t.type === "morph" ? (t.face === false ? " plain" : " face-aware") : ""} ${(t.end - t.start).toFixed(2)}s`).join(", ")}${tr.length > 6 ? ", …" : ""})${tr.some((t) => t.type === "morph" && t.face !== false) ? "; a face-aware morph slides the head into place where the face is found either side, else morphs the picture" : ""}` : "Transitions: none (cuts)",
     keyed ? `Keyframes: ${keyed} ${keyed === 1 ? "clip" : "clips"} animated` : "Keyframes: none",
   ];
 }
@@ -1118,6 +1151,8 @@ export type PlanFiles = {
   stabilize?: Record<string, string>;
   /** Phase 21: each stabilized copy's file (plan.stabilized), by clip id. */
   stableCopies?: Record<string, string>;
+  /** Face-aware Morph Cut: the face either side of each morph (by the transition's clip id), measured by the worker. */
+  morphFaces?: Record<string, MorphFace>;
   /** The other videos on V1, by video id. */
   videos?: Record<string, string>;
   output: string;
@@ -1788,6 +1823,38 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         g.push(`[xa${i}][xb${i}]xfade=transition=${xf}:duration=${n6(D)}:offset=0,trim=end_frame=${n}${film ? `,${lin("pow(val/65535,1/2.2)*65535")}` : ""},format=${PF}[tx${i}]`);
       }
       else if (t.type === "dissolve") g.push(`[${b}]format=${PFA},fade=t=in:st=0:d=${n6(D)}:alpha=1[tbf${i}];[${a}][tbf${i}]overlay=format=auto,format=${PF}[tx${i}]`);
+      else if (t.type === "morph" && t.face !== false && files.morphFaces?.[t.clipId] && faceWarp(files.morphFaces[t.clipId], W, H)) {
+        // Face-aware Morph Cut: A's frame and B's, each held over the window. A is moved, scaled and turned from where its
+        // face is toward where B's face is, and B the other way (each fully its own at its end), and the two are mixed;
+        // that slides the head into place. It is laid only over the head and shoulders (a soft ellipse round both); the
+        // rest of the picture dissolves (a still room looks the same either side).
+        const mf = files.morphFaces[t.clipId], w = faceWarp(mf, W, H)!, n = Math.max(1, Math.round(D * FPS));
+        // perspective counts its frames from 1: frame k of the window (0-based) is in = k + 1.
+        const u = `((in-1)/${n})`, k = (v: number) => v.toFixed(6);
+        const dx = w.cb[0] - w.ca[0], dy = w.cb[1] - w.ca[1], ls = Math.log(w.s);
+        // Where a corner (X, Y) of A goes at u: B's centre side by u, scaled s^u and turned th*u about A's face.
+        const corner = (X: number, Y: number, from: [number, number], sc: string, an: string, cx: string, cy: string) => {
+          const ox = X - from[0], oy = Y - from[1];
+          return [`${cx}+${sc}*(cos(${an})*${k(ox)}-sin(${an})*${k(oy)})`, `${cy}+${sc}*(sin(${an})*${k(ox)}+cos(${an})*${k(oy)})`];
+        };
+        const persp = (from: [number, number], sc: string, an: string) => {
+          const cx = `(${k(w.ca[0])}+${k(dx)}*${u})`, cy = `(${k(w.ca[1])}+${k(dy)}*${u})`;
+          const cs = [[0, 0], [W, 0], [0, H], [W, H]].map(([X, Y]) => corner(X, Y, from, sc, an, cx, cy));
+          return `perspective=${cs.map(([x, y], j) => `x${j}='${x}':y${j}='${y}'`).join(":")}:sense=destination:eval=frame:interpolation=linear`;
+        };
+        const hold = (src: string, take: string) => `[${src}]${take}trim=end_frame=1,setpts=PTS-STARTPTS,loop=loop=${n - 1}:size=1:start=0,settb=${TB},setpts=N,format=${PF}`;
+        g.push(`${hold(a, "")},split[mfa${i}][mfw${i}]`);
+        g.push(`${hold(b, "reverse,")},split[mfb${i}][mfv${i}]`);
+        g.push(`[mfw${i}]${persp(w.ca, `exp(${k(ls)}*${u})`, `(${k(w.th)}*${u})`)}[mwa${i}]`);
+        g.push(`[mfv${i}]${persp(w.cb, `exp(${k(ls)}*(${u}-1))`, `(${k(w.th)}*(${u}-1))`)}[mwb${i}]`);
+        g.push(`[mwa${i}][mwb${i}]blend=all_expr='A+(B-A)*N/${n}'[mal${i}]`);
+        g.push(`[mfa${i}][mfb${i}]blend=all_expr='A+(B-A)*N/${n}'[mba${i}]`);
+        // The soft ellipse, made small and scaled up (it is soft anyway): 1 inside 75% of it, 0 at its edge.
+        const ar = morphArea(mf, W, H), mw = Math.max(16, even(W / 4)), mh = Math.max(16, even(H / 4)), sx = mw / W, sy = mh / H;
+        g.push(`color=c=black:s=${mw}x${mh}:r=${R}:d=1,format=gray,trim=end_frame=1,geq=lum='255*clip((1-hypot((X-${k(ar.cx * sx)})/${k(ar.rx * sx)}\,(Y-${k(ar.cy * sy)})/${k(ar.ry * sy)}))/0.25\,0\,1)',scale=${W}:${H},loop=loop=${n - 1}:size=1:start=0,settb=${TB},setpts=N${hdr ? ",format=gray10le" : ""}[mmk${i}]`);
+        g.push(`[mal${i}][mmk${i}]alphamerge[mam${i}]`);
+        g.push(`[mba${i}][mam${i}]overlay=format=auto,format=${PF}[tx${i}]`);
+      }
       else if (t.type === "morph") {
         // Phase 8 (Morph Cut): A's frame at the window's start and B's at its end, D apart, and the frames between made by
         // motion-compensated interpolation (minterpolate: block motion both ways, overlapped blocks), so the head moves
