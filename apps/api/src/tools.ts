@@ -1092,7 +1092,9 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     // One preview per change: the AI's second preview in a row is not rendered unless the user asked for more since
     // (newRequest) or left feedback (a comment, a change in the editor). Each render is a version the user sees and
     // costs them tokens; the AI's own fixes after a preview wait for the next request.
-    const gate = i.newRequest ? null : await previewGate(p.id);
+    // (A preview of this same version still rendering is joined below: nothing new is rendered.)
+    const running = latest ? await prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", version: latest.v, status: { in: ["queued", "running"] } }, select: { id: true } }) : null;
+    const gate = i.newRequest || running ? null : await previewGate(p.id);
     if (gate) return { text: gate };
     const r = await startRender(c.userId, i.projectId, "preview", { by: c.ai ?? "claude" });
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
