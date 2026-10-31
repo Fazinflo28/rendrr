@@ -71,7 +71,7 @@ export async function trackObject(tl: Timeline, aspect: string, e: TrackOp, word
   type Look = { objects?: TrackedObject[] };
   const v1 = (tl.tracks.v1 as unknown as (V1 & Look & { angle?: string; start: number; end: number })[]).find((c) => c.id === e.clipId);
   const b = v1 ? null : (tl.tracks.v2 as unknown as ({ id: string; kind?: string; videoId?: string; sourceStart?: number; start: number; end: number } & Look)[]).find((c) => c.id === e.clipId && c.kind === "broll" && c.videoId);
-  if (!v1 && !b) throw new AppError(`There is no clip "${e.clipId}" on V1 or b-roll on V2 to track an object on. Read the project again to get the current clip ids. Nothing was changed.`, 400, "invalid-edit");
+  if (!v1 && !b) throw new AppError(`There is no clip "${e.clipId}" on V1 or b-roll on V2 to track an object on. A clip made in this same apply_edits is not there yet: send track_object in a second apply_edits (it stays the same version). Nothing was changed.`, 400, "invalid-edit");
   const old = e.id ? (v1 ?? b)!.objects?.find((o) => o.id === e.id) : undefined;
   let at = e.at ?? old?.at;
   const box = e.box ?? old?.box;

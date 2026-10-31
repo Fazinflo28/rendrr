@@ -21,6 +21,20 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Review of every phase: bugs found and fixed (1 November)
+
+Three reviewers read the new phases side by side; every finding was checked and fixed with a test.
+
+- **Versions and renders.** Rendering or sharing no longer looks like "Claude just changed this edit". Undo after "undo, then a new change" no longer brings back what was undone. The open editor now shows Claude's later changes in the same version instead of saving over them. `again: true` no longer gets round the one-preview rule. A client's note on a folder review link counts as feedback.
+- **Comments.** Drawings made in the editor now reach Claude (it can see them on the frame). A drawing is posted at the frame it was drawn on. Drawing on a phone no longer leaves stray listeners after a scroll.
+- **Morph Cut.** Sending a morph to all cuts keeps the ones you made plain. The face-aware morph falls back to the plain one where a side is stabilized or keyframed (it would have slid the head off target).
+- **Multicam timecode.** Exact 23.976/29.97/59.94 rates, midnight wrap per rate, 00:00:00:00 treated as no timecode, angles synced at the same time.
+- **Masks.** A path redrawn at the clip's start now renders the new shape. A path with keys but no points no longer crashes.
+- **Tracking and pins.** Pinned text keeps its own fades and turns. Pins follow the object across a split clip, mirror with a flipped clip, move with the clip's keyframes and use a multicam angle's framing. Long pins use their 60 keys where they matter most and say when the follow is rough. Tracking on an angle uses its own framing and start. Edit times use the transcript.
+- **Samples and stabilize.** Frame samples render with loudness on (they failed before). A sample inside a transition keeps the cut-out of the far side. A stabilized clip at 4x with a transition no longer runs out of smoothed footage. The cut-out of a stabilized clip now moves with the smoothed picture. A failed sample set leaves no files; two identical asks at once make one render.
+- **Known limits left.** HDR footage is stabilized at 8 bits (the stabilizer works only in 8 bits; it is dithered and the plan says so). A clip made in the same apply_edits cannot be tracked in that call (the message says to send it in a second call; it stays the same version). The cut-out of a clip that is both slowed and stabilized is not smoothed.
+- **Tests.** Shared 498, worker render tests, API tests against a real database, browser tests (comments, tracking, mask paths).
+
 ## One version and one render per request (1 November)
 
 - **Why.** Claude was making 4 or 5 versions for one request: each fix-up apply_edits was a new version, and the editing guide let it render "once more, up to 3 rounds" after its own checks. Every render is a version you have to watch, and costs tokens.
