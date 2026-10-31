@@ -183,6 +183,9 @@ const EDIT_OPS = [
   // Skin retouch (smooth, blemishes, even, brighten 0-100; fields left out keep their value, or the natural defaults).
   // Default clips: every V1 clip. area: "face" (the default: each clip's face, forehead to neck, from the faces Rendrr
   // measured into faceAreas; a clip with no face measured gets the whole picture), "frame", or a shape. off removes it.
+  // Phase 7: Warp Stabilizer on V1 clips (smooth 0-100, default 50: how much of the camera's movement is smoothed out;
+  // the picture zooms in just enough to hide the edges); off removes it.
+  z.object({ op: z.literal("stabilize"), ...lookTargets, smooth: z.number().min(0).max(100).optional(), off: z.boolean().optional() }),
   z.object({ op: z.literal("retouch_skin"), ...lookTargets, smooth: z.number().min(0).max(100).optional(), blemishes: z.number().min(0).max(100).optional(), even: z.number().min(0).max(100).optional(), brighten: z.number().min(0).max(100).optional(),
     area: z.union([z.literal("face"), z.literal("frame"), AreaSchema]).optional(), faceAreas: z.record(AreaSchema.nullable()).optional(), off: z.boolean().optional() }),
   // The person kept, the background around them transparent (an AI matte Rendrr makes of the footage; V1 clips; default
@@ -1185,6 +1188,15 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const es = (lookClip(next, ids[0]).clip.effects ?? []) as Effect[];
       return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.effects.length ? effectsText(es) : "no effects"}${fl.note(ids)}` };
     }
+    case "stabilize": {
+      const ids = op.clipId || op.clipIds || op.all || op.video ? lookIds(tl, op) : lookIds(tl, { all: true });
+      const v1 = new Set((tl.tracks.v1 as Clip[]).map((c) => c.id));
+      const bad = ids.filter((id) => !v1.has(id));
+      if (bad.length) throw new EditError(`stabilize works on V1 clips: ${bad.slice(0, 4).join(", ")} ${bad.length === 1 ? "is" : "are"} b-roll.`);
+      const smooth = op.smooth ?? 50;
+      const next = withTracks(tl, "v1", (tl.tracks.v1 as Clip[]).map((c) => { if (!ids.includes(c.id)) return c; const { stabilize: _s, ...rest } = c as Clip & { stabilize?: unknown }; return (op.off || !smooth ? rest : { ...rest, stabilize: { smooth } }) as Clip; }));
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.off || !smooth ? "not stabilized" : `stabilized, smooth ${smooth} (Warp Stabilizer: the picture zooms in a little to hide the edges)`}` };
+    }
     case "retouch_skin": {
       const ids = op.clipId || op.clipIds || op.all || op.video ? lookIds(tl, op) : lookIds(tl, { all: true });
       const given = { smooth: op.smooth, blemishes: op.blemishes, even: op.even, brighten: op.brighten };
@@ -1602,6 +1614,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
     if (c.audioMuted) extra.push("muted");
     if (c.audioGain) extra.push(`dialogue ${c.audioGain > 0 ? "+" : ""}${c.audioGain} dB`);
     if (c.audioFadeIn || c.audioFadeOut) extra.push(`fades ${c.audioFadeIn ?? 0}/${c.audioFadeOut ?? 0}s`);
+    { const st = (c as unknown as { stabilize?: { smooth: number } }).stabilize; if (st) extra.push(`stabilized ${st.smooth}`); }
     { const r = c as unknown as Record<string, unknown>, fx = clipFxText({ pan: r.audioPan as number, eq: r.audioEq as Eq, reverb: r.audioReverb as Reverb, keys: r.audioKeys as AudioKey[] }); if (fx) extra.push(`dialogue ${fx}`); }
     if (c.rotate && !look.includes("turned") ) extra.push(`turned ${c.rotate}°`);
     if (!normalSpeed(c)) extra.push(speedText(c));

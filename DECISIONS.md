@@ -357,6 +357,16 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 7: Warp Stabilizer (31 October)
+
+| Question | Decision |
+|---|---|
+| Which stabilizer | vidstab's two passes (in the worker's Debian FFmpeg): detect the camera's motion, then transform with smoothing. deshake is one pass and much weaker. optzoom=1: a fixed zoom just large enough to hide the edges for the whole part. |
+| Keeping the passes in step | vidstabtransform reads the moves frame by frame, so the detection must see exactly the frames the render gives it: the render puts each video on the plan's frame grid (setpts from the window's seek, fps) and trims each part; the detection does the same from a second before the part (the grid is anchored at 0, so the frames match). Same size too: the moves are in pixels. |
+| Smoothness | smooth 0-100 maps to vidstab's smoothing window: 0.3 frames per point (50 = 15 frames, half a second at 30 fps). |
+| Limits | Normal-speed parts only (a ramp or reverse plays as filmed and the plan says so); V1 only; the analysis runs at each render (fast against the render itself); the editor's player shows the footage as filmed. |
+| The test footage | A still scene of blurred noise seen through a crop that shakes: a repeating pattern with shakes larger than its period cannot be tracked by anything, and lavfi's random() gives new noise every frame (both tried first). |
+
 ## Premiere parity, phase 6: audio (31 October)
 
 | Question | Decision |

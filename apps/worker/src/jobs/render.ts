@@ -14,6 +14,7 @@ import { cachedAsset, cachedCopy } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
 import { writeMoving } from "../lib/moving";
+import { detectShake } from "../lib/stabilize";
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
 import { measureSound } from "../lib/sound";
@@ -197,6 +198,14 @@ export async function renderJob(ctx: Ctx) {
       if (spec.kind === "moving") await writeMoving(spec, plan, p, signal);
       else await writeFile(p, lookFileData(spec, plan, luts));
       files.looks![name] = p;
+    }
+    // Phase 7: each stabilized part's shake, measured on the frames the render will read.
+    for (const [key, st] of Object.entries(plan.stabilize ?? {})) {
+      const src = st.videoId === video.id ? files.source : files.videos?.[st.videoId];
+      if (!src) continue;
+      const p = join(ctx.dir, st.file);
+      await detectShake(src, st, plan.rate || String(plan.fps || 30), p, signal);
+      (files.stabilize ??= {})[key] = p;
     }
     // Phase 6: each reverb room's impulse response (seeded: the same room as the editor's player hears).
     for (const [name, size] of Object.entries(plan.audioMix?.irs ?? {})) {

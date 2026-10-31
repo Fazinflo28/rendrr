@@ -600,6 +600,10 @@ function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek 
         <select class="input sm" id="clip-blend" value=${clip.blend || "normal"} onChange=${(e) => doOp({ op: "set_blend", clipId: clip.id, blend: e.target.value })}>${BLEND_MODES.map((m) => html`<option key=${m} value=${m}>${BLEND_NAME[m]}</option>`)}</select></div>
       <${OpSlider} id="clip-opacity" label="Opacity" value=${clip.opacity ?? 1} min=${0} max=${1} step=${0.01} show=${(v) => Math.round(v * 100) + "%"} opFor=${(v) => ({ op: "set_blend", clipId: clip.id, opacity: v })} ...${sl} />
       <span class="t-small muted">Screen and Add for light leaks and glows; Multiply and Overlay for textures.</span></div>`}
+    ${v1 && html`<div class="col" style="gap:8px" id="stabilize-panel">
+      <div class="row between"><b class="t-label">Stabilize</b><label class="t-small row" style="gap:6px"><input type="checkbox" id="clip-stabilize" checked=${!!clip.stabilize} onChange=${(e) => doOp({ op: "stabilize", clipId: clip.id, ...(e.target.checked ? { smooth: 50 } : { off: true }) })} />Warp Stabilizer</label></div>
+      ${clip.stabilize && html`<${OpSlider} id="clip-stabilize-smooth" label="Smoothness" value=${clip.stabilize.smooth} min=${5} max=${100} step=${5} show=${(v) => String(v)} opFor=${(v) => ({ op: "stabilize", clipId: clip.id, smooth: v })} ...${sl} />
+        <span class="t-small muted">Smoothed in the render: the picture zooms in a little to hide the edges. The player shows the footage as filmed.</span>`}</div>`}
     ${v1 && html`<div class="col" style="gap:10px" id="speed-panel">
       <b class="t-label">Speed</b>
       ${clip.freeze ? html`<${OpSlider} id="freeze-len" label="Freeze length" value=${clip.freeze} min=${0.1} max=${10} step=${0.1} show=${(v) => v + " s"} opFor=${(x) => sp({ freeze: x })} ...${sl} />`

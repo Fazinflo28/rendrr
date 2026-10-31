@@ -88,6 +88,10 @@ export type AudioMix = AudioMixSettings & {
   /** Phase 6: the reverb rooms to write (impulse responses, by file name): their size. */
   irs?: Record<string, number>;
 };
+/** Phase 7: a V1 part stabilized: its footage (on the plan's frame grid, as the render reads it), analysed first by the
+ *  worker into `file` (vidstabdetect), then smoothed over `smoothing` frames in the render (vidstabtransform). */
+export type StabilizeOp = { videoId: string; srcIn: number; srcOut: number; smoothing: number; file: string };
+export const stabilizeKey = (p: { clipIds: string[]; srcIn: number }) => `${p.clipIds[0]}@${p.srcIn.toFixed(3)}`;
 export type CaptionEvent = { start: number; end: number; text: string };
 /**
  * A clip's colour and compositing (Phase 6), with the files the render reads: lut = the grade as a .cube (lutHdr: the
@@ -127,6 +131,8 @@ export type RenderPlan = {
   kept: Range[];
   /** The picture: parts in edit order, each a stretch of one video with its turn and framing. */
   parts: PicturePart[];
+  /** Phase 7: stabilized parts (by stabilizeKey). */
+  stabilize?: Record<string, StabilizeOp>;
   /** The dialogue: parts in edit order covering the whole edit (muted = silent). */
   sound: SoundPart[];
   /** The videos it plays, main footage first. */
@@ -552,6 +558,15 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(t.inside ? { inside: t.inside } : { cut: t.card!.color }) }));
 
   const parts = view.picture.map((p) => ({ ...p, start: r3(p.start), end: r3(p.end) }));
+  // Phase 7: stabilized V1 clips, part by part (normal speed only: a part at another speed plays as filmed, said below).
+  const stabilize: Record<string, StabilizeOp> = {}, unstabilized = new Set<string>();
+  for (const p of parts) {
+    const st = (clipById.get(p.clipIds[0]) as { stabilize?: { smooth: number } } | undefined)?.stabilize;
+    if (!st || p.clipIds.length !== 1) continue;
+    if ((p.rate ?? 1) !== 1 || p.srcOut - p.srcIn < 0.2) { unstabilized.add(p.clipIds[0]); continue; }
+    const op = { videoId: p.videoId, srcIn: r3(p.srcIn), srcOut: r3(p.srcOut), smoothing: Math.max(1, Math.round(st.smooth * 0.3)) };
+    stabilize[stabilizeKey(p)] = { ...op, file: `stab_${hashOf(op)}.trf` };
+  }
 
   // Phase 6: HDR stays HDR in a final (unless the edit asks for SDR): the main footage's transfer, else the first HDR
   // video's. Previews are made from the SDR preview copies.
@@ -662,6 +677,7 @@ export function planRender(input: PlanInput): RenderPlan {
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
+    ...(Object.keys(stabilize).length || unstabilized.size ? [`Stabilized (Warp Stabilizer, zoomed in to hide the edges): ${Array.from(new Set(Object.values(stabilize).map((x) => Object.keys(stabilize).find((k) => stabilize[k] === x)!.split("@")[0]))).slice(0, 6).join(", ") || "none"}${unstabilized.size ? `; as filmed where a clip plays at another speed: ${Array.from(unstabilized).slice(0, 4).join(", ")}` : ""}`] : []),
     ...([...broll, ...graphics].some((x) => x.blend || x.opacity != null) ? [`Blend: ${[...broll, ...graphics].filter((x) => x.blend || x.opacity != null).slice(0, 6).map((x) => `${x.videoId ? "b-roll" : "graphic"} ${x.clipId} ${blendText(x.blend, x.opacity)}`).join(", ")}`] : []),
     ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
@@ -685,6 +701,7 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(assBehind ? { assBehind: hdr ? hdrAss(assBehind, hdr.transfer) : assBehind } : {}), ...(person ? { person } : {}),
     ...(textMattes.length ? { textMattes: hdr ? textMattes.map((m) => (m.decor ? { ...m, decor: hdrAss(m.decor, hdr.transfer) } : m)) : textMattes } : {}),
     ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}),
+    ...(Object.keys(stabilize).length ? { stabilize } : {}),
   };
 }
 
@@ -860,6 +877,8 @@ export type PlanFiles = {
   source: string;
   /** Phase 6: the reverb rooms' impulse responses written out (by plan.audioMix.irs name). */
   irs?: Record<string, string>;
+  /** Phase 7: each stabilized part's shake (vidstabdetect's file), by stabilizeKey. */
+  stabilize?: Record<string, string>;
   /** The other videos on V1, by video id. */
   videos?: Record<string, string>;
   output: string;
@@ -1296,6 +1315,12 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
      * 1 s chunks, each from its own input so memory stays small; frozen = one frame held), turned, fitted, framed and
      * moved by its clip's keyframes. `exact` pads or trims to the frame count (transition sides).
      */
+    // Phase 7: a stabilized part smoothed by the shake its own frames showed (the worker's vidstabdetect pass over the same
+    // frames), zoomed in just enough to hide the edges.
+    const stab = (x: { srcIn: number; clipIds?: string[] }) => {
+      const st = x.clipIds ? plan.stabilize?.[stabilizeKey({ clipIds: x.clipIds, srcIn: x.srcIn })] : undefined, f = st ? files.stabilize?.[stabilizeKey({ clipIds: x.clipIds!, srcIn: x.srcIn })] : undefined;
+      return st && f ? `,vidstabtransform=input=${q(f)}:smoothing=${st.smoothing}:optzoom=1:interpol=bicubic` : "";
+    };
     const drawSeg = (x: { videoId: string; srcIn: number; srcOut: number; rate?: number; start: number; end: number; rotate: number; framing: Framing | null; clipIds?: string[]; clipId?: string }, out: string, tag: string, exact = false) => {
       const N = Math.max(1, Math.round((x.end - x.start) * FPS));
       const r = rateOf(x);
@@ -1320,7 +1345,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         chain = `${parts.join("")}concat=n=${parts.length}:v=1:a=0,${pick(-r)}${pad}`;
       } else if (r === 0) chain = `[${branch(x.videoId, x.srcIn, x.srcIn + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
       else if (r !== 1) chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
-      else chain = `[${branch(x.videoId, x.srcIn, x.srcOut)}]${vt(x)}${exact ? pad : ""},${look}`;
+      else chain = `[${branch(x.videoId, x.srcIn, x.srcOut)}]${vt(x)}${stab(x)}${exact ? pad : ""},${look}`;
       // remove_background: the matte through the same trim, speed, turn and fit (not reversed clips: they keep theirs).
       // Phase 2: a main part under a layer behind the person reads one too (plan.person.parts), kept apart.
       const personM = /^\d+$/.test(tag) ? plan.person?.parts[Number(tag)] : undefined;
@@ -1362,7 +1387,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     // One video, one look, all at normal speed and still: cut, join, then fit once (the same graph model A used).
     // Otherwise each part is drawn on its own first.
     const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
-    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject || isMovingLook(l)) && !Object.keys(plan.person?.parts ?? {}).length;
+    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject || isMovingLook(l)) && !Object.keys(plan.person?.parts ?? {}).length && !plan.stabilize;
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId, p.srcIn, p.srcOut)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
     const withPerson = !!plan.person?.windows.length && Object.keys(personFor).length > 0;
     const blackFrom = new Set<number>();
