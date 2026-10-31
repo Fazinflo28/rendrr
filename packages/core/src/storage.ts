@@ -160,7 +160,7 @@ export async function abortStaleMultipart(prefix: string, before: Date): Promise
 
 export function contentTypeFor(key: string): string {
   const ext = key.split(".").pop()?.toLowerCase();
-  return ({ mp4: "video/mp4", m4a: "audio/mp4", webm: "video/webm", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", json: "application/json", mov: "video/quicktime", wav: "audio/wav" } as Record<string, string>)[ext || ""] || "application/octet-stream";
+  return ({ mp4: "video/mp4", m4a: "audio/mp4", webm: "video/webm", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", json: "application/json", mov: "video/quicktime", wav: "audio/wav", gif: "image/gif", srt: "text/plain", vtt: "text/vtt", txt: "text/plain" } as Record<string, string>)[ext || ""] || "application/octet-stream";
 }
 
 /** Browsers upload previews and originals straight to storage, so the bucket must allow the web app's origin. */

@@ -357,6 +357,16 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 12a: deliverables (31 October)
+
+| Question | Decision |
+|---|---|
+| Captions files | Every final comes with SRT and WebVTT of the edit's words (cues laid out as the captions are, in the words' own case), whether or not captions are drawn on the picture. The editor's Export window saves them from the edit at once, without a render. |
+| YouTube chapters | Chapter marks (add_marks kind chapter, with a label) where their footage plays in the edit, as "0:00 Title" lines; the first is put at 0:00; what YouTube needs (3 chapters, 10 s each) is said when it is missing. The final's answer carries them to paste. |
+| Formats | set_export format: mp4 (default); gif (made from the MP4 with its own palette, 15 fps, 640 wide or 480 for portrait, up to 60 s: refused above); audio (AAC 256 kbit/s .m4a) and wav (PCM 48 kHz), written straight from the mix; overlay (the graphics, text and captions on transparency). |
+| Transparency | The overlay export renders the edit twice with the picture as one colour (black, then white), footage, b-roll, zooms, adjustment layers and the person matte left out, losslessly (FFV1 4:4:4); alpha = 1 - (white - black), the colour un-premultiplied from the black pass, into ProRes 4444. This is exact for anything the graph composites, libass text and its soft shadows included, which an RGBA graph could not promise (libass does not write alpha). |
+| Bitrate and frame rate | bitrate (Mbit/s) replaces constant quality with that average (peaks to 1.5x); fps (24, 25, 30, 50, 60) replaces the footage's for the final. HDR keeps constant quality. |
+
 ## Premiere parity, phase 11: flip, crop, anchor, shadow, motion blur, smooth slow motion, eased ramps (31 October)
 
 | Question | Decision |

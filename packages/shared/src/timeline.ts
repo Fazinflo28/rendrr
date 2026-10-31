@@ -217,11 +217,18 @@ export const RESOLUTIONS = ["720p", "1080p", "4k"] as const;
 export const CODECS = ["h264", "hevc"] as const;
 export type Resolution = (typeof RESOLUTIONS)[number];
 export type Codec = (typeof CODECS)[number];
-export const ExportSchema = z.object({ hdr: z.enum(["keep", "sdr"]).optional(), resolution: z.enum(RESOLUTIONS).optional(), codec: z.enum(CODECS).optional() });
+/** Phase 12: what the final is (mp4; gif; audio: AAC .m4a; wav; overlay: the graphics, text and captions on
+ *  transparency, ProRes 4444), its video bitrate in Mbit/s (left out: constant quality) and its frame rate (left out:
+ *  the footage's). */
+export const EXPORT_FORMATS = ["mp4", "gif", "audio", "wav", "overlay"] as const;
+export type ExportFormat = (typeof EXPORT_FORMATS)[number];
+export const EXPORT_FPS = [24, 25, 30, 50, 60] as const;
+export const ExportSchema = z.object({ hdr: z.enum(["keep", "sdr"]).optional(), resolution: z.enum(RESOLUTIONS).optional(), codec: z.enum(CODECS).optional(),
+  format: z.enum(EXPORT_FORMATS).optional(), bitrate: z.number().min(1).max(200).optional(), fps: z.union([z.literal(24), z.literal(25), z.literal(30), z.literal(50), z.literal(60)]).optional() });
 export type ExportSettings = z.infer<typeof ExportSchema>;
 
 // Marks (see marks.ts): what Rendrr or the AI noticed, in footage seconds. The AI's own are kept with the edit.
-export const MARK_KINDS = ["silence", "filler", "retake", "stumble", "false_start", "off_camera", "director_note", "breath", "click_pop", "loud_peak", "clipped_audio", "low_light", "out_of_focus", "scene_change", "face_lost", "music_beat", "custom"] as const;
+export const MARK_KINDS = ["silence", "filler", "retake", "stumble", "false_start", "off_camera", "director_note", "breath", "click_pop", "loud_peak", "clipped_audio", "low_light", "out_of_focus", "scene_change", "face_lost", "music_beat", "chapter", "custom"] as const;
 export type MarkKind = (typeof MARK_KINDS)[number];
 
 const markTime = z.number().finite().min(0).max(24 * 3600);

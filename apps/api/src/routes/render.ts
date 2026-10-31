@@ -35,7 +35,7 @@ export default async function render(app: FastifyInstance) {
     const conn = await prisma.driveConnection.findUnique({ where: { userId } });
     if (!conn || conn.stub) throw new AppError("Connect Google Drive first (Library > Add footage > Google Drive), then save again.", 409, "drive");
     const res = await renderResult(r);
-    const f = await drive.uploadToDrive(userId, res.fileName, { url: await signGet(r.outputKey, 3600), size: Number(r.sizeBytes), type: "video/mp4" });
+    const f = await drive.uploadToDrive(userId, res.fileName, { url: await signGet(r.outputKey, 3600), size: Number(r.sizeBytes), type: ({ gif: "image/gif", m4a: "audio/mp4", wav: "audio/wav", mov: "video/quicktime" } as Record<string, string>)[res.ext] ?? "video/mp4" });
     return { ok: true, fileId: f.id, link: f.webViewLink ?? null, message: `Saved to your Google Drive as "${res.fileName}".` };
   });
 

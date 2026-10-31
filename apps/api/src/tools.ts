@@ -322,7 +322,9 @@ async function renderOut(renderId: string): Promise<ToolOut> {
   const took = res.renderSeconds != null ? `, rendered in ${res.renderSeconds < 60 ? `${Math.round(res.renderSeconds)} s` : `${Math.floor(res.renderSeconds / 60)} min ${Math.round(res.renderSeconds % 60)} s`}` : "";
   const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s${took}. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
   const dl = driveLine(r);
-  if (r.kind === "final") return { text: dl ? `${head}\n${dl}` : head, data: { renderId: r.id } };
+  // Phase 12: the captions files and YouTube chapters made with a final.
+  const extra = [res.files.srt ? `Captions: SRT ${res.files.srt} , WebVTT ${res.files.vtt}` : "", res.chapters ? `YouTube chapters (paste into the description${res.chapterNote.length ? `; YouTube shows none until there are: ${res.chapterNote.join("; ")}` : ""}):\n${res.chapters}` : ""].filter(Boolean).join("\n");
+  if (r.kind === "final") return { text: [head, extra, dl].filter(Boolean).join("\n"), data: { renderId: r.id } };
   const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number; operations?: string[]; heard?: HeardTranscript } | null;
   // Phase 6: what the render itself said about HDR and missing LUTs goes into the check.
   const notes = (plan?.operations ?? []).filter((l) => l.startsWith("HDR:") || /^Color: LUT .* left out/.test(l) || /^Graphic \S+ left out/.test(l));

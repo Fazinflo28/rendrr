@@ -3,11 +3,19 @@
 // choice is part of the edit, undoable, and what the AI sees in get_project.
 import { html, Btn, Modal } from "./ui";
 import { outputRate, outputSize, rateText } from "@rendrr/shared/renderPlan";
-import { ASPECT_RATIO } from "@rendrr/shared";
+import { ASPECT_RATIO, chapterProblems, chaptersText, srtText, vttText } from "@rendrr/shared";
 
 const SHAPES = [["9:16", "9:16"], ["16:9", "16:9"], ["1:1", "1:1"], ["4:5", "4:5"]];
 const SIZES = [["720p", "720p"], ["1080p", "1080p"], ["4k", "4K"]];
 const CODECS = [["h264", "H.264"], ["hevc", "HEVC"]];
+// Phase 12: what the final is made as; its frame rate.
+const FORMATS = [["mp4", "MP4 video"], ["gif", "GIF (up to 60 s)"], ["audio", "Sound only (.m4a)"], ["wav", "Sound only (WAV)"], ["overlay", "Titles on transparency (ProRes 4444)"]];
+const RATES = [["", "Footage"], ["24", "24"], ["25", "25"], ["30", "30"], ["50", "50"], ["60", "60"]];
+/** A text file the browser saves (captions, chapters). */
+function saveText(name, text, type = "text/plain") {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
 
 function Seg({ id, value, options, onPick }) {
   return html`<div class="seg sm" role="group" id=${id}>${options.map(([v, label]) => html`<button key=${v} type="button" class=${value === v ? "on" : ""} aria-pressed=${value === v} data-v=${v} onClick=${() => value !== v && onPick(v)}>${label}</button>`)}</div>`;
@@ -23,12 +31,14 @@ export function exportSummary(snap, video) {
   return [
     `${width}x${height}`,
     hdr ? "HEVC 10-bit HDR" : ex.codec === "hevc" ? "HEVC" : "H.264",
-    !r ? "your footage's frame rate" : r.capped ? `60 fps (your footage is ${rateText(video.fps)})` : `${rateText(r.fps)} fps, kept from your footage`,
+    ex.fps ? `${ex.fps} fps` : !r ? "your footage's frame rate" : r.capped ? `60 fps (your footage is ${rateText(video.fps)})` : `${rateText(r.fps)} fps, kept from your footage`,
+    ex.bitrate ? `${ex.bitrate} Mbit/s` : null,
+    ex.format && ex.format !== "mp4" ? (FORMATS.find((f) => f[0] === ex.format) || [0, ""])[1] : null,
     short && video?.kind !== "canvas" && Math.min(width, height) > short * 1.05 ? `scaled up from ${video.width}x${video.height}` : null,
   ].filter(Boolean).join(" · ");
 }
 
-export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, reframing = false }) {
+export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, reframing = false, plan = null, name = "edit" }) {
   const ex = snap.timeline.export || {};
   const hdrFootage = !!video?.hdr;
   // Footage of another shape is cut to fit; Follow the speaker keeps the face in view (set_framing focus "face").
@@ -45,7 +55,20 @@ export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, r
         ? html`<span class="t-small muted" id="export-codec-hdr">HEVC 10-bit (HDR kept)</span>`
         : html`<${Seg} id="export-codec" value=${ex.codec || "h264"} options=${CODECS} onPick=${(v) => doOp({ op: "set_export", codec: v })} />`)}
       ${hdrFootage && row("HDR", html`<${Seg} id="export-hdr" value=${ex.hdr || "keep"} options=${[["keep", "Keep HDR"], ["sdr", "Convert to SDR"]]} onPick=${(v) => doOp({ op: "set_export", hdr: v })} />`)}
+      ${row("Format", html`<select class="input sm" id="export-format" value=${ex.format || "mp4"} onChange=${(e) => doOp({ op: "set_export", format: e.target.value })}>${FORMATS.map(([v, l]) => html`<option key=${v} value=${v}>${l}</option>`)}</select>`)}
+      ${(!ex.format || ex.format === "mp4" || ex.format === "overlay") && row("Frame rate", html`<${Seg} id="export-fps" value=${ex.fps ? String(ex.fps) : ""} options=${RATES} onPick=${(v) => doOp({ op: "set_export", fps: v ? Number(v) : null })} />`)}
+      ${(!ex.format || ex.format === "mp4") && row("Bitrate", html`<label class="row t-small" style="gap:6px;align-items:center"><input class="input sm mono" type="number" min="1" max="200" step="1" id="export-bitrate" placeholder="Auto" value=${ex.bitrate ?? ""} style="width:80px" onChange=${(e) => doOp({ op: "set_export", bitrate: e.target.value ? Number(e.target.value) : null })} />Mbit/s</label>`)}
+      ${ex.format === "overlay" && html`<p class="t-small muted" id="export-overlay-note">The graphics, text and captions alone, on transparency, to lay over footage in another editor. Footage, b-roll and zooms are left out.</p>`}
       <p class="t-small muted" id="export-summary">${exportSummary(snap, video)}</p>
+      ${plan && html`<div class="col" style="gap:6px" id="export-files">
+        <span class="t-label">Captions and chapters</span>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <${Btn} kind="secondary" size="xs" icon="download" id="export-srt" disabled=${!plan.subtitles?.length} onClick=${() => saveText(`${name}.srt`, srtText(plan.subtitles))}>SRT<//>
+          <${Btn} kind="secondary" size="xs" icon="download" id="export-vtt" disabled=${!plan.subtitles?.length} onClick=${() => saveText(`${name}.vtt`, vttText(plan.subtitles), "text/vtt")}>WebVTT<//>
+          <${Btn} kind="secondary" size="xs" icon="copy" id="export-chapters" disabled=${!plan.chapters?.length} onClick=${() => { const t = chaptersText(plan.chapters); navigator.clipboard?.writeText(t).catch(() => {}); saveText(`${name} chapters.txt`, t); }}>YouTube chapters<//>
+        </div>
+        <span class="t-small muted" id="export-chapters-note">${plan.chapters?.length ? `${plan.chapters.length} chapters from your chapter marks${chapterProblems(plan.chapters, plan.outputSeconds).length ? `. YouTube shows none until there are: ${chapterProblems(plan.chapters, plan.outputSeconds).join("; ")}` : "."}` : "Chapters come from chapter marks (your AI adds them with add_marks, kind chapter)."}</span>
+      </div>`}
       <p class="t-small muted">${(ex.resolution === "4k" || ex.codec === "hevc") ? "4K and HEVC take longer to render; the window shows the time left." : "Frame rate: the final keeps your footage's. Previews are 30 fps."}</p>
       <div class="row"><${Btn} icon="film" id="export-render" onClick=${onRender}>Export final<//><${Btn} kind="ghost" onClick=${onClose}>Cancel<//></div>
     </div>

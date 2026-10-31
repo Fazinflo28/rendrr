@@ -64,7 +64,7 @@ describe("export settings", () => {
     expect(a.summary).toBe("export: final 4K, HEVC");
     const b = edit(a.snap, { op: "set_export", resolution: "1080p", codec: "h264" } as Op);
     expect(b.snap.timeline.export).toBeUndefined();
-    expect(() => edit(base(), { op: "set_export" } as Op)).toThrow(/needs hdr, resolution or codec/);
+    expect(() => edit(base(), { op: "set_export" } as Op)).toThrow(/needs hdr, resolution, codec, format, bitrate or fps/);
     expect(edit(base(), { op: "set_export", resolution: "720p", hdr: "sdr" } as Op).snap.timeline.export).toEqual({ resolution: "720p", hdr: "sdr" });
   });
   it("sizes the final by resolution in every shape", () => {

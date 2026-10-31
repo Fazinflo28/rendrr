@@ -1,5 +1,7 @@
 import { deleteObject, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
+import { formatFile } from "@rendrr/shared";
+import { makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
 import { allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, planRender, RenderPlanError, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
@@ -266,7 +268,13 @@ export async function renderJob(ctx: Ctx) {
     // Threads: the encoder as many as the container's CPUs (x264 left alone takes 1.5 times the host's 48), the decoders
     // twice that between them; once more after running out, one filter thread and one per decoder.
     const cpus = cpuBudget();
-    const argsFor = (ft: number, decode = cpus * 2) => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets });
+    // Phase 12: what the final is made as. Sound only goes straight to its file; the overlay export renders over black
+    // first (and over white after); a GIF is made from the MP4.
+    const fmt = plan.format;
+    if (fmt === "overlay") files.output = join(ctx.dir, "out-b.mkv");
+    else if (fmt === "audio") files.output = join(ctx.dir, "out.m4a");
+    else if (fmt === "wav") files.output = join(ctx.dir, "out.wav");
+    const argsFor = (ft: number, decode = cpus * 2, pictureAs?: "black" | "white") => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, ...(fmt === "overlay" ? { pictureAs: pictureAs ?? "black" } : {}) });
     // The graph decides how many filter threads it may have (it is the same text whatever that number).
     const { args, filterGraph } = argsFor(filterThreads(argsFor(4).filterGraph));
     const graphPath = join(ctx.dir, "graph.txt");
@@ -297,6 +305,27 @@ export async function renderJob(ctx: Ctx) {
       console.error("[render] ffmpeg failed:", (e as Error).message.slice(0, 2600));
       throw new JobError(`Render failed at '${steps[Math.min(endStep - 1, i)]}'. Nothing was lost. Try again.`, "ffmpeg", true);
     }
+    try {
+      if (fmt === "overlay") {
+        // The same edit over white, then the two merged into ProRes 4444 with the alpha their difference gives.
+        const black = files.output;
+        files.output = join(ctx.dir, "out-w.mkv");
+        const w = argsFor(filterThreads(argsFor(4, cpus * 2, "white").filterGraph), cpus * 2, "white");
+        const wPath = join(ctx.dir, "graph-w.txt");
+        await writeFile(wPath, w.filterGraph);
+        await run("ffmpeg", w.args.map((x) => (x === "__FILTER_SCRIPT__" ? wPath : x)), { signal });
+        files.output = join(ctx.dir, "out.mov");
+        await mergeOverlay(black, join(ctx.dir, "out-w.mkv"), files.output, signal);
+      } else if (fmt === "gif") {
+        const gif = join(ctx.dir, "out.gif");
+        await makeGif(files.output, gif, plan.width, plan.height, signal);
+        files.output = gif;
+      }
+    } catch (e) {
+      if (signal.aborted) throw e;
+      console.error("[render] making the deliverable failed:", (e as Error).message.slice(0, 1600));
+      throw new JobError(`Making the ${fmt === "gif" ? "GIF" : "transparent file"} failed. Nothing was lost. Try again, or export MP4.`, "ffmpeg", true);
+    }
     i = endStep;
     est.encEnd = Date.now();
     await send(i, 0.1);
@@ -309,7 +338,15 @@ export async function renderJob(ctx: Ctx) {
     // A failed measurement is reported in the check (never silently left out).
     let measured: FileMeasure;
     // The upload and the check frames go while the file is measured (they only read it).
-    const uploaded = uploadFile(`${base}.mp4`, files.output, "video/mp4");
+    const ff = formatFile(fmt);
+    const outKey = `${base}.${ff.ext}`;
+    const uploaded = uploadFile(outKey, files.output, ff.type);
+    // Phase 12: captions (SRT, WebVTT) and YouTube chapters next to a final.
+    const sideKeys: Record<string, string> = {};
+    if (kind === "final") {
+      const side = await writeSideFiles(ctx.dir, plan).catch(() => ({} as Record<string, string | undefined>));
+      for (const [k, p] of Object.entries(side)) if (p) { const key = `${base}-${k === "chapters" ? "chapters.txt" : `captions.${k}`}`; await uploadFile(key, p, k === "vtt" ? "text/vtt" : "text/plain").then(() => { sideKeys[k] = key; }).catch(() => {}); }
+    }
     uploaded.catch(() => {});
     const frames = Promise.all([0.15, 0.4, 0.65, 0.9].map(async (f, k) => {
       const fp = join(ctx.dir, `f${k}.jpg`);
@@ -383,8 +420,8 @@ export async function renderJob(ctx: Ctx) {
       await prisma.tempOriginal.deleteMany({ where: { id: { in: tempOriginalIds } } });
     }
     await prisma.render.update({ where: { id: r.id }, data: {
-      status: "done", outputKey: `${base}.mp4`, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}) } as unknown as Prisma.InputJsonValue,
+      status: "done", outputKey: outKey, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
+      quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}) } as unknown as Prisma.InputJsonValue,
     } });
     // Engine Part 3: the preview's sound is transcribed again after it is ready (it never holds the render up).
     if (heard?.status === "queued") await enqueue<HeardJob>("heard", { renderId: r.id }, { jobId: `heard-${r.id}` }).catch((e) => console.error("[render] heard not queued:", (e as Error).message));
@@ -398,7 +435,7 @@ export async function renderJob(ctx: Ctx) {
     // A final the user asked to be saved into their Google Drive (render_final driveFolder): the copy starts now.
     const save = kind === "final" ? driveSaveOf(await prisma.render.findUniqueOrThrow({ where: { id: r.id }, select: { driveSave: true } })) : null;
     if (save?.state === "waiting") await queueDriveSave(r.id, save).catch((e) => console.error("[render] Drive copy not queued:", (e as Error).message));
-    return { url: await signGet(`${base}.mp4`, 3600) };
+    return { url: await signGet(outKey, 3600) };
   } catch (e) {
     if (previewTimedOut) throw new JobError("Preview render took too long. Try again.", "timeout", false);
     if (e instanceof RenderPlanError) throw new JobError(e.message, "empty", false);

@@ -10,7 +10,7 @@ import {
 import { autoMusicFades, CLEANUP_KNOBS, cleanupText } from "./audio";
 import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema, presetStyle, styleText, TEXT_ANIMS, TEXT_PRESETS, TextInsideSchema, textPreset, TextStylePatchSchema, TextStyleSchema, type Card, type TextAnim, type TextInside, type TextStyle } from "./captions";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
-import { MARK_KINDS, type Angle, type Mark, type MarkEdit, type Multicam } from "./timeline";
+import { EXPORT_FORMATS, MARK_KINDS, type Angle, type Mark, type MarkEdit, type Multicam } from "./timeline";
 import { multicamText } from "./multicam";
 import { editToFootage, RENDRR_MARK } from "./marks";
 import { AnchorSchema, DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
@@ -218,7 +218,10 @@ const EDIT_OPS = [
   // Phase 4: how b-roll (V2) or a graphic (V3) lies over the picture: a blend mode and its opacity (0-1). normal at 1 = plain.
   z.object({ op: z.literal("set_blend"), clipId: clipId.optional(), clipIds: z.array(clipId).min(1).max(200).optional(), blend: BlendModeSchema.optional(), opacity: z.number().min(0).max(1).optional() }),
   // How the final file is made: hdr keep (HDR footage stays HDR) or sdr (converted).
-  z.object({ op: z.literal("set_export"), hdr: z.enum(["keep", "sdr"]).optional(), resolution: z.enum(RESOLUTIONS).optional(), codec: z.enum(CODECS).optional() }),
+  // Phase 12: format mp4|gif|audio (.m4a)|wav|overlay (graphics, text and captions on transparency, ProRes 4444),
+  // bitrate Mbit/s (null = constant quality), fps 24|25|30|50|60 (null = the footage's).
+  z.object({ op: z.literal("set_export"), hdr: z.enum(["keep", "sdr"]).optional(), resolution: z.enum(RESOLUTIONS).optional(), codec: z.enum(CODECS).optional(),
+    format: z.enum(EXPORT_FORMATS).optional(), bitrate: z.number().min(1).max(200).nullable().optional(), fps: z.union([z.literal(24), z.literal(25), z.literal(30), z.literal(50), z.literal(60)]).nullable().optional() }),
   // ---- marks: notes on the footage, kept with the edit; they never change the video ----
   // A mark on a moment (end left out) or a range of a video (default the main footage; edit true: edit seconds).
   z.object({ op: z.literal("add_marks"), marks: z.array(z.object({ kind: z.enum(MARK_KINDS), start: t, end: t.optional(), label: z.string().max(200).optional(), note: z.string().max(2000).optional(), confidence: z.number().min(0).max(1).optional(), videoId: z.string().max(80).optional() })).min(1).max(500), edit }),
@@ -1406,18 +1409,23 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, timeline: t }, summary: said.join("; ") };
     }
     case "set_export": {
-      if (!op.hdr && !op.resolution && !op.codec) throw new EditError("set_export needs hdr, resolution or codec.");
+      if (!op.hdr && !op.resolution && !op.codec && !op.format && op.bitrate === undefined && op.fps === undefined) throw new EditError("set_export needs hdr, resolution, codec, format, bitrate or fps.");
       const ex = { ...(tl.export ?? {}) };
       if (op.hdr) ex.hdr = op.hdr;
       if (op.resolution) ex.resolution = op.resolution;
       if (op.codec) ex.codec = op.codec;
+      if (op.format) ex.format = op.format;
+      if (op.bitrate === null) delete ex.bitrate; else if (op.bitrate != null) ex.bitrate = Math.round(op.bitrate * 10) / 10;
+      if (op.fps === null) delete ex.fps; else if (op.fps != null) ex.fps = op.fps;
+      if (ex.format === "mp4") delete ex.format;
       // Defaults are not stored (HDR kept, 1080p, H.264), so an edit at the defaults has no export field.
       if (ex.hdr === "keep") delete ex.hdr;
       if (ex.resolution === "1080p") delete ex.resolution;
       if (ex.codec === "h264") delete ex.codec;
       const next: Timeline = { ...tl, export: ex };
       if (!Object.keys(ex).length) delete next.export;
-      const said = [op.resolution && `final ${op.resolution === "4k" ? "4K" : op.resolution}`, op.codec && (op.codec === "hevc" ? "HEVC" : "H.264"), op.hdr && `HDR ${op.hdr === "sdr" ? "converted to SDR" : "kept when the footage is HDR"}`].filter(Boolean);
+      const fmt = { mp4: "MP4", gif: "a GIF (up to 60 s, 15 fps)", audio: "sound only (.m4a)", wav: "sound only (WAV)", overlay: "the graphics, text and captions on transparency (ProRes 4444 .mov)" } as const;
+      const said = [op.format && `the final as ${fmt[op.format]}`, op.resolution && `final ${op.resolution === "4k" ? "4K" : op.resolution}`, op.codec && (op.codec === "hevc" ? "HEVC" : "H.264"), op.hdr && `HDR ${op.hdr === "sdr" ? "converted to SDR" : "kept when the footage is HDR"}`, op.bitrate === null ? "constant quality" : op.bitrate != null && `${ex.bitrate} Mbit/s`, op.fps === null ? "the footage's frame rate" : op.fps != null && `${op.fps} fps`].filter(Boolean);
       return { snap: { ...snap, timeline: next }, summary: `export: ${said.join(", ")}` };
     }
 

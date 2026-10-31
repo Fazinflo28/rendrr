@@ -19,6 +19,7 @@ export * from "./captions";
 export * from "./motion";
 export * from "./look";
 export * from "./multicam";
+export * from "./deliverables";
 export * from "./marks";
 export * from "./deep";
 export * from "./cardLook";

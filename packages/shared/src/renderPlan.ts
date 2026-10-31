@@ -10,7 +10,8 @@ import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing, Resolution, Cod
 import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, clipFxChain, clipFxText, dialogueExpr, duckExpr, keyExpr, reverbWet, speechRanges, type AudioKey, type DialogueSpan, type Eq, type Reverb } from "./audio";
-import { audioSettings, sourceVideoIds, type AudioMixSettings } from "./timeline";
+import { audioSettings, sourceVideoIds, type AudioMixSettings, type ExportFormat } from "./timeline";
+import { chapterProblems, GIF_MAX_SECONDS, gifWidth, type Chapter } from "./deliverables";
 import { blendFilter, blendText, type BlendMode } from "./blend";
 import { buildStyledAss, captionStyleOf, isMatted, layoutCaptions, styleText, textMatteAss, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
@@ -138,6 +139,13 @@ export type RenderPlan = {
   parts: PicturePart[];
   /** Phase 7: stabilized parts (by stabilizeKey). */
   stabilize?: Record<string, StabilizeOp>;
+  /** Phase 12 (final): what the file is (left out: mp4), its video bitrate in Mbit/s (left out: constant quality),
+   *  and the edit's chapters (chapter marks, in edit seconds). */
+  format?: ExportFormat;
+  bitrate?: number;
+  chapters?: Chapter[];
+  /** Phase 12: the words as subtitle cues in edit seconds (the captions, or the words when captions are off). */
+  subtitles?: CaptionEvent[];
   /** Phase 9: adjustment layers. */
   adjust?: AdjustOp[];
   /** The dialogue: parts in edit order covering the whole edit (muted = silent). */
@@ -410,6 +418,13 @@ export function buildAss(events: CaptionEvent[], look: CaptionLook, width: numbe
 /** Phase 4: a layer's blend mode and opacity for the plan (nothing when it is plain). */
 const layerBlend = (c: { blend?: BlendMode; opacity?: number }) => ({ ...(c.blend && c.blend !== "normal" ? { blend: c.blend } : {}), ...(c.opacity != null && c.opacity < 1 ? { opacity: c.opacity } : {}) });
 
+/** Phase 12: what the final is made as. */
+function deliverableLine(ex: NonNullable<Snapshot["timeline"]["export"]>, W: number, H: number, hdr: boolean): string {
+  const f = ex.format ?? "mp4";
+  const what = f === "gif" ? `GIF ${gifWidth(W, H)} px wide, 15 fps (from the ${W}x${H} render)` : f === "audio" ? "sound only, AAC 256 kbit/s (.m4a)" : f === "wav" ? "sound only, WAV 48 kHz 16-bit" : f === "overlay" ? "the graphics, text and captions on transparency (ProRes 4444 .mov with alpha; footage, b-roll and zooms left out)" : "MP4";
+  return `Deliverable: ${what}${ex.bitrate && (f === "mp4" || f === "overlay") ? hdr ? "; bitrate left to quality (HDR)" : `, ${ex.bitrate} Mbit/s` : ""}${ex.fps ? `, ${ex.fps} fps` : ""}`;
+}
+
 /** Phase 11: a keyed clip's anchor and motion blur, as the render and the player take them. */
 const moveExtras = (c: { keys?: unknown[]; anchor?: { x: number; y: number }; motionBlur?: number }) => (c.keys?.length ? { ...(c.anchor && (c.anchor.x !== 0.5 || c.anchor.y !== 0.5) ? { anchor: c.anchor } : {}), ...(c.motionBlur ? { motionBlur: c.motionBlur } : {}) } : {});
 /** Phase 11: a mirror as FFmpeg filters (with a trailing comma, or nothing). */
@@ -456,7 +471,8 @@ export function planRender(input: PlanInput): RenderPlan {
   // Every part starts and ends on a frame of the output (30 fps; a final at its footage's rate, Phase 7), so each part
   // is a whole number of frames and picture and sound stay together however many cuts there are. Footage beyond a
   // file's real length is left out.
-  const out = outputRate(kind, input.source.fps);
+  // Phase 12: a final at the frame rate the export asks for (else its footage's).
+  const out = kind === "final" && tl.export?.fps ? { fps: tl.export.fps, rate: String(tl.export.fps), capped: false } : outputRate(kind, input.source.fps);
   const onFrame = (t: number) => Math.round(t * out.fps) / out.fps;
   const view = sequenceView(tl, words, { align: out.fps, seconds: Object.fromEntries(used.map((v) => [v, infoOf(v)!.seconds])), cutsOnFrames: input.cutsOnFrames });
   if (!view.picture.length) throw new RenderPlanError("Nothing is left to render. Every part of the video is cut. Restore some words or clips, then try again.");
@@ -577,6 +593,9 @@ export function planRender(input: PlanInput): RenderPlan {
   const captionStyle = captionStyleOf(tl as { captionLook: CaptionLook; captionStyle?: CaptionStyle }, snapshot.aspect, input.captionRules);
   const styledCaptions = layoutCaptions(sequenceCaptionGroups(input, view), captionStyle, width, height, total);
   const captions: CaptionEvent[] = styledCaptions.map((c) => ({ start: c.start, end: c.end, text: c.lines.map((l) => l.map((w) => w.text).join(" ")).join(" ") })); // lines: styledCaptions
+  // Phase 12: the edit's words as subtitle cues (SRT, WebVTT), whether or not captions are drawn on the picture.
+  // The words' own case (a style's capitals are for the picture).
+  const subtitles: CaptionEvent[] = layoutCaptions(sequenceCaptionGroups({ ...input, snapshot: { ...snapshot, timeline: { ...tl, captionsOn: true } } }, view), { ...captionStyle, case: "none" }, width, height, total).map((c) => ({ start: c.start, end: c.end, text: c.lines.map((l) => l.map((w) => w.text).join(" ")).join(" ") }));
   const texts: TextLayer[] = [];
   const insideMissing: string[] = [];
   for (const c of tl.tracks.v3 as (V3Clip & Attached & { text?: string; style?: TextStyle; card?: Card | null; anim?: TextAnim })[]) {
@@ -708,6 +727,16 @@ export function planRender(input: PlanInput): RenderPlan {
     lookFor({ id: c.id, grade: c.grade, effects: c.effects });
     adjust.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), ...(c.grade ? { grade: c.grade } : {}), ...(c.effects?.length ? { effects: c.effects } : {}) });
   }
+  // Phase 12: chapters from chapter marks, where their footage plays in the edit.
+  const chapters: Chapter[] = [];
+  for (const m of tl.marks ?? []) {
+    if (m.kind !== "chapter") continue;
+    const at = view.videoToEdit(m.videoId ?? main, m.start);
+    if (at == null || at >= view.total - 0.5 || chapters.some((c) => Math.abs(c.at - at) < 0.5)) continue;
+    chapters.push({ at: r3(at), title: (m.label || m.note || "Chapter").slice(0, 100) });
+  }
+  chapters.sort((a, b) => a.at - b.at);
+  if (kind === "final" && tl.export?.format === "gif" && view.total > GIF_MAX_SECONDS + 0.5) throw new RenderPlanError(`A GIF can be up to ${GIF_MAX_SECONDS} s; this edit is ${Math.round(view.total)} s. Export it as MP4, or cut it to under a minute.`);
   const sound = view.sound.map((x) => ({ ...x, start: r3(x.start), end: r3(x.end) }));
   const sources = Array.from(new Set([main, ...parts.map((p) => p.videoId), ...sound.map((x) => x.videoId)])).filter((v) => parts.some((p) => p.videoId === v) || sound.some((x) => x.videoId === v));
   const videos = Object.fromEntries(sources.map((v) => [v, { hasAudio: infoOf(v)!.hasAudio, hdr: !!infoOf(v)!.hdr, ...(infoOf(v)!.hdr ? { transfer: infoOf(v)!.transfer ?? "pq" } : {}), seconds: infoOf(v)!.seconds }]));
@@ -726,6 +755,8 @@ export function planRender(input: PlanInput): RenderPlan {
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
     ...(tl.multicam?.angles.length ? [multicamLine(tl.multicam, view, main, total)] : []),
     ...extrasLines(parts, clipMotion, broll, graphics, (tl.tracks.v2 as (V2Clip & { cardLook?: CardLook })[])),
+    ...(chapters.length ? [`Chapters: ${chapters.length} (${chapters.slice(0, 5).map((c) => `${fmtClock(c.at)} ${c.title}`).join(", ")})${chapterProblems(chapters, view.total).length ? `; YouTube shows none until there are: ${chapterProblems(chapters, view.total).join("; ")}` : ""}`] : []),
+    ...(kind === "final" && tl.export && (tl.export.format && tl.export.format !== "mp4" || tl.export.bitrate || tl.export.fps) ? [deliverableLine(tl.export, width, height, !!hdr)] : []),
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
@@ -744,7 +775,7 @@ export function planRender(input: PlanInput): RenderPlan {
     settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : hdr ? `Encode final: HEVC 10-bit HDR (${hdr.transfer === "pq" ? "PQ" : "HLG"}, BT.2020), ${width}x${height}, ${rateText(out.fps)} fps` : `Encode final: ${codec === "hevc" ? "HEVC" : "H.264"}, ${width}x${height}, ${rateText(out.fps)} fps`,
     // Phase 7: what the final keeps and what it cannot (the check repeats these).
-    ...(kind === "final" ? exportNotes(out, width, height, input.source) : []),
+    ...(kind === "final" ? exportNotes(out, width, height, input.source, tl.export?.fps) : []),
   ];
   return {
     model: "B", kind, width, height, fps: out.fps, rate: out.rate, codec, aspect: snapshot.aspect, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })), parts, sound, sources, videos,
@@ -755,6 +786,9 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(textMattes.length ? { textMattes: hdr ? textMattes.map((m) => (m.decor ? { ...m, decor: hdrAss(m.decor, hdr.transfer) } : m)) : textMattes } : {}),
     ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}),
     ...(Object.keys(stabilize).length ? { stabilize } : {}), ...(adjust.length ? { adjust } : {}),
+    ...(kind === "final" && tl.export?.format && tl.export.format !== "mp4" ? { format: tl.export.format } : {}),
+    ...(kind === "final" && tl.export?.bitrate && !hdr ? { bitrate: tl.export.bitrate } : {}),
+    ...(chapters.length ? { chapters } : {}), ...(subtitles.length ? { subtitles } : {}),
   };
 }
 
@@ -769,16 +803,17 @@ export function exportText(snap: Snapshot, footage?: FootageInfo): string {
   const { width, height } = outputSize(snap.aspect, "final", ex.resolution);
   const codec = footage?.hdr && (ex.hdr ?? "keep") === "keep" ? "HEVC 10-bit HDR" : ex.codec === "hevc" ? "HEVC" : "H.264";
   const r = footage?.fps ? outputRate("final", footage.fps) : null;
-  const rate = !r ? "the footage's frame rate" : r.capped ? `60 fps (the footage is ${rateText(footage!.fps!)}; finals go up to 60)` : `${rateText(r.fps)} fps (the footage's)`;
+  const rate = ex.fps ? `${ex.fps} fps (set)` : !r ? "the footage's frame rate" : r.capped ? `60 fps (the footage is ${rateText(footage!.fps!)}; finals go up to 60)` : `${rateText(r.fps)} fps (the footage's)`;
   const fw = footage?.width ?? 0, fh = footage?.height ?? 0;
   const up = fw && fh && Math.min(width, height) > Math.min(fw, fh) * 1.05 ? `, scaled up from the footage's ${fw}x${fh}` : "";
   const res = ex.resolution === "4k" ? "4K" : ex.resolution ?? "1080p";
-  return `Export (final): ${res} ${width}x${height} ${snap.aspect}, ${codec}, ${rate}${up}`;
+  const fmt = ex.format === "gif" ? "; as a GIF (15 fps, up to 60 s)" : ex.format === "audio" ? "; sound only (.m4a)" : ex.format === "wav" ? "; sound only (WAV)" : ex.format === "overlay" ? "; the graphics, text and captions on transparency (ProRes 4444)" : "";
+  return `Export (final): ${res} ${width}x${height} ${snap.aspect}, ${codec}${ex.bitrate ? ` ${ex.bitrate} Mbit/s` : ""}, ${rate}${up}${fmt}`;
 }
 
 /** Phase 7: a final's frame rate (kept, or capped at 60) and whether its size is above the footage's (scaled up). */
-function exportNotes(out: { fps: number; capped: boolean }, width: number, height: number, src: SourceInfo): string[] {
-  const lines = [out.capped ? `Frame rate: 60 fps (the footage is ${rateText(src.fps)} fps; finals go up to 60)` : `Frame rate: ${rateText(out.fps)} fps, the footage's`];
+function exportNotes(out: { fps: number; capped: boolean }, width: number, height: number, src: SourceInfo, set?: number): string[] {
+  const lines = [set ? `Frame rate: ${set} fps, as the export asks (the footage is ${rateText(src.fps)} fps)` : out.capped ? `Frame rate: 60 fps (the footage is ${rateText(src.fps)} fps; finals go up to 60)` : `Frame rate: ${rateText(out.fps)} fps, the footage's`];
   const srcShort = Math.min(src.width, src.height), outShort = Math.min(width, height);
   if (srcShort > 0 && outShort > srcShort * 1.05) lines.push(`Size: scaled up from the footage's ${src.width}x${src.height} to ${width}x${height}`);
   return lines;
@@ -1020,6 +1055,9 @@ export type FfmpegOpts = {
   loudnessGainDb?: number;
   /** Audio only, up to the mix, through ebur128: the measuring pass (its stderr has the loudness summary). */
   measure?: boolean;
+  /** Phase 12 (overlay export): the picture under the overlays as one colour (the worker renders black and white and
+   *  takes the alpha from their difference); b-roll, zooms, adjustment layers and the person matte left out. */
+  pictureAs?: "black" | "white";
 };
 
 /**
@@ -1602,7 +1640,12 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     g.push(`${parts.join("")}concat=n=${parts.length}:v=0:a=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
   }
 
-  if (!opts.measure) v = overlays(plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null, person: personMatte });
+  if (opts.pictureAs && !opts.measure) {
+    g.push(`[${v}]null[vdrop];color=c=${opts.pictureAs}:s=${plan.width}x${plan.height}:r=${plan.rate || "30"}:d=${n6(plan.outputSeconds + 1)},format=${PF},trim=end=${n6(plan.outputSeconds)}[vplain]`);
+    g.push(`[vdrop]nullsink`);
+    v = "vplain";
+  }
+  if (!opts.measure) v = overlays(opts.pictureAs ? { ...plan, broll: [], under: [], zooms: [], adjust: undefined, person: undefined } : plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null, person: opts.pictureAs ? null : personMatte });
   mixAudio(plan, files, g, inputs, () => idx++, opts);
   // Windows that read from the start left empty placeholders where a seek would go (they never move an input's place).
   const windows: Record<string, number> = {};
@@ -1942,11 +1985,20 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
   // Phase 7: the output's frame rate (a final keeps its footage's), a keyframe every 2 s, and the export's codec. HEVC
   // carries the hvc1 tag so Apple devices play it; at 4K x265 runs one preset faster.
   const R = plan.rate || "30", gop = String(Math.round((plan.fps || 30) * 2)), x265Preset = plan.width * plan.height > 4e6 ? "faster" : "fast";
-  const video = plan.hdr
+  const video0 = plan.hdr
     ? ["-c:v", "libx265", "-preset", x265Preset, "-crf", "20", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1", "-x265-params", `log-level=error:colorprim=bt2020:transfer=${trc}:colormatrix=bt2020nc:range=limited:repeat-headers=1${plan.hdr.transfer === "pq" ? ":hdr10=1:hdr10-opt=1" : ""}`, "-r", R, "-g", gop, "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", trc]
     : plan.codec === "hevc"
       ? ["-c:v", "libx265", "-preset", x265Preset, "-crf", "22", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-x265-params", "log-level=error:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
       : ["-c:v", "libx264", "-preset", preview ? "ultrafast" : "veryfast", "-crf", preview ? "28" : "20", "-pix_fmt", "yuv420p", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+  // Phase 12: a bitrate the export asks for, in place of constant quality (peaks allowed to 1.5x).
+  const crf = video0.indexOf("-crf");
+  const video = plan.bitrate && crf >= 0 ? [...video0.slice(0, crf), "-b:v", `${plan.bitrate}M`, "-maxrate", `${Math.round(plan.bitrate * 15) / 10}M`, "-bufsize", `${plan.bitrate * 2}M`, ...video0.slice(crf + 2)] : video0;
+  const head = ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", ...capInputThreads(inputs, opts.inputThreads), ...(opts.filterThreads ? ["-filter_complex_threads", String(opts.filterThreads)] : []), "-filter_complex_script", "__FILTER_SCRIPT__"];
+  const tail = [...(opts.threads ? ["-threads", String(opts.threads)] : []), "-progress", "pipe:1", "-nostats"];
+  // Phase 12: the overlay export's two passes (over black, over white), lossless for the worker to take the alpha from.
+  if (opts.pictureAs) return [...head, "-map", "[vout]", "-map", "[aout]", "-c:v", "ffv1", "-level", "3", "-g", "1", "-pix_fmt", "yuv444p", "-r", R, "-c:a", "pcm_s16le", "-ar", "48000", "-t", n3(plan.outputSeconds), ...tail, files.output];
+  // Phase 12: sound only: the mix as the file, the picture made and dropped (its graph is the same).
+  if (plan.format === "audio" || plan.format === "wav") return [...head, "-map", "[aout]", ...(plan.format === "wav" ? ["-c:a", "pcm_s16le"] : ["-c:a", "aac", "-b:a", "256k"]), "-ar", "48000", "-t", n3(plan.outputSeconds), ...tail, files.output, "-map", "[vout]", "-f", "null", "-"];
   return [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
     ...capInputThreads(inputs, opts.inputThreads),

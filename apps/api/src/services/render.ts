@@ -1,3 +1,4 @@
+import { chapterProblems, chaptersText, type Chapter } from "@rendrr/shared";
 import { AppError, enqueue, publishRender, readRender, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, qualityLabel, renderTimeoutMs } from "@rendrr/shared";
@@ -47,15 +48,23 @@ export async function startRender(userId: string, projectId: string, kind: "prev
 export async function renderResult(r: Render) {
   const project = await prisma.project.findUnique({ where: { id: r.projectId } });
   const video = project ? await prisma.video.findUnique({ where: { id: project.videoId } }) : null;
-  const fileName = `${(project?.name || "rendrr").replace(/[^\w\- ]+/g, "").trim() || "rendrr"} ${r.kind === "final" ? "final" : "preview"} v${r.version}.mp4`;
+  // Phase 12: the file's own extension (a GIF, sound only, ProRes with alpha) and its captions and chapters.
+  const ext = (r.outputKey?.match(/\.(\w+)$/)?.[1] ?? "mp4").toLowerCase();
+  const stem = `${(project?.name || "rendrr").replace(/[^\w\- ]+/g, "").trim() || "rendrr"} ${r.kind === "final" ? "final" : "preview"} v${r.version}`;
+  const fileName = `${stem}.${ext}`;
   const url = r.outputKey ? await signGet(r.outputKey, 6 * 3600) : null;
+  const meta = (r.plan as { files?: Record<string, string>; chapters?: Chapter[]; outputSeconds?: number } | null) ?? {};
+  const files: Record<string, string> = {};
+  for (const [k, key] of Object.entries(meta.files ?? {})) files[k] = await signGet(key, 6 * 3600, { download: k === "chapters" ? `${stem} chapters.txt` : `${stem}.${k}` });
+  const chapters = meta.chapters?.length ? chaptersText(meta.chapters) : null;
+  const chapterNote = meta.chapters?.length ? chapterProblems(meta.chapters, meta.outputSeconds ?? r.seconds) : [];
   const downloadUrl = r.outputKey ? await signGet(r.outputKey, 6 * 3600, { download: fileName }) : null;
   const frames = await Promise.all(((r.framesKeys as string[]) || []).slice(0, 5).map((k) => signGet(k, 3600)));
   const source = video?.source || "drive";
   const note = r.kind === "final" ? (source === "drive" && !video?.sample ? "Final ready. Original file deleted from our servers." : video?.sample ? "Final ready." : "Final ready. Your original was deleted from our servers.") : undefined;
   // How long the render took (work only: from the worker's start to the file being ready).
   const renderSeconds = r.startedAt && r.finishedAt ? Math.round((r.finishedAt.getTime() - r.startedAt.getTime()) / 100) / 10 : null;
-  return { renderId: r.id, url, downloadUrl, fileName, quality: r.quality || (r.kind === "final" ? "1080p" : "540p"), size: fmtSize(r.sizeBytes), seconds: r.seconds, renderSeconds, source, note, version: r.version, frames, steps: (r.steps as string[]) || [] };
+  return { renderId: r.id, url, downloadUrl, fileName, files, chapters, chapterNote, ext, quality: r.quality || (r.kind === "final" ? "1080p" : "540p"), size: fmtSize(r.sizeBytes), seconds: r.seconds, renderSeconds, source, note, version: r.version, frames, steps: (r.steps as string[]) || [] };
 }
 
 export async function renderStatus(r: Render) {
