@@ -9,7 +9,10 @@ const playable = {}; // videoId -> blob URL of the file picked in this tab, so t
 const getProject = api.getProject, createProject = api.createProject;
 const getVideo = api.getVideo, listVideos = api.listVideos, addFromDrive = api.addFromDrive, addFromComputer = api.addFromComputer;
 const kinds = {}; // videoId -> "footage" | "reference" (the design's fake backend has no references)
-const withKind = (v) => (v ? { ...v, kind: kinds[v.id] || "footage" } : v);
+const inFolder = {}; // videoId -> library folder id (the design's fake backend has no library folders)
+const libFolders = []; // { id, name, updated }
+const withKind = (v) => (v ? { ...v, kind: kinds[v.id] || "footage", libraryFolderId: inFolder[v.id] || null } : v);
+const folderErr = (msg) => Object.assign(new Error(msg), { code: "invalid-input" });
 
 // "What Claude sees" for demo footage: drawn contact sheets and a breakdown made by the real shared code.
 const COLOURS = ["#3b3f52", "#5a4648", "#2f4a44", "#4b3f5c", "#53483a", "#334455"];
@@ -91,9 +94,26 @@ Object.assign(api, {
   listVideos: async () => { const vs = await listVideos(); return Array.isArray(vs) ? vs.map(withKind) : vs; },
   // The design's fake backend makes an edit of one video: several (videoIds) start from the first in the preview.
   createProject: async ({ videoIds, videoId, ...rest }) => createProject({ ...rest, videoId: (Array.isArray(videoIds) && videoIds[0]) || videoId }),
-  updateVideo: async (id, body) => { await wait(300); if (body.kind) kinds[id] = body.kind; return withKind(await getVideo(id)); },
-  addFromDrive: async (ids, kind) => { const out = await addFromDrive(ids); if (kind) out.forEach((v) => { kinds[v.id] = kind; }); return out.map(withKind); },
-  addFromComputer: async (files, onProgress, kind) => { const out = await addFromComputer(files, onProgress); if (kind) (out || []).forEach((v) => { kinds[v.id] = kind; }); return (out || []).map(withKind); },
+  updateVideo: async (id, body) => { await wait(300); if (body.kind) kinds[id] = body.kind; if (body.libraryFolderId !== undefined) { if (body.libraryFolderId) inFolder[id] = body.libraryFolderId; else delete inFolder[id]; } return withKind(await getVideo(id)); },
+  addFromDrive: async (ids, kind, fid) => { const out = await addFromDrive(ids); out.forEach((v) => { if (kind) kinds[v.id] = kind; if (fid) inFolder[v.id] = fid; }); return out.map(withKind); },
+  addFromComputer: async (files, onProgress, kind, fid) => { const out = await addFromComputer(files, onProgress); (out || []).forEach((v) => { if (kind) kinds[v.id] = kind; if (fid) inFolder[v.id] = fid; }); return (out || []).map(withKind); },
+  // Library folders, kept in this tab.
+  listLibraryFolders: async () => {
+    const vs = await listVideos(); const all = Array.isArray(vs) ? vs : [];
+    return libFolders.map((f) => { const mine = all.filter((v) => inFolder[v.id] === f.id); return { ...f, count: mine.length, seconds: mine.reduce((a, v) => a + (v.seconds || 0), 0) }; })
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+  },
+  createLibraryFolder: async (name) => {
+    await wait(150); const n = String(name || "").trim();
+    if (!n) throw folderErr("Give the folder a name.");
+    const same = libFolders.find((f) => f.name.toLowerCase() === n.toLowerCase());
+    if (same) throw folderErr(`You already have a folder called "${same.name}".`);
+    const f = { id: "lf" + Math.random().toString(36).slice(2, 8), name: n, updated: Date.now() }; libFolders.push(f);
+    return { ...f, count: 0, seconds: 0 };
+  },
+  renameLibraryFolder: async (id, name) => { await wait(150); const f = libFolders.find((x) => x.id === id); if (!f) throw folderErr("That folder is not in your library any more."); f.name = String(name || "").trim() || f.name; return { ...f, count: 0, seconds: 0 }; },
+  deleteLibraryFolder: async (id) => { await wait(150); const i = libFolders.findIndex((x) => x.id === id); if (i >= 0) libFolders.splice(i, 1); for (const k of Object.keys(inFolder)) if (inFolder[k] === id) delete inFolder[k]; return { ok: true }; },
+  moveVideos: async (ids, fid) => { await wait(150); ids.forEach((id) => { if (fid) inFolder[id] = fid; else delete inFolder[id]; }); return { moved: ids.length }; },
   getProject: async (id) => {
     const p = await getProject(id);
     const src = playable[p.videoId];

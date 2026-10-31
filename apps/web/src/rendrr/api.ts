@@ -129,7 +129,18 @@ export const api: any = {
   // ---- library ----
   listVideos: async () => emptyIf((await get("/videos")).map(remember)),
   getVideo: async (id: string) => remember(await get(`/videos/${enc(id)}`)),
-  updateVideo: async (id: string, body: { kind?: string; name?: string }) => remember(await patch(`/videos/${enc(id)}`, body)),
+  updateVideo: async (id: string, body: { kind?: string; name?: string; libraryFolderId?: string | null }) => remember(await patch(`/videos/${enc(id)}`, body)),
+  // Library folders: videos of one kind kept together; a whole folder can become one edit.
+  listLibraryFolders: async () => get("/library/folders"),
+  createLibraryFolder: async (name: string) => post("/library/folders", { name }),
+  renameLibraryFolder: async (id: string, name: string) => patch(`/library/folders/${enc(id)}`, { name }),
+  deleteLibraryFolder: async (id: string) => del(`/library/folders/${enc(id)}`),
+  moveVideos: async (videoIds: string[], libraryFolderId: string | null) => post("/videos/move", { videoIds, libraryFolderId }),
+  projectFromLibraryFolder: async (id: string, o: { name?: string; folderId?: string; aspect?: string } = {}) => {
+    const r = await post(`/library/folders/${enc(id)}/project`, o);
+    versions[r.project.id] = r.project.version;
+    return r;
+  },
   retryVideo: async (id: string) => {
     const v = remember(await post(`/videos/${enc(id)}/retry`));
     if (v.source === "local" && !v.sample && v.status === "previewing") {
@@ -177,12 +188,13 @@ export const api: any = {
   listDriveFiles: (folderId = "root", o: { view?: string; driveId?: string; q?: string; drives?: boolean } = {}) =>
     get(`/drive/files?folderId=${enc(folderId)}` + (o.view ? `&view=${enc(o.view)}` : "") + (o.driveId ? `&driveId=${enc(o.driveId)}` : "") + (o.q ? `&q=${enc(o.q)}` : "") + (o.drives ? "&drives=1" : "")),
   // kind "reference": a video whose style to copy (Rendrr reads it like footage; the AI matches it).
-  addFromDrive: async (fileIds: string[], kind?: string) => (await post("/videos/drive", { fileIds, ...(kind ? { kind } : {}) })).map(remember),
-  addFromComputer: async (files: File[] | null, onProgress?: (p: any) => void, kind?: string) => {
+  // libraryFolderId: the library folder the new videos go in.
+  addFromDrive: async (fileIds: string[], kind?: string, libraryFolderId?: string) => (await post("/videos/drive", { fileIds, ...(kind ? { kind } : {}), ...(libraryFolderId ? { libraryFolderId } : {}) })).map(remember),
+  addFromComputer: async (files: File[] | null, onProgress?: (p: any) => void, kind?: string, libraryFolderId?: string) => {
     const list = files && files.length ? Array.from(files) : null;
     if (!list) throw fail("Pick a video file first.");
     if (DEV && (demo.failNextUpload || list.some((f) => /fail/i.test(f.name)))) { demo.failNextUpload = false; throw fail("One of the files could not be read."); }
-    const made = (await post("/videos/local", { files: list.map((f) => ({ name: f.name, size: f.size, type: f.type })), ...(kind ? { kind } : {}) })).map(remember);
+    const made = (await post("/videos/local", { files: list.map((f) => ({ name: f.name, size: f.size, type: f.type })), ...(kind ? { kind } : {}), ...(libraryFolderId ? { libraryFolderId } : {}) })).map(remember);
     made.forEach((v: any, i: number) => { localJobs.hold(v.id, list[i]); localJobs.start(v.id); });
     onProgress?.({ percent: 5 });
     return made;

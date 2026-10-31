@@ -1,11 +1,17 @@
 import { AppError, deleteObjects, deletePrefix, drive, enqueue, env, features, headObject, notFound, signGet, signPut, type ProxyJob, type AnalyzeJob, encrypt } from "@rendrr/core";
 import { prisma, type Video } from "@rendrr/db";
-import { breakdownAsText, DAY_MS, DriveAddInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
+import { breakdownAsText, DAY_MS, DriveAddInput, FolderProjectInput, LibraryFolderInput, MoveVideosInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
-import { videoOut } from "../serialize";
+import { projectOut, videoOut } from "../serialize";
 import { purgeProjectFiles } from "../services/projects";
+import { createLibraryFolder, deleteLibraryFolder, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, renameLibraryFolder } from "../services/libraryFolders";
+
+/** The folder new videos go in: the user's own, or none. */
+async function intoFolder(userId: string, id?: string | null): Promise<string | null> {
+  return id ? (await ownLibraryFolder(userId, id)).id : null;
+}
 
 const ART = ["c", "d", "e", "f", "a", "b"];
 const randomArt = () => ART[Math.floor(Math.random() * ART.length)];
@@ -102,11 +108,33 @@ export default async function library(app: FastifyInstance) {
       };
     });
 
-    // Rename, or switch between footage and reference (a video whose style to copy).
+    // Rename, switch between footage and reference (a video whose style to copy), or move it to a folder (null: out).
     a.patch("/videos/:id", async (req) => {
       const v = await ownedVideo(req.user!.id, (req.params as { id: string }).id);
       const b = VideoPatchInput.parse(req.body);
-      return videoOut(await prisma.video.update({ where: { id: v.id }, data: { ...(b.kind ? { kind: b.kind } : {}), ...(b.name ? { name: b.name } : {}) } }));
+      const folder = b.libraryFolderId !== undefined ? { libraryFolderId: await intoFolder(v.userId, b.libraryFolderId) } : {};
+      return videoOut(await prisma.video.update({ where: { id: v.id }, data: { ...(b.kind ? { kind: b.kind } : {}), ...(b.name ? { name: b.name } : {}), ...folder } }));
+    });
+
+    // ---------------- library folders: videos of one kind together; a whole folder to a new edit ----------------
+    a.get("/library/folders", async (req) => listLibraryFolders(req.user!.id));
+    a.post("/library/folders", async (req) => libraryFolderOut(await createLibraryFolder(req.user!.id, LibraryFolderInput.parse(req.body).name)));
+    a.patch("/library/folders/:id", async (req) => {
+      const f = await renameLibraryFolder(req.user!.id, (req.params as { id: string }).id, LibraryFolderInput.parse(req.body).name);
+      return (await listLibraryFolders(req.user!.id)).find((x) => x.id === f.id) ?? libraryFolderOut(f);
+    });
+    a.delete("/library/folders/:id", async (req) => deleteLibraryFolder(req.user!.id, (req.params as { id: string }).id));
+    a.post("/videos/move", async (req) => {
+      const b = MoveVideosInput.parse(req.body);
+      const r = await moveVideos(req.user!.id, b.videoIds, b.libraryFolderId);
+      return { moved: r.moved, folder: r.folder ? libraryFolderOut(r.folder) : null };
+    });
+    // Every ready video in the folder, in name order, as one new edit. Videos not ready yet and references are left
+    // out and named.
+    a.post("/library/folders/:id/project", async (req) => {
+      const b = FolderProjectInput.parse(req.body ?? {});
+      const r = await projectFromLibraryFolder(req.user!.id, (req.params as { id: string }).id, b);
+      return { project: projectOut(r.project), videos: r.videos.length, skipped: r.skipped };
     });
 
     a.post("/videos/:id/retry", async (req) => {
@@ -144,16 +172,17 @@ export default async function library(app: FastifyInstance) {
     });
 
     a.post("/videos/drive", async (req) => {
-      const { fileIds, kind } = DriveAddInput.parse(req.body);
+      const { fileIds, kind, libraryFolderId } = DriveAddInput.parse(req.body);
       const userId = req.user!.id;
       const conn = await driveConn(userId);
+      const inFolder = await intoFolder(userId, libraryFolderId);
       const out: Video[] = [];
       for (const fid of Array.from(new Set(fileIds))) {
         const f = await drive.getFile(userId, fid, conn.stub);
         if (!f) continue;
         const v = await prisma.video.create({ data: {
           userId, name: stripExt(f.name), seconds: f.seconds, sizeBytes: BigInt(f.sizeBytes || 0), originalSize: BigInt(f.sizeBytes || 0), originalName: f.name,
-          orientation: f.width && f.height ? orientationOf(f.width, f.height) : "Landscape", source: "drive", driveFileId: f.id, status: "linking", art: randomArt(), kind: kind || "footage",
+          orientation: f.width && f.height ? orientationOf(f.width, f.height) : "Landscape", source: "drive", driveFileId: f.id, status: "linking", art: randomArt(), kind: kind || "footage", libraryFolderId: inFolder,
           sourceKey: conn.stub ? (f as { sampleKey?: string }).sampleKey ?? null : null,
         } });
         await enqueue<ProxyJob>("proxy", { videoId: v.id });
@@ -165,8 +194,9 @@ export default async function library(app: FastifyInstance) {
 
     // Built-in sample footage: processed on the server, original kept so exports work without asking.
     a.post("/videos/sample", async (req) => {
-      const { kind } = SampleAddInput.parse(req.body ?? {});
-      const v = await prisma.video.create({ data: { kind: kind || "footage",
+      const { kind, libraryFolderId } = SampleAddInput.parse(req.body ?? {});
+      const inFolder = await intoFolder(req.user!.id, libraryFolderId);
+      const v = await prisma.video.create({ data: { kind: kind || "footage", libraryFolderId: inFolder,
         userId: req.user!.id, name: "Sample footage", seconds: 41, sizeBytes: BigInt(989_324), originalSize: BigInt(989_324), originalName: "sample-footage.mp4",
         orientation: "Landscape", source: "local", sample: true, sourceKey: drive.SAMPLE_KEYS.talking, status: "previewing", progress: 0, art: randomArt(),
       } });
@@ -176,8 +206,9 @@ export default async function library(app: FastifyInstance) {
 
     // ---------------- local files: the browser makes the preview, we only receive it ----------------
     a.post("/videos/local", async (req) => {
-      const { files, kind } = LocalFilesInput.parse(req.body);
-      const made = await Promise.all(files.map((f) => prisma.video.create({ data: { kind: kind || "footage",
+      const { files, kind, libraryFolderId } = LocalFilesInput.parse(req.body);
+      const inFolder = await intoFolder(req.user!.id, libraryFolderId);
+      const made = await Promise.all(files.map((f) => prisma.video.create({ data: { kind: kind || "footage", libraryFolderId: inFolder,
         userId: req.user!.id, name: stripExt(f.name).slice(0, 200), sizeBytes: BigInt(f.size), originalSize: BigInt(f.size), originalName: f.name,
         source: "local", status: "previewing", progress: 0, art: randomArt(),
       } })));

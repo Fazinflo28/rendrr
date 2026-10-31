@@ -119,7 +119,8 @@ describe("connector tool list", () => {
     // 45: save_to_drive (a final copied into the folder the user named in their Google Drive).
     // 46: add_audio (the user's own audio file: a voice enhanced outside Rendrr, their music).
     // 47: retry_graphic (a graphic recorded again from its own code, its failed placements too; asked for by name).
-    expect(MCP_TOOLS.length).toBeLessThanOrEqual(47);
+    // 48: move_footage (library folders: videos of one kind kept together; create_project libraryFolder edits a whole one).
+    expect(MCP_TOOLS.length).toBeLessThanOrEqual(48);
     const names = MCP_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
     for (const gone of ["cut_silences", "remove_fillers", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);

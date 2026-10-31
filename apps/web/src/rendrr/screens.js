@@ -107,7 +107,7 @@ function Shell({ children }) {
         ? html`<button key=${l} class=${"mtab" + (isOn(p) || (p === "/settings" && ["/usage", "/billing", "/connect"].some((x) => route.startsWith(x))) ? " on" : "")} data-mtab=${l} onClick=${() => go(p)}><${Icon} name=${i} size="20" /><span>${l}</span></button>`
         : html`<button key=${l} class="mtab add" data-mtab="Add" aria-label="Add footage" onClick=${openAdd}><i><${Icon} name="plus" size="20" /></i></button>`)}
     </nav>`}
-    ${addOpen && html`<${AddFootageModal} onClose=${closeAdd} initialKind=${addOpen.kind} />`}
+    ${addOpen && html`<${AddFootageModal} onClose=${closeAdd} initialKind=${addOpen.kind} folder=${addOpen.folder} />`}
   </div>`;
 }
 
@@ -168,20 +168,21 @@ function DrivePicker({ onAdd, single, addLabel, onLocal }) {
     <div class="row between dfoot"><span class="t-small muted">Your raw files stay in your Drive. We only keep a light preview copy.</span><span class="row" style="gap:12px;flex:none">${sel.length > 0 && html`<span class="t-small row" style="gap:8px"><b id="drive-count">${sel.length} selected</b>${!single && html`<button class="dlink" onClick=${() => setSel([])}>Clear</button>`}</span>`}<${Btn} id="drive-add" disabled=${sel.length === 0 || busy} onClick=${async () => { setBusy(true); try { await onAdd(sel); } finally { setBusy(false); } }}>${addLabel || ("Add " + (sel.length || "") + (sel.length === 1 ? " video" : " videos"))}<//></span></div>
   </div>`;
 }
-function AddFootageModal({ onClose, initialKind = "footage" }) {
+function AddFootageModal({ onClose, initialKind = "footage", folder = null }) {
   const { startUpload, addFromDrive } = useApp();
   const [tab, setTab] = useState("drive"); const [over, setOver] = useState(false); const fileRef = useRef();
   const [asRef, setAsRef] = useState(initialKind === "reference"); const kind = asRef ? "reference" : undefined;
   useEffect(() => { api.getDriveStatus().then((s) => { if (!s.connected && s.available === false) setTab("local"); }).catch(() => {}); }, []);
   return html`<${Modal} title=${asRef ? "Add a reference" : "Add footage"} sub=${asRef ? "A video whose style you want to copy. Rendrr reads it the same way, so the AI can match its cuts and look." : "Pick as many videos as you like. Filmed in parts? Add them all, then Select them in the Library to make one edit. Raw files never come to us."} onClose=${onClose} wide>
+    ${folder && html`<p class="t-small row" id="add-into-folder" style="gap:6px"><${Icon} name="folder" size="14" />They go in the folder <b>${folder.name}</b>.</p>`}
     <div class="row between card flat" id="as-ref-row" style="gap:12px;padding:10px 14px"><div><b class="t-label">Add as a reference</b><p class="t-small muted">For a video to copy the style of, not to edit.</p></div><${Toggle} id="as-ref" on=${asRef} onChange=${setAsRef} label="Add as a reference" /></div>
     <div class="srcpick">
       <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick videos from your Drive</span></span><span class="tag accent">Recommended</span></button>
       <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="src-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>From your computer</b><span class="t-small muted">Pick files or drag and drop</span></span></button>
     </div>
-    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind)} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
-      <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs), kind); e.target.value = ""; }} />
-      <div class=${"drop" + (over ? " over" : "")} id="local-drop" style="padding:40px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs), kind); }}>
+    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind, folder?.id)} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
+      <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs), kind, folder?.id); e.target.value = ""; }} />
+      <div class=${"drop" + (over ? " over" : "")} id="local-drop" style="padding:40px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs), kind, folder?.id); }}>
         <div class="ico"><${Icon} name="laptop" /></div><b class="t-heading">Drop videos here</b><p class="muted t-small">Files stay on your computer. We make a light preview in your browser.</p>
         <div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>Choose files<//></div></div>
       <div class="row" style="gap:8px"><${Icon} name="clock" size="14" /><span class="t-small muted">Keep this tab open while we prepare your preview.</span></div>
@@ -264,9 +265,54 @@ function RecreateModal({ g, onClose }) {
 /* ---------- /library ---------- */
 const BUSY = ["linking", "preview", "previewing", "uploading", "processing"];
 const ATTN = ["failed", "missing", "expired", "paused"];
+/* ---------- Library folders ---------- */
+// Name order as a person sorts it ("Part 2" before "Part 10"); the order a folder's videos go into an edit.
+const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }) || (a.date || 0) - (b.date || 0);
+function FolderNameModal({ folder, onClose, onSaved }) {
+  const [name, setName] = useState(folder?.name || ""); const [busy, setBusy] = useState(false); const [err, setErr] = useState(null);
+  const save = async () => { setBusy(true); setErr(null); try { const f = folder ? await api.renameLibraryFolder(folder.id, name) : await api.createLibraryFolder(name); onSaved(f, !folder); } catch (e) { setErr(e.message); setBusy(false); } };
+  return html`<${Modal} title=${folder ? "Rename folder" : "New folder"} sub=${folder ? "" : "Keep videos of one kind together: a course, a client's interviews, one shoot. You can edit a whole folder as one video."} onClose=${onClose}
+    footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="folder-save" disabled=${busy || !name.trim()} onClick=${save}>${busy ? "Saving…" : folder ? "Rename" : "Make folder"}<//>`}>
+    <${Field} label="Name" id="folder-name-input"><input id="folder-name-input" class="input" value=${name} maxlength="80" autofocus placeholder="Course: module 1" onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && name.trim() && !busy) save(); }} /><//>
+    ${err && html`<p role="alert" class="t-small">${err}</p>`}
+  <//>`;
+}
+function MoveToFolderModal({ videos, folders, onClose, onMoved }) {
+  const toast = useToast(); const [busy, setBusy] = useState(false); const [name, setName] = useState("");
+  const where = videos.length === 1 ? videos[0].libraryFolderId || null : undefined;
+  const move = async (f) => { setBusy(true); try { await api.moveVideos(videos.map((v) => v.id), f ? f.id : null); onMoved(f); } catch (e) { toast(e.message); setBusy(false); } };
+  const makeAndMove = async () => { setBusy(true); try { const f = await api.createLibraryFolder(name); await api.moveVideos(videos.map((v) => v.id), f.id); onMoved(f); } catch (e) { toast(e.message); setBusy(false); } };
+  return html`<${Modal} title=${videos.length === 1 ? "Move " + videos[0].name : "Move " + videos.length + " videos"} sub="Pick the folder they go in." onClose=${onClose}>
+    <div class="col" id="move-list" style="gap:6px">
+      ${folders.map((f) => html`<button key=${f.id} class=${"lfrow" + (where === f.id ? " on" : "")} data-move-to=${f.id} disabled=${busy || where === f.id} onClick=${() => move(f)}><${Icon} name="folder" size="16" /><span class="grow">${f.name}</span><span class="t-small muted">${where === f.id ? "Here now" : f.count + (f.count === 1 ? " video" : " videos")}</span></button>`)}
+      <button class=${"lfrow" + (where === null ? " on" : "")} id="move-out" disabled=${busy || where === null} onClick=${() => move(null)}><${Icon} name="library" size="16" /><span class="grow">No folder</span><span class="t-small muted">Loose in the Library</span></button>
+    </div>
+    <div class="row" style="gap:8px;margin-top:12px"><input id="move-new-name" class="input" placeholder="New folder name" maxlength="80" value=${name} onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && name.trim() && !busy) makeAndMove(); }} /><${Btn} id="move-new" icon="plus" disabled=${busy || !name.trim()} onClick=${makeAndMove}>Make and move<//></div>
+  <//>`;
+}
+
 function LibraryPage() {
   const { go } = useNav(); const { startUpload, openAdd } = useApp(); const toast = useToast();
   const q = useAsync(() => api.listVideos(), []);
+  // Library folders: videos of one kind kept together. The open folder is remembered for this tab.
+  const fq = useAsync(() => api.listLibraryFolders(), []);
+  const [openF, setOpenF] = useState(() => { try { return sessionStorage.getItem("rendrr:libfolder") || null; } catch { return null; } });
+  const openFolder = (id) => { setOpenF(id); setPick([]); try { if (id) sessionStorage.setItem("rendrr:libfolder", id); else sessionStorage.removeItem("rendrr:libfolder"); } catch { /* private window */ } };
+  const folders = fq.data || []; const cur = openF ? folders.find((f) => f.id === openF) || null : null;
+  const folderIds = new Set(folders.map((f) => f.id)); const folderName = (id) => folders.find((f) => f.id === id)?.name;
+  useEffect(() => { if (openF && fq.data && !cur) openFolder(null); }, [fq.data]);
+  const [nameModal, setNameModal] = useState(null); const [moveOf, setMoveOf] = useState(null); const [delFolder, setDelFolder] = useState(null); const [folderEdit, setFolderEdit] = useState(null);
+  const reloadAll = () => { q.reload(); fq.reload(); };
+  const dropOnFolder = (f) => async (e) => { const vid = e.dataTransfer.getData("text/rendrr-video"); if (!vid) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("over"); try { await api.moveVideos([vid], f.id); toast(`Moved to ${f.name}`, { icon: "folder", tone: "brand" }); reloadAll(); } catch (er) { toast(er.message); } };
+  // Every ready video in the open folder, in name order, as one edit (the order can still be changed before creating).
+  const editFolder = () => {
+    const mine = (q.data || []).filter((v) => v.libraryFolderId === cur.id).sort(byName);
+    const use = mine.filter((v) => v.status === "ready" && v.kind !== "reference"), left = mine.filter((v) => !use.includes(v));
+    if (!mine.length) return toast(`"${cur.name}" is empty. Add videos to it first.`);
+    if (!use.length) return toast(`None of the videos in "${cur.name}" are ready to edit yet.`);
+    if (use.length > 20) return toast(`"${cur.name}" has ${use.length} videos ready. An edit starts from up to 20: move some into another folder.`);
+    setFolderEdit({ ids: use.map((v) => v.id), name: cur.name, sub: `Every ready video in "${cur.name}", in name order. Change the order below if you need to.` + (left.length ? ` Left out: ${left.map((v) => v.name).join(", ")} (not ready yet, or a reference).` : "") });
+  };
   const [filter, setFilter] = useState("All"); const [search, setSearch] = useState(""); const [over, setOver] = useState(false); const [reconnect, setReconnect] = useState(null); const [remove, setRemove] = useState(null);
   // Select several videos (the parts of one video, in the order they play) and make one edit of them.
   const [picking, setPicking] = useState(false); const [pick, setPick] = useState([]); const [np, setNp] = useState(false);
@@ -276,30 +322,45 @@ function LibraryPage() {
     setPick((x) => (x.includes(v.id) ? x.filter((i) => i !== v.id) : [...x, v.id]));
   };
   const stopPicking = () => { setPicking(false); setPick([]); };
-  useEffect(() => { const k = () => q.reload(); window.addEventListener("rendrr:library", k); return () => window.removeEventListener("rendrr:library", k); }, []);
+  useEffect(() => { const k = () => { q.reload(); fq.reload(); }; window.addEventListener("rendrr:library", k); return () => window.removeEventListener("rendrr:library", k); }, []);
   // Local previews are made in this tab: if it goes away mid preview, they pause until the user comes back.
   useEffect(() => { const vis = () => { if (document.hidden) { api.pauseLocalPreviews(); } q.reload(); }; document.addEventListener("visibilitychange", vis); window.addEventListener("pagehide", api.pauseLocalPreviews); return () => { document.removeEventListener("visibilitychange", vis); window.removeEventListener("pagehide", api.pauseLocalPreviews); }; }, []);
   // Poll while anything is in progress so cards move on their own.
   useEffect(() => { const busy = q.data?.some((v) => BUSY.includes(v.status)); if (!busy) return; const t = setTimeout(q.reload, 1000); return () => clearTimeout(t); }, [q.data]);
-  const onDrop = (e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs)); };
-  const dropProps = { onDragOver: (e) => { e.preventDefault(); setOver(true); }, onDragLeave: () => setOver(false), onDrop };
+  const onDrop = (e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs), undefined, openF || undefined); };
+  const dropProps = { onDragOver: (e) => { e.preventDefault(); if (Array.from(e.dataTransfer?.types || []).includes("Files")) setOver(true); }, onDragLeave: () => setOver(false), onDrop };
   const act = async (e, fn, msg) => { e.stopPropagation(); try { await fn(); if (msg) toast(msg); q.reload(); } catch (er) { toast(er.message); } };
   const filt = (v) => filter === "All" || (filter === "Ready" && v.status === "ready") || (filter === "In progress" && BUSY.includes(v.status)) || (filter === "Needs attention" && ATTN.includes(v.status)) || (filter === "References" && v.kind === "reference");
   return html`<div class="page wide" ...${dropProps}>
-    <div class="page-head"><div><h1 class="t-title">Library</h1><p class="muted">Raw files stay in your Drive or on your computer. We keep a light preview for 30 days.</p></div>
+    <div class="page-head"><div>${cur ? html`<div class="row" style="gap:6px"><button class="dlink t-small" id="folder-back" onClick=${() => openFolder(null)}>Library</button><span class="t-small muted">/</span></div><h1 class="t-title row" style="gap:10px" id="folder-title"><${Icon} name="folder" size="26" />${cur.name}</h1><p class="muted" id="folder-meta">${cur.count} ${cur.count === 1 ? "video" : "videos"} · ${fmtLen(cur.seconds)}. Edit the whole folder as one video, in name order.</p>` : html`<h1 class="t-title">Library</h1><p class="muted">Raw files stay in your Drive or on your computer. We keep a light preview for 30 days.</p>`}</div>
       <div class="row"><div class="search" style="width:240px"><${Icon} name="search" /><input class="input sm" placeholder="Find footage" value=${search} onInput=${(e) => setSearch(e.target.value)} aria-label="Find footage" /></div>
       <${Seg} size="sm" value=${filter} options=${["All", "Ready", "In progress", "Needs attention", "References"]} onChange=${setFilter} />
       <${Btn} kind=${picking ? "secondary" : "ghost"} size="sm" icon=${picking ? "x" : "check"} id="select-videos" title="Select videos to make one edit of them, in order" onClick=${() => (picking ? stopPicking() : setPicking(true))}>${picking ? "Cancel" : "Select"}<//></div></div>
     ${picking && html`<div class="bulk pickbar" id="pick-bar" role="region" aria-label="Selected videos"><span class="grow t-small">${pick.length ? html`<b id="pick-count">${pick.length} selected</b> · ${fmtLen(pick.reduce((a, id) => a + ((q.data || []).find((v) => v.id === id)?.seconds || 0), 0))} · they play in the order you picked them` : "Click videos in the order they play. A video filmed in parts becomes one edit."}</span>
-      ${pick.length > 0 && html`<${Btn} kind="ghost" size="sm" onClick=${() => setPick([])}>Clear<//>`}<${Btn} size="sm" icon="scissors" id="pick-make" disabled=${!pick.length} onClick=${() => setNp(true)}>${pick.length > 1 ? "Make one edit" : "Make an edit"}<//></div>`}
+      ${pick.length > 0 && html`<${Btn} kind="ghost" size="sm" onClick=${() => setPick([])}>Clear<//><${Btn} kind="ghost" size="sm" icon="folder" id="pick-move" onClick=${() => setMoveOf(pick.map((id) => (q.data || []).find((v) => v.id === id)).filter(Boolean))}>Move to folder<//>`}<${Btn} size="sm" icon="scissors" id="pick-make" disabled=${!pick.length} onClick=${() => setNp(true)}>${pick.length > 1 ? "Make one edit" : "Make an edit"}<//></div>`}
     <${Async} q=${q} skeleton=${html`<${GridSkeleton} />`} whenEmpty=${html`<div class=${"drop" + (over ? " over" : "")} id="drop" onClick=${openAdd}><div class="ico"><${Icon} name="plus" /></div><h2 class="t-heading">Add your first footage</h2><p class="muted">Link videos from Google Drive, or pick files from your computer. Raw files never come to us.</p><div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); openAdd(); }}>Add footage<//></div></div>`}>
       ${(videos) => {
-        const list = videos.filter((v) => filt(v) && v.name.toLowerCase().includes(search.toLowerCase()));
+        // In a folder: its videos in name order. At the top: the videos in no folder (a search looks in every folder).
+        const here = (v) => (openF ? v.libraryFolderId === openF : !!search || !v.libraryFolderId || !folderIds.has(v.libraryFolderId));
+        const list = videos.filter((v) => here(v) && filt(v) && v.name.toLowerCase().includes(search.toLowerCase()));
+        if (openF) list.sort(byName);
         return html`<div class="col" style="gap:16px">
+          ${cur ? html`<div class="row wrap" id="folder-actions" style="gap:8px">
+              <${Btn} size="sm" icon="scissors" id="folder-edit" onClick=${editFolder}>Edit this folder<//>
+              <${Btn} kind="ghost" size="sm" icon="plus" id="folder-add" onClick=${() => openAdd("footage", cur)}>Add videos<//>
+              <${Btn} kind="ghost" size="sm" icon="edit" id="folder-rename" onClick=${() => setNameModal({ folder: cur })}>Rename<//>
+              <${Btn} kind="quiet" size="sm" icon="trash" id="folder-delete" onClick=${() => setDelFolder(cur)}>Delete folder<//></div>`
+            : !search && html`<div class="col" id="lib-folders" style="gap:10px">
+              <div class="row between"><span class="row" style="gap:8px"><b class="t-label">Folders</b>${!folders.length && html`<span class="t-small muted">Keep videos of one kind together, then edit a whole folder at once.</span>`}</span><${Btn} kind="ghost" size="sm" icon="plus" id="new-folder" onClick=${() => setNameModal({})}>New folder<//></div>
+              ${folders.length > 0 && html`<div class="lfgrid">${folders.map((f) => html`<button key=${f.id} class="lfcard" data-folder=${f.id} onClick=${() => openFolder(f.id)} aria-label=${"Open folder " + f.name}
+                  onDragOver=${(e) => { if (Array.from(e.dataTransfer?.types || []).includes("text/rendrr-video")) { e.preventDefault(); e.currentTarget.classList.add("over"); } }} onDragLeave=${(e) => e.currentTarget.classList.remove("over")} onDrop=${dropOnFolder(f)}>
+                <span class="lfico"><${Icon} name="folder" size="20" /></span><span class="col" style="gap:2px;min-width:0"><b class="t-label lfname">${f.name}</b><span class="t-small muted">${f.count} ${f.count === 1 ? "video" : "videos"}${f.count ? " · " + fmtLen(f.seconds) : ""}</span></span></button>`)}</div>`}
+            </div>`}
           ${over && html`<div class="drop over"><div class="ico"><${Icon} name="laptop" /></div><h2 class="t-heading">Drop to add from your computer</h2></div>`}
-          ${list.length === 0 ? (filter === "References" && !search ? html`<${EmptyState} icon="spark" title="No references yet" text="Add a video whose style you want to copy. Rendrr reads it like footage, and the AI matches its cuts and look." action=${html`<${Btn} size="sm" icon="plus" id="add-reference" onClick=${() => openAdd("reference")}>Add a reference<//>`} />`
+          ${list.length === 0 && cur && filter === "All" && !search ? html`<${EmptyState} icon="folder" title="This folder is empty" text="Drag videos onto the folder in the Library, use the folder button on a video, or add new ones straight into it." action=${html`<${Btn} size="sm" icon="plus" id="folder-empty-add" onClick=${() => openAdd("footage", cur)}>Add videos<//>`} />`
+            : list.length === 0 ? (filter === "References" && !search ? html`<${EmptyState} icon="spark" title="No references yet" text="Add a video whose style you want to copy. Rendrr reads it like footage, and the AI matches its cuts and look." action=${html`<${Btn} size="sm" icon="plus" id="add-reference" onClick=${() => openAdd("reference")}>Add a reference<//>`} />`
             : html`<${EmptyState} icon="search" title="No footage matches" text="Try another filter or clear the search." action=${html`<${Btn} kind="secondary" size="sm" onClick=${() => { setFilter("All"); setSearch(""); }}>Clear filters<//>`} />`) : html`<div class="grid">
-            ${list.map((v) => { const n = pick.indexOf(v.id); return html`<button key=${v.id} class=${"vcard" + (v.status !== "ready" ? " busy" : "") + (picking ? " picking" : "") + (n >= 0 ? " picked" : "")} data-id=${v.id} data-status=${v.status} aria-pressed=${picking ? n >= 0 : undefined} onClick=${() => (picking ? togglePick(v) : v.status === "ready" && go("/library/" + v.id))} aria-label=${v.name}>
+            ${list.map((v) => { const n = pick.indexOf(v.id); return html`<button key=${v.id} class=${"vcard" + (v.status !== "ready" ? " busy" : "") + (picking ? " picking" : "") + (n >= 0 ? " picked" : "")} data-id=${v.id} draggable=${!picking} onDragStart=${(e) => { e.dataTransfer.setData("text/rendrr-video", v.id); e.dataTransfer.effectAllowed = "move"; }} data-status=${v.status} aria-pressed=${picking ? n >= 0 : undefined} onClick=${() => (picking ? togglePick(v) : v.status === "ready" && go("/library/" + v.id))} aria-label=${v.name}>
               <div class="thumb"><${Thumb} src=${v.thumb} art=${v.art} /><div class="ori"><${OriIcon} o=${v.orientation} /></div>${picking && html`<span class=${"vpick" + (n >= 0 ? " on" : "")} aria-hidden="true">${n >= 0 ? n + 1 : ""}</span>`}<div class="len"><${Chip} tone="neutral" size="sm" style="background:rgba(0,0,0,.5);color:#fff">${fmtLen(v.seconds)}<//></div>
                 ${BUSY.includes(v.status) && html`<div class="veil"><span class="dot brand pulse" /><b class="t-small">${v.stepName}${v.progress != null && (v.status === "previewing" || v.status === "uploading") ? " " + v.progress + "%" : ""}</b>${(v.status === "previewing" || v.status === "uploading") && html`<div class="bar"><i style=${{ width: v.progress + "%" }} /></div>`}<span class="t-small" style="opacity:.7">Step ${v.idx + 1} of ${v.total}</span></div>`}
                 ${v.status === "paused" && html`<div class="veil"><${Icon} name="clock" size="22" /><b class="t-small">Paused. Open this tab to continue</b></div>`}
@@ -308,22 +369,26 @@ function LibraryPage() {
                 ${v.status === "expired" && html`<div class="veil"><${Icon} name="clock" size="22" /><b class="t-small">Preview expired</b><span class="t-small" style="opacity:.7">30 days passed</span></div>`}
               </div>
               <div class="meta"><div class="row between"><b class="t-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.name}</b><${StatusChip} status=${v.status} /></div>
-                <div class="row between" style="gap:8px"><span class="row" style="gap:6px;min-width:0"><${SourceBadge} source=${v.source} />${v.kind === "reference" && html`<span class="tag accent" data-ref=${v.id}>Reference</span>`}</span>
+                <div class="row between" style="gap:8px"><span class="row" style="gap:6px;min-width:0"><${SourceBadge} source=${v.source} />${v.kind === "reference" && html`<span class="tag accent" data-ref=${v.id}>Reference</span>`}${!openF && v.libraryFolderId && folderName(v.libraryFolderId) && html`<span class="tag" data-in-folder=${v.id}>${folderName(v.libraryFolderId)}</span>`}</span>
                   ${v.status === "failed" ? html`<${Btn} kind="ghost" size="xs" onClick=${(e) => act(e, () => api.retryVideo(v.id), "Trying again")}>Retry<//>`
                   : v.status === "paused" ? html`<${Btn} size="xs" icon="play" data-resume=${v.id} onClick=${(e) => act(e, () => api.resumeLocalPreview(v.id), "Resumed")}>Resume<//>`
                   : v.status === "missing" ? html`<${Btn} size="xs" icon="drive" data-reconnect=${v.id} onClick=${(e) => { e.stopPropagation(); setReconnect(v); }}>Reconnect file<//>`
                   : v.status === "expired" ? html`<${Btn} size="xs" icon="refresh" data-rebuild=${v.id} onClick=${(e) => act(e, () => api.rebuildPreview(v.id), "Rebuilding the preview")}>Rebuild preview<//>`
                   : html`<span class="t-small muted">${fmtAgo(v.date)} · ${v.size}</span>`}
-                  <${Btn} kind="quiet" size="xs" icon="trash" aria-label=${"Delete " + v.name} data-delete=${v.id} onClick=${(e) => { e.stopPropagation(); setRemove(v); }} /></div>
+                  <span class="row" style="gap:2px;flex:none"><${Btn} kind="quiet" size="xs" icon="folder" aria-label=${"Move " + v.name + " to a folder"} title="Move to a folder" data-move=${v.id} onClick=${(e) => { e.stopPropagation(); setMoveOf([v]); }} /><${Btn} kind="quiet" size="xs" icon="trash" aria-label=${"Delete " + v.name} data-delete=${v.id} onClick=${(e) => { e.stopPropagation(); setRemove(v); }} /></span></div>
                 ${v.status === "failed" && html`<span class="t-small muted">${v.error}</span>`}
               </div>
             </button>`; })}
-            <button class=${"drop" + (over ? " over" : "")} style="padding:32px;border-radius:12px" onClick=${openAdd} aria-label="Add footage"><div class="ico" style="width:48px;height:48px"><${Icon} name="plus" size="22" /></div><b class="t-label">Add footage</b><span class="t-small muted">Drive or this computer</span></button>
+            <button class=${"drop" + (over ? " over" : "")} style="padding:32px;border-radius:12px" onClick=${() => openAdd("footage", cur)} aria-label="Add footage"><div class="ico" style="width:48px;height:48px"><${Icon} name="plus" size="22" /></div><b class="t-label">Add footage</b><span class="t-small muted">Drive or this computer</span></button>
           </div>`}
         </div>`;
       }}
     <//>
-    ${remove && html`<${DeleteVideoModal} video=${remove} onClose=${() => setRemove(null)} onDeleted=${() => { setRemove(null); q.reload(); }} />`}
+    ${remove && html`<${DeleteVideoModal} video=${remove} onClose=${() => setRemove(null)} onDeleted=${() => { setRemove(null); reloadAll(); }} />`}
+    ${nameModal && html`<${FolderNameModal} folder=${nameModal.folder} onClose=${() => setNameModal(null)} onSaved=${(f, made) => { setNameModal(null); toast(made ? `Folder "${f.name}" made` : "Renamed", { icon: "folder", tone: "brand" }); fq.reload(); if (made && nameModal.then) nameModal.then(f); }} />`}
+    ${moveOf && html`<${MoveToFolderModal} videos=${moveOf} folders=${folders} onClose=${() => setMoveOf(null)} onMoved=${(f) => { setMoveOf(null); stopPicking(); toast(f ? `Moved to ${f.name}` : "Taken out of the folder", { icon: "folder", tone: "brand" }); reloadAll(); }} />`}
+    ${delFolder && html`<${Modal} title=${"Delete " + delFolder.name + "?"} sub="The folder goes. Its videos stay in your library, outside any folder." onClose=${() => setDelFolder(null)} footer=${html`<${Btn} kind="ghost" onClick=${() => setDelFolder(null)}>Cancel<//><${Btn} id="folder-delete-ok" onClick=${async () => { try { await api.deleteLibraryFolder(delFolder.id); toast("Folder deleted. Its videos are in the Library.", { icon: "folder" }); setDelFolder(null); openFolder(null); reloadAll(); } catch (e) { toast(e.message); } }}>Delete folder<//>`} />`}
+    ${folderEdit && html`<${NewProjectModal} videoIds=${folderEdit.ids} defaultName=${folderEdit.name} title=${"Edit " + folderEdit.name} sub=${folderEdit.sub} onClose=${() => setFolderEdit(null)} onCreated=${(p) => { setFolderEdit(null); toast("Edit created from the folder. Opening the editor.", { icon: "check", tone: "brand" }); go("/editor/" + p.id); }} />`}
     ${np && html`<${NewProjectModal} videoIds=${pick} title=${pick.length > 1 ? "One edit from " + pick.length + " videos" : "New edit"} onClose=${() => setNp(false)} onCreated=${(p) => { setNp(false); stopPicking(); toast("Edit created. Opening the editor.", { icon: "check", tone: "brand" }); go("/editor/" + p.id); }} />`}
     ${reconnect && html`<${Modal} title="Reconnect file" sub=${"Pick '" + reconnect.name + "' again in your Drive. The raw file was moved or deleted."} onClose=${() => setReconnect(null)} wide><${DrivePicker} single addLabel="Reconnect" onAdd=${async (ids) => { try { await api.reconnectDriveFile(reconnect.id, ids[0]); toast("Reconnected. Linking again.", { icon: "drive", tone: "brand" }); setReconnect(null); q.reload(); } catch (e) { toast(e.message); } }} /><//>`}
   </div>`;

@@ -28,6 +28,7 @@ import { analyzeReference, styleFileLines, styleFileOut } from "./services/style
 import { openProjects } from "./services/claudeApp";
 import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, latestFinal } from "./services/driveSave";
 import { resolveMulticam } from "./services/multicam";
+import { byName, createLibraryFolder, findLibraryFolder, listLibraryFolders, moveVideos, projectFromLibraryFolder } from "./services/libraryFolders";
 import { resolveSoundRefs, soundFromSource, soundLine, soundOut, soundsText, soundUploadLink } from "./services/sounds";
 import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
 
@@ -407,14 +408,22 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   async list_footage(c, i) {
-    const vs = await prisma.video.findMany({ where: { userId: c.userId, ...(i.kind ? { kind: i.kind } : { kind: { not: "canvas" } }) }, orderBy: { createdAt: "desc" }, take: 500 });
-    const recipes = i.kind === "reference" ? await prisma.reference.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 }) : [];
+    const folders = await listLibraryFolders(c.userId);
+    const lf = i.libraryFolder ? await findLibraryFolder(c.userId, i.libraryFolder) : null;
+    if (i.libraryFolder && !lf) throw notFound(`There is no library folder "${i.libraryFolder}". ${folders.length ? `Library folders: ${folders.map((f) => `${f.name} (${f.id})`).join(", ")}.` : "There are none yet: move_footage makes one."}`);
+    let vs = await prisma.video.findMany({ where: { userId: c.userId, ...(i.kind ? { kind: i.kind } : { kind: { not: "canvas" } }), ...(lf ? { libraryFolderId: lf.id } : {}) }, orderBy: { createdAt: "desc" }, take: 500 });
+    if (lf) vs = vs.sort(byName); // a folder's videos in the order they go into an edit
+    const recipes = i.kind === "reference" && !lf ? await prisma.reference.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 }) : [];
     const acct = await accountLine(c.userId);
-    if (!vs.length && !recipes.length) return { text: i.kind ? `${acct} No ${i.kind === "reference" ? "reference videos" : "footage"} yet.` : `${acct} No footage yet: the user adds videos in Rendrr (Library > Add footage). ${EMPTY_HINT}` };
+    const folderLine = folders.length && !lf ? `Library folders (id | name | videos): ${folders.map((f) => `${f.id} | ${f.name} | ${f.count}`).join("; ")}.\n` : "";
+    if (lf && !vs.length) return { text: `${acct} The library folder "${lf.name}" is empty${i.kind ? ` of ${i.kind}` : ""}. move_footage puts videos in it.` };
+    if (!vs.length && !recipes.length) return { text: i.kind ? `${acct} ${folderLine}No ${i.kind === "reference" ? "reference videos" : "footage"} yet.` : `${acct} No footage yet: the user adds videos in Rendrr (Library > Add footage). ${EMPTY_HINT}` };
     const pg = pageOf(vs, i);
     const where = (v: (typeof vs)[number]) => (v.sample ? "sample" : v.source === "drive" ? "drive" : "computer");
-    return { text: `${acct} Videos ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${vs.length} (id | name | kind | length | shape | status | raw file):\n` +
-      pg.shown.map((v) => `${v.id} | ${v.name} | ${v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${where(v)}`).join("\n") + pg.tail +
+    const names = new Map(folders.map((f) => [f.id, f.name]));
+    const withFolder = folders.length > 0 && !lf;
+    return { text: `${acct} ${folderLine}${lf ? `Library folder "${lf.name}" (${lf.id}), in name order (the order create_project libraryFolder uses): videos` : "Videos"} ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${vs.length} (id | name | kind | length | shape | status | raw file${withFolder ? " | folder" : ""}):\n` +
+      pg.shown.map((v) => `${v.id} | ${v.name} | ${v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${where(v)}${withFolder ? ` | ${(v.libraryFolderId && names.get(v.libraryFolderId)) || "-"}` : ""}`).join("\n") + pg.tail +
       (recipes.length ? "\nSaved recipes (id | name):\n" + recipes.map((r) => `${r.id} | ${r.name}`).join("\n") : "") };
   },
 
@@ -776,8 +785,34 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: `Created folder "${f.name}" (${f.id}). Put edits in it with folderId on create_project or create_shorts.`, data: { folderId: f.id } };
   },
 
+  async move_footage(c, i) {
+    let f = null, made = false;
+    if (i.libraryFolder !== null) {
+      f = await findLibraryFolder(c.userId, i.libraryFolder);
+      if (!f && /^c[a-z0-9]{20,}$/.test(i.libraryFolder.trim())) throw notFound("That library folder is not there any more. list_footage lists them.");
+      if (!f) { f = await createLibraryFolder(c.userId, i.libraryFolder); made = true; }
+    }
+    const r = await moveVideos(c.userId, i.videoIds, f?.id ?? null);
+    const n = `${r.moved} ${r.moved === 1 ? "video" : "videos"}`;
+    return { text: f ? `Moved ${n} into ${made ? "the new " : ""}library folder "${f.name}" (${f.id}). create_project libraryFolder "${f.name}" makes one edit of its ready videos, in name order.` : `Took ${n} out of their library folder.`, data: { libraryFolderId: f?.id ?? null } };
+  },
+
   async create_project(c, i) {
     const actor = { actorKind: c.ai === "chatgpt" ? "chatgpt" as const : "claude" as const };
+    if (i.libraryFolder) {
+      if (i.blank || i.videoId || i.videoIds?.length || i.fromProjectId || i.clips?.length) throw new AppError("libraryFolder makes an edit of every ready video in that folder: send it without blank, videoId, videoIds, fromProjectId or clips.", 400, "invalid-input");
+      const lf = await findLibraryFolder(c.userId, i.libraryFolder);
+      if (!lf) throw notFound(`There is no library folder "${i.libraryFolder}". list_footage lists them.`);
+      const r = await projectFromLibraryFolder(c.userId, lf.id, { name: i.name, folderId: i.folderId, aspect: i.aspect }, { ...actor, folder: lf });
+      const p = r.project;
+      const left = r.skipped.length ? ` Left out: ${r.skipped.map((s) => `"${s.name}" (${s.why})`).join(", ")}.` : "";
+      const head = `Created edit "${p.name}" (${p.id}) from the library folder "${lf.name}": ${r.videos.length} ${r.videos.length === 1 ? "video" : "videos"} back to back in name order (${r.videos.map((v) => v.name).join(", ")}), ${p.aspect}.${left}`;
+      if (i.reframe) {
+        const st = await startEdits(p, { reframe: true });
+        if (st.edits.length) { const e = await applyEdits(c, p.id, st.edits, undefined, { projectId: p.id }); return { text: `${head} ${e.text} Next: apply_edits.`, data: { projectId: p.id } }; }
+      }
+      return { text: `${head} Version 1 is the raw footage. Next: get_project, then apply_edits.`, data: { projectId: p.id } };
+    }
     if (i.blank) {
       if (i.videoId || i.videoIds?.length || i.fromProjectId || i.clips?.length) throw new AppError("blank starts an edit with no footage: send it without videoId, videoIds, fromProjectId or clips.", 400, "invalid-input");
       const name = (i.name || "").trim() || "New video";

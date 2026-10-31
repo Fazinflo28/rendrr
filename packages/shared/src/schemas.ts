@@ -40,15 +40,23 @@ export const UpdateProjectInput = z.object({
 });
 
 const kind = z.enum(["footage", "reference"]).optional(); // reference: a video whose style to copy
-export const DriveAddInput = z.object({ fileIds: z.array(z.string().min(1).max(200)).min(1, "Pick at least one video.").max(50), kind });
+/** A library folder the new videos go in (videos of one kind kept together); null or left out: loose in the library. */
+const libraryFolderId = id.nullable().optional();
+export const DriveAddInput = z.object({ fileIds: z.array(z.string().min(1).max(200)).min(1, "Pick at least one video.").max(50), kind, libraryFolderId });
 export const ReconnectInput = z.object({ fileId: z.string().min(1, "Pick the file in Drive to reconnect it.").max(200) });
 
 export const LocalFilesInput = z.object({
   files: z.array(z.object({ name: z.string().min(1).max(300), size: z.number().int().min(1).max(200e9), type: z.string().max(100).optional() })).min(1).max(20),
-  kind,
+  kind, libraryFolderId,
 });
-export const SampleAddInput = z.object({ kind }).default({});
-export const VideoPatchInput = z.object({ kind: z.enum(["footage", "reference"]).optional(), name: z.string().trim().min(1, "Give the video a name.").max(200).optional() });
+export const SampleAddInput = z.object({ kind, libraryFolderId }).default({});
+export const VideoPatchInput = z.object({ kind: z.enum(["footage", "reference"]).optional(), name: z.string().trim().min(1, "Give the video a name.").max(200).optional(), libraryFolderId });
+
+// Library folders: videos of one kind kept together, and a whole folder sent to a new edit.
+export const LIBRARY_FOLDER_MAX_VIDEOS = 20; // an edit starts from up to 20 videos (CreateProjectInput)
+export const LibraryFolderInput = z.object({ name: z.string().trim().min(1, "Give the folder a name.").max(80, "Keep the folder name under 80 characters.") });
+export const MoveVideosInput = z.object({ videoIds: z.array(id).min(1, "Pick at least one video.").max(200), libraryFolderId: id.nullable() });
+export const FolderProjectInput = z.object({ name: z.string().max(200).optional().nullable(), folderId: id.optional().nullable(), aspect: z.enum(["16:9", "9:16", "1:1", "4:5"]).optional() });
 export const LocalProgressInput = z.object({ status: z.enum(["previewing", "uploading", "paused", "failed"]), progress: z.number().min(0).max(100).optional(), error: z.string().max(300).optional() });
 export const LocalCompleteInput = z.object({
   seconds: z.number().min(0.1).max(24 * 3600),
