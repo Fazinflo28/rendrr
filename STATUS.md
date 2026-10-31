@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Stabilize b-roll and clips at other speeds (phase 21, 31 October)
+
+- **What changed.** Warp Stabilizer now works on b-roll and on V1 clips played at another speed: slowed, sped up, reversed, frozen or with a speed ramp. Before, those played as filmed.
+- **How.** Such a clip's footage is stabilized once, over the whole clip, then every part of it reads that stabilized copy. A ramp is smoothed through its speed changes, with no jump where the speed changes.
+- **Measured** (frame-to-frame shake on a shaky test clip): half speed 21.9 to 0.7, a ramp 22.3 to 0.7, reversed 30.1 to 0.1, b-roll 29.7 to 0.1.
+- **Editor.** Speed & motion, Stabilize is offered on b-roll too; its note says when it smooths through speed changes.
+- **Claude.** stabilize takes b-roll ids and clips at any speed.
+- **Tests.** packages/shared/test/phase21.test.ts, apps/worker/test/stabilize21-render.test.ts, apps/web/demo/phase21.mjs.
+
 ## Samples: a few frames and short clips before the whole preview (31 October)
 
 - **What it is.** Claude (or you) renders a few key moments of an edit on their own: up to 8 frames and 3 clips of up to 6 s. Only those seconds are rendered, so it takes seconds, not minutes. Each is drawn exactly as the whole preview draws that moment.

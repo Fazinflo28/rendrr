@@ -1,5 +1,5 @@
 // Premiere parity, phase 7: Warp Stabilizer. The op (V1 clips, smooth, off), get_project, the plan (a part per
-// stabilized clip at normal speed, keyed by clip and footage start; another speed plays as filmed and says so) and the
+// stabilized clip at normal speed, keyed by clip and footage start; another speed reads a stabilized copy) and the
 // graph (vidstabtransform on the part's own frames, the uniform fast path left).
 import { describe, expect, it } from "vitest";
 import { applyOp, buildInitialTimeline, buildTranscript, summarizeTimeline, type EditContext, type Op, type SeqClip, type Snapshot } from "../src/index";
@@ -23,7 +23,7 @@ describe("stabilize", () => {
     s = edit(s, { op: "stabilize", clipId: "a", off: true } as Op).snap;
     expect(clipOf(s, "a").stabilize).toBeUndefined();
   });
-  it("the plan: a part per stabilized clip at normal speed; another speed plays as filmed and says so", () => {
+  it("the plan: a part per stabilized clip at normal speed; one at another speed reads a stabilized copy (phase 21) and says so", () => {
     let s = edit(base(), { op: "stabilize", smooth: 60 } as Op).snap;
     s = edit(s, { op: "set_speed", clipId: "b", speed: 2 } as Op).snap;
     const p = planRender({ kind: "preview", snapshot: s, transcript: tr, source, videoId: "v" });
@@ -31,7 +31,8 @@ describe("stabilize", () => {
     expect(keys).toEqual([stabilizeKey(p.parts[0])]);
     expect(p.stabilize![keys[0]]).toMatchObject({ videoId: "v", srcIn: 1, srcOut: 5, smoothing: 18 });
     expect(p.stabilize![keys[0]].file).toMatch(/^stab_\w+\.trf$/);
-    expect(p.operations.join("\n")).toMatch(/Stabilized \(Warp Stabilizer, zoomed in to hide the edges\): a; as filmed where a clip plays at another speed: b/);
+    expect(p.stabilized?.b).toMatchObject({ clipId: "b", videoId: "v", srcIn: 5, srcOut: 11, smoothing: 18 });
+    expect(p.operations.join("\n")).toMatch(/Stabilized \(Warp Stabilizer, zoomed in to hide the edges\): a, b \(at its speeds, from a stabilized copy\)/);
   });
   it("the graph: the part's own frames smoothed by its shake; no stabilize, the fast path as before", () => {
     const plain = planRender({ kind: "preview", snapshot: base(), transcript: tr, source, videoId: "v" });

@@ -100,6 +100,14 @@ export type AudioMix = AudioMixSettings & {
  *  worker into `file` (vidstabdetect), then smoothed over `smoothing` frames in the render (vidstabtransform). */
 export type StabilizeOp = { videoId: string; srcIn: number; srcOut: number; smoothing: number; file: string };
 export const stabilizeKey = (p: { clipIds: string[]; srcIn: number }) => `${p.clipIds[0]}@${p.srcIn.toFixed(3)}`;
+/**
+ * Phase 21: a stabilized copy of a clip's footage, for b-roll and for a V1 clip played at another speed (a ramp's steps,
+ * reversed, a freeze). The worker measures the shake over [srcIn, srcOut) (on the frame grid, a second either side of
+ * what the clip shows, so transition sides are in it) and writes the footage stabilized; every part of the clip reads
+ * that copy (its frame k is footage frame srcIn x fps + k), so the whole clip is smoothed as one, through its speed
+ * changes. Keyed by clip id.
+ */
+export type StableCopyOp = { clipId: string; videoId: string; srcIn: number; srcOut: number; smoothing: number; file: string; copy: string; broll?: boolean };
 /** Phase 9: an adjustment layer over start..end (edit seconds): its look is plan.looks[clipId]; grade and effects for
  *  the player's preview. */
 export type AdjustOp = { clipId: string; start: number; end: number; grade?: Grade; effects?: Effect[]; masks?: Mask[]; opacity?: number; fadeIn?: number; fadeOut?: number };
@@ -144,6 +152,8 @@ export type RenderPlan = {
   parts: PicturePart[];
   /** Phase 7: stabilized parts (by stabilizeKey). */
   stabilize?: Record<string, StabilizeOp>;
+  /** Phase 21: stabilized copies of b-roll and of V1 clips at other speeds (by clip id). */
+  stabilized?: Record<string, StableCopyOp>;
   /** Phase 12 (final): what the file is (left out: mp4), its video bitrate in Mbit/s (left out: constant quality),
    *  and the edit's chapters (chapter marks, in edit seconds). */
   format?: ExportFormat;
@@ -634,14 +644,37 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(t.inside ? { inside: t.inside } : { cut: t.card!.color }) }));
 
   const parts = view.picture.map((p) => ({ ...p, start: r3(p.start), end: r3(p.end) }));
-  // Phase 7: stabilized V1 clips, part by part (normal speed only: a part at another speed plays as filmed, said below).
-  const stabilize: Record<string, StabilizeOp> = {}, unstabilized = new Set<string>();
+  // Phase 7: stabilized V1 clips at normal speed, part by part. Phase 21: a clip with any part at another speed (a
+  // ramp, reversed, a freeze) and stabilized b-roll read a stabilized copy of their footage instead, smoothed as one.
+  const stabilize: Record<string, StabilizeOp> = {}, unstabilized = new Set<string>(), stabilized: Record<string, StableCopyOp> = {};
+  const smoothingOf = (smooth: number) => Math.max(1, Math.round(smooth * 0.3));
+  /** The copy's footage: a second either side of what the clip shows, on the frame grid, inside the video. */
+  const copyOf = (clipId: string, videoId: string, lo: number, hi: number, smooth: number, seconds: number | undefined, broll?: boolean) => {
+    const a = Math.max(0, Math.floor((lo - 1) * out.fps + 1e-6) / out.fps), b = Math.min(seconds ?? hi + 1, Math.ceil((hi + 1) * out.fps - 1e-6) / out.fps);
+    if (b - a < 0.2) { unstabilized.add(clipId); return; }
+    const op = { clipId, videoId, srcIn: r3(a), srcOut: r3(b), smoothing: smoothingOf(smooth) };
+    const h = hashOf(op);
+    stabilized[clipId] = { ...op, file: `stab_${h}.trf`, copy: `stable_${h}.mkv`, ...(broll ? { broll: true } : {}) };
+  };
+  const byClip = new Map<string, PicturePart[]>();
   for (const p of parts) {
     const st = (clipById.get(p.clipIds[0]) as { stabilize?: { smooth: number } } | undefined)?.stabilize;
     if (!st || p.clipIds.length !== 1) continue;
-    if ((p.rate ?? 1) !== 1 || p.srcOut - p.srcIn < 0.2) { unstabilized.add(p.clipIds[0]); continue; }
-    const op = { videoId: p.videoId, srcIn: r3(p.srcIn), srcOut: r3(p.srcOut), smoothing: Math.max(1, Math.round(st.smooth * 0.3)) };
-    stabilize[stabilizeKey(p)] = { ...op, file: `stab_${hashOf(op)}.trf` };
+    byClip.set(p.clipIds[0], [...(byClip.get(p.clipIds[0]) ?? []), p]);
+  }
+  for (const [clipId, ps] of byClip) {
+    const smooth = (clipById.get(clipId) as unknown as { stabilize: { smooth: number } }).stabilize.smooth;
+    if (ps.every((p) => (p.rate ?? 1) === 1)) {
+      for (const p of ps) {
+        if (p.srcOut - p.srcIn < 0.2) { unstabilized.add(clipId); continue; }
+        const op = { videoId: p.videoId, srcIn: r3(p.srcIn), srcOut: r3(p.srcOut), smoothing: smoothingOf(smooth) };
+        stabilize[stabilizeKey(p)] = { ...op, file: `stab_${hashOf(op)}.trf` };
+      }
+    } else copyOf(clipId, ps[0].videoId, Math.min(...ps.map((p) => p.srcIn)), Math.max(...ps.map((p) => (rateOf(p) === 0 ? p.srcIn + 1 / out.fps : p.srcOut))), smooth, infoOf(ps[0].videoId)?.seconds);
+  }
+  for (const o of [...broll, ...under]) {
+    const c = (tl.tracks.v2 as (V2Clip & { stabilize?: { smooth: number } })[]).find((x) => x.id === o.clipId);
+    if (c?.stabilize && o.videoId) copyOf(o.clipId, o.videoId, o.sourceStart, o.sourceStart + (o.end - o.start), c.stabilize.smooth, input.brollSeconds?.[o.videoId], true);
   }
 
   // Phase 6: HDR stays HDR in a final (unless the edit asks for SDR): the main footage's transfer, else the first HDR
@@ -787,7 +820,7 @@ export function planRender(input: PlanInput): RenderPlan {
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
     ...(adjust.length ? [`Adjustment layers: ${adjust.slice(0, 4).map((a) => `${fmtClock(a.start)}-${fmtClock(a.end)} ${[a.grade ? `grade ${gradeText(a.grade)}` : "", a.effects?.length ? effectsText(a.effects) : "", adjustText(a)].filter(Boolean).join(", ")}`).join("; ")} (over the picture, b-roll and graphics; text and captions on top as they are)${hdr && adjust.some((a) => a.grade) ? "; this output keeps HDR: their grades are left out there (their effects apply)" : ""}`] : []),
-    ...(Object.keys(stabilize).length || unstabilized.size ? [`Stabilized (Warp Stabilizer, zoomed in to hide the edges): ${Array.from(new Set(Object.values(stabilize).map((x) => Object.keys(stabilize).find((k) => stabilize[k] === x)!.split("@")[0]))).slice(0, 6).join(", ") || "none"}${unstabilized.size ? `; as filmed where a clip plays at another speed: ${Array.from(unstabilized).slice(0, 4).join(", ")}` : ""}`] : []),
+    ...(Object.keys(stabilize).length || Object.keys(stabilized).length || unstabilized.size ? [`Stabilized (Warp Stabilizer, zoomed in to hide the edges): ${[...new Set(Object.keys(stabilize).map((k) => k.split("@")[0])), ...Object.keys(stabilized).map((id) => `${id} (${stabilized[id].broll ? "b-roll" : "at its speeds"}, from a stabilized copy)`)].slice(0, 8).join(", ") || "none"}${unstabilized.size ? `; as filmed, too short to stabilize: ${Array.from(unstabilized).slice(0, 4).join(", ")}` : ""}`] : []),
     ...([...broll, ...graphics].some((x) => x.blend || x.opacity != null) ? [`Blend: ${[...broll, ...graphics].filter((x) => x.blend || x.opacity != null).slice(0, 6).map((x) => `${x.videoId ? "b-roll" : "graphic"} ${x.clipId} ${blendText(x.blend, x.opacity)}`).join(", ")}`] : []),
     ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
@@ -812,7 +845,7 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(textMattes.length ? { textMattes: hdr ? textMattes.map((m) => (m.decor ? { ...m, decor: hdrAss(m.decor, hdr.transfer) } : m)) : textMattes } : {}),
     ...(textBlurs.length ? { textBlurs } : {}),
     ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}),
-    ...(Object.keys(stabilize).length ? { stabilize } : {}), ...(adjust.length ? { adjust } : {}),
+    ...(Object.keys(stabilize).length ? { stabilize } : {}), ...(Object.keys(stabilized).length ? { stabilized } : {}), ...(adjust.length ? { adjust } : {}),
     ...(kind === "final" && tl.export?.format && tl.export.format !== "mp4" ? { format: tl.export.format } : {}),
     ...(kind === "final" && tl.export?.bitrate && !hdr ? { bitrate: tl.export.bitrate } : {}),
     ...(chapters.length ? { chapters } : {}), ...(subtitles.length ? { subtitles } : {}),
@@ -972,6 +1005,9 @@ export function windowPlan(plan: RenderPlan, from: number, to: number): RenderPl
   });
   if (!parts.length) throw new RenderPlanError(`Nothing plays at ${fmtClock(from)}.`);
   const stabilize = plan.stabilize ? Object.fromEntries(Object.entries(plan.stabilize).filter(([k]) => parts.some((p) => stabilizeKey(p) === k))) : undefined;
+  const broll0 = plan.broll.filter(hit), under0 = plan.under?.filter(hit) ?? [];
+  const shown = new Set([...parts.flatMap((p) => p.clipIds), ...broll0.map((o) => o.clipId), ...under0.map((o) => o.clipId), ...(plan.transitions ?? []).filter(hit).flatMap((t) => [...t.a, ...t.b].map((x) => x.clipId))]);
+  const stabilized = plan.stabilized ? Object.fromEntries(Object.entries(plan.stabilized).filter(([id]) => shown.has(id))) : undefined;
   const person = plan.person ? { ...plan.person, parts: Object.fromEntries(kept.flatMap((old, j) => (plan.person!.parts[old] ? [[j, plan.person!.parts[old]]] : []))) } : undefined;
   const broll = plan.broll.filter(hit), under = plan.under?.filter(hit);
   // The matte blocks the window reads: its parts' footage (a look's subject or the person behind text) and its b-roll.
@@ -992,7 +1028,7 @@ export function windowPlan(plan: RenderPlan, from: number, to: number): RenderPl
   }
   return {
     ...plan, window: { from: a, to: b }, parts, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })),
-    ...(stabilize ? { stabilize } : {}), ...(person ? { person } : {}), ...(mattes ? { mattes } : {}),
+    ...(stabilize ? { stabilize } : {}), ...(stabilized && Object.keys(stabilized).length ? { stabilized } : { stabilized: undefined }), ...(person ? { person } : {}), ...(mattes ? { mattes } : {}),
     zooms: plan.zooms.filter(hit), broll, graphics: plan.graphics.filter(hit), ...(under ? { under } : {}),
     ...(plan.transitions ? { transitions: plan.transitions.filter(hit) } : {}), ...(plan.adjust ? { adjust: plan.adjust.filter(hit) } : {}),
     ...(plan.textMattes ? { textMattes: plan.textMattes.filter(hit) } : {}), ...(plan.textBlurs ? { textBlurs: plan.textBlurs.filter(hit) } : {}),
@@ -1080,6 +1116,8 @@ export type PlanFiles = {
   irs?: Record<string, string>;
   /** Phase 7: each stabilized part's shake (vidstabdetect's file), by stabilizeKey. */
   stabilize?: Record<string, string>;
+  /** Phase 21: each stabilized copy's file (plan.stabilized), by clip id. */
+  stableCopies?: Record<string, string>;
   /** The other videos on V1, by video id. */
   videos?: Record<string, string>;
   output: string;
@@ -1462,10 +1500,12 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     const end = start + frames / FPS;
     let cur = backOf(start, frames, tag, blurSrc, dom);
     underClips.filter((u) => u.start < end - 1e-6 && u.end > start + 1e-6).forEach((u, j) => {
-      const path = files.under?.[u.clipId];
+      const st = plan.stabilized?.[u.clipId], cpPath = st ? files.stableCopies?.[u.clipId] : undefined;
+      const path = cpPath ?? files.under?.[u.clipId];
       if (!path) return;
       const s = Math.max(start, u.start), e = Math.min(end, u.end), n = Math.max(1, Math.round((e - s) * FPS)), t = `${tag}u${j}`;
-      inputs.push("-ss", n3(u.sourceStart + (s - u.start)), "-t", n3(e - s + 0.25), "-i", path);
+      // Phase 21: stabilized b-roll is read from its stabilized copy (its time starts at the copy's srcIn).
+      inputs.push("-ss", n3(u.sourceStart + (s - u.start) - (cpPath ? st!.srcIn : 0)), "-t", n3(e - s + 0.25), "-i", path);
       g.push(`[${idx++}:v]fps=${R},${flipFilter(u.flip)}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[ua${t}]`);
       const c = colorChain(`ua${t}`, looks[u.clipId], "sdr", n, t, `trim=start=${n6(u.sourceStart + (s - u.start))},setpts=PTS-STARTPTS`);
       let ov = c.out;
@@ -1490,6 +1530,16 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     if (!path) throw new RenderPlanError(`The file of a video on V1 is missing (${vid}).`);
     srcPath[vid] = path;
   }
+  // Phase 21: a stabilized copy is read as a video of its own ("copy:<clip>"), its time starting at the copy's srcIn.
+  const copyVid = (clipId: string) => `copy:${clipId}`;
+  for (const [clipId, st] of Object.entries(plan.stabilized ?? {})) if (files.stableCopies?.[clipId]) srcPath[copyVid(clipId)] = files.stableCopies[clipId];
+  /** Where a stretch of a clip's footage is read: its stabilized copy (shifted to the copy's time) when it has one
+   *  covering it, else the video itself. */
+  const readFrom = (clipId: string | undefined, videoId: string, a: number, b: number) => {
+    const st = clipId ? plan.stabilized?.[clipId] : undefined;
+    if (!st || !srcPath[copyVid(clipId!)] || st.videoId !== videoId || a < st.srcIn - 1e-6 || b > st.srcOut + 1e-6) return null;
+    return { vid: copyVid(clipId!), d: st.srcIn, path: srcPath[copyVid(clipId!)] };
+  };
   type Win = { vid: string; idx: number; at: number; min: number; max: number; pos: number; made: "v" | "a"; v: string[]; a: string[] };
   const wins: Win[] = [];
   const gap = opts.windowGap ?? WINDOW_GAP, oneEach = gap === Infinity;
@@ -1559,7 +1609,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     let nBranch = 0;
     /** A branch of the video's decoder for footage a..b (seconds): from the window that reads there. */
     const branch = (vid: string, a: number, b: number) => { const l = `sv${nBranch++}`; take("v", vid, a, b, l); return l; };
-    const pathOf = (vid: string) => (vid === main ? files.source : files.videos?.[vid])!;
+    const pathOf = (vid: string) => srcPath[vid] ?? (vid === main ? files.source : files.videos?.[vid])!;
     /**
      * One stretch of picture as exactly round(length x 30) frames at output size: its footage at its rate (reversed in
      * 1 s chunks, each from its own input so memory stays small; frozen = one frame held), turned, fitted, framed and
@@ -1571,11 +1621,15 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       const st = x.clipIds ? plan.stabilize?.[stabilizeKey({ clipIds: x.clipIds, srcIn: x.srcIn })] : undefined, f = st ? files.stabilize?.[stabilizeKey({ clipIds: x.clipIds!, srcIn: x.srcIn })] : undefined;
       return st && f ? `,vidstabtransform=input=${q(f)}:smoothing=${st.smoothing}:optzoom=1:interpol=bicubic` : "";
     };
-    const drawSeg = (x: { videoId: string; srcIn: number; srcOut: number; rate?: number; start: number; end: number; rotate: number; framing: Framing | null; clipIds?: string[]; clipId?: string; flip?: "h" | "v" | "both"; interp?: "blend" | "flow" }, out: string, tag: string, exact = false) => {
-      const N = Math.max(1, Math.round((x.end - x.start) * FPS));
-      const r = rateOf(x);
-      const lk = looks[x.clipId ?? x.clipIds?.[0] ?? ""], dom = domOf(x.videoId, lk);
-      const look = `${turnOf(x.rotate)}${flipFilter(x.flip)}${toneOf(x.videoId, dom)}${fitFor(x.framing)}`;
+    const drawSeg = (x0: { videoId: string; srcIn: number; srcOut: number; rate?: number; start: number; end: number; rotate: number; framing: Framing | null; clipIds?: string[]; clipId?: string; flip?: "h" | "v" | "both"; interp?: "blend" | "flow" }, out: string, tag: string, exact = false) => {
+      const N = Math.max(1, Math.round((x0.end - x0.start) * FPS));
+      const r = rateOf(x0);
+      // Phase 21: footage read from the clip's stabilized copy when it has one (times shifted to the copy's); the look,
+      // mattes and keys keep the footage's own (x0).
+      const cp = readFrom(x0.clipId ?? (x0.clipIds?.length === 1 ? x0.clipIds[0] : undefined), x0.videoId, x0.srcIn, r === 0 ? x0.srcIn : x0.srcOut);
+      const x = cp ? { ...x0, videoId: cp.vid, srcIn: x0.srcIn - cp.d, srcOut: x0.srcOut - cp.d } : x0;
+      const lk = looks[x.clipId ?? x.clipIds?.[0] ?? ""], dom = domOf(x0.videoId, lk);
+      const look = `${turnOf(x.rotate)}${flipFilter(x.flip)}${toneOf(x0.videoId, dom)}${fitFor(x.framing)}`;
       // tpad clones a frame at the link's frame rate: without a rate (after trim) FFmpeg 7 gives the clones one
       // timestamp and they are dropped, so the stream is put on the 30 fps grid first.
       const pad = `,fps=${R},tpad=stop_mode=clone:stop=2,trim=end_frame=${N}`;
@@ -1601,15 +1655,15 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 2 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 2 / FPS)},fps=${R},settb=1/90000,setpts=(PTS-STARTPTS)/${n6(r)},minterpolate=fps=${R}:${mi}${pad},${look}`;
       }
       else if (r !== 1) chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
-      else chain = `[${branch(x.videoId, x.srcIn, x.srcOut)}]${vt(x)}${stab(x)}${exact ? pad : ""},${look}`;
+      else chain = `[${branch(x.videoId, x.srcIn, x.srcOut)}]${vt(x)}${cp ? "" : stab(x)}${exact ? pad : ""},${look}`;
       // remove_background: the matte through the same trim, speed, turn and fit (not reversed clips: they keep theirs).
       // Phase 2: a main part under a layer behind the person reads one too (plan.person.parts), kept apart.
       const personM = /^\d+$/.test(tag) ? plan.person?.parts[Number(tag)] : undefined;
       // A stream in footage time made to follow this segment as its picture does (its trim, speed, freeze).
-      const steps = r < 0 ? undefined : r === 0 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N}`
-        : r !== 1 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(x)}${exact ? pad : ""}`;
+      const steps = r < 0 ? undefined : r === 0 ? `trim=start=${n6(x0.srcIn)}:end=${n6(x0.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N}`
+        : r !== 1 ? `trim=start=${n6(x0.srcIn)}:end=${n6(x0.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(x0)}${exact ? pad : ""}`;
       if ((lk?.subject || personM) && r >= 0) {
-        const mt = matteIn(lk?.subject?.matte ?? personM!, x.srcIn, r === 0 ? x.srcIn + 1 / FPS : x.srcOut + 1 / FPS);
+        const mt = matteIn(lk?.subject?.matte ?? personM!, x0.srcIn, r === 0 ? x0.srcIn + 1 / FPS : x0.srcOut + 1 / FPS);
         const both = !!lk?.subject && !!personM;
         g.push(`[${mt}]${steps},${turnOf(x.rotate)}${flipFilter(x.flip)}${fitFor(x.framing)},format=gray${both ? `,split[mf${tag}][mp${tag}]` : `[${lk?.subject ? "mf" : "mp"}${tag}]`}`);
         if (lk?.subject) mattesFor[tag] = `mf${tag}`;
@@ -1617,8 +1671,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       } else if ((lk?.subject || personM) && r < 0) {
         // Phase 18: a reversed clip: its matte in the same 1 s pieces as its picture, each played backwards, joined.
         const name = lk?.subject?.matte ?? personM!, ps: string[] = [];
-        for (let b = x.srcOut, j = 0; b > x.srcIn + 1e-6; b -= 1, j++) {
-          const a = Math.max(x.srcIn, b - 1), M = Math.max(1, Math.round((b - a) * FPS));
+        for (let b = x0.srcOut, j = 0; b > x0.srcIn + 1e-6; b -= 1, j++) {
+          const a = Math.max(x0.srcIn, b - 1), M = Math.max(1, Math.round((b - a) * FPS));
           const mt = matteIn(name, a, b + 1 / FPS);
           g.push(`[${mt}]trim=start=${n6(a)}:end=${n6(b + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},trim=end_frame=${M},${turnOf(x.rotate)}${flipFilter(x.flip)}${fitFor(x.framing)},format=gray,reverse,setpts=PTS-STARTPTS[mrc${tag}_${j}]`);
           ps.push(`[mrc${tag}_${j}]`);
@@ -1656,7 +1710,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     // One video, one look, all at normal speed and still: cut, join, then fit once (the same graph model A used).
     // Otherwise each part is drawn on its own first.
     const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
-    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && !p.flip && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject || isMovingLook(l)) && !Object.keys(plan.person?.parts ?? {}).length && !plan.stabilize;
+    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && !p.flip && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject || isMovingLook(l)) && !Object.keys(plan.person?.parts ?? {}).length && !plan.stabilize && !plan.stabilized;
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId, p.srcIn, p.srcOut)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
     const withPerson = !!plan.person?.windows.length && Object.keys(personFor).length > 0;
     const blackFrom = new Set<number>();
@@ -1961,9 +2015,11 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
   };
   // 4. B-roll overlays (video only; the dialogue keeps playing underneath).
   plan.broll.forEach((b, i) => {
-    const path = files.broll?.[b.clipId];
+    const st = plan.stabilized?.[b.clipId], cpPath = st ? files.stableCopies?.[b.clipId] : undefined;
+    const path = cpPath ?? files.broll?.[b.clipId];
     if (!path) return;
-    inputs.push("-ss", n3(b.sourceStart), "-t", n3(b.end - b.start), "-i", path);
+    // Phase 21: stabilized b-roll is read from its stabilized copy (its time starts at the copy's srcIn).
+    inputs.push("-ss", n3(b.sourceStart - (cpPath ? st!.srcIn : 0)), "-t", n3(b.end - b.start), "-i", path);
     const bi = next();
     const n = Math.max(1, Math.round((b.end - b.start) * FPS));
     const look = plan.looks?.[b.clipId];

@@ -1245,12 +1245,18 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "stabilize": {
       const ids = op.clipId || op.clipIds || op.all || op.video ? lookIds(tl, op) : lookIds(tl, { all: true });
+      // Phase 21: V1 clips (at any speed: ramps, reversed, freezes) and b-roll (its own footage).
       const v1 = new Set((tl.tracks.v1 as Clip[]).map((c) => c.id));
-      const bad = ids.filter((id) => !v1.has(id));
-      if (bad.length) throw new EditError(`stabilize works on V1 clips: ${bad.slice(0, 4).join(", ")} ${bad.length === 1 ? "is" : "are"} b-roll.`);
+      const broll = new Set((tl.tracks.v2 as V2Clip[]).filter((c) => c.kind === "broll" && c.videoId).map((c) => c.id));
+      const bad = ids.filter((id) => !v1.has(id) && !broll.has(id));
+      if (bad.length) throw new EditError(`stabilize works on V1 clips and b-roll: ${bad.slice(0, 4).join(", ")} ${bad.length === 1 ? "is neither" : "are neither"}.`);
       const smooth = op.smooth ?? 50;
-      const next = withTracks(tl, "v1", (tl.tracks.v1 as Clip[]).map((c) => { if (!ids.includes(c.id)) return c; const { stabilize: _s, ...rest } = c as Clip & { stabilize?: unknown }; return (op.off || !smooth ? rest : { ...rest, stabilize: { smooth } }) as Clip; }));
-      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.off || !smooth ? "not stabilized" : `stabilized, smooth ${smooth} (Warp Stabilizer: the picture zooms in a little to hide the edges)`}` };
+      const set = <T extends { id: string }>(c: T): T => { if (!ids.includes(c.id)) return c; const { stabilize: _s, ...rest } = c as T & { stabilize?: unknown }; return (op.off || !smooth ? rest : { ...rest, stabilize: { smooth } }) as T; };
+      let next = withTracks(tl, "v1", (tl.tracks.v1 as Clip[]).map(set));
+      if (ids.some((id) => broll.has(id))) next = withTracks(next, "v2", (next.tracks.v2 as V2Clip[]).map(set));
+      const slowed = ids.filter((id) => v1.has(id) && (() => { const c = (tl.tracks.v1 as (Clip & { speed?: number; reverse?: boolean; ramp?: unknown[]; freeze?: number })[]).find((x) => x.id === id); return !!c && ((c.speed ?? 1) !== 1 || c.reverse || !!c.ramp?.length || !!c.freeze); })());
+      const how = [ids.some((id) => broll.has(id)) ? "b-roll from its own footage" : "", slowed.length ? `${slowed.join(", ")} through ${slowed.length === 1 ? "its" : "their"} speed changes` : ""].filter(Boolean).join("; ");
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.off || !smooth ? "not stabilized" : `stabilized, smooth ${smooth} (Warp Stabilizer: the picture zooms in a little to hide the edges${how ? `; ${how}` : ""})`}` };
     }
     case "retouch_skin": {
       const ids = op.clipId || op.clipIds || op.all || op.video ? lookIds(tl, op) : lookIds(tl, { all: true });

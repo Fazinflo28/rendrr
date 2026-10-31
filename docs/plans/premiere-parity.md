@@ -81,7 +81,11 @@ plugin hosting, hardware I/O, localization) are out of scope.
     (FFmpeg's 16-bit screen; now float), and shake or mirror on one clip of several broke the render (non-square pixels).
 20. **More shape wipes; GIFs longer than a minute (done, 31 October).** Iris box, Iris cross, Venetian blinds, Checker
     wipe and Wedge wipe (render and player from one rule); GIFs up to ten minutes at fewer frames and a smaller size.
-21. **Warp Stabilizer on b-roll and ramped clips.**
+21. **Warp Stabilizer on b-roll and ramped clips (done, 31 October).** A V1 clip with any part at another speed (a
+    ramp's steps, reversed, a freeze) and stabilized b-roll read a stabilized copy of their footage: the shake measured
+    over the whole clip (a second either side), written smoothed once, so a ramp is smoothed through its speed changes.
+    Normal-speed V1 clips keep the in-render path. Measured: the shake drops from 22-30 to under 0.7 (half speed, a ramp,
+    reversed, b-roll), no jump where a ramp changes speed.
 22. **Multicam sync by timecode.**
 
 Hardest, last: mask path keyframes (bezier masks that change shape), tracking an object other than a face, a

@@ -16,7 +16,7 @@ import { cachedAsset, cachedCopy } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
 import { writeMoving } from "../lib/moving";
-import { detectShake } from "../lib/stabilize";
+import { detectShake, makeStableCopy } from "../lib/stabilize";
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
 import { measureSound } from "../lib/sound";
@@ -195,6 +195,7 @@ export async function renderJob(ctx: Ctx) {
     if (sampleWins) {
       const subs = sampleWins.map((w) => windowPlan(plan, w.from, w.to));
       if (plan.stabilize) { const keep = Object.entries(plan.stabilize).filter(([k]) => subs.some((x) => x.stabilize?.[k])); plan.stabilize = keep.length ? Object.fromEntries(keep) : undefined; }
+      if (plan.stabilized) { const keep = Object.entries(plan.stabilized).filter(([k]) => subs.some((x) => x.stabilized?.[k])); plan.stabilized = keep.length ? Object.fromEntries(keep) : undefined; }
       if (plan.mattes) {
         const m: NonNullable<RenderPlan["mattes"]> = {};
         for (const x of subs) for (const [n, mo] of Object.entries(x.mattes ?? {})) m[n] = m[n] ? { ...mo, blocks: Array.from(new Set([...m[n].blocks, ...mo.blocks])).sort((a, b) => a - b) } : mo;
@@ -227,6 +228,15 @@ export async function renderJob(ctx: Ctx) {
       const p = join(ctx.dir, st.file);
       await detectShake(src, st, plan.rate || String(plan.fps || 30), p, signal);
       (files.stabilize ??= {})[key] = p;
+    }
+    // Phase 21: b-roll and clips at other speeds: the shake measured over the clip's footage, then its stabilized copy.
+    for (const [clipId, st] of Object.entries(plan.stabilized ?? {})) {
+      const src = st.broll ? (files.broll?.[clipId] ?? files.under?.[clipId]) : st.videoId === video.id ? files.source : files.videos?.[st.videoId];
+      if (!src) continue;
+      const trf = join(ctx.dir, st.file), copy = join(ctx.dir, st.copy);
+      await detectShake(src, st, plan.rate || String(plan.fps || 30), trf, signal);
+      await makeStableCopy(src, st, plan.rate || String(plan.fps || 30), trf, copy, { deep: !!plan.hdr, signal });
+      (files.stableCopies ??= {})[clipId] = copy;
     }
     // Phase 6: each reverb room's impulse response (seeded: the same room as the editor's player hears).
     for (const [name, size] of Object.entries(plan.audioMix?.irs ?? {})) {
