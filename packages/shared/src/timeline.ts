@@ -4,7 +4,7 @@ import { z } from "zod";
 import { catalogMusic, catalogSfx } from "./catalog";
 import { CaptionStyleSchema, CardSchema, TEXT_ANIMS, TextInsideSchema, TextStyleSchema } from "./captions";
 import { ASPECTS, CAPTION_LOOKS } from "./constants";
-import { KeysSchema, RampPointSchema, TransitionSchema } from "./motion";
+import { AnchorSchema, KeysSchema, RampPointSchema, TransitionSchema } from "./motion";
 import { ChromaKeySchema, EffectSchema, GradeSchema, MaskSchema, SkinSchema, SubjectSchema } from "./look";
 import { BackgroundSchema, CardLookSchema } from "./cardLook";
 
@@ -37,6 +37,13 @@ export const V1ClipSchema = ClipSchema.extend({
   ...look,
   /** Drawn as a card: crop, rounded corners, drop shadow, border (with framing to shrink and place it). */
   cardLook: CardLookSchema.optional(),
+  /** Phase 11: mirrored (h: left to right, v: upside down, both); slow motion's in-between frames (frames: each frame
+   *  held, as now; blend: frames mixed; flow: made by optical flow); the anchor point keyframes turn and scale about;
+   *  motion blur on keyframed movement (0-100, 50 = a 180° shutter). */
+  flip: z.enum(["h", "v", "both"]).optional(),
+  interp: z.enum(["frames", "blend", "flow"]).optional(),
+  anchor: AnchorSchema.optional(),
+  motionBlur: z.number().min(0).max(100).optional(),
   /** Phase 10 (multicam): the picture comes from this angle (a video in the edit's multicam), at the same moment by
    *  its sync offset; the clip's footage, cuts and words stay the main video's. */
   angle: z.string().max(80).optional(),
@@ -51,7 +58,14 @@ export const V2ClipSchema = ClipSchema.extend({
   keys,
   ...look,
   /** Drawn behind V1 instead of over it: it shows where V1 is keyed, masked, framed smaller or moved away. */
-  under: z.boolean().optional(),  /** Phase 4: how it lies over the picture (b-roll over V1): a blend mode and its opacity (0-1). */
+  under: z.boolean().optional(),
+  /** Phase 11 (b-roll): mirrored, the anchor its keyframes turn about, motion blur, and drawn as a card (crop, rounded
+   *  corners, drop shadow) over the picture. */
+  flip: z.enum(["h", "v", "both"]).optional(),
+  anchor: AnchorSchema.optional(),
+  motionBlur: z.number().min(0).max(100).optional(),
+  cardLook: CardLookSchema.optional(),
+  /** Phase 4: how it lies over the picture (b-roll over V1): a blend mode and its opacity (0-1). */
   blend: BlendModeSchema.optional(),
   opacity: z.number().min(0).max(1).optional(),
 });
@@ -77,6 +91,9 @@ export const V3ClipSchema = ClipSchema.extend({
   cutout: z.boolean().optional(),  /** Phase 4 (graphics): how it lies over the picture: a blend mode and its opacity (0-1). */
   blend: BlendModeSchema.optional(),
   opacity: z.number().min(0).max(1).optional(),
+  /** Phase 11 (text, graphics): the anchor keyframes turn and scale about; motion blur on keyframed movement. */
+  anchor: AnchorSchema.optional(),
+  motionBlur: z.number().min(0).max(100).optional(),
   /** Phase 9 (kind "adjust"): an adjustment layer: this grade and these effects on everything under it (footage,
    *  b-roll, graphics) over its time; text and captions stay as they are. */
   grade: GradeSchema.optional(),
@@ -412,7 +429,7 @@ function normalizeSequence(t: Timeline): Timeline {
         const r3 = (n: number) => Math.round(n * 1000) / 1000;
         if (x.speed != null) { const v = r3(Number(x.speed)); if (v && v !== 1) x.speed = v; else delete x.speed; }
         if (!x.reverse) delete x.reverse;
-        if (Array.isArray(x.ramp)) { const ps = (x.ramp as { at: number; speed: number }[]).map((p) => ({ at: r3(p.at), speed: r3(p.speed) })).sort((a, b) => a.at - b.at); if (ps.length) x.ramp = ps; else delete x.ramp; }
+        if (Array.isArray(x.ramp)) { const ps = (x.ramp as { at: number; speed: number; ease?: unknown }[]).map((p) => ({ at: r3(p.at), speed: r3(p.speed), ...(p.ease && p.ease !== "linear" ? { ease: p.ease } : {}) })).sort((a, b) => a.at - b.at); if (ps.length) x.ramp = ps; else delete x.ramp; }
         if (x.freeze != null) { x.freeze = r(Number(x.freeze)); delete x.speed; delete x.reverse; delete x.ramp; delete x.audioStart; }
         if (x.transition && (x.transition as { type: string }).type === "cut") delete x.transition;
         if (Array.isArray(x.keys)) { if ((x.keys as unknown[]).length) x.keys = sortKeys(x.keys as { t: number }[]); else delete x.keys; }

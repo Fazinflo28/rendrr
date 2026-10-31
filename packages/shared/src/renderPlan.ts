@@ -51,7 +51,9 @@ export type PlanInput = {
 export type ZoomOp = { start: number; end: number; scale: number; mode: "punch" | "push" | "through" };
 /** keys: keyframes in seconds from the overlay's start (a b-roll clip with keys is a picture-in-picture). */
 /** blend, opacity (Phase 4): how the layer lies over the picture (normal at full opacity when left out). */
-export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string; keys?: Key[]; behind?: boolean; blend?: BlendMode; opacity?: number };
+export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string; keys?: Key[]; behind?: boolean; blend?: BlendMode; opacity?: number;
+  /** Phase 11: mirrored (b-roll); the anchor its keys turn about; motion blur (0-100); a drop shadow (b-roll cards). */
+  flip?: "h" | "v" | "both"; anchor?: { x: number; y: number }; motionBlur?: number; shadow?: { color: string; opacity: number; blur: number; x: number; y: number } };
 /**
  * Phase 2b: a text layer drawn from a mask, on its side of the person (behind: before the person is laid back), after
  * that side's graphics and before its other text layers. mask: an ASS file drawn white on black from the layer's start
@@ -158,7 +160,7 @@ export type RenderPlan = {
   captionLook: CaptionLook;
   /** Phase 5: transitions in edit order, and the keyframes of V1 clips (seconds from the clip's start in the edit). */
   transitions?: TransitionOp[];
-  clipMotion?: Record<string, { start: number; end: number; keys: Key[] }>;
+  clipMotion?: Record<string, { start: number; end: number; keys: Key[]; anchor?: { x: number; y: number }; motionBlur?: number }>;
   /** Phase 6: each V1 and b-roll clip's look (by clip id), the files they need (by file name), b-roll drawn behind V1,
    *  and the HDR output (null: SDR). hdr.lut converts SDR pictures (footage, b-roll, graphics) into it. */
   looks?: Record<string, LookOp>;
@@ -408,6 +410,28 @@ export function buildAss(events: CaptionEvent[], look: CaptionLook, width: numbe
 /** Phase 4: a layer's blend mode and opacity for the plan (nothing when it is plain). */
 const layerBlend = (c: { blend?: BlendMode; opacity?: number }) => ({ ...(c.blend && c.blend !== "normal" ? { blend: c.blend } : {}), ...(c.opacity != null && c.opacity < 1 ? { opacity: c.opacity } : {}) });
 
+/** Phase 11: a keyed clip's anchor and motion blur, as the render and the player take them. */
+const moveExtras = (c: { keys?: unknown[]; anchor?: { x: number; y: number }; motionBlur?: number }) => (c.keys?.length ? { ...(c.anchor && (c.anchor.x !== 0.5 || c.anchor.y !== 0.5) ? { anchor: c.anchor } : {}), ...(c.motionBlur ? { motionBlur: c.motionBlur } : {}) } : {});
+/** Phase 11: a mirror as FFmpeg filters (with a trailing comma, or nothing). */
+export const flipFilter = (f?: "h" | "v" | "both") => (f === "h" ? "hflip," : f === "v" ? "vflip," : f === "both" ? "hflip,vflip," : "");
+
+/** Phase 11: mirrored clips, slow motion's in-between frames, anchors and motion blur, b-roll cards. */
+function extrasLines(parts: PicturePart[], clipMotion: Record<string, { anchor?: unknown; motionBlur?: number }>, broll: OverlayOp[], graphics: OverlayOp[], v2: (V2Clip & { cardLook?: CardLook })[]): string[] {
+  const out: string[] = [];
+  const ids = (xs: string[]) => Array.from(new Set(xs)).slice(0, 6).join(", ");
+  const flipped = [...parts.filter((p) => p.flip).flatMap((p) => p.clipIds), ...broll.filter((b) => b.flip).map((b) => b.clipId)];
+  if (flipped.length) out.push(`Mirrored: ${ids(flipped)}`);
+  const smooth = parts.filter((p) => p.interp);
+  if (smooth.length) out.push(`Slow motion: ${smooth.map((p) => `${p.clipIds[0]} ${p.interp === "flow" ? "optical flow" : "frame blending"} at ${Math.round(rateOf(p) * 100)}%`).slice(0, 4).join(", ")} (the in-between frames are made in the render; the player holds frames)`);
+  const moved = [...Object.entries(clipMotion).map(([id, m]) => ({ id, ...m })), ...[...broll, ...graphics].map((x) => ({ id: x.clipId, anchor: x.anchor, motionBlur: x.motionBlur }))];
+  const blur = moved.filter((m) => m.motionBlur), anch = moved.filter((m) => m.anchor);
+  if (blur.length) out.push(`Motion blur: ${blur.slice(0, 6).map((m) => `${m.id} ${m.motionBlur}`).join(", ")} (in the render)`);
+  if (anch.length) out.push(`Anchor points: ${ids(anch.map((m) => m.id))}`);
+  const cards = broll.filter((b) => hasCard(v2.find((c) => c.id === b.clipId)?.cardLook));
+  if (cards.length) out.push(`B-roll cards: ${cards.slice(0, 4).map((b) => `${b.clipId} ${cardLookText(v2.find((c) => c.id === b.clipId)!.cardLook!)}`).join("; ")}`);
+  return out;
+}
+
 /** Phase 10: how much of the edit each camera shows, and whose sound plays. */
 function multicamLine(m: NonNullable<Snapshot["timeline"]["multicam"]>, view: SequenceView, main: string, total: number): string {
   const on = new Map<string, number>();
@@ -452,12 +476,12 @@ export function planRender(input: PlanInput): RenderPlan {
   // start in the edit, and the transitions on the cuts.
   const v1 = tl.tracks.v1 as SeqClip[];
   const clipById = new Map(v1.map((c) => [c.id, c]));
-  const clipMotion: Record<string, { start: number; end: number; keys: Key[] }> = {};
+  const clipMotion: Record<string, { start: number; end: number; keys: Key[]; anchor?: { x: number; y: number }; motionBlur?: number }> = {};
   for (const c of v1) {
     const p = view.clip(c.id);
     if (!c.keys?.length || !p || !p.pieces.length) continue;
     const at = (k: Key) => (c.freeze ? Math.min(p.end - p.start, Math.max(0, k.t - c.sourceIn)) : (view.editAt(c.id, k.t) ?? p.start) - p.start);
-    clipMotion[c.id] = { start: r3(p.start), end: r3(p.end), keys: c.keys.map((k) => ({ ...k, t: r3(at(k)) })).sort((a, b) => a.t - b.t) };
+    clipMotion[c.id] = { start: r3(p.start), end: r3(p.end), keys: c.keys.map((k) => ({ ...k, t: r3(at(k)) })).sort((a, b) => a.t - b.t), ...moveExtras(c) };
   }
   const transitions = planTransitions(view, clipById, (vid) => infoOf(vid)?.seconds, out.fps);
 
@@ -476,7 +500,9 @@ export function planRender(input: PlanInput): RenderPlan {
       const end = Math.min(sp.end, sp.start + (len - ss));
       // On whole frames, so the render and the player show it on exactly the same frames.
       const fs = onFrame(sp.start), fe = onFrame(end);
-      if (fe - fs >= 0.05) ((c as { under?: boolean }).under ? under : broll).push({ clipId: c.id, start: fs, end: fe, sourceStart: ss, videoId: c.videoId, ...(c.keys?.length ? { keys: c.keys } : {}), ...(!c.under ? layerBlend(c) : {}) });
+      const sh = c.cardLook?.shadow;
+      if (fe - fs >= 0.05) ((c as { under?: boolean }).under ? under : broll).push({ clipId: c.id, start: fs, end: fe, sourceStart: ss, videoId: c.videoId, ...(c.keys?.length ? { keys: c.keys } : {}), ...(!c.under ? layerBlend(c) : {}), ...(c.flip ? { flip: c.flip } : {}), ...moveExtras(c),
+        ...(sh ? { shadow: { color: sh.color ?? SHADOW_DEFAULTS.color, opacity: sh.opacity ?? SHADOW_DEFAULTS.opacity, blur: sh.blur ?? SHADOW_DEFAULTS.blur, x: sh.x ?? SHADOW_DEFAULTS.x, y: sh.y ?? SHADOW_DEFAULTS.y } } : {}) });
     }
   }
   const graphics: OverlayOp[] = [];
@@ -485,7 +511,7 @@ export function planRender(input: PlanInput): RenderPlan {
     const sp = placed(c);
     // A custom graphic can start part way into its recording (add_graphic from); a template is drawn for each clip.
     const from = !findTemplate(c.graphicId) && c.sourceStart ? c.sourceStart : 0;
-    if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: from, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}), ...(c.behind ? { behind: true } : {}), ...layerBlend(c) });
+    if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: from, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}), ...(c.behind ? { behind: true } : {}), ...layerBlend(c), ...moveExtras(c) });
   }
   const audio: AudioOp[] = [];
   // Keys come from the catalog only (see catalogMusic), whatever the stored clip says; the user's own files from the
@@ -699,6 +725,7 @@ export function planRender(input: PlanInput): RenderPlan {
     broll.length ? `B-roll overlays: ${broll.length}` : "B-roll overlays: none",
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
     ...(tl.multicam?.angles.length ? [multicamLine(tl.multicam, view, main, total)] : []),
+    ...extrasLines(parts, clipMotion, broll, graphics, (tl.tracks.v2 as (V2Clip & { cardLook?: CardLook })[])),
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
@@ -1248,10 +1275,10 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       if (!path) return;
       const s = Math.max(start, u.start), e = Math.min(end, u.end), n = Math.max(1, Math.round((e - s) * FPS)), t = `${tag}u${j}`;
       inputs.push("-ss", n3(u.sourceStart + (s - u.start)), "-t", n3(e - s + 0.25), "-i", path);
-      g.push(`[${idx++}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[ua${t}]`);
+      g.push(`[${idx++}:v]fps=${R},${flipFilter(u.flip)}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[ua${t}]`);
       const c = colorChain(`ua${t}`, looks[u.clipId], "sdr", n, t, `trim=start=${n6(u.sourceStart + (s - u.start))},setpts=PTS-STARTPTS`);
       let ov = c.out;
-      if (u.keys?.length) { motionChain(g, ov, `um${t}`, u.keys, s - u.start, n, W, H, false, t, { hdr: !!hdr, fr }); ov = `um${t}`; }
+      if (u.keys?.length) { motionChain(g, ov, `um${t}`, u.keys, s - u.start, n, W, H, false, t, { hdr: !!hdr, fr, anchor: u.anchor, blur: u.motionBlur }); ov = `um${t}`; }
       g.push(`[${ov}]settb=${TB},setpts=PTS-STARTPTS+${Math.round((s - start) * FPS)}[ub${t}]`);
       g.push(`[${cur}][ub${t}]overlay=eof_action=pass:format=auto,format=${PF}[bu${t}]`);
       cur = `bu${t}`;
@@ -1351,11 +1378,11 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       const st = x.clipIds ? plan.stabilize?.[stabilizeKey({ clipIds: x.clipIds, srcIn: x.srcIn })] : undefined, f = st ? files.stabilize?.[stabilizeKey({ clipIds: x.clipIds!, srcIn: x.srcIn })] : undefined;
       return st && f ? `,vidstabtransform=input=${q(f)}:smoothing=${st.smoothing}:optzoom=1:interpol=bicubic` : "";
     };
-    const drawSeg = (x: { videoId: string; srcIn: number; srcOut: number; rate?: number; start: number; end: number; rotate: number; framing: Framing | null; clipIds?: string[]; clipId?: string }, out: string, tag: string, exact = false) => {
+    const drawSeg = (x: { videoId: string; srcIn: number; srcOut: number; rate?: number; start: number; end: number; rotate: number; framing: Framing | null; clipIds?: string[]; clipId?: string; flip?: "h" | "v" | "both"; interp?: "blend" | "flow" }, out: string, tag: string, exact = false) => {
       const N = Math.max(1, Math.round((x.end - x.start) * FPS));
       const r = rateOf(x);
       const lk = looks[x.clipId ?? x.clipIds?.[0] ?? ""], dom = domOf(x.videoId, lk);
-      const look = `${turnOf(x.rotate)}${toneOf(x.videoId, dom)}${fitFor(x.framing)}`;
+      const look = `${turnOf(x.rotate)}${flipFilter(x.flip)}${toneOf(x.videoId, dom)}${fitFor(x.framing)}`;
       // tpad clones a frame at the link's frame rate: without a rate (after trim) FFmpeg 7 gives the clones one
       // timestamp and they are dropped, so the stream is put on the 30 fps grid first.
       const pad = `,fps=${R},tpad=stop_mode=clone:stop=2,trim=end_frame=${N}`;
@@ -1374,6 +1401,12 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         }
         chain = `${parts.join("")}concat=n=${parts.length}:v=1:a=0,${pick(-r)}${pad}`;
       } else if (r === 0) chain = `[${branch(x.videoId, x.srcIn, x.srcIn + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N},${look}`;
+      else if (r > 0 && r < 1 && x.interp) {
+        // Phase 11: slow motion's in-between frames made (blend: neighbours mixed; flow: optical flow, motion-compensated),
+        // output frame n at footage srcIn + n x rate, as frame sampling shows it. Two frames past the end feed the last.
+        const mi = x.interp === "flow" ? "mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:scd=none" : "mi_mode=blend:scd=none";
+        chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 2 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 2 / FPS)},fps=${R},settb=1/90000,setpts=(PTS-STARTPTS)/${n6(r)},minterpolate=fps=${R}:${mi}${pad},${look}`;
+      }
       else if (r !== 1) chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
       else chain = `[${branch(x.videoId, x.srcIn, x.srcOut)}]${vt(x)}${stab(x)}${exact ? pad : ""},${look}`;
       // remove_background: the matte through the same trim, speed, turn and fit (not reversed clips: they keep theirs).
@@ -1409,7 +1442,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         return;
       }
       if (frm) { const b = m ? null : behind(); frame(cur, frm, `pg${tag}`, tag, m ? "clear" : b ? { base: b } : "black", card, N); cur = `pg${tag}`; }
-      if (m) { motionChain(g, cur, out, m.keys, x.start - m.start, N, W, H, true, tag, { base: behind() ?? undefined, hdr: !!hdr, fr }); return; }
+      if (m) { motionChain(g, cur, out, m.keys, x.start - m.start, N, W, H, true, tag, { base: behind() ?? undefined, hdr: !!hdr, fr, anchor: m.anchor, blur: m.motionBlur }); return; }
       g.push(`[${cur}]format=${PF}[${out}]`);
     };
 
@@ -1417,7 +1450,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     // One video, one look, all at normal speed and still: cut, join, then fit once (the same graph model A used).
     // Otherwise each part is drawn on its own first.
     const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
-    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject || isMovingLook(l)) && !Object.keys(plan.person?.parts ?? {}).length && !plan.stabilize;
+    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && !p.flip && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject || isMovingLook(l)) && !Object.keys(plan.person?.parts ?? {}).length && !plan.stabilize;
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId, p.srcIn, p.srcOut)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
     const withPerson = !!plan.person?.windows.length && Object.keys(personFor).length > 0;
     const blackFrom = new Set<number>();
@@ -1583,7 +1616,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
  * multiplies its alpha. The curves are the same tables the player reads (motion.ts). opaque: laid on black (V1);
  * otherwise it keeps its alpha (b-roll, graphics). `offset`: seconds into the clip at the picture's first frame.
  */
-export function motionChain(g: string[], inp: string, out: string, keys: Key[], offset: number, frames: number, W: number, H: number, opaque: boolean, tag: string, o: { base?: string; hdr?: boolean; fr?: { fps: number; rate: string } } = {}) {
+export function motionChain(g: string[], inp: string, out: string, keys: Key[], offset: number, frames: number, W: number, H: number, opaque: boolean, tag: string, o: { base?: string; hdr?: boolean; fr?: { fps: number; rate: string }; anchor?: { x: number; y: number }; blur?: number } = {}) {
   const FPS = o.fr?.fps ?? 30, RATE = o.fr?.rate ?? String(FPS);
   const tracks = keyTracks(keys);
   if (!tracks) { g.push(`[${inp}]null[${out}]`); return; }
@@ -1591,16 +1624,25 @@ export function motionChain(g: string[], inp: string, out: string, keys: Key[], 
   const [, smax] = scaleRange(tracks);
   const pre = smax < 0.75 ? Math.max(0.05, smax) : 1;
   const P = 2, CW = W + 2 * P, CH = H + 2 * P;
-  const tv = `((in-1)/${FPS}+${n6(offset)})`; // perspective counts frames from 1
+  // Phase 11: motion blur: the movement drawn at SUB times the frame rate and the last frames of each frame's shutter
+  // averaged (premultiplied, so edges do not darken), then back to the frame rate.
+  const SUB = o.blur ? 4 : 1, K = o.blur ? Math.max(2, Math.round((SUB * o.blur) / 100)) : 1;
+  const tv = `((in-1)/${FPS * SUB}+${n6(offset)})`; // perspective counts frames from 1
   const S = motionExpr(tracks, "scale", tv), X = motionExpr(tracks, "x", tv), Y = motionExpr(tracks, "y", tv);
   const R = `(${motionExpr(tracks, "rotation", tv)})*PI/180`;
   const k = pre === 1 ? S : `${S}/${pre}`;
+  // Phase 11: the anchor (Premiere's Anchor Point): the point of the picture it turns and scales about, which the
+  // position keys move. In the padded canvas: where it is on the (shrunk) picture, and where it lands in the frame.
+  const ax = o.anchor?.x ?? 0.5, ay = o.anchor?.y ?? 0.5;
+  const AXs = CW / 2 + (ax - 0.5) * W * pre, AYs = CH / 2 + (ay - 0.5) * H * pre, AXd = CW / 2 + (ax - 0.5) * W, AYd = CH / 2 + (ay - 0.5) * H;
   const corner = (i: number, sx: number, sy: number) => {
-    const dx = (sx * CW) / 2, dy = (sy * CH) / 2;
-    return `x${i}='${CW / 2}+${W}*${X}+${k}*(${dx}*cos(${R})-(${dy})*sin(${R}))':y${i}='${CH / 2}+${H}*${Y}+${k}*(${dx}*sin(${R})+(${dy})*cos(${R}))'`;
+    const dx = r3((sx * CW) / 2 + CW / 2 - AXs), dy = r3((sy * CH) / 2 + CH / 2 - AYs);
+    return `x${i}='${r3(AXd)}+${W}*${X}+${k}*(${dx}*cos(${R})-(${dy})*sin(${R}))':y${i}='${r3(AYd)}+${H}*${Y}+${k}*(${dx}*sin(${R})+(${dy})*cos(${R}))'`;
   };
   const shrink = pre < 1 ? `,scale=${even(W * pre)}:${even(H * pre)}` : "";
-  g.push(`[${inp}]format=yuva420p${shrink},pad=${CW}:${CH}:(ow-iw)/2:(oh-ih)/2:color=black@0,perspective=${corner(0, -1, -1)}:${corner(1, 1, -1)}:${corner(2, -1, 1)}:${corner(3, 1, 1)}:sense=destination:eval=frame,crop=${W}:${H}:${P}:${P}[mv${tag}]`);
+  const sub = SUB > 1 ? `fps=${FPS * SUB},` : "";
+  const blur = SUB > 1 ? `,format=yuva444p,premultiply=inplace=1,tmix=frames=${K},unpremultiply=inplace=1,fps=${RATE},trim=end_frame=${frames},format=yuva420p` : "";
+  g.push(`[${inp}]${sub}format=yuva420p${shrink},pad=${CW}:${CH}:(ow-iw)/2:(oh-ih)/2:color=black@0,perspective=${corner(0, -1, -1)}:${corner(1, 1, -1)}:${corner(2, -1, 1)}:${corner(3, 1, 1)}:sense=destination:eval=frame,crop=${W}:${H}:${P}:${P}${blur}[mv${tag}]`);
   let cur = `mv${tag}`;
   if (tracks.opacity) {
     // The opacity curve on a 2x2 grey picture (cheap per frame), stretched over the frame and multiplied into the alpha.
@@ -1616,6 +1658,20 @@ export function motionChain(g: string[], inp: string, out: string, keys: Key[], 
     if (!o.base) g.push(`color=c=black:s=${W}x${H}:r=${RATE}:d=${n6(frames / FPS + 1)},trim=end_frame=${frames}[mbg${tag}]`);
     g.push(`[${o.base ?? `mbg${tag}`}][${cur}]overlay=format=auto,format=${o.hdr ? "yuv420p10le" : "yuv420p"}[${out}]`);
   } else g.push(`[${cur}]null[${out}]`);
+}
+
+/**
+ * Phase 11: a layer's drop shadow: its alpha blurred, times the shadow's opacity, as the alpha of the shadow's colour,
+ * moved by x, y (shares of the frame's short side), laid on `base` over the layer's time. The layer goes on as before.
+ */
+function dropShadow(g: string[], base: string, layer: string, sh: { color: string; opacity: number; blur: number; x: number; y: number }, op: { start: number; end: number }, n: number, W: number, H: number, tag: string, fr: { fps: number; rate: string }, deep: string | null): { base: string; layer: string } {
+  const short = Math.min(W, H), sig = Math.max(0.5, (sh.blur * short) / 2), dx = Math.round(sh.x * short), dy = Math.round(sh.y * short);
+  g.push(`[${layer}]split[sdl${tag}][sds${tag}]`);
+  g.push(`[sds${tag}]alphaextract,gblur=sigma=${n3(sig)},lut=c0='val*${n3(sh.opacity)}'[sda${tag}]`);
+  g.push(`color=c=${sh.color.replace("#", "0x")}:s=${W}x${H}:r=${fr.rate}:d=${n6(n / fr.fps + 1)},format=yuva420p,trim=end_frame=${n}[sdc${tag}]`);
+  g.push(`[sdc${tag}][sda${tag}]alphamerge,settb=${timeBase(fr.rate)},setpts=PTS-STARTPTS+${Math.round(op.start * fr.fps)}[sdm${tag}]`);
+  g.push(`[${base}][sdm${tag}]overlay=${dx}:${dy}:enable='between(t,${n6(op.start)},${n6(op.end - 0.5 / fr.fps)})':eof_action=pass${deep ? `:format=auto,format=${deep}` : ""}[sdv${tag}]`);
+  return { base: `sdv${tag}`, layer: `sdl${tag}` };
 }
 
 type ColorCtx = { colorChain: (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string) => { out: string; alpha: boolean }; PF: string; PFA: string; hdrLut: string | null; person?: string | null };
@@ -1681,17 +1737,20 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     if (b.keys?.length || look || plan.hdr) {
       // Keyframed b-roll: moved, scaled, turned and faded over the picture (picture-in-picture). Phase 6: its look
       // (grade, key, masks, blur) first; in an HDR output it goes in as SDR.
-      g.push(`[${bi}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[bk${i}]`);
+      g.push(`[${bi}:v]fps=${R},${flipFilter(b.flip)}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[bk${i}]`);
       let cur = cc.colorChain(`bk${i}`, look, "sdr", n, `b${i}`).out;
-      if (b.keys?.length) { motionChain(g, cur, `bm${i}`, b.keys, 0, n, W, H, false, `b${i}`, { hdr: !!plan.hdr, fr }); cur = `bm${i}`; }
+      if (b.keys?.length) { motionChain(g, cur, `bm${i}`, b.keys, 0, n, W, H, false, `b${i}`, { hdr: !!plan.hdr, fr, anchor: b.anchor, blur: b.motionBlur }); cur = `bm${i}`; }
+      // Phase 11: a b-roll card's drop shadow, from its own alpha (crop, corners, masks, its movement), laid on the
+      // picture under it first.
+      if (b.shadow && (look?.alpha || b.keys?.length)) { const d = dropShadow(g, v, cur, b.shadow, b, n, W, H, `b${i}`, fr, plan.hdr ? cc.PF : null); v = d.base; cur = d.layer; }
       if (b.blend) { g.push(`[${cur}]settb=${TB},setpts=PTS-STARTPTS[brl${i}]`); v = blendWindow(v, `brl${i}`, b, n, `b${i}`); return; }
       g.push(`[${cur}]${fadeTo(b.opacity)}settb=${TB},setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
     } else if (b.blend) {
-      g.push(`[${bi}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n},settb=${TB},setpts=PTS-STARTPTS[brl${i}]`);
+      g.push(`[${bi}:v]fps=${R},${flipFilter(b.flip)}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n},settb=${TB},setpts=PTS-STARTPTS[brl${i}]`);
       v = blendWindow(v, `brl${i}`, b, n, `b${i}`);
       return;
     } else
-    g.push(`[${bi}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,${fadeTo(b.opacity)}settb=${TB},setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
+    g.push(`[${bi}:v]fps=${R},${flipFilter(b.flip)}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,${fadeTo(b.opacity)}settb=${TB},setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
     g.push(`[${v}][br${i}]overlay=0:0:enable='between(t,${n6(b.start)},${n6(b.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vb${i}]`);
     v = `vb${i}`;
   });
@@ -1714,7 +1773,7 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
       // a blend mode is centred on a transparent frame too, and blended over the picture's frames under it.
       g.push(`[${gi}:v]${from}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=${R},tpad=stop_mode=clone:stop=${hold || gr.blend ? -1 : 2},trim=end_frame=${n}${toHdr}[gk${i}]`);
       let gc = `gk${i}`;
-      if (gr.keys?.length) { motionChain(g, gc, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`, { hdr: !!plan.hdr, fr }); gc = `gm${i}`; }
+      if (gr.keys?.length) { motionChain(g, gc, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`, { hdr: !!plan.hdr, fr, anchor: gr.anchor, blur: gr.motionBlur }); gc = `gm${i}`; }
       if (gr.blend) { g.push(`[${gc}]setpts=PTS-STARTPTS[grl${i}]`); v = blendWindow(v, `grl${i}`, gr, n, `g${i}`); return; }
       g.push(`[${gc}]${fadeTo(gr.opacity)}setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     } else

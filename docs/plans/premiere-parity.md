@@ -41,7 +41,11 @@ plugin hosting, hardware I/O, localization) are out of scope.
     their sound, cut between them by range or live from the playhead, the main sound or each camera's own. Left for
     later: syncing by timecode, a 4-up monitor that plays in step while you cut with number keys, cutting to whoever
     speaks (from the transcript's speakers).
-11. **Crop, flip, anchor, drop shadow, motion blur on any clip**; optical-flow slow motion and eased speed ramps.
+11. **Crop, flip, anchor, drop shadow, motion blur; optical-flow slow motion and eased speed ramps (done, 31
+    October).** Flip on V1 and b-roll; crop, rounded corners and a drop shadow on V1 and b-roll (b-roll cards for
+    picture-in-picture); the anchor point and motion blur on keyed V1 clips, b-roll and graphics; slow motion by frame
+    blending or optical flow; eased ramps. Left for later: anchor and motion blur on text layers, a border on b-roll
+    cards, motion blur and optical flow live in the player.
 12. **Deliverables.** SRT / VTT export, export with transparency, GIF, audio only, bitrate and frame-rate settings,
     YouTube chapters from markers; more effects (glow, grain, vignette, RGB split, camera shake, mirror, corner pin) and
     transitions (push, wipes, iris, cross zoom, film dissolve).

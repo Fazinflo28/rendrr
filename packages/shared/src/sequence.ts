@@ -284,6 +284,8 @@ export type SeqClip = Clip & {
   grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[];
   /** Phase 10: the multicam angle (video id) its picture comes from. */
   angle?: string;
+  /** Phase 11: mirrored; slow motion's in-between frames; the anchor keyframes turn about; motion blur. */
+  flip?: "h" | "v" | "both"; interp?: "frames" | "blend" | "flow"; anchor?: { x: number; y: number }; motionBlur?: number;
 };
 /** The clip plays at normal speed, forwards. */
 export const normalSpeed = (c: Partial<SeqClip>) => (!c.speed || c.speed === 1) && !c.reverse && !c.ramp?.length && !c.freeze;
@@ -299,7 +301,9 @@ export const isAttached = (track: TrackName, c: Clip) => ATTACHED_TRACKS.include
  *  below 0 = reversed, 0 = frozen on the frame at srcIn). */
 export type Piece = { clipId: string; videoId: string; srcIn: number; srcOut: number; start: number; end: number; rate?: number };
 /** A stretch of picture with no cut in it (it may span several clips whose footage continues). */
-export type PicturePart = { videoId: string; srcIn: number; srcOut: number; start: number; end: number; rotate: Rotation; framing: Framing | null; clipIds: string[]; rate?: number };
+export type PicturePart = { videoId: string; srcIn: number; srcOut: number; start: number; end: number; rotate: Rotation; framing: Framing | null; clipIds: string[]; rate?: number;
+  /** Phase 11: mirrored; slow motion's in-between frames (blend or optical flow; left out: each frame held). */
+  flip?: "h" | "v" | "both"; interp?: "blend" | "flow" };
 /** A stretch of dialogue: its video and footage; muted parts keep their footage (captions follow them) but are silent.
  *  silent: no sound because of its speed (reversed, frozen, too slow or fast): no captions either. */
 export type SoundPart = { videoId: string; srcIn: number; srcOut: number; start: number; end: number; muted: boolean; clipId: string; rate?: number; silent?: boolean };
@@ -354,7 +358,7 @@ export const plainFraming = (f?: Framing | null): Framing | null => (!f || (f.sc
 // Keyframed clips play as parts of their own (their motion is the clip's).
 /** Colour and compositing (Phase 6): clips with different looks are drawn apart. */
 const colorOf = (c: SeqClip) => { const card = (c as { cardLook?: unknown }).cardLook; return c.grade || c.key || c.masks || c.effects || card ? JSON.stringify([c.grade, c.key, c.masks, c.effects, card]) : ""; };
-const sameLook = (a: SeqClip, b: SeqClip) => (a.rotate ?? 0) === (b.rotate ?? 0) && sameFraming(plainFraming(a.framing), plainFraming(b.framing)) && (a === b || (!a.keys?.length && !b.keys?.length)) && (a === b || colorOf(a) === colorOf(b));
+const sameLook = (a: SeqClip, b: SeqClip) => (a.rotate ?? 0) === (b.rotate ?? 0) && (a.flip ?? "") === (b.flip ?? "") && (a.interp ?? "") === (b.interp ?? "") && sameFraming(plainFraming(a.framing), plainFraming(b.framing)) && (a === b || (!a.keys?.length && !b.keys?.length)) && (a === b || colorOf(a) === colorOf(b));
 
 /** Cuts ranges out of ranges, keeping every leftover however short (the caller decides what is too short). */
 function cutOut(keep: Range[], remove: Range[]): Range[] {
@@ -506,6 +510,9 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
     acc += editLen(p);
     const part: PicturePart = { videoId: p.videoId, srcIn: p.srcIn, srcOut: p.srcOut, start, end: acc, rotate: (p.look.rotate ?? 0) as Rotation, framing: plainFraming(p.look.framing), clipIds: Array.from(new Set(p.raws.map((r) => r.clip.id))) };
     if (p.rate !== 1) part.rate = p.rate;
+    if (p.look.flip) part.flip = p.look.flip;
+    // Slow motion's in-between frames: only where the picture plays slower than filmed.
+    if (p.rate > 0 && p.rate < 1 && (p.look.interp === "blend" || p.look.interp === "flow")) part.interp = p.look.interp;
     // An angle's picture: its own video at the same moment, turned and fitted as the angle is.
     const pic: PicturePart = p.pic ? { ...part, videoId: p.pic.videoId, srcIn: p.srcIn + p.pic.offset, srcOut: p.srcOut + p.pic.offset, rotate: p.pic.rotate, framing: p.pic.framing } : part;
     const shown = fps ? onFrames(pic, lenOf(pic.videoId), fps) : pic;

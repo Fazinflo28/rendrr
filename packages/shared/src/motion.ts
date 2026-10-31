@@ -11,6 +11,10 @@ export const EASES = ["linear", "in", "out", "in-out"] as const;
 export const EaseSchema = z.union([z.enum(EASES), z.tuple([unit, z.number().min(-2).max(3), unit, z.number().min(-2).max(3)])]);
 export type Ease = z.infer<typeof EaseSchema>;
 export const KEY_PROPS = ["x", "y", "scale", "rotation", "opacity"] as const;
+/** Phase 11: the point a clip turns and scales about (Premiere's Anchor Point), as shares of its frame (0.5, 0.5 = the
+ *  middle; 0, 0 = top left). */
+export const AnchorSchema = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) });
+export type Anchor = z.infer<typeof AnchorSchema>;
 export type KeyProp = (typeof KEY_PROPS)[number];
 /**
  * A keyframe: at time t, the properties it sets. x, y: offset of the centre as a share of the frame's width and height
@@ -49,6 +53,8 @@ export function bezierAt(b: [number, number, number, number], x: number): number
 }
 const curveOf = (e: Ease | undefined) => (Array.isArray(e) ? e : NAMED[e ?? "linear"]);
 const isLinear = (b: [number, number, number, number]) => b[0] === b[1] && b[2] === b[3];
+/** An ease's progress (0-1) at x (0-1). */
+export const easeAt = (e: Ease | undefined, x: number) => { const b = curveOf(e); return isLinear(b) ? x : bezierAt(b, Math.min(1, Math.max(0, x))); };
 const tables = new Map<string, number[]>();
 function tableOf(b: [number, number, number, number]): number[] {
   const k = b.join(",");
@@ -132,7 +138,9 @@ export function cornersOf(m: Motion, W: number, H: number, w = W, h = H): [numbe
 // ---------------------------------------------------------------------------------------------
 // Speed ramps: speed points at footage moments of the clip, linear between them, constant outside.
 // ---------------------------------------------------------------------------------------------
-export const RampPointSchema = z.object({ at: z.number().finite().min(0).max(24 * 3600), speed: z.number().min(0.1).max(10) });
+/** Phase 11: ease: how the speed changes on the way to the next point (linear by default; in, out, in-out or a
+ *  bezier ease the change in and out, as Premiere's speed ramp handles). */
+export const RampPointSchema = z.object({ at: z.number().finite().min(0).max(24 * 3600), speed: z.number().min(0.1).max(10), ease: EaseSchema.optional() });
 export type RampPoint = z.infer<typeof RampPointSchema>;
 /** Longest step of a ramp, in edit seconds: each step plays at one speed. */
 export const RAMP_STEP = 0.2;
@@ -145,7 +153,7 @@ export function speedAt(ramp: RampPoint[], src: number): number {
   if (src <= ps[0].at) return ps[0].speed;
   for (let i = 0; i + 1 < ps.length; i++) {
     const a = ps[i], b = ps[i + 1];
-    if (src <= b.at) return b.at - a.at < 1e-9 ? b.speed : a.speed + ((b.speed - a.speed) * (src - a.at)) / (b.at - a.at);
+    if (src <= b.at) return b.at - a.at < 1e-9 ? b.speed : a.speed + (b.speed - a.speed) * easeAt(a.ease, (src - a.at) / (b.at - a.at));
   }
   return ps[ps.length - 1].speed;
 }

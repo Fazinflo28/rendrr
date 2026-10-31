@@ -357,6 +357,17 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 11: flip, crop, anchor, shadow, motion blur, smooth slow motion, eased ramps (31 October)
+
+| Question | Decision |
+|---|---|
+| Flip | set_flip on V1 clips and b-roll (h, v, both, none): after the turn and before the fit in the render (hflip, vflip), a CSS mirror in the player. A mirrored clip is its own part (it never joins an unmirrored neighbour). |
+| Crop, corners, shadow on b-roll | set_card takes b-roll ids: the crop and rounded corners are its mask (the same mask V1 cards use), the drop shadow is made from the b-roll's own alpha after its movement (blurred, times the opacity, in its colour, offset) and laid on the picture before the b-roll, so it follows a moving picture-in-picture. A border stays a V1 card's (refused for b-roll). The player: the mask through the look canvas, the shadow as CSS drop-shadow. |
+| Anchor point | On keyed V1 clips, b-roll and graphics (set_keyframes anchor): the perspective corners are mapped about that point of the picture, and the point lands at its own place in the frame plus the position keys (Premiere's Anchor Point). The player: CSS transform-origin. Text layers keep the middle (they are drawn by libass). |
+| Motion blur | On keyed movement (set_keyframes motionBlur 0-100; 50 = a 180° shutter): the movement drawn at 4x the frame rate, the sub-frames inside the shutter averaged premultiplied (no dark fringes), back to the frame rate. Measured: a square moving 19 px a frame, edge 1 px sharp, 26 px blurred at 100. Render only; the player shows the movement sharp. |
+| Smooth slow motion | set_speed interp: frames (each frame held, as before), blend (neighbours mixed) or flow (optical flow, minterpolate mci): the stretch's timestamps divided by the rate, then frames made on the output's grid, so frame n is footage srcIn + n x rate as frame sampling shows it, and the sound is unchanged. Only where the clip plays slower than 1x. Measured: a bar at half speed steps 4-5 px every frame (frame sampling: 0, 9, 0, 9). |
+| Eased ramps | A ramp point's ease (in, out, in-out, a bezier) shapes the speed change to the next point; the ramp's steps follow it in the render and the player alike. |
+
 ## Premiere parity, phase 10: multicam (31 October)
 
 | Question | Decision |

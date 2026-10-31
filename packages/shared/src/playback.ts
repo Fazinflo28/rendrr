@@ -130,17 +130,21 @@ export type LiveFrame = {
   zoom: number;
   muted: boolean;              // the dialogue is silent here
   /** blend, opacity (Phase 4): how it lies over the picture (CSS mix-blend-mode and opacity in the player). */
-  broll: { clipId: string; videoId: string; src: number; motion: Motion | null; blend?: BlendMode; opacity?: number } | null;
-  graphics: { clipId: string; graphicId: string; t: number; start: number; end: number; motion: Motion | null; behind: boolean; blend?: BlendMode; opacity?: number }[];
+  /** Phase 11: flip (mirrored), anchor (the point keys turn and scale about: CSS transform-origin), shadow (a b-roll
+   *  card's drop shadow). */
+  broll: { clipId: string; videoId: string; src: number; motion: Motion | null; blend?: BlendMode; opacity?: number; flip?: "h" | "v" | "both"; anchor?: { x: number; y: number }; shadow?: { color: string; opacity: number; blur: number; x: number; y: number } } | null;
+  graphics: { clipId: string; graphicId: string; t: number; start: number; end: number; motion: Motion | null; behind: boolean; blend?: BlendMode; opacity?: number; anchor?: { x: number; y: number } }[];
   /** Phase 9: adjustment layers on now (the player previews their grade and blur with CSS backdrop filters). */
   adjust?: { clipId: string; grade?: Grade; effects?: Effect[] }[];
   /** Phase 5: the picture's rate (1 normal, below 0 reversed, 0 frozen), its V1 keyframe motion, the transition on. */
   rate: number;
   motion: Motion | null;
+  /** Phase 11: the V1 clip's anchor (its keys turn and scale about it). */
+  motionAnchor?: { x: number; y: number };
   transition: TransitionNow | null;
   /** Phase 6: the clip whose look (plan.looks) the picture shows, and the b-roll behind V1 at t (bottom first). */
   lookId: string | null;
-  under: { clipId: string; videoId: string; src: number; motion: Motion | null }[];
+  under: { clipId: string; videoId: string; src: number; motion: Motion | null; flip?: "h" | "v" | "both"; anchor?: { x: number; y: number } }[];
 };
 
 const inside = (t: number, r: { start: number; end: number }) => t >= r.start && t < r.end;
@@ -169,14 +173,15 @@ export function liveFrame(plan: RenderPlan, t0: number, clock = sequenceClock(pl
     texts: (plan.texts ?? []).filter((x) => inside(t, x)).map((x) => ({ layer: x, ...textAnimAt(x.anim, t - x.start, x.end - x.start, plan.height), ...(x.keys?.length ? { look: textLookAt(x, t - x.start, plan.width, plan.height) } : {}) })),
     zoom: zoomAt(plan.zooms, t),
     muted: plan.dialogueMutes.some((m) => inside(t, m)),
-    broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start), motion: ov(br, "v2:"), ...(br.blend ? { blend: br.blend } : {}), ...(br.opacity != null ? { opacity: br.opacity } : {}) } : null,
+    broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start), motion: ov(br, "v2:"), ...(br.blend ? { blend: br.blend } : {}), ...(br.opacity != null ? { opacity: br.opacity } : {}), ...(br.flip ? { flip: br.flip } : {}), ...(br.anchor ? { anchor: br.anchor } : {}), ...(br.shadow ? { shadow: br.shadow } : {}) } : null,
     adjust: (plan.adjust ?? []).filter((a) => inside(t, a)).map((a) => ({ clipId: a.clipId, ...(a.grade ? { grade: a.grade } : {}), ...(a.effects ? { effects: a.effects } : {}) })),
-    graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start + g.sourceStart, start: g.start, end: g.end, motion: ov(g, "v3:"), behind: !!g.behind, ...(g.blend ? { blend: g.blend } : {}), ...(g.opacity != null ? { opacity: g.opacity } : {}) })),
+    graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start + g.sourceStart, start: g.start, end: g.end, motion: ov(g, "v3:"), behind: !!g.behind, ...(g.blend ? { blend: g.blend } : {}), ...(g.opacity != null ? { opacity: g.opacity } : {}), ...(g.anchor ? { anchor: g.anchor } : {}) })),
     rate: pic ? pic.rate : 1,
     motion: part && part.clipIds.length === 1 ? clipMotionAt(plan, part.clipIds[0], t) : null,
+    ...(part && part.clipIds.length === 1 && plan.clipMotion?.[part.clipIds[0]]?.anchor ? { motionAnchor: plan.clipMotion[part.clipIds[0]].anchor } : {}),
     transition: transitionNow(plan, t),
     lookId: part && plan.looks?.[part.clipIds[0]] ? part.clipIds[0] : null,
-    under: (plan.under ?? []).filter((u) => inside(t, u) && u.videoId).map((u) => ({ clipId: u.clipId, videoId: u.videoId!, src: u.sourceStart + (t - u.start), motion: ov(u, "v2:") })),
+    under: (plan.under ?? []).filter((u) => inside(t, u) && u.videoId).map((u) => ({ clipId: u.clipId, videoId: u.videoId!, src: u.sourceStart + (t - u.start), motion: ov(u, "v2:"), ...(u.flip ? { flip: u.flip } : {}), ...(u.anchor ? { anchor: u.anchor } : {}) })),
   };
 }
 
