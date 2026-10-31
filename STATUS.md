@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Object tracking (31 October)
+
+- **What it is.** Draw a box round anything (a logo, a licence plate, a product, a face) and Rendrr follows it through the clip, like Premiere's mask tracking. Where it is covered or leaves the frame, Rendrr says so and what follows it holds still there.
+- **What follows it.** Masks and blur, pixelate, darken and the other effect areas (follow "object"). Text layers and graphics can be pinned to it: they move with it, and can grow and shrink with it.
+- **Editor.** Color, Tracking: "+ Track an object", then drag a box on the picture. Each object shows where it was followed and lost, with "Blur it", "Pixelate it", "Mask to it", "Track again here" and a name. Its box is drawn on the player at the playhead. Masks and effect areas get a "Follow" choice. Text tab: "Pin to a tracked object" and "Grow and shrink with it".
+- **Claude.** track_object {clipId, at, box, label} (the server tracks it), then set_masks / set_effects with follow "object", object id, and pin_layer {clipId, to {clipId, object}, scale}. get_project lists tracked objects and pinned layers.
+- **Limits.** Up to 8 objects a clip; at most 60 s of a clip is tracked in one go (round the moment the box is drawn).
+- **Tests.** packages/shared/test/tracking.test.ts, apps/worker/test/track.test.ts (accuracy), apps/worker/test/tracking-render.test.ts (a real render), apps/api/test/track.test.ts (needs the database), apps/web/demo/tracking.mjs.
+
 ## Mask path keyframes (31 October)
 
 - **What it is.** A path mask can change shape over time, like Premiere's mask path keyframes. Each point moves in a straight line to its place in the next shape. Shapes drawn with a different number of points still morph smoothly.

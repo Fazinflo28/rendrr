@@ -5,7 +5,7 @@ import { mergeRules, StyleRulesPatchSchema, type StyleRules } from "./styles";
 import {
   AspectSchema, audioSettings, CaptionLookSchema, CLEANUPS, ClipSchema, FocusSchema, FramingSchema, isCaptionMarker, RotationSchema, SnapshotSchema, TimelineSchema, TrackNameSchema,
   normalizeTimeline, timelineProblems, RESOLUTIONS, CODECS,
-  type AudioSettings, type Clip, type Framing, type Snapshot, type Timeline, type TrackName, type V2Clip,
+  type AudioSettings, type Clip, type Framing, type Pin, type Snapshot, type Timeline, type TrackName, type V2Clip, type V3Clip,
 } from "./timeline";
 import { autoMusicFades, CLEANUP_KNOBS, cleanupText } from "./audio";
 import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema, presetStyle, styleText, TEXT_ANIMS, TEXT_PRESETS, TextInsideSchema, textPreset, TextStylePatchSchema, TextStyleSchema, type Card, type TextAnim, type TextInside, type TextStyle } from "./captions";
@@ -19,7 +19,7 @@ import { libraryItem, libraryParams } from "./library";
 import { BlendModeSchema, blendText, type BlendMode } from "./blend";
 import { AudioKeySchema, clipFxText, EqSchema, ReverbSchema, type AudioKey, type Eq, type Reverb } from "./audio";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
-import { AreaSchema, normalizePath, ChromaKeySchema, CurveSchema, EffectSchema, GradeSchema, gradeIsActive, mergeGrade, type GradePatch, HslSchema, WheelSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, adjustText, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
+import { AreaSchema, normalizePath, followObject, objectBoxAt, objectTrack, type TrackedObject, ChromaKeySchema, CurveSchema, EffectSchema, GradeSchema, gradeIsActive, mergeGrade, type GradePatch, HslSchema, WheelSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, adjustText, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, restoreSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
@@ -187,6 +187,18 @@ const EDIT_OPS = [
   // [footage second, x0, y0, x1, y1] on screen, and the shape gets keys from them).
   z.object({ op: z.literal("set_masks"), ...lookTargets, masks: z.array(MaskSchema).max(8), faceTracks: FaceTracksSchema.optional() }),
   z.object({ op: z.literal("set_effects"), ...lookTargets, effects: z.array(EffectSchema).max(4), faceTracks: FaceTracksSchema.optional() }),
+  // Object tracking: Rendrr follows an object through a V1 clip or b-roll from a box drawn round it at `at` (the clip's
+  // footage second; edit: true = an edit second): x, y (top left), w, h in shares of the clip's picture as fitted, before
+  // framing. The server tracks it (rows: [second, x0, y0, x1, y1, confidence], filled by the server). Shapes with follow
+  // "object" (set_masks, set_effects) and layers pinned to it (pin_layer) follow it. id: re-track or rename that object;
+  // remove: take it off (shapes that followed it stay where they are; pinned layers stop moving).
+  z.object({ op: z.literal("track_object"), clipId, at: t.optional(), edit, box: z.object({ x: z.number().min(-1).max(2), y: z.number().min(-1).max(2), w: z.number().min(0.005).max(3), h: z.number().min(0.005).max(3) }).optional(),
+    label: z.string().max(60).optional(), id: z.string().min(1).max(40).optional(), remove: z.boolean().optional(),
+    rows: z.array(z.tuple([z.number(), z.number(), z.number(), z.number(), z.number(), z.number()])).max(40_000).optional() }),
+  // A text layer or graphic (V3) pinned to a tracked object (to: the clip and the object's id): it moves with the object
+  // (scale: and grows and shrinks with it), keeping where it is against the object at the layer's first moment. Its
+  // keyframes are made from the track (and kept up to date when the edit changes). off: unpinned, keyframes removed.
+  z.object({ op: z.literal("pin_layer"), clipId, to: z.object({ clipId, object: z.string().min(1).max(40) }).optional(), scale: z.boolean().optional(), off: z.boolean().optional() }),
   // Skin retouch (smooth, blemishes, even, brighten 0-100; fields left out keep their value, or the natural defaults).
   // Default clips: every V1 clip. area: "face" (the default: each clip's face, forehead to neck, from the faces Rendrr
   // measured into faceAreas; a clip with no face measured gets the whole picture), "frame", or a shape. off removes it.
@@ -1200,7 +1212,16 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const what = op.with?.length ? op.with : ["grade" as const];
       const ids = lookIds(tl, { clipIds: op.to, all: op.all, video: op.video }).filter((id) => id !== op.from);
       if (!ids.length) throw new EditError("Send the clips to copy onto: to (clip ids), all: true, or video.");
-      const next = mapLook(tl, ids, (c) => { const x = { ...c }; for (const k of what) { if (src[k]) (x as Record<string, unknown>)[k] = JSON.parse(JSON.stringify(src[k])); else delete x[k]; } return x; });
+      // A shape that follows an object the other clip does not have keeps its path as plain keyframes there.
+      const unfollow = (c: Clip & ClipLook) => <A extends Area>(a: A): A => { if (a.follow !== "object" || c.objects?.some((o) => o.id === a.object)) return a; const { follow: _f, object: _o, ...rest } = a; return rest as A; };
+      const next = mapLook(tl, ids, (c) => {
+        const x = { ...c };
+        for (const k of what) { if (src[k]) (x as Record<string, unknown>)[k] = JSON.parse(JSON.stringify(src[k])); else delete x[k]; }
+        const u = unfollow(c);
+        if (x.masks) x.masks = x.masks.map(u);
+        if (x.effects) x.effects = x.effects.map((e) => (e.area ? { ...e, area: u(e.area) } : e));
+        return x;
+      });
       return { snap: { ...snap, timeline: next }, summary: `copied the ${what.join(", ")} of ${name(src)} onto ${idsText(tl, ids)}` };
     }
     case "match_color": {
@@ -1232,16 +1253,93 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     case "set_masks": {
       const ids = lookIds(tl, op);
       const fl = following(op.faceTracks);
-      const next = mapLook(tl, ids, (c) => { const { masks: _m, ...rest } = c; return (op.masks.length ? { ...rest, masks: op.masks.map((m) => fl.area(m, c.id)) } : rest) as typeof c; });
+      const next = mapLook(tl, ids, (c) => { const { masks: _m, ...rest } = c; return (op.masks.length ? { ...rest, masks: op.masks.map((m) => fl.area(m, c.id, c.objects)) } : rest) as typeof c; });
       const ms = (lookClip(next, ids[0]).clip.masks ?? []) as Mask[];
       return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.masks.length ? `masks ${masksText(ms)}` : "no masks"}${fl.note(ids)}` };
     }
     case "set_effects": {
       const ids = lookIds(tl, op);
       const fl = following(op.faceTracks);
-      const next = mapLook(tl, ids, (c) => { const { effects: _e, ...rest } = c; return (op.effects.length ? { ...rest, effects: op.effects.map((e) => (e.area ? { ...e, area: fl.area(e.area, c.id) } : e)) } : rest) as typeof c; });
+      const next = mapLook(tl, ids, (c) => { const { effects: _e, ...rest } = c; return (op.effects.length ? { ...rest, effects: op.effects.map((e) => (e.area ? { ...e, area: fl.area(e.area, c.id, c.objects) } : e)) } : rest) as typeof c; });
       const es = (lookClip(next, ids[0]).clip.effects ?? []) as Effect[];
       return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.effects.length ? effectsText(es) : "no effects"}${fl.note(ids)}` };
+    }
+    case "track_object": {
+      const { track, clip: c } = lookClip(tl, op.clipId);
+      const objs = (c.objects ?? []) as TrackedObject[];
+      const old = op.id ? objs.find((o) => o.id === op.id) : undefined;
+      // Shapes that follow an object (masks, effect areas): a function over each one.
+      const shapes = (x: typeof c, f: (a: Area) => Area): typeof c => {
+        const out = { ...x };
+        if (x.masks) out.masks = x.masks.map((m) => f(m) as Mask);
+        if (x.effects) out.effects = x.effects.map((e) => (e.area ? { ...e, area: f(e.area) } : e));
+        return out;
+      };
+      const followsIt = (a: Area, id: string) => a.follow === "object" && a.object === id;
+      if (op.remove) {
+        if (!op.id) throw new EditError("Send the id of the object to take off (track_object remove: true, id).");
+        if (!old) throw new EditError(`${name(c)} has no tracked object "${op.id}"${objs.length ? ` (it has ${objs.map((o) => o.id).join(", ")})` : ""}.`);
+        let freed = 0;
+        const next = mapLook(tl, [c.id], (x) => {
+          // Shapes that followed it keep their keys as plain keyframes.
+          const y = shapes(x, (a) => { if (!followsIt(a, old.id)) return a; freed++; const { follow: _f, object: _o, ...rest } = a; return rest as Area; });
+          const left = objs.filter((o) => o.id !== old.id);
+          const { objects: _ob, ...rest } = y;
+          return (left.length ? { ...rest, objects: left } : rest) as typeof c;
+        });
+        return { snap: { ...snap, timeline: next }, summary: `${name(c)}: object ${old.id} taken off${freed ? `; ${freed} ${freed === 1 ? "shape keeps" : "shapes keep"} its path as plain keyframes` : ""}` };
+      }
+      // A new name only (id and label, nothing to track again).
+      if (old && op.label !== undefined && !op.box && op.at == null && !op.rows) {
+        const next = mapLook(tl, [c.id], (x) => ({ ...x, objects: objs.map((o) => { if (o.id !== old.id) return o; const { label: _l, ...rest } = o; return op.label ? { ...rest, label: op.label } : rest; }) }) as typeof c);
+        return { snap: { ...snap, timeline: next }, summary: `${name(c)}: object ${old.id} ${op.label ? `named "${op.label}"` : "unnamed"}` };
+      }
+      // The clip's footage: a V1 clip's [sourceIn, sourceOut]; b-roll from its sourceStart for its length.
+      const v1 = track === "v1" ? (c as unknown as SeqClip) : null;
+      const b = track === "v2" ? (c as unknown as V2Clip) : null;
+      const span = v1 ? { from: v1.sourceIn, to: v1.sourceOut } : { from: b!.sourceStart ?? 0, to: (b!.sourceStart ?? 0) + (b!.end - b!.start) };
+      if (v1?.freeze) throw new EditError(`${name(c)} is a freeze frame: nothing moves in it to track.`);
+      let at = op.at ?? old?.at;
+      if (at == null) throw new EditError("Send at: the moment the box is drawn (the clip's footage second, or an edit second with edit: true).");
+      if (op.edit && op.at != null) at = v1 ? view().editToSource(v1.id, op.at) : span.from + (op.at - b!.start);
+      if (at < span.from - 0.05 || at > span.to + 0.05) throw new EditError(`${at.toFixed(2)}s is outside ${name(c)} (its footage plays ${span.from.toFixed(2)}-${span.to.toFixed(2)}s).`);
+      at = Math.min(span.to, Math.max(span.from, at));
+      const box = op.box ?? old?.box;
+      if (!box) throw new EditError("Send box {x, y, w, h}: the object's box on the clip's picture at `at` (shares of the frame, top left x, y).");
+      if (!old && objs.length >= 8) throw new EditError(`${name(c)} already follows 8 objects: take one off first (remove: true).`);
+      if (!op.rows) throw new EditError("track_object needs the object followed by the server: send it through apply_edits (or the editor's Track button), which tracks it.");
+      const { track: tr, lost } = objectTrack(op.rows);
+      if (tr.length < 2) throw new EditError(`Rendrr could not follow that object on ${name(c)}: draw the box closer round something with clear detail (edges, texture), at a moment it is sharp.`);
+      let id = op.id;
+      if (!id) { let k = 1; while (objs.some((o) => o.id === `o${k}`)) k++; id = `o${k}`; }
+      const r4 = (v: number) => Math.round(v * 10000) / 10000;
+      const label = op.label ?? old?.label;
+      const obj: TrackedObject = { id, ...(label ? { label } : {}), at: rT(at), box: { x: r4(box.x), y: r4(box.y), w: r4(box.w), h: r4(box.h) }, track: tr, ...(lost.length ? { lost } : {}) };
+      let followers = 0;
+      const next = mapLook(tl, [c.id], (x) => {
+        const y = shapes(x, (a) => { if (!followsIt(a, obj.id)) return a; followers++; return followObject(a, obj, old); });
+        return { ...y, objects: [...objs.filter((o) => o.id !== obj.id), obj] } as typeof c;
+      });
+      const pins = (tl.tracks.v3 as (V3Clip & { pin?: { clipId: string; object: string } })[]).filter((l) => l.pin?.clipId === c.id && l.pin.object === obj.id).length;
+      const seen = (tr[tr.length - 1][0] - tr[0][0]);
+      return { snap: { ...snap, timeline: next }, summary: `${name(c)}: object ${obj.id}${label ? ` "${label}"` : ""} ${old ? "tracked again" : "tracked"} over ${+tr[0][0].toFixed(2)}-${+tr[tr.length - 1][0].toFixed(2)}s (${tr.length} boxes, ${seen.toFixed(1)}s)${lost.length ? `; lost ${lost.slice(0, 4).map(([a, z]) => `${+a.toFixed(2)}-${+z.toFixed(2)}s`).join(", ")}${lost.length > 4 ? ` +${lost.length - 4} more` : ""} (what follows it holds still there)` : ""}${followers ? `; ${followers} ${followers === 1 ? "shape follows" : "shapes follow"} it` : ""}${pins ? `; ${pins} pinned ${pins === 1 ? "layer moves" : "layers move"} with it` : ""}. Make a mask or blur follow it with follow "object", object "${obj.id}"; pin text to it with pin_layer.` };
+    }
+    case "pin_layer": {
+      const l = findClip(tl, "v3", op.clipId) as V3Clip & { pin?: Pin };
+      if (l.kind !== "text" && l.kind !== "graphic") throw new EditError(`${name(l)} is ${l.kind === "adjust" ? "an adjustment layer" : "a caption"}: text layers and graphics can be pinned to an object.`);
+      if (op.off) {
+        if (!l.pin) return { snap, summary: `${name(l)} is not pinned` };
+        const next = withTracks(tl, "v3", (tl.tracks.v3 as (V3Clip & { pin?: Pin })[]).map((x) => { if (x.id !== l.id) return x; const { pin: _p, keys: _k, ...rest } = x; return rest as V3Clip; }));
+        return { snap: { ...snap, timeline: next }, summary: `${name(l)}: unpinned (its keyframes removed)` };
+      }
+      const to = op.to ?? (l.pin ? { clipId: l.pin.clipId, object: l.pin.object } : undefined);
+      if (!to) throw new EditError("Send to {clipId, object}: the clip and the tracked object's id to pin it to (track_object first).");
+      const host = lookClip(tl, to.clipId).clip;
+      const obj = (host.objects ?? []).find((o) => o.id === to.object);
+      if (!obj) throw new EditError(`${name(host)} has no tracked object "${to.object}"${host.objects?.length ? ` (it has ${host.objects.map((o) => o.id).join(", ")})` : ": track it first with track_object"}.`);
+      const pin: Pin = { clipId: to.clipId, object: to.object, ...((op.scale ?? l.pin?.scale) ? { scale: true } : {}) };
+      const next = withTracks(tl, "v3", (tl.tracks.v3 as (V3Clip & { pin?: Pin })[]).map((x) => (x.id === l.id ? ({ ...x, pin } as V3Clip) : x)));
+      return { snap: { ...snap, timeline: next }, summary: `${name(l)}: pinned to ${obj.label ? `"${obj.label}" (${obj.id})` : `object ${obj.id}`} on ${name(host)}${pin.scale ? ", growing and shrinking with it" : ""}: it moves with the object where both are on screen` };
     }
     case "stabilize": {
       const ids = op.clipId || op.clipIds || op.all || op.video ? lookIds(tl, op) : lookIds(tl, { all: true });
@@ -1419,7 +1517,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "adjustment_layer": {
       if (op.grade?.lut && ctx.getLut && !ctx.getLut(op.grade.lut.id)) throw new EditError(`There is no LUT "${op.grade.lut.id}" in your LUTs.`);
-      if (op.masks?.some((m) => m.follow)) throw new EditError(`An adjustment layer has no footage of its own to find a face in: move its mask with keys (at: seconds from the layer's start), or mask the clip itself (set_masks follow "face").`);
+      if (op.masks?.some((m) => m.follow)) throw new EditError(`An adjustment layer has no footage of its own to find a face or an object in: move its mask with keys (at: seconds from the layer's start), or mask the clip itself (set_masks follow "face" or "object").`);
       const fx = { ...(op.grade && gradeIsActive(op.grade) ? { grade: op.grade } : {}), ...(op.effects?.length ? { effects: op.effects } : {}) };
       type LayerFx = { grade?: Grade; effects?: Effect[]; masks?: Mask[]; opacity?: number; fadeIn?: number; fadeOut?: number };
       // Phase 16: where (masks), how strong (opacity) and its fades; left out keeps them, null removes them.
@@ -1630,8 +1728,13 @@ const keyText = (keys: Key[]) => {
 function following(tracks: Record<string, FaceTrack | null> | undefined) {
   const faceless = new Set<string>();
   return {
-    area: <A extends Area>(a0: A, clipId: string): A => {
+    area: <A extends Area>(a0: A, clipId: string, objects?: TrackedObject[]): A => {
       const a = normalizePath(a0);
+      if (a.follow === "object") {
+        const obj = objects?.find((o) => o.id === a.object);
+        if (!obj) throw new EditError(`Clip "${clipId}" has no tracked object "${a.object}"${objects?.length ? ` (it has ${objects.map((o) => o.id).join(", ")})` : ": track it first with track_object (a box round the object)"}.`);
+        return followObject(a, obj) as A;
+      }
       if (a.follow !== "face") return a;
       if (!tracks) {
         if (a.keys?.length) return a;
@@ -1761,7 +1864,84 @@ export function applyOp(snap: Snapshot, op: Op, ctx: EditContext): { snap: Snaps
   if (!parsed.success) throw new EditError("That change would break the timeline: " + parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")} ${i.message}`).join("; "));
   const problems = timelineProblems(timeline);
   if (problems.length) throw new EditError(problems.slice(0, 3).join(" "));
-  return { snap: { ...r.snap, timeline: layoutTimeline(timeline, words) }, summary: r.summary };
+  const laid = layoutTimeline(timeline, words);
+  const pinned = repin(laid, words);
+  return { snap: { ...r.snap, timeline: pinned.timeline }, summary: r.summary + pinned.note };
+}
+
+/**
+ * Object tracking: text layers and graphics pinned to a tracked object get their keyframes from its track, after every
+ * change (so they stay on it when the clip, the layer or the object moves). x, y: the object's centre on screen against
+ * where it is at the layer's first moment with it (scale: its size too), every 0.1 s, then the fewest keys that stay
+ * within 0.2% of the frame (at most 60). Before and after the host clip plays, the layer holds. A pin whose clip or
+ * object is gone is taken off (the layer keeps its keys).
+ */
+export function repin(tl: Timeline, words: Word[]): { timeline: Timeline; note: string } {
+  const layers = (tl.tracks.v3 as (V3Clip & { pin?: Pin })[]).filter((l) => l.pin);
+  if (!layers.length) return { timeline: tl, note: "" };
+  const v = sequenceView(tl, words);
+  const dropped: string[] = [];
+  const keysOf = new Map<string, Key[] | null>();
+  for (const l of layers) {
+    const pin = l.pin!;
+    const v1 = (tl.tracks.v1 as (SeqClip & ClipLook)[]).find((c) => c.id === pin.clipId);
+    const b = v1 ? null : (tl.tracks.v2 as (V2Clip & ClipLook)[]).find((c) => c.id === pin.clipId && c.kind === "broll");
+    const host = v1 ?? b;
+    const obj = host?.objects?.find((o) => o.id === pin.object);
+    if (!host || !obj?.track.length) { dropped.push(name(l)); keysOf.set(l.id, null); continue; }
+    // Where the host plays in the edit, and its footage second at an edit second.
+    const place = v1 ? v.clip(v1.id) : { start: b!.start, end: b!.end };
+    if (!place || place.end - place.start < 0.01) { keysOf.set(l.id, []); continue; }
+    const src = (e: number) => (v1 ? (v1.freeze ? v1.sourceIn : v.editToSource(v1.id, e)) : (b!.sourceStart ?? 0) + (e - b!.start));
+    // On screen: a V1 clip's framing scales its picture about the middle and moves it.
+    const f = v1?.framing && (v1.framing.scale !== 1 || v1.framing.x || v1.framing.y) ? v1.framing : null;
+    const screen = (e: number) => {
+      const bx = objectBoxAt(obj, src(Math.min(place.end, Math.max(place.start, e))))!;
+      const cx = (bx[0] + bx[2]) / 2, cy = (bx[1] + bx[3]) / 2, sz = Math.sqrt(Math.max(1e-6, (bx[2] - bx[0]) * (bx[3] - bx[1])));
+      return f ? { x: 0.5 + (cx - 0.5) * f.scale + f.x, y: 0.5 + (cy - 0.5) * f.scale + f.y, s: sz * f.scale } : { x: cx, y: cy, s: sz };
+    };
+    const from = Math.max(l.start, place.start), len = l.end - l.start;
+    if (len <= 0) { keysOf.set(l.id, []); continue; }
+    const ref = screen(from);
+    const r4 = (n: number) => Math.round(n * 10000) / 10000;
+    const samples: Key[] = [];
+    const steps = Math.max(1, Math.ceil(len / 0.1));
+    for (let i = 0; i <= steps; i++) {
+      const tt = Math.min(len, (i * len) / steps), p = screen(l.start + tt);
+      samples.push({ t: rT(tt), x: r4(p.x - ref.x), y: r4(p.y - ref.y), ...(pin.scale ? { scale: Math.min(4, Math.max(0.05, r4(p.s / ref.s))) } : {}) });
+    }
+    keysOf.set(l.id, fewestKeys(samples, 60));
+  }
+  const next = withTracks(tl, "v3", (tl.tracks.v3 as (V3Clip & { pin?: Pin })[]).map((l) => {
+    if (!keysOf.has(l.id)) return l;
+    const ks = keysOf.get(l.id);
+    if (ks === null) { const { pin: _p, ...rest } = l; return rest as V3Clip; }
+    const { keys: _k, ...rest } = l;
+    return (ks!.length > 1 ? { ...rest, keys: ks } : rest) as V3Clip;
+  }));
+  return { timeline: next, note: dropped.length ? `; ${dropped.slice(0, 4).join(", ")} no longer pinned (the object or its clip is gone)` : "" };
+}
+/** The fewest keys (at most `max`) that keep x, y and scale within a tolerance of the samples (Douglas-Peucker; the
+ *  tolerance grows until they fit). */
+function fewestKeys(samples: Key[], max: number): Key[] {
+  if (samples.length <= 2) return samples;
+  const props = ["x", "y", "scale"] as const;
+  const off = (a: Key, b: Key, m: Key) => { const u = b.t > a.t ? (m.t - a.t) / (b.t - a.t) : 0; return Math.max(...props.map((p) => (a[p] == null ? 0 : Math.abs(a[p]! + (b[p]! - a[p]!) * u - m[p]!) * (p === "scale" ? 0.25 : 1)))); };
+  for (let tol = 0.002; ; tol *= 1.5) {
+    const keep = new Uint8Array(samples.length); keep[0] = keep[samples.length - 1] = 1;
+    const stack: [number, number][] = [[0, samples.length - 1]];
+    while (stack.length) {
+      const [i, j] = stack.pop()!;
+      let worst = -1, at = -1;
+      for (let k = i + 1; k < j; k++) { const d = off(samples[i], samples[j], samples[k]); if (d > worst) { worst = d; at = k; } }
+      if (worst > tol) { keep[at] = 1; stack.push([i, at], [at, j]); }
+    }
+    const out = samples.filter((_, k) => keep[k]);
+    if (out.length <= max) {
+      // A layer that does not move gets no keys.
+      return out.every((k) => Math.abs(k.x!) < 1e-4 && Math.abs(k.y!) < 1e-4 && (k.scale == null || Math.abs(k.scale - 1) < 1e-4)) ? [] : out;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1850,7 +2030,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
       const auto = k === "a2" ? autoMusicFades(c.end - c.start) : { fadeIn: 0, fadeOut: 0 };
       const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
       const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
-      const extra = c.kind === "adjust" ? ` adjustment layer: ${[c.grade ? `grade ${gradeText(c.grade as Grade, lutName)}` : "", (c.effects as Effect[] | undefined)?.length ? effectsText(c.effects as Effect[]) : "", adjustText(c as { masks?: Mask[]; opacity?: number; fadeIn?: number; fadeOut?: number })].filter(Boolean).join(", ")}` : c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}${blendNote(c)}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}${blendNote(c)}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.inside ? ` video ${(c.inside as TextInside).videoId}@${(c.inside as TextInside).from} inside the letters` : ""}${c.cutout ? " cut out of the card" : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}${soundNote(c)}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}${soundNote(c)}` : "";
+      const extra = c.kind === "adjust" ? ` adjustment layer: ${[c.grade ? `grade ${gradeText(c.grade as Grade, lutName)}` : "", (c.effects as Effect[] | undefined)?.length ? effectsText(c.effects as Effect[]) : "", adjustText(c as { masks?: Mask[]; opacity?: number; fadeIn?: number; fadeOut?: number })].filter(Boolean).join(", ")}` : c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}${blendNote(c)}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}${blendNote(c)}${pinNote(c)}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.inside ? ` video ${(c.inside as TextInside).videoId}@${(c.inside as TextInside).from} inside the letters` : ""}${c.cutout ? " cut out of the card" : ""}${c.behind ? " behind the person" : ""}${pinNote(c)}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}${soundNote(c)}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}${soundNote(c)}` : "";
       const lk = k === "v2" ? lookTags(c as Clip & ClipLook) : "";
       const on = (c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "") + (Array.isArray(c.keys) && c.keys.length ? ` keys ${(c.keys as Key[]).map((k) => k.t).join(",")}s` : "") + (c.under ? " under V1" : "") + (lk ? " " + lk : "");
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;
@@ -1867,6 +2047,8 @@ function lookTags(c: Clip & ClipLook): string {
   const t = [c.grade ? "grade" : "", c.key ? "key" : "", c.masks?.length ? `${c.masks.length} ${c.masks.length === 1 ? "mask" : "masks"}` : "", ...(c.effects ?? []).map((e) => e.type), skinActive(c.skin) ? "skin" : "", c.subject ? "no background" : "", hasCard((c as { cardLook?: CardLook }).cardLook) ? "card" : ""].filter(Boolean);
   return t.length ? `look: ${t.join(", ")}` : "";
 }
+/** Object tracking: " pinned to o1 on c" for a text layer or graphic pinned to a tracked object. */
+const pinNote = (c: object) => { const p = (c as { pin?: Pin }).pin; return p ? ` pinned to ${p.object} on ${p.clipId}${p.scale ? " (scaling)" : ""}` : ""; };
 /** The looks in full, clips with the same one together (get_project). */
 export function colorSummary(tl: Timeline, lutName?: (id: string) => string | undefined): string[] {
   const clips = [...(tl.tracks.v1 as (Clip & ClipLook)[]), ...(tl.tracks.v2 as (Clip & ClipLook)[])];
@@ -1883,6 +2065,8 @@ export function colorSummary(tl: Timeline, lutName?: (id: string) => string | un
     ...group((c) => (skinActive(c.skin) ? skinText(c.skin!) : "")),
     ...group((c) => (c.subject ? subjectText(c.subject) : "")),
     ...group((c) => { const cl = (c as { cardLook?: CardLook }).cardLook; return hasCard(cl) ? `card ${cardLookText(cl)}` : ""; }),
+    // Object tracking: what each clip follows, where it was followed and lost.
+    ...group((c) => (c.objects?.length ? `tracked ${c.objects.map((o) => `${o.id}${o.label ? ` "${o.label}"` : ""} ${+o.track[0][0].toFixed(2)}-${+o.track[o.track.length - 1][0].toFixed(2)}s${o.lost?.length ? ` (lost ${o.lost.map(([a, z]) => `${+a.toFixed(1)}-${+z.toFixed(1)}s`).join(", ")})` : ""}`).join(", ")}` : "")),
   ];
   if (tl.background) out.push(`behind V1: ${backgroundText(tl.background)}`);
   if (tl.export?.hdr === "sdr") out.push("export: HDR footage converted to SDR");

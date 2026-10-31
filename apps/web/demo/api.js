@@ -262,6 +262,9 @@ Object.assign(api, {
   },
   // Phase 22: the demo's cameras carry timecode (the sound agrees), as jammed cameras do.
   multicamSync: async (_id, videoId) => { await wait(200); const v = await getVideo(videoId).catch(() => null); return { videoId, name: v?.name || videoId, offset: 1.2, score: 0.87, margin: 3.1, overlap: 120, sure: true, by: "timecode", checked: true, note: "by timecode; the sound agrees (within 34 ms)" }; },
+  // Object tracking in the preview: the box drawn slides right 4% of the width a second and grows a little, from the
+  // moment it was drawn (forward and back), lost for 0.3 s a second after it.
+  trackObject: async (_id, b) => { await wait(300); const n = Math.max(2, Math.round((b.to - b.from) * 10) + 1); return { rows: Array.from({ length: n }, (_, i) => { const t = Math.round((b.from + i / 10) * 1000) / 1000, d = t - b.at, g = 1 + d * 0.02, w = b.box.w * g, h = b.box.h * g, cx = b.box.x + b.box.w / 2 + d * 0.04, cy = b.box.y + b.box.h / 2; return [t, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, d > 1 && d < 1.3 ? 0 : 0.9]; }) }; },
   faceTracks: async (_id, clips) => { await wait(150); return { tracks: Object.fromEntries(clips.map((c) => [c.id, Array.from({ length: Math.max(2, Math.round((c.srcOut - c.srcIn) * 10) + 1) }, (_, i) => { const t = c.srcIn + i / 10, x = 0.38 + Math.min(0.2, i * 0.004); return [Math.round(t * 1000) / 1000, x, 0.12, x + 0.24, 0.6]; })])) }; },
   speakerCentres: async (_id, clips) => { await wait(150); return { centers: Object.fromEntries(clips.map((c) => [c.id, { x: 0.38, y: 0.42 }])) }; },
 });

@@ -98,5 +98,11 @@ Hardest, last:
     count along their outline first. One rule (areaAt) for the render's mask video and the player's outline and mask.
     Editor: "Key the shape here" and "Redraw here" at the playhead. Measured: the rendered mask matched the shape between
     keys on 100% of pixels away from the edge.
-24. **Tracking an object other than a face.**
+24. **Tracking an object other than a face (done, 31 October).** A box drawn round anything (a logo, a plate, a product)
+    is followed through the clip by optical flow (feature points checked forward and back, a shift-and-scale fit,
+    template matching against drift), on frames turned and fitted as the render shows them; where it is lost the box
+    holds. Masks and effect areas follow it (follow "object"); text and graphics are pinned to it (keyframes made from
+    the track, kept up to date after every change). Measured: the tracker stayed on a moving, growing patch (worst
+    overlap 93%, centre within 0.4% of the width); in a real render the blur took a sliding square's texture from 54
+    to 0.4 and a pinned title kept its place on it within 1 px while it moved 250 px.
 25. **A face-aware Morph Cut.**

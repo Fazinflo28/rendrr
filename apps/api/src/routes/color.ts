@@ -5,7 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { authenticate } from "../auth";
 import { getOwnedProject } from "../services/projects";
-import { colorSamples } from "../services/color";
+import { colorSamples, trackRows } from "../services/color";
 import { saveLut } from "../services/luts";
 
 // Phase 6: imported LUTs (.cube files) and the measured frames the editor's Match button needs.
@@ -50,5 +50,19 @@ export default async function color(app: FastifyInstance) {
     const body = z.object({ clipIds: z.array(z.string().max(80)).min(1).max(40) }).safeParse(req.body);
     if (!body.success) throw new AppError("Send the clip ids to measure (1 to 40).", 400);
     return { measured: await colorSamples(p.timeline as unknown as Timeline, p.aspect, body.data.clipIds) };
+  });
+
+  // Object tracking: the editor's Track button, on the editor's own clip (saved or not): the box drawn on it at its
+  // footage second `at` followed through its footage [from, to] (a multicam angle: that file, `shift` later). The
+  // answer is the tracker's rows, for the editor's track_object op.
+  app.post("/projects/:id/track", { config: { rateLimit: { max: 12, timeWindow: "1 minute" } } }, async (req) => {
+    const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    const n = z.number().finite();
+    const body = z.object({ videoId: z.string().min(1).max(80), from: n.min(0), to: n.min(0), at: n.min(0), shift: n.optional(), rotate: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).optional(), fitY: n.min(0).max(1).optional(),
+      focus: z.object({ x: n, y: n }).nullable().optional(), box: z.object({ x: n, y: n, w: n.min(0.005).max(3), h: n.min(0.005).max(3) }), aspect: z.string().max(8).optional() }).safeParse(req.body);
+    if (!body.success || body.data.to <= body.data.from) throw new AppError("Send the clip's videoId, from, to (its footage), at and box {x, y, w, h} (shares of its picture) to track an object.", 400);
+    const d = body.data;
+    if (!(await prisma.video.findFirst({ where: { id: d.videoId, userId: req.user!.id }, select: { id: true } }))) throw new AppError("That video is not in your library.", 404);
+    return { rows: await trackRows({ videoId: d.videoId, from: d.from, to: d.to, at: d.at, box: d.box, rotate: d.rotate ?? 0, fitY: d.fitY ?? 0.4, shift: d.shift, ...(d.focus ? { focus: d.focus } : {}) }, d.aspect ?? p.aspect) };
   });
 }

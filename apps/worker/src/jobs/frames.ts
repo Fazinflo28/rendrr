@@ -1,19 +1,21 @@
-import { headObject, signGet, uploadFile, type ColorSampleJob, type ColorSamples, type FaceJob, type FaceSamples, type FramesJob } from "@rendrr/core";
+import { headObject, signGet, uploadFile, type ColorSampleJob, type ColorSamples, type FaceJob, type FaceSamples, type FramesJob, type TrackJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { frameAt, JobError, overlayPng, rgbFrames } from "../lib/ffmpeg";
 import { detectFaces, faceOf } from "../lib/faces";
+import { trackObject, type TrackRow } from "../lib/track";
 import type { Ctx } from "../lib/job";
 import { framesPrefix } from "./breakdown";
 
 // Frames for the AI to look at: from a preview render (get_preview_frames, output times) or from footage and
 // references (get_frames, original times). Render frames are kept next to the render and expire with it; footage
 // frames sit with the video's other frames and go when its preview copy goes.
-export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | FaceSamples> {
-  const { renderId, videoId, times, overlays, colorSamples: cs, faces } = ctx.job.data as FramesJob;
+export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | FaceSamples | TrackRow[]> {
+  const { renderId, videoId, times, overlays, colorSamples: cs, faces, track } = ctx.job.data as FramesJob;
   if (cs) return colorSamples(ctx, cs);
   if (faces) return faceSamples(ctx, faces);
+  if (track) return trackSamples(ctx, track);
   if (videoId) return videoFrames(ctx, videoId, times);
   const r = renderId ? await prisma.render.findUnique({ where: { id: renderId } }) : null;
   if (!r?.outputKey) return [];
@@ -109,4 +111,11 @@ async function faceSamples(ctx: Ctx, fj: FaceJob): Promise<FaceSamples> {
   let at = 0;
   clips.forEach((c, i) => { out[c.id] = faceOf(boxes.slice(at, at + counts[i]), fj.w, fj.h); at += counts[i]; });
   return out;
+}
+
+/** Object tracking: the box followed over the clip, on its preview copy turned and fitted as the render draws it. */
+async function trackSamples(ctx: Ctx, tj: TrackJob): Promise<TrackRow[]> {
+  const v = await prisma.video.findUnique({ where: { id: tj.videoId }, select: { proxyKey: true, name: true } });
+  if (!v?.proxyKey) throw new JobError(`The preview copy of this video is gone${v ? ` ("${v.name}")` : ""}. Rebuild it from your Library, then track again.`, "expired", false);
+  return trackObject(await signGet(v.proxyKey, 900), { from: tj.srcIn, to: tj.srcOut, at: tj.at, box: tj.box, w: tj.w, h: tj.h, rotate: tj.rotate, fitY: tj.fitY, focus: tj.focus, dir: ctx.dir, signal: ctx.signal });
 }

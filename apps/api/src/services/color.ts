@@ -1,6 +1,6 @@
-import { AppError, enqueue, getText, newRedis, type ColorSamples, type FaceSamples, type FramesJob } from "@rendrr/core";
+import { AppError, enqueue, getText, newRedis, type ColorSamples, type FaceSamples, type FramesJob, type TrackJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { aspectSize, boxOnScreen, faceSkinArea, type FaceTrack, isSequence, mainVideoOf, parseCube, QUEUES, speakerCentre, speakerFaceBox, type Area, type ClipLook, type EditOp, type Focus, type Lut, type Timeline, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { aspectSize, boxOnScreen, faceSkinArea, type FaceTrack, isSequence, mainVideoOf, sequenceView, type TrackedObject, parseCube, QUEUES, speakerCentre, speakerFaceBox, type Area, type ClipLook, type EditOp, type Focus, type Lut, type Timeline, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { visionDetailsOf } from "./deep";
 import { QueueEvents } from "bullmq";
 
@@ -56,6 +56,57 @@ export async function faceSamples(tl: Timeline, aspect: string, ids: string[]): 
   }
 }
 
+const TRACK_WAIT_MS = 150_000;
+/** The longest stretch tracked in one go (seconds, round the moment the box is drawn). */
+export const TRACK_SPAN = 60;
+type TrackOp = Extract<EditOp, { op: "track_object" }>;
+/**
+ * Object tracking: the box drawn on a clip followed through its footage by the worker (python/track.py), on frames
+ * turned and fitted as the render shows them, at 10 fps; the op gets the tracker's rows ([second, x0, y0, x1, y1,
+ * confidence], footage seconds of the clip). A V1 clip on a multicam angle is tracked on that angle's picture. At
+ * most TRACK_SPAN seconds round `at`. An edit second (edit: true) is turned into the clip's footage second here.
+ */
+export async function trackObject(tl: Timeline, aspect: string, e: TrackOp): Promise<TrackOp> {
+  const main = mainVideoOf(tl);
+  type Look = { objects?: TrackedObject[] };
+  const v1 = (tl.tracks.v1 as unknown as (V1 & Look & { angle?: string; start: number; end: number })[]).find((c) => c.id === e.clipId);
+  const b = v1 ? null : (tl.tracks.v2 as unknown as ({ id: string; kind?: string; videoId?: string; sourceStart?: number; start: number; end: number } & Look)[]).find((c) => c.id === e.clipId && c.kind === "broll" && c.videoId);
+  if (!v1 && !b) throw new AppError(`There is no clip "${e.clipId}" on V1 or b-roll on V2 to track an object on. Read the project again to get the current clip ids. Nothing was changed.`, 400, "invalid-edit");
+  const old = e.id ? (v1 ?? b)!.objects?.find((o) => o.id === e.id) : undefined;
+  let at = e.at ?? old?.at;
+  const box = e.box ?? old?.box;
+  if (at == null || !box) throw new AppError("track_object needs at (the clip's footage second, or an edit second with edit: true) and box {x, y, w, h} drawn round the object then. Nothing was changed.", 400, "invalid-edit");
+  if (e.edit && e.at != null) at = v1 ? sequenceView(tl, []).editToSource(v1.id, e.at) : (b!.sourceStart ?? 0) + (e.at - b!.start);
+  // The clip's footage (main-video seconds for V1), and the picture it shows: a multicam angle's file, `offset` later.
+  const from = v1 ? v1.sourceIn : b!.sourceStart ?? 0, to = v1 ? v1.sourceOut : from + (b!.end - b!.start);
+  const ang = v1?.angle ? tl.multicam?.angles.find((a) => a.videoId === v1.angle) : undefined;
+  const shift = ang?.offset ?? 0;
+  const rows = await trackRows({ videoId: ang ? ang.videoId : v1 ? v1.sourceVideoId || main : b!.videoId!, from, to, at, box, rotate: ang ? ang.rotate ?? 0 : v1?.rotate ?? 0, fitY: v1 ? 0.4 : 0.5, shift, ...(!ang && v1?.framing?.focus ? { focus: v1.framing.focus } : {}) }, aspect);
+  const { edit: _e, ...rest } = e;
+  return { ...rest, at, rows };
+}
+export type TrackRows = [number, number, number, number, number, number][];
+/**
+ * The worker's tracker over one clip's footage [from, to] (seconds of the clip's own time; shift: where that time is
+ * in the file read, a multicam angle's offset), the box drawn at `at` (shares of the picture as fitted; fitY 0.4 for
+ * V1, 0.5 for b-roll). At most TRACK_SPAN seconds round `at`. Rows in the clip's own time.
+ */
+export async function trackRows(c: { videoId: string; from: number; to: number; at: number; box: { x: number; y: number; w: number; h: number }; rotate: number; fitY: number; shift?: number; focus?: { x: number; y: number } }, aspect: string): Promise<TrackRows> {
+  const shift = c.shift ?? 0, at = Math.min(c.to, Math.max(c.from, c.at));
+  const lo = Math.max(c.from, Math.min(at + TRACK_SPAN / 2, c.to) - TRACK_SPAN), span = { from: lo, to: Math.min(c.to, lo + TRACK_SPAN) };
+  const { width: w, height: h } = aspectSize(aspect, aspect === "1:1" || aspect === "4:5" ? 480 : 360);
+  const job: TrackJob = { videoId: c.videoId, srcIn: span.from + shift, srcOut: span.to + shift, at: at + shift, box: c.box, rotate: c.rotate, fitY: c.fitY, w, h, ...(c.focus ? { focus: c.focus } : {}) };
+  events ||= new QueueEvents(QUEUES.frames.name, { connection: newRedis() });
+  const q = await enqueue<FramesJob>("frames", { times: [], track: job });
+  try {
+    const rows = (await q.waitUntilFinished(events, TRACK_WAIT_MS)) as TrackRows;
+    return rows.map((r) => [Math.round((r[0] - shift) * 1000) / 1000, r[1], r[2], r[3], r[4], r[5]] as TrackRows[number]);
+  } catch (err) {
+    const msg = (err as Error).message || "";
+    throw new AppError(/timed out/i.test(msg) ? `Tracking the object took over ${TRACK_WAIT_MS / 1000} s and was stopped. Nothing was changed; try a shorter clip.` : `Could not track the object: ${msg.slice(0, 200)}. Nothing was changed.`, 503, "measure");
+  }
+}
+
 /** Closes the queue listener (tests; the server keeps it for its lifetime). */
 export async function closeColorEvents() { await events?.close(); events = null; }
 
@@ -67,12 +118,16 @@ export async function withMeasurements(projectId: string, edits: EditOp[]): Prom
   const skin = (e: EditOp) => e.op === "retouch_skin" && !e.off && !e.faceAreas && (e.area === "face" || e.area === undefined);
   // Phase 3: masks and effect areas that follow the face.
   const follow = (e: EditOp) => (e.op === "set_masks" || e.op === "set_effects") && !e.faceTracks && (e.op === "set_masks" ? e.masks : e.effects.map((x) => x.area)).some((a) => a?.follow === "face");
-  if (!edits.some((e) => (e.op === "match_color" && !e.measured) || faces(e) || speaker(e) || skin(e) || follow(e))) return edits;
+  // Object tracking: the box followed through the clip.
+  // (a new name only, id and label with no box or moment, needs no tracking).
+  const track = (e: EditOp) => e.op === "track_object" && !e.remove && !e.rows && !(e.id && e.label !== undefined && !e.box && e.at == null);
+  if (!edits.some((e) => (e.op === "match_color" && !e.measured) || faces(e) || speaker(e) || skin(e) || follow(e) || track(e))) return edits;
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timeline: true, aspect: true } });
   const tl = p.timeline as unknown as Timeline;
   const out: EditOp[] = [];
   for (const e of edits) {
     if (e.op === "match_color" && !e.measured) out.push({ ...e, measured: await colorSamples(tl, p.aspect, Array.from(new Set([e.to, ...e.clipIds]))) });
+    else if (e.op === "track_object" && track(e)) out.push(await trackObject(tl, p.aspect, e));
     else if (e.op === "set_framing" && speaker(e)) {
       const main = mainVideoOf(tl);
       const v1 = tl.tracks.v1 as unknown as V1[];

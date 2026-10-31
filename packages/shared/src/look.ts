@@ -137,15 +137,18 @@ export const AreaSchema = z.object({
   /** Phase 3: the box over time (a moving rect or ellipse). follow "face": Rendrr made the keys from the speaker's face,
    *  measured over the clip (the box keeps its place and size against the face). */
   keys: z.array(AreaKeySchema).max(MAX_AREA_KEYS).optional(),
-  follow: z.enum(["face"]).optional(),
+  follow: z.enum(["face", "object"]).optional(),
+  /** Object tracking: the tracked object (its id on the same clip) a shape with follow "object" follows. */
+  object: z.string().max(40).optional(),
   /** Mask path keyframes: a path's shape over time (its points at each key). */
   pathKeys: z.array(PathKeySchema).max(MAX_PATH_KEYS).optional(),
 }).superRefine((a, ctx) => {
   if (a.shape === "path" && (a.keys?.length || a.follow)) ctx.addIssue({ code: "custom", message: "keys and follow move a rect or an ellipse; a path changes shape with pathKeys" });
   if (a.shape !== "path" && a.pathKeys?.length) ctx.addIssue({ code: "custom", message: "pathKeys change a path's shape; a rect or an ellipse moves with keys" });
+  if (a.follow === "object" && !a.object) ctx.addIssue({ code: "custom", message: "follow \"object\" needs object: a tracked object's id on the clip (track_object)" });
   if (a.shape === "path" && !a.points && !a.pathKeys?.length) ctx.addIssue({ code: "custom", message: "a path needs points (at least 3), or pathKeys" });
-  // A shape that follows the face may leave its box out: it is an ellipse round the face (forehead to neck).
-  if (a.shape !== "path" && a.follow !== "face" && (a.x == null || a.y == null || a.w == null || a.h == null)) ctx.addIssue({ code: "custom", message: `a ${a.shape} needs x, y, w and h` });
+  // A shape that follows the face or an object may leave its box out: an ellipse round the face, a box round the object.
+  if (a.shape !== "path" && a.follow !== "face" && a.follow !== "object" && (a.x == null || a.y == null || a.w == null || a.h == null)) ctx.addIssue({ code: "custom", message: `a ${a.shape} needs x, y, w and h` });
 });
 export type Area = z.infer<typeof AreaSchema>;
 /** A mask: the clip shows only inside its masks. add: joins the masks before it; subtract: cuts it out; intersect: keeps
@@ -267,6 +270,64 @@ export function followFace(a: Area, track: FaceTrack): Area {
   const first = keys[0];
   return { ...a, shape: a.shape === "path" ? "ellipse" : a.shape, x: first.x, y: first.y, w: first.w, h: first.h, ...(own ? {} : { feather: a.feather ?? FACE_AREA.feather }), keys, follow: "face" };
 }
+/**
+ * Object tracking: an object on a clip, followed by Rendrr from the box drawn at `at` (the clip's footage second, on
+ * its fitted frame, shares): track holds its box every 0.1 s where it was found ([footage second, x0, y0, x1, y1]);
+ * lost: where it was not (covered, out of frame, blurred) and what follows it holds still.
+ */
+export const TrackedObjectSchema = z.object({
+  id: z.string().min(1).max(40), label: z.string().max(60).optional(), at: z.number().min(0).max(24 * 3600),
+  box: z.object({ x: coord, y: coord, w: z.number().min(0.005).max(3), h: z.number().min(0.005).max(3) }),
+  track: z.array(z.tuple([z.number(), z.number(), z.number(), z.number(), z.number()])).max(40_000),
+  lost: z.array(z.tuple([z.number(), z.number()])).max(500).optional(),
+});
+export type TrackedObject = z.infer<typeof TrackedObjectSchema>;
+/** The tracker's rows ([second, x0, y0, x1, y1, confidence]) as an object's track: the confident boxes, lightly smoothed
+ *  over three samples, and the stretches where it was lost. */
+export function objectTrack(rows: [number, number, number, number, number, number][], minConf = 0.35): { track: FaceTrack; lost: [number, number][] } {
+  const r4 = (v: number) => Math.round(v * 10000) / 10000;
+  const ok = rows.filter((r) => r[5] >= minConf);
+  // Smoothed only between two neighbours (a one-sided average would pull a moving box back at the ends and at gaps).
+  const near = (q: (typeof ok)[number] | undefined, p: (typeof ok)[number]) => !!q && Math.abs(q[0] - p[0]) < 0.25;
+  const track: FaceTrack = ok.map((p, i) => { const n = near(ok[i - 1], p) && near(ok[i + 1], p) ? [ok[i - 1], p, ok[i + 1]] : [p]; return [p[0], ...[1, 2, 3, 4].map((k) => r4(n.reduce((a, q) => a + q[k], 0) / n.length))] as FaceTrack[number]; });
+  const lost: [number, number][] = [];
+  let from: number | null = null;
+  for (const r of rows) {
+    if (r[5] < minConf) { if (from == null) from = r[0]; }
+    else if (from != null) { lost.push([from, r[0]]); from = null; }
+  }
+  if (from != null && rows.length) lost.push([from, rows[rows.length - 1][0]]);
+  return { track, lost };
+}
+/**
+ * A shape that follows a tracked object: it keeps its place and size against the object's box as it was where the
+ * object was drawn (`at`); without its own box it is a box round the object. Keys where the object was found.
+ * prev: the object as it was tracked before (tracked again): the shape keeps its place against that one.
+ */
+export function followObject(a: Area, obj: TrackedObject, prev?: TrackedObject): Area {
+  const tr = obj.track;
+  if (!tr.length) return a;
+  const basis = prev?.track.length ? prev : obj;
+  const [fx0, fy0, fx1, fy1] = objectBoxAt(basis, basis.at)!, fw = Math.max(1e-4, fx1 - fx0), fh = Math.max(1e-4, fy1 - fy0);
+  // A shape that already moves: where it is at that moment.
+  const cur = a.keys?.length ? areaAt(a, basis.at) : a;
+  const own = cur.shape !== "path" && cur.x != null && cur.y != null && cur.w != null && cur.h != null;
+  const rel = own ? { x: (cur.x! - fx0) / fw, y: (cur.y! - fy0) / fh, w: cur.w! / fw, h: cur.h! / fh } : { x: -0.05, y: -0.05, w: 1.1, h: 1.1 };
+  const r4 = (v: number) => Math.round(v * 10000) / 10000;
+  const keys = simplifyKeys(tr.map(([at, x0, y0, x1, y1]) => { const w = x1 - x0, h = y1 - y0; return { at, x: r4(x0 + rel.x * w), y: r4(y0 + rel.y * h), w: r4(rel.w * w), h: r4(rel.h * h) }; }), 0.003);
+  const near = keys.reduce((b, k) => (Math.abs(k.at - obj.at) < Math.abs(b.at - obj.at) ? k : b), keys[0]);
+  return { ...a, shape: a.shape === "path" ? "rect" : a.shape, x: near.x, y: near.y, w: near.w, h: near.h, keys, follow: "object", object: obj.id };
+}
+/** An object's box at footage second t (straight between its samples; held before, after and through a gap). */
+export function objectBoxAt(obj: TrackedObject, t: number): [number, number, number, number] | null {
+  const tr = obj.track;
+  if (!tr.length) return null;
+  if (t <= tr[0][0]) return [tr[0][1], tr[0][2], tr[0][3], tr[0][4]];
+  const j = tr.findIndex((p) => p[0] >= t);
+  if (j < 0) { const q = tr[tr.length - 1]; return [q[1], q[2], q[3], q[4]]; }
+  const p = tr[j - 1], q = tr[j], u = q[0] > p[0] ? (t - p[0]) / (q[0] - p[0]) : 1;
+  return [1, 2, 3, 4].map((k) => p[k] + (q[k] - p[k]) * u) as [number, number, number, number];
+}
 /** Keys left out where a straight line between their neighbours is within `tol` of them (Douglas-Peucker on the box). */
 export function simplifyKeys(ks: AreaKey[], tol: number): AreaKey[] {
   if (ks.length <= 2) return ks;
@@ -331,7 +392,7 @@ export function matteAllowanceMs(timeline: unknown): number {
 }
 
 /** Everything Phase 6 adds to a drawn clip (V1, b-roll). */
-export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[]; skin?: Skin; subject?: Subject };
+export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[]; skin?: Skin; subject?: Subject; objects?: TrackedObject[] };
 export const hasLook = (c: ClipLook | null | undefined) => !!c && (!!c.grade && gradeIsActive(c.grade) || !!c.key || !!c.masks?.length || !!c.effects?.length || skinActive(c.skin) || !!c.subject);
 export const gradeIsActive = (g: Grade | undefined) => !!g && (!!g.exposure || !!g.contrast || !!g.temperature || !!g.tint || (g.saturation != null && g.saturation !== 100) || !!g.lut || !!g.curves && Object.values(g.curves).some(Boolean)
   || !!g.highlights || !!g.shadows || !!g.whites || !!g.blacks || !!g.vibrance || wheelsActive(g.wheels) || !!g.hsl?.length || !!g.hueSat?.length || !!g.hueHue?.length || !!g.lumaSat?.length);
@@ -798,7 +859,7 @@ export function gradeText(g: Grade, lutName?: (id: string) => string | undefined
   return out.join(", ") || "none";
 }
 const pct = (n: number) => `${Math.round(n * 100)}%`;
-export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}${a.follow === "face" ? ` following the face (${a.keys?.length ?? 0} keys)` : a.pathKeys?.length && moving(a) ? ` changing shape (${a.pathKeys.length} keys, ${+a.pathKeys[0].at.toFixed(2)}-${+a.pathKeys[a.pathKeys.length - 1].at.toFixed(2)}s)` : moving(a) ? ` moving (${a.keys!.length} keys, ${+a.keys![0].at.toFixed(2)}-${+a.keys![a.keys!.length - 1].at.toFixed(2)}s)` : ""}`;
+export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}${a.follow === "face" ? ` following the face (${a.keys?.length ?? 0} keys)` : a.follow === "object" ? ` following object ${a.object} (${a.keys?.length ?? 0} keys)` : a.pathKeys?.length && moving(a) ? ` changing shape (${a.pathKeys.length} keys, ${+a.pathKeys[0].at.toFixed(2)}-${+a.pathKeys[a.pathKeys.length - 1].at.toFixed(2)}s)` : moving(a) ? ` moving (${a.keys!.length} keys, ${+a.keys![0].at.toFixed(2)}-${+a.keys![a.keys!.length - 1].at.toFixed(2)}s)` : ""}`;
 export const chromaKeyText = (k: ChromaKey) => `${k.color} similarity ${k.similarity} blend ${k.blend}${k.spill ? ` spill ${k.spill}` : ""}`;
 export const masksText = (ms: Mask[]) => ms.map((m, i) => `${i && m.mode && m.mode !== "add" ? m.mode + " " : ""}${areaText(m)}`).join(", ");
 export const effectsText = (es: Effect[]) => es.map((e) => e.type === "pin" ? `corner pin${e.corners ? ` to ${e.corners.map((c) => `${Math.round(c[0] * 100)}%,${Math.round(c[1] * 100)}%`).join(" ")}` : ""}` : `${e.type === "rgbsplit" ? "RGB split" : e.type} ${e.amount}${e.area ? ` in ${areaText(e.area)}` : ""}`).join(", ");

@@ -154,22 +154,31 @@ export function pickColor(video, W, H, rotate, fitY, fx, fy, focus = null) {
 // The overlay on the picture while the Color tab is open: outlines of the clip's masks and effect areas; a path being
 // drawn; clicks that add a path point or pick the key colour.
 // ---------------------------------------------------------------------------------------------
-export function MaskOverlay({ shapes, mode, draft, onPoint }) {
+export function MaskOverlay({ shapes, mode, draft, onPoint, onBox }) {
   const box = useRef(null);
+  // Object tracking: a box dragged round the object (mode "box").
+  const [drag, setDrag] = useState(null);
   const at = (e) => { const r = box.current.getBoundingClientRect(); return [Math.round(((e.clientX - r.left) / r.width) * 1000) / 1000, Math.round(((e.clientY - r.top) / r.height) * 1000) / 1000]; };
+  const rectOf = (d) => ({ x: Math.min(d.a[0], d.b[0]), y: Math.min(d.a[1], d.b[1]), w: Math.abs(d.b[0] - d.a[0]), h: Math.abs(d.b[1] - d.a[1]) });
+  const down = (e) => { if (mode !== "box") return; e.preventDefault(); const p = at(e); setDrag({ a: p, b: p }); e.currentTarget.setPointerCapture?.(e.pointerId); };
+  const move = (e) => { if (mode === "box" && drag) setDrag({ ...drag, b: at(e) }); };
+  const up = () => { if (mode !== "box" || !drag) return; const r = rectOf(drag); setDrag(null); if (r.w > 0.01 && r.h > 0.01) onBox?.(r); };
   const shapeEl = (s, i) => {
+    if (s.kind === "object") return html`<g key=${i}><rect x=${s.x} y=${s.y} width=${s.w} height=${s.h} style=${{ fill: "none", stroke: "#fb923c", strokeWidth: 1.5, vectorEffect: "non-scaling-stroke", strokeDasharray: s.lost ? "2 3" : "6 3" }} /></g>`;
     const st = { fill: "none", stroke: s.kind === "mask" ? "#4ade80" : "#60a5fa", strokeWidth: 1.5, vectorEffect: "non-scaling-stroke", strokeDasharray: s.invert ? "4 3" : null };
     if (s.shape === "rect") return html`<rect key=${i} x=${s.x} y=${s.y} width=${s.w} height=${s.h} style=${st} />`;
     if (s.shape === "ellipse") return html`<ellipse key=${i} cx=${s.x + s.w / 2} cy=${s.y + s.h / 2} rx=${s.w / 2} ry=${s.h / 2} style=${st} />`;
     return html`<polygon key=${i} points=${s.points.map((p) => p.join(",")).join(" ")} style=${st} />`;
   };
-  return html`<div ref=${box} id="mask-overlay" data-mode=${mode || ""} style=${{ position: "absolute", inset: 0, cursor: mode ? "crosshair" : "default", pointerEvents: mode ? "auto" : "none", zIndex: 5 }} onClick=${(e) => mode && onPoint(at(e))}>
+  const d = drag && rectOf(drag);
+  return html`<div ref=${box} id="mask-overlay" data-mode=${mode || ""} style=${{ position: "absolute", inset: 0, cursor: mode ? "crosshair" : "default", pointerEvents: mode ? "auto" : "none", zIndex: 5, touchAction: mode === "box" ? "none" : "auto" }} onClick=${(e) => mode && mode !== "box" && onPoint(at(e))} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up}>
     <svg viewBox="0 0 1 1" preserveAspectRatio="none" width="100%" height="100%" style="position:absolute;inset:0;overflow:visible">
       ${shapes.map(shapeEl)}
+      ${d && html`<rect id="track-box" x=${d.x} y=${d.y} width=${d.w} height=${d.h} style=${{ fill: "rgba(250,204,21,.12)", stroke: "#facc15", strokeWidth: 2, vectorEffect: "non-scaling-stroke" }} />`}
       ${draft?.length ? html`<polyline points=${draft.map((p) => p.join(",")).join(" ")} style=${{ fill: "none", stroke: "#facc15", strokeWidth: 2, vectorEffect: "non-scaling-stroke" }} />` : null}
       ${(draft || []).map((p, i) => html`<circle key=${i} cx=${p[0]} cy=${p[1]} r="0.006" style=${{ fill: "#facc15" }} />`)}
     </svg>
-    ${mode && html`<div class="t-small" style="position:absolute;left:8px;top:8px;background:rgba(0,0,0,.6);color:#fff;padding:4px 8px;border-radius:6px">${mode === "pick" ? "Click the colour to remove" : "Click to add points; Done in the Color tab when the shape is closed"}</div>`}
+    ${mode && html`<div class="t-small" style="position:absolute;left:8px;top:8px;background:rgba(0,0,0,.6);color:#fff;padding:4px 8px;border-radius:6px">${mode === "pick" ? "Click the colour to remove" : mode === "box" ? "Drag a box tight round the object to follow" : "Click to add points; Done in the Color tab when the shape is closed"}</div>`}
   </div>`;
 }
 
@@ -210,7 +219,7 @@ const BOX = (shape) => ({ shape, x: 0.25, y: 0.2, w: 0.5, h: 0.6 });
 const SHAPE_NAME = { rect: "Rectangle", ellipse: "Ellipse", path: "Path" };
 
 /** A shape held still where it is now (its keys, shape keys and any face it followed dropped). */
-const stillArea = ({ keys: _k, follow: _f, pathKeys: _p, ...a }) => a;
+const stillArea = ({ keys: _k, follow: _f, object: _o, pathKeys: _p, ...a }) => a;
 /** Mask path keyframes: the path's shape at footage second t added as a key (one there already is replaced); the
  *  first key also keeps the shape the path had, at its own first moment. */
 export function keyPath(a, t, points) {
@@ -222,7 +231,7 @@ export function keyPath(a, t, points) {
 
 /** Sliders for a shape's box and feather, and its invert box (masks and effect areas). Phase 3: follow(a, on) makes a
  *  rect or ellipse follow the face (V1 clips; null elsewhere); a shape that moves says so and can be held still. */
-function AreaControls({ idp, a, set, sl, follow, busy, footAt, redraw }) {
+function AreaControls({ idp, a, set, sl, follow, busy, footAt, redraw, objects = [] }) {
   const mv = moving(a), placed = a.shape !== "path" && !mv;
   // Mask path keyframes: key the path's shape at the playhead (the clip's footage second), or draw it again there.
   const pathKeys = a.shape === "path" ? a.pathKeys || [] : null;
@@ -230,12 +239,13 @@ function AreaControls({ idp, a, set, sl, follow, busy, footAt, redraw }) {
   const keyHere = () => set(keyPath(a, footAt, here), true);
   return html`<div class="col" style="gap:6px">
     ${a.shape !== "path" && follow && html`<label class="t-small row" style="gap:6px"><input type="checkbox" id=${idp + "-follow"} disabled=${busy} checked=${a.follow === "face"} onChange=${(e) => follow(a, e.target.checked)} />Follow the face${busy ? " (measuring…)" : ""}</label>`}
+    ${a.shape !== "path" && objects.length > 0 && html`<label class="t-small row" style="gap:6px">Follow<select class="input sm" id=${idp + "-follow-object"} value=${a.follow === "object" ? a.object : ""} onChange=${(e) => set(e.target.value ? { ...stillArea(a), follow: "object", object: e.target.value } : stillArea(a), true)} style="width:auto"><option value="">No object</option>${objects.map((o) => html`<option key=${o.id} value=${o.id}>${o.label || o.id}</option>`)}</select></label>`}
     ${pathKeys && html`<div class="col" style="gap:4px" id=${idp + "-pathkeys"}><div class="row" style="gap:6px;flex-wrap:wrap">
       <${Btn} kind="ghost" size="xs" id=${idp + "-key-shape"} disabled=${footAt == null} title="Keep the shape it has at the playhead as a key; change it at another moment and it morphs between them" onClick=${keyHere}>◆ Key the shape here<//>
       ${redraw && html`<${Btn} kind="ghost" size="xs" id=${idp + "-redraw"} disabled=${footAt == null} title="Draw the shape again at the playhead: it becomes a key there" onClick=${() => redraw(footAt)}>Redraw here<//>`}</div>
       ${footAt == null && html`<span class="t-small muted">Move the playhead onto this clip to key its shape.</span>`}
       ${pathKeys.length > 0 && html`<span class="t-small muted" id=${idp + "-pathkeys-list"}>Shape keys at ${pathKeys.map((k) => k.at.toFixed(1) + "s").join(", ")}</span>`}</div>`}
-    ${mv && html`<div class="row between" id=${idp + "-moving"}><span class="t-small muted">${a.pathKeys?.length ? `Changes shape (${a.pathKeys.length} keys, ${a.pathKeys[0].at.toFixed(1)}-${a.pathKeys[a.pathKeys.length - 1].at.toFixed(1)}s)` : a.follow === "face" ? `Follows the face (${a.keys.length} keys)` : `Moves (${a.keys.length} keys, ${a.keys[0].at.toFixed(1)}-${a.keys[a.keys.length - 1].at.toFixed(1)}s)`}</span>
+    ${mv && html`<div class="row between" id=${idp + "-moving"}><span class="t-small muted">${a.pathKeys?.length ? `Changes shape (${a.pathKeys.length} keys, ${a.pathKeys[0].at.toFixed(1)}-${a.pathKeys[a.pathKeys.length - 1].at.toFixed(1)}s)` : a.follow === "face" ? `Follows the face (${a.keys.length} keys)` : a.follow === "object" ? `Follows ${objects.find((o) => o.id === a.object)?.label || a.object} (${a.keys.length} keys)` : `Moves (${a.keys.length} keys, ${a.keys[0].at.toFixed(1)}-${a.keys[a.keys.length - 1].at.toFixed(1)}s)`}</span>
       <${Btn} kind="ghost" size="xs" id=${idp + "-still"} onClick=${() => set(stillArea(a), true)}>Hold still<//></div>`}
     ${placed && html`<div class="row" style="gap:8px">
       <div class="grow"><${OpSlider} id=${idp + "-x"} label="Left" value=${a.x} min=${-0.5} max=${1} step=${0.01} show=${pct} opFor=${(v) => set({ ...a, x: v })} ...${sl} /></div>
@@ -365,14 +375,32 @@ export function Scopes({ idp, grade, luts }) {
       ${err && html`<span class="t-small muted">${err}</span>`}`}</div>`;
 }
 
-export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast, mattes = {}, footAt = null, adjust = { clips: [], sel: null, at: 0, dur: 0, select: () => {} } }) {
+export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast, mattes = {}, footAt = null, boxDraft = null, setBoxDraft = () => {}, adjust = { clips: [], sel: null, at: 0, dur: 0, select: () => {} } }) {
   // Mask path keyframes: a path drawn again at a moment becomes that path's shape key there.
   const [redrawing, setRedrawing] = useState(null);
   const [ch, setCh] = useState("master");
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
   const [measuring, setMeasuring] = useState(false);
+  const [tracking, setTracking] = useState(null);
   const fileRef = useRef(null);
+  // Object tracking: a box drawn on the picture (boxDraft) is followed through the clip by the server, then applied
+  // as a track_object op with its rows (as the connector's apply_edits does).
+  useEffect(() => {
+    if (!boxDraft || !clip) return;
+    const box = boxDraft, redo = tracking?.redo;
+    setBoxDraft(null);
+    if (footAt == null) { toast("Move the playhead onto this clip first.", { icon: "alert" }); return; }
+    const broll = clip.kind === "broll";
+    const ang = !broll && clip.angle ? timeline.multicam?.angles?.find((a) => a.videoId === clip.angle) : null;
+    const from = broll ? clip.sourceStart || 0 : clip.sourceIn, to = broll ? from + (clip.end - clip.start) : clip.sourceOut;
+    const r4 = (v) => Math.round(v * 10000) / 10000;
+    setTracking({ busy: true });
+    api.trackObject(projectId, { videoId: broll ? clip.videoId : ang ? ang.videoId : clip.sourceVideoId || mainVideo, from, to, at: footAt, box, rotate: ang ? ang.rotate || 0 : clip.rotate || 0, fitY: broll ? 0.5 : 0.4, focus: !broll && !ang ? clip.framing?.focus ?? null : null, shift: ang?.offset || 0, aspect })
+      .then(({ rows }) => { doOp({ op: "track_object", clipId: clip.id, at: footAt, box: { x: r4(box.x), y: r4(box.y), w: r4(box.w), h: r4(box.h) }, rows, ...(redo ? { id: redo } : {}) }, false); })
+      .catch((e) => toast(e.message))
+      .finally(() => setTracking(null));
+  }, [boxDraft]);
   if (adjust.sel) return html`<${AdjustPanel} c=${adjust.sel} doOp=${doOp} H=${H} liveOp=${liveOp} select=${adjust.select} />`;
   if (!clip || !(track === "v1" || track === "a1" || (track === "v2" && clip.kind === "broll"))) {
     return html`<${WholeEditColor} clips=${clips} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} lutList=${lutList} reloadLuts=${reloadLuts} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} mattes=${mattes} adjust=${adjust} />`;
@@ -400,6 +428,7 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
   const followMask = (i) => canFollow ? (m, on) => (on ? withFaces(mop(masks.map((x, j) => (j === i ? { ...stillArea(m), follow: "face" } : x)))) : doOp(setMask(i)(stillArea(m)), false)) : null;
   const followFx = (i) => canFollow ? (a, on) => (on ? withFaces(eop(effects.map((x, j) => (j === i ? { ...x, area: { ...stillArea(a), follow: "face" } } : x)))) : doOp(setEffect(i)({ ...effects[i], area: stillArea(a) }), false)) : null;
   const others = clips.filter((c) => c.id !== clip.id);
+  const objects = clip.objects || [];
   const importLut = async (file) => {
     if (!file) return;
     setBusy(true);
@@ -482,8 +511,27 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
           <div class="row between"><span class="t-small">${SHAPE_NAME[m.shape]}${m.shape === "path" ? ` (${m.points.length} points)` : ""}</span><span class="row" style="gap:6px">
             ${i > 0 && html`<select class="input sm" id=${"mask-mode-" + i} value=${m.mode || "add"} onChange=${(e) => setMask(i)({ ...m, mode: e.target.value }, true)}><option value="add">Add</option><option value="subtract">Subtract</option><option value="intersect">Intersect</option></select>`}
             <button class="btn icon sm quiet" aria-label="Remove this mask" id=${"mask-del-" + i} onClick=${() => doOp(mop(masks.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
-          <${AreaControls} idp=${"mask-" + i} a=${m} set=${setMask(i)} sl=${sl} follow=${followMask(i)} busy=${measuring} footAt=${footAt} redraw=${(at) => { setDraft([]); setRedrawing({ i, at }); setMode("path"); }} />
+          <${AreaControls} idp=${"mask-" + i} a=${m} set=${setMask(i)} sl=${sl} follow=${followMask(i)} busy=${measuring} footAt=${footAt} objects=${objects} redraw=${(at) => { setDraft([]); setRedrawing({ i, at }); setMode("path"); }} />
         </div>`) : html`<p class="t-small muted">The clip shows only inside its masks. Shapes are on the clip's picture and move with it.</p>`}
+    </div>
+
+    <div class="col" style="gap:8px" id="objects-panel">
+      <div class="row between"><b class="t-label">Tracking</b>
+        <${Btn} kind="ghost" size="xs" id="track-add" disabled=${!!tracking || objects.length >= 8 || footAt == null || clip.freeze} title="Draw a box round something at the playhead; Rendrr follows it through the clip" onClick=${() => { setTracking(null); setMode(mode === "box" ? null : "box"); }}>${mode === "box" && !tracking?.redo ? "Cancel" : "+ Track an object"}<//></div>
+      ${mode === "box" && html`<span class="t-small muted" id="track-hint">Drag a box tight round the object on the picture${tracking?.redo ? ` (tracking ${tracking.redo} again from here)` : ""}.</span>`}
+      ${tracking?.busy && html`<span class="t-small" id="track-busy">Following it through the clip…</span>`}
+      ${footAt == null && !objects.length && html`<span class="t-small muted">Move the playhead onto this clip to draw a box.</span>`}
+      ${objects.map((o, i) => html`<div key=${o.id} class="col card flat" style="gap:6px;padding:10px" data-object=${o.id}>
+        <div class="row between"><input class="input sm grow" id=${"obj-label-" + i} value=${o.label || ""} placeholder=${o.id} title="A name for it" onChange=${(e) => doOp({ op: "track_object", clipId: clip.id, id: o.id, label: e.target.value.trim().slice(0, 60) }, false)} />
+          <button class="btn icon sm quiet" aria-label="Stop tracking it" id=${"obj-del-" + i} onClick=${() => doOp({ op: "track_object", clipId: clip.id, id: o.id, remove: true }, false)}><${Icon} name="x" size="12" /></button></div>
+        <span class="t-small muted" id=${"obj-text-" + i}>Followed ${o.track[0][0].toFixed(1)}-${o.track[o.track.length - 1][0].toFixed(1)}s${o.lost?.length ? `; lost ${o.lost.map(([a, b]) => `${a.toFixed(1)}-${b.toFixed(1)}s`).join(", ")}` : ""}</span>
+        <div class="row wrap" style="gap:4px">
+          <${Btn} kind="ghost" size="xs" id=${"obj-blur-" + i} disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "blur", amount: 60, area: { shape: "rect", feather: 0.02, follow: "object", object: o.id } }]))}>Blur it<//>
+          <${Btn} kind="ghost" size="xs" id=${"obj-pixelate-" + i} disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "pixelate", amount: 40, area: { shape: "rect", follow: "object", object: o.id } }]))}>Pixelate it<//>
+          <${Btn} kind="ghost" size="xs" id=${"obj-mask-" + i} disabled=${masks.length >= 8} onClick=${() => doOp(mop([...masks, { shape: "ellipse", feather: 0.03, follow: "object", object: o.id }]))}>Mask to it<//>
+          <${Btn} kind="ghost" size="xs" id=${"obj-retrack-" + i} disabled=${!!tracking?.busy || footAt == null} title="Draw its box again at the playhead and follow it from there" onClick=${() => { setTracking({ redo: o.id }); setMode("box"); }}>Track again here<//></div>
+      </div>`)}
+      ${!objects.length && html`<p class="t-small muted">Draw a box round a face, a logo or a plate and Rendrr follows it through the clip: blur it, mask to it, or pin text to it (Text tab).</p>`}
     </div>
 
     ${clip.kind === "broll" ? (clip.under ? null : html`<${BackgroundSection} targets=${[clip]} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mattes=${mattes} broll=${true} />`)
@@ -504,7 +552,7 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
           <button class="btn icon sm quiet" aria-label="Remove" id=${"fx-del-" + i} onClick=${() => doOp(eop(effects.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
         ${e.type === "pin" ? html`<${PinCorners} i=${i} e=${e} set=${(c, now) => setEffect(i)({ ...e, corners: c }, now)} sl=${sl} />`
           : e.type !== "mirror" && html`<${OpSlider} id=${"fx-amount-" + i} label="Amount" value=${e.amount} min=${1} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => setEffect(i)({ ...e, amount: v })} ...${sl} />`}
-        ${e.area && html`<${AreaControls} idp=${"fx-" + i} a=${e.area} set=${(a, now) => setEffect(i)({ ...e, area: a }, now)} sl=${sl} follow=${followFx(i)} busy=${measuring} />`}
+        ${e.area && html`<${AreaControls} idp=${"fx-" + i} a=${e.area} set=${(a, now) => setEffect(i)({ ...e, area: a }, now)} sl=${sl} follow=${followFx(i)} busy=${measuring} objects=${objects} />`}
       </div>`)}
     </div>
 
