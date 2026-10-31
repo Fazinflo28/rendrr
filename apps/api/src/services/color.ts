@@ -1,6 +1,6 @@
 import { AppError, enqueue, getText, newRedis, type ColorSamples, type FaceSamples, type FramesJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { aspectSize, boxOnScreen, faceSkinArea, isSequence, mainVideoOf, parseCube, QUEUES, speakerCentre, speakerFaceBox, type Area, type ClipLook, type EditOp, type Focus, type Lut, type Timeline, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { aspectSize, boxOnScreen, faceSkinArea, type FaceTrack, isSequence, mainVideoOf, parseCube, QUEUES, speakerCentre, speakerFaceBox, type Area, type ClipLook, type EditOp, type Focus, type Lut, type Timeline, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { visionDetailsOf } from "./deep";
 import { QueueEvents } from "bullmq";
 
@@ -65,7 +65,9 @@ export async function withMeasurements(projectId: string, edits: EditOp[]): Prom
   const speaker = (e: EditOp) => e.op === "set_framing" && e.focus === "face" && !e.centers;
   // retouch_skin on the face (its default) for clips that have no skin area yet.
   const skin = (e: EditOp) => e.op === "retouch_skin" && !e.off && !e.faceAreas && (e.area === "face" || e.area === undefined);
-  if (!edits.some((e) => (e.op === "match_color" && !e.measured) || faces(e) || speaker(e) || skin(e))) return edits;
+  // Phase 3: masks and effect areas that follow the face.
+  const follow = (e: EditOp) => (e.op === "set_masks" || e.op === "set_effects") && !e.faceTracks && (e.op === "set_masks" ? e.masks : e.effects.map((x) => x.area)).some((a) => a?.follow === "face");
+  if (!edits.some((e) => (e.op === "match_color" && !e.measured) || faces(e) || speaker(e) || skin(e) || follow(e))) return edits;
   const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timeline: true, aspect: true } });
   const tl = p.timeline as unknown as Timeline;
   const out: EditOp[] = [];
@@ -76,6 +78,12 @@ export async function withMeasurements(projectId: string, edits: EditOp[]): Prom
       const v1 = tl.tracks.v1 as unknown as V1[];
       const ids = e.clipIds ?? v1.filter((c) => (c.sourceVideoId || main) === main).map((c) => c.id);
       out.push({ ...e, centers: await speakerCentres(v1.filter((c) => ids.includes(c.id)).map((c) => ({ id: c.id, videoId: c.sourceVideoId || main, srcIn: c.sourceIn, srcOut: c.freeze ? c.sourceIn + 0.04 : c.sourceOut, rotate: c.rotate ?? 0 }))) });
+    }
+    else if ((e.op === "set_masks" || e.op === "set_effects") && follow(e)) {
+      // The V1 clips it names (b-roll keeps the shape still: no face measured there).
+      const v1 = tl.tracks.v1 as unknown as V1[], main = mainVideoOf(tl);
+      const ids = new Set(e.clipIds ?? (e.clipId ? [e.clipId] : e.video ? v1.filter((c) => (c.sourceVideoId || main) === (e.video === "main" ? main : e.video)).map((c) => c.id) : e.all ? v1.map((c) => c.id) : []));
+      out.push({ ...e, faceTracks: await faceTracks(v1.filter((c) => ids.has(c.id)), main, p.aspect) });
     }
     else if (e.op === "retouch_skin" && skin(e)) {
       const v1 = tl.tracks.v1 as unknown as V1[];
@@ -140,6 +148,37 @@ export async function skinFaceAreas(clips: V1[], main: string, aspect: string): 
     const box = v ? speakerFaceBox(v.d, c.sourceIn - pad, to + pad) : null;
     const onScreen = box && v ? boxOnScreen(box, v.turned, v.d.size, W, H, { rotate: c.rotate ?? 0, framing: { scale: 1, x: 0, y: 0, focus: c.framing?.focus ?? undefined } }) : null;
     out[c.id] = onScreen ? faceSkinArea(onScreen) : null;
+  }
+  return out;
+}
+
+/**
+ * Phase 3 (masks that follow the face): each clip's face over it, every 0.1 s of its footage, as the render places it
+ * ([footage second, x0, y0, x1, y1], shares of the frame), smoothed over three samples (YuNet's box jitters a little).
+ * Null: no face there, or no face measurements for that video yet.
+ */
+export async function faceTracks(clips: V1[], main: string, aspect: string): Promise<Record<string, FaceTrack | null>> {
+  const ids = Array.from(new Set(clips.map((c) => c.sourceVideoId || main)));
+  const rows = await prisma.footageAnalysis.findMany({ where: { videoId: { in: ids } }, select: { videoId: true, vision: true } });
+  const vis = new Map<string, { d: VisionDetails; turned: number }>();
+  for (const r of rows) {
+    const v = r.vision as unknown as VisionSummary | null;
+    const d = v ? await visionDetailsOf(v).catch(() => null) : null;
+    if (d) vis.set(r.videoId, { d, turned: v!.turned ?? 0 });
+  }
+  const { width: W, height: H } = aspectSize(aspect, 1080);
+  const r4 = (x: number) => Math.round(x * 10000) / 10000;
+  const out: Record<string, FaceTrack | null> = {};
+  for (const c of clips) {
+    const v = vis.get(c.sourceVideoId || main);
+    if (!v) { out[c.id] = null; continue; }
+    const to = c.freeze ? c.sourceIn + 0.04 : c.sourceOut, raw: FaceTrack = [];
+    for (let t = c.sourceIn; t <= to + 1e-6; t = Math.round((t + 0.1) * 1000) / 1000) {
+      const box = speakerFaceBox(v.d, t - 0.15, t + 0.15);
+      const s = box ? boxOnScreen(box, v.turned, v.d.size, W, H, { rotate: c.rotate ?? 0, framing: { scale: 1, x: 0, y: 0, focus: c.framing?.focus ?? undefined } }) : null;
+      if (s) raw.push([Math.round(t * 1000) / 1000, s[0], s[1], s[2], s[3]]);
+    }
+    out[c.id] = raw.length ? raw.map((p, i) => { const n = [raw[i - 1], p, raw[i + 1]].filter(Boolean); return [p[0], ...[1, 2, 3, 4].map((k) => r4(n.reduce((a, q) => a + q[k], 0) / n.length))] as FaceTrack[number]; }) : null;
   }
   return out;
 }

@@ -13,6 +13,7 @@ import { COVER_SIZE, cpuBudget, filterThreads, frameAt, graphicCover, JobError, 
 import { cachedAsset, cachedCopy } from "../lib/assets";
 import { renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
+import { writeMoving } from "../lib/moving";
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
 import { measureSound } from "../lib/sound";
@@ -193,7 +194,8 @@ export async function renderJob(ctx: Ctx) {
     // border, and the background's colour or gradient).
     for (const [name, spec] of Object.entries(plan.lookFiles ?? {})) {
       const p = join(ctx.dir, `look-${name}`);
-      await writeFile(p, lookFileData(spec, plan, luts));
+      if (spec.kind === "moving") await writeMoving(spec, plan, p, signal);
+      else await writeFile(p, lookFileData(spec, plan, luts));
       files.looks![name] = p;
     }
     // remove_background: the person's matte, made once per block of footage and kept (the first render waits for it).

@@ -16,7 +16,7 @@ import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDL
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { libraryItem, libraryParams } from "./library";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
-import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
+import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, restoreSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
@@ -164,9 +164,11 @@ const EDIT_OPS = [
   z.object({ op: z.literal("match_color"), clipIds: z.array(clipId).min(1).max(200), to: clipId, measured: z.record(z.object({ w: z.number().int().min(1).max(512), h: z.number().int().min(1).max(512), rgb: z.string().max(2_000_000) })).optional() }),
   // Chroma key: color (pick it from the frame), similarity, blend, spill; off removes the key.
   z.object({ op: z.literal("set_key"), ...lookTargets, color: ChromaKeySchema.shape.color.optional(), similarity: ChromaKeySchema.shape.similarity.optional(), blend: ChromaKeySchema.shape.blend.optional(), spill: ChromaKeySchema.shape.spill.optional(), off: z.boolean().optional() }),
-  // A clip's masks (replaces them; [] removes them) and its blur/pixelate effects (same).
-  z.object({ op: z.literal("set_masks"), ...lookTargets, masks: z.array(MaskSchema).max(8) }),
-  z.object({ op: z.literal("set_effects"), ...lookTargets, effects: z.array(EffectSchema).max(4) }),
+  // A clip's masks (replaces them; [] removes them) and its blur/pixelate/sharpen/darken effects (same). Phase 3: a rect
+  // or ellipse moves with keys, or follows the face (follow "face": the server measures each clip's face into faceTracks,
+  // [footage second, x0, y0, x1, y1] on screen, and the shape gets keys from them).
+  z.object({ op: z.literal("set_masks"), ...lookTargets, masks: z.array(MaskSchema).max(8), faceTracks: FaceTracksSchema.optional() }),
+  z.object({ op: z.literal("set_effects"), ...lookTargets, effects: z.array(EffectSchema).max(4), faceTracks: FaceTracksSchema.optional() }),
   // Skin retouch (smooth, blemishes, even, brighten 0-100; fields left out keep their value, or the natural defaults).
   // Default clips: every V1 clip. area: "face" (the default: each clip's face, forehead to neck, from the faces Rendrr
   // measured into faceAreas; a clip with no face measured gets the whole picture), "frame", or a shape. off removes it.
@@ -1137,13 +1139,17 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "set_masks": {
       const ids = lookIds(tl, op);
-      const next = mapLook(tl, ids, (c) => { const { masks: _m, ...rest } = c; return (op.masks.length ? { ...rest, masks: op.masks } : rest) as typeof c; });
-      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.masks.length ? `masks ${masksText(op.masks)}` : "no masks"}` };
+      const fl = following(op.faceTracks);
+      const next = mapLook(tl, ids, (c) => { const { masks: _m, ...rest } = c; return (op.masks.length ? { ...rest, masks: op.masks.map((m) => fl.area(m, c.id)) } : rest) as typeof c; });
+      const ms = (lookClip(next, ids[0]).clip.masks ?? []) as Mask[];
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.masks.length ? `masks ${masksText(ms)}` : "no masks"}${fl.note(ids)}` };
     }
     case "set_effects": {
       const ids = lookIds(tl, op);
-      const next = mapLook(tl, ids, (c) => { const { effects: _e, ...rest } = c; return (op.effects.length ? { ...rest, effects: op.effects } : rest) as typeof c; });
-      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.effects.length ? effectsText(op.effects) : "no effects"}` };
+      const fl = following(op.faceTracks);
+      const next = mapLook(tl, ids, (c) => { const { effects: _e, ...rest } = c; return (op.effects.length ? { ...rest, effects: op.effects.map((e) => (e.area ? { ...e, area: fl.area(e.area, c.id) } : e)) } : rest) as typeof c; });
+      const es = (lookClip(next, ids[0]).clip.effects ?? []) as Effect[];
+      return { snap: { ...snap, timeline: next }, summary: `${idsText(tl, ids)}: ${op.effects.length ? effectsText(es) : "no effects"}${fl.note(ids)}` };
     }
     case "retouch_skin": {
       const ids = op.clipId || op.clipIds || op.all || op.video ? lookIds(tl, op) : lookIds(tl, { all: true });
@@ -1340,6 +1346,33 @@ const keyText = (keys: Key[]) => {
   const props = (["x", "y", "scale", "rotation", "opacity"] as const).filter((p) => keys.some((k) => k[p] != null));
   return `${keys.length} ${keys.length === 1 ? "keyframe" : "keyframes"} (${props.join(", ") || "no values"}) at ${keys.map((k) => k.t.toFixed(2)).join(", ")}s`;
 };
+
+/**
+ * Phase 3: shapes that follow the face (follow "face"), given each clip's face measured over it (faceTracks, from the
+ * server): the shape gets keys from its clip's face; a clip with no face measured keeps the shape still (said once).
+ * Without faceTracks a shape that already has its keys keeps them.
+ */
+function following(tracks: Record<string, FaceTrack | null> | undefined) {
+  const faceless = new Set<string>();
+  return {
+    area: <A extends Area>(a: A, clipId: string): A => {
+      if (a.follow !== "face") return a;
+      if (!tracks) {
+        if (a.keys?.length) return a;
+        throw new EditError("follow \"face\" needs the faces measured: send it through apply_edits, which measures them (or send the shape's keys).");
+      }
+      const tr = tracks[clipId];
+      if (!tr?.length) {
+        // No face there: the shape stays still, where it was (or, sent without a box, in the middle).
+        faceless.add(clipId);
+        const { follow: _f, keys: _k, ...still } = a;
+        return (still.x == null || still.y == null || still.w == null || still.h == null ? { ...still, x: 0.3, y: 0.15, w: 0.4, h: 0.6 } : still) as A;
+      }
+      return followFace(a, tr) as A;
+    },
+    note: (ids: string[]) => (faceless.size ? `; no face measured on ${faceless.size === ids.length ? "them" : Array.from(faceless).slice(0, 8).join(", ")}: the shape stays where it is there` : ""),
+  };
+}
 
 /**
  * Phase 2b: what shows inside a text layer's letters after an op (add_text, set_text): its own colour, a library video

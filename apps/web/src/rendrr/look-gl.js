@@ -122,6 +122,9 @@ void main() {
   o = vec4(acc / ws, texture(pic, fboUV(q)).a);
 }`,
   // Sharpen: x + k (x - blur(x)), the blur the render's binomial kernel (n 3 or 5, sharpenKernel), edges clamped.
+  // Darken (Phase 3): the colour times k, as the render's colorchannelmixer.
+  dark: `uniform sampler2D pic; uniform float k;
+void main() { vec2 q = img(); vec4 c = texture(pic, fboUV(q)); o = vec4(c.rgb * k, c.a); }`,
   sharp: `uniform sampler2D pic; uniform float k; uniform float n;
 void main() {
   vec2 q = img();
@@ -230,7 +233,8 @@ export function createLookRenderer(canvas) {
   return {
     /**
      * Draws the video's current frame. spec: { W, H, rotate, fitY, focus (a framing's, fitCrop), lut: {id, n, data} | null, key: {rgb, sim, blend,
-     * spill, blue} | null, mask: {key, px} | null, effects: [{type, px, amount, area: {key, px} | null}] }. matte: the
+     * spill, blue} | null, mask: {key, px, w?, h?} | null, effects: [{type, px, amount, area: {key, px, w?, h?} | null}] } (a picture
+     * smaller than the frame, w x h, is stretched over it: a moving mask is drawn small each frame). matte: the
      * person's matte as a video element at the same footage time ({ el, edge, soft, invert }), or null.
      */
     draw(video, spec, matte = null) {
@@ -261,7 +265,7 @@ export function createLookRenderer(canvas) {
         use("skin", { hasArea: !!spec.skin.area, k: W / p.ww, tone: [T.hue, T.hueFull, T.hueSoft, T.strength], sat: [...T.sat], luma: [T.lumaFloor, T.lumaSoft],
           sigS: p.smooth ? p.smooth.sigmaS : 0, sigR: p.smooth ? p.smooth.sigmaR : 0.1, fillR: p.blemishes ? p.blemishes.fill * 1.5 : 0, band: p.blemishes ? [p.blemishes.r1, p.blemishes.r2, p.blemishes.r3, p.blemishes.r4] : [0, 1, 1, 2],
           evSig: p.even ? p.even.sigma : 0, evLim: p.even ? p.even.limit : 1, gam: p.brighten ? p.brighten.gamma : 1 },
-          [["pic", fit.t], ["area", spec.skin.area ? grey(spec.skin.area.key, spec.skin.area.px, W, H) : src]]);
+          [["pic", fit.t], ["area", spec.skin.area ? grey(spec.skin.area.key, spec.skin.area.px, spec.skin.area.w ?? W, spec.skin.area.h ?? H) : src]]);
         run(skinT); fitted = skinT;
       }
       const k = spec.key;
@@ -274,6 +278,8 @@ export function createLookRenderer(canvas) {
           const radius = Math.min(200, Math.ceil(e.px * 3));
           use("blur", { dir: [1, 0], sigma: e.px, radius }, [["pic", buf[cur].t]]); run(buf[a]);
           use("blur", { dir: [0, 1], sigma: e.px, radius }, [["pic", buf[a].t]]); run(buf[b]);
+        } else if (e.type === "darken") {
+          use("dark", { k: 1 - e.amount / 100 }, [["pic", buf[cur].t]]); run(buf[b]);
         } else if (e.type === "sharpen") {
           use("sharp", { k: Math.round(e.amount * 2) / 100, n: e.px }, [["pic", buf[cur].t]]); run(buf[b]);
         } else {
@@ -283,7 +289,7 @@ export function createLookRenderer(canvas) {
           use("pxshow", { B, blocks }, [["pic", buf[cur].t], ["small", small.t]]); run(buf[b]);
         }
         if (e.area) {
-          use("mix", {}, [["base", buf[cur].t], ["fx", buf[b].t], ["area", grey(e.area.key, e.area.px, W, H)]]); run(buf[a]);
+          use("mix", {}, [["base", buf[cur].t], ["fx", buf[b].t], ["area", grey(e.area.key, e.area.px, e.area.w ?? W, e.area.h ?? H)]]); run(buf[a]);
           cur = a;
         } else cur = b;
       }
@@ -302,7 +308,7 @@ export function createLookRenderer(canvas) {
       // edge -20..20 moves the cut's middle (out: lower), soft 0-100 widens it; as the render's lut and blur do, near enough.
       const mw = 0.04 + 0.005 * (matte?.soft ?? 20), mc = 0.5 - 0.02 * (matte?.edge ?? 0);
       use("out", { hasMask: !!spec.mask, hasMat: !!mm, mfx: [mc - mw / 2, mc + mw / 2, matte?.invert ? 1 : 0] },
-        [["pic", buf[cur].t], ["mask", spec.mask ? grey(spec.mask.key, spec.mask.px, W, H) : src], ["mat", mm && mfit ? mfit.t : src]]);
+        [["pic", buf[cur].t], ["mask", spec.mask ? grey(spec.mask.key, spec.mask.px, spec.mask.w ?? W, spec.mask.h ?? H) : src], ["mat", mm && mfit ? mfit.t : src]]);
       gl.clearColor(0, 0, 0, 0); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.clear(gl.COLOR_BUFFER_BIT);
       run(null);
       for (const [key, t] of pics) if (!used.has(key)) { gl.deleteTexture(t); pics.delete(key); }

@@ -357,6 +357,16 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 3: masks that move and follow the face (31 October)
+
+| Question | Decision |
+|---|---|
+| How a shape moves | Keys on the box (at: the clip's footage second, x, y, w, h), a straight line between them. Footage time, not edit time: a cut or a trim leaves the shape on the same part of the picture. Rect and ellipse only; a path keeps its points. |
+| Following the face | follow "face": the server measures the speaker's face every 0.1 s over the clip (the 10 fps face tracks, smoothed over three samples, placed as the render fits the clip) and the op turns that into keys. The shape keeps its place and size against the face where it is first seen; sent without a box it is an ellipse round the face (the skin area's shape). Keys are thinned where a straight line is within 0.4% of the frame (Douglas-Peucker), at most 3,000. A clip with no face keeps the shape still and the result says so. |
+| How the render draws it | A moving shape is a small (at most 480 wide) lossless FFV1 grey video in footage time, written by the worker; the graph shifts it to its footage time and puts it through the segment's own trim and speed, as the picture, then scales it to the frame. A still one stays a .pgm. A reversed clip holds the shape where it is at the clip's start (the plan says so). |
+| Darken | colorchannelmixer by 1 - amount%; the player's "dark" pass is the same multiply. A spotlight is darken outside an ellipse that follows the face (+ Spotlight in the Color tab: 55%, feather 8%). |
+| The editor | The player draws a moving shape again at each footage moment, small (320 wide), stretched over the frame as the render scales its video. |
+
 ## Premiere parity, phase 2b: video inside text (30 October, night)
 
 | Question | Decision |

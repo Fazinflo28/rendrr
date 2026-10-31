@@ -249,6 +249,8 @@ export const api: any = {
   /** remove_background: the links of a video's matte blocks over footage from..to (null: still being made). */
   matte: (projectId: string, videoId: string, from: number, to: number, rotate = 0) => get(`/projects/${enc(projectId)}/matte?video=${enc(videoId)}&from=${from}&to=${to}&rotate=${rotate}`) as Promise<{ turn: number; block: number; blocks: Record<string, string | null> }>,
   skinAreas: (projectId: string, clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number; focus: { x: number; y: number } | null }[], aspect?: string) => post(`/projects/${enc(projectId)}/skin-areas`, { clips, aspect }) as Promise<{ areas: Record<string, { shape: "ellipse"; x: number; y: number; w: number; h: number; feather?: number } | null> }>,
+  // Phase 3: each clip's face over it ([footage second, x0, y0, x1, y1] on screen), for a shape that follows the face.
+  faceTracks: (projectId: string, clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number; focus: { x: number; y: number } | null }[], aspect?: string) => post(`/projects/${enc(projectId)}/face-tracks`, { clips, aspect }) as Promise<{ tracks: Record<string, [number, number, number, number, number][] | null> }>,
   speakerCentres: (projectId: string, clips: { id: string; videoId: string; srcIn: number; srcOut: number; rotate: number }[]) => post(`/projects/${enc(projectId)}/speaker`, { clips }) as Promise<{ centers: Record<string, { x: number; y: number } | null> }>,
   /** Live changes to a project (AI edits). Returns a function that stops listening. */
   watchProject: (projectId: string, onChange: (msg: any) => void) => {

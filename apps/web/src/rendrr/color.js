@@ -6,7 +6,7 @@ import { useState, useEffect, useRef, useMemo, html, Btn, Icon } from "./ui";
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
 import { createLookRenderer } from "./look-gl";
-import { areaPicture, buildLut, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, LUT_SIZE, maskPicture, parseCube, SKIN_DEFAULTS, spillType, SUBJECT_DEFAULTS } from "@rendrr/shared";
+import { areaAt, areaPicture, buildLut, moving, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, LUT_SIZE, maskPicture, parseCube, SKIN_DEFAULTS, spillType, SUBJECT_DEFAULTS } from "@rendrr/shared";
 
 // ---------------------------------------------------------------------------------------------
 // Imported LUTs: their numbers, loaded once per page.
@@ -42,9 +42,35 @@ export function lookSpec(look, W, H, luts = {}) {
     effects: (look?.effects || []).map((e) => ({ type: e.type, px: e.px, amount: e.amount, area: e.area ? { key: hashOf([e.area, W, H]), px: areaPicture(e.area, W, H) } : null })),
     skin: look?.skin ? { p: look.skin.p, area: look.skin.skin.area ? { key: hashOf([look.skin.skin.area, W, H]), px: areaPicture(look.skin.skin.area, W, H) } : null } : null,
   };
+  // Phase 3: masks and areas with keys are drawn again at each footage moment (lookSpecAt).
+  spec.moving = !!look && [...(look.masks || []), ...(look.effects || []).map((e) => e.area), look.skin?.skin.area].some((a) => moving(a));
+  spec.look = look;
   specs.set(id, spec);
   if (specs.size > 40) specs.delete(specs.keys().next().value);
   return spec;
+}
+
+/**
+ * Phase 3: the spec at footage second t: its moving masks and areas where their keys put them then, drawn small (at
+ * most 320 wide; the shader stretches them over the frame, as the render scales its mask video). The last few are kept.
+ */
+const atCache = new Map();
+export function lookSpecAt(spec, t) {
+  if (!spec.moving) return spec;
+  const look = spec.look, sw = Math.min(spec.W, 320), sh = Math.max(2, Math.round((spec.H * sw) / spec.W));
+  const masks = (look.masks || []).map((m) => areaAt(m, t)), areas = (look.effects || []).map((e) => (e.area ? areaAt(e.area, t) : null)), sa = look.skin?.skin.area ? areaAt(look.skin.skin.area, t) : null;
+  const key = hashOf([spec.id, masks, areas, sa]);
+  if (atCache.has(key)) return atCache.get(key);
+  const pic = (px, k) => ({ key: k, px, w: sw, h: sh });
+  const out = {
+    ...spec,
+    mask: masks.length ? pic(maskPicture(masks, sw, sh), hashOf([key, "m"])) : spec.mask,
+    effects: spec.effects.map((e, i) => (areas[i] ? { ...e, area: pic(areaPicture(areas[i], sw, sh), hashOf([key, "e", i])) } : e)),
+    skin: spec.skin && sa ? { ...spec.skin, area: pic(areaPicture(sa, sw, sh), hashOf([key, "s"])) } : spec.skin,
+  };
+  atCache.set(key, out);
+  if (atCache.size > 8) atCache.delete(atCache.keys().next().value);
+  return out;
 }
 
 /**
@@ -91,7 +117,7 @@ export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, focus
         const mt = matteAt(s);
         const k = `${el.currentTime.toFixed(4)}|${s.id}|${s.rotate}|${s.fitY}|${s.focus ? s.focus.x + "," + s.focus.y : ""}|${mt ? `${mv.currentTime.toFixed(4)},${mt.edge},${mt.soft},${mt.invert}` : ""}`;
         if (dirty || k !== last || !el.paused) {
-          try { r.draw(el, s, mt); cv.current.dataset.drawn = String((+cv.current.dataset.drawn || 0) + 1); if (mt) cv.current.dataset.matte = mv.dataset.k; } catch (e) { console.warn(e); }
+          try { r.draw(el, lookSpecAt(s, el.currentTime), mt); cv.current.dataset.drawn = String((+cv.current.dataset.drawn || 0) + 1); if (mt) cv.current.dataset.matte = mv.dataset.k; } catch (e) { console.warn(e); }
           last = k; dirty = false;
         }
       }
@@ -180,10 +206,18 @@ const sgn = (v, d = 0) => (v > 0 ? "+" : "") + (d ? v.toFixed(d) : Math.round(v)
 const BOX = (shape) => ({ shape, x: 0.25, y: 0.2, w: 0.5, h: 0.6 });
 const SHAPE_NAME = { rect: "Rectangle", ellipse: "Ellipse", path: "Path" };
 
-/** Sliders for a shape's box and feather, and its invert box (masks and effect areas). */
-function AreaControls({ idp, a, set, sl }) {
+/** A shape held still where it is now (its keys and any face it followed dropped). */
+const stillArea = ({ keys: _k, follow: _f, ...a }) => a;
+
+/** Sliders for a shape's box and feather, and its invert box (masks and effect areas). Phase 3: follow(a, on) makes a
+ *  rect or ellipse follow the face (V1 clips; null elsewhere); a shape that moves says so and can be held still. */
+function AreaControls({ idp, a, set, sl, follow, busy }) {
+  const mv = moving(a), placed = a.shape !== "path" && !mv;
   return html`<div class="col" style="gap:6px">
-    ${a.shape !== "path" && html`<div class="row" style="gap:8px">
+    ${a.shape !== "path" && follow && html`<label class="t-small row" style="gap:6px"><input type="checkbox" id=${idp + "-follow"} disabled=${busy} checked=${a.follow === "face"} onChange=${(e) => follow(a, e.target.checked)} />Follow the face${busy ? " (measuring…)" : ""}</label>`}
+    ${mv && html`<div class="row between" id=${idp + "-moving"}><span class="t-small muted">${a.follow === "face" ? `Follows the face (${a.keys.length} keys)` : `Moves (${a.keys.length} keys, ${a.keys[0].at.toFixed(1)}-${a.keys[a.keys.length - 1].at.toFixed(1)}s)`}</span>
+      <${Btn} kind="ghost" size="xs" id=${idp + "-still"} onClick=${() => set(stillArea(a), true)}>Hold still<//></div>`}
+    ${placed && html`<div class="row" style="gap:8px">
       <div class="grow"><${OpSlider} id=${idp + "-x"} label="Left" value=${a.x} min=${-0.5} max=${1} step=${0.01} show=${pct} opFor=${(v) => set({ ...a, x: v })} ...${sl} /></div>
       <div class="grow"><${OpSlider} id=${idp + "-y"} label="Top" value=${a.y} min=${-0.5} max=${1} step=${0.01} show=${pct} opFor=${(v) => set({ ...a, y: v })} ...${sl} /></div></div>
     <div class="row" style="gap:8px">
@@ -198,6 +232,7 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
   const [ch, setCh] = useState("master");
   const [ref, setRef] = useState("");
   const [busy, setBusy] = useState(false);
+  const [measuring, setMeasuring] = useState(false);
   const fileRef = useRef(null);
   if (!clip || !(track === "v1" || track === "a1" || (track === "v2" && clip.kind === "broll"))) {
     return html`<${WholeEditColor} clips=${clips} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} lutList=${lutList} reloadLuts=${reloadLuts} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} mattes=${mattes} />`;
@@ -212,6 +247,18 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
   const eop = (es) => ({ op: "set_effects", clipId: clip.id, effects: es });
   const setMask = (i) => (m, now) => { const op = mop(masks.map((x, j) => (j === i ? m : x))); if (now) doOp(op, false); return op; };
   const setEffect = (i) => (e, now) => { const op = eop(effects.map((x, j) => (j === i ? e : x))); if (now) doOp(op, false); return op; };
+  // Phase 3: a shape that follows the face gets its keys from this clip's face, measured by the server first.
+  const withFaces = async (op) => {
+    setMeasuring(true);
+    try {
+      const { tracks } = await api.faceTracks(projectId, [{ id: clip.id, videoId: clip.sourceVideoId || mainVideo, srcIn: clip.sourceIn, srcOut: clip.freeze ? clip.sourceIn + 0.04 : clip.sourceOut, rotate: clip.rotate || 0, focus: clip.framing?.focus ?? null }], aspect);
+      if (!tracks[clip.id]) toast("No face measured on this clip: the shape stays where it is.", { icon: "alert" });
+      doOp({ ...op, faceTracks: tracks }, false);
+    } catch (e) { toast(e.message); } finally { setMeasuring(false); }
+  };
+  const canFollow = track === "v1";
+  const followMask = (i) => canFollow ? (m, on) => (on ? withFaces(mop(masks.map((x, j) => (j === i ? { ...stillArea(m), follow: "face" } : x)))) : doOp(setMask(i)(stillArea(m)), false)) : null;
+  const followFx = (i) => canFollow ? (a, on) => (on ? withFaces(eop(effects.map((x, j) => (j === i ? { ...x, area: { ...stillArea(a), follow: "face" } } : x)))) : doOp(setEffect(i)({ ...effects[i], area: stillArea(a) }), false)) : null;
   const others = clips.filter((c) => c.id !== clip.id);
   const importLut = async (file) => {
     if (!file) return;
@@ -289,29 +336,31 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
           <div class="row between"><span class="t-small">${SHAPE_NAME[m.shape]}${m.shape === "path" ? ` (${m.points.length} points)` : ""}</span><span class="row" style="gap:6px">
             ${i > 0 && html`<select class="input sm" id=${"mask-mode-" + i} value=${m.mode || "add"} onChange=${(e) => setMask(i)({ ...m, mode: e.target.value }, true)}><option value="add">Add</option><option value="subtract">Subtract</option><option value="intersect">Intersect</option></select>`}
             <button class="btn icon sm quiet" aria-label="Remove this mask" id=${"mask-del-" + i} onClick=${() => doOp(mop(masks.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
-          <${AreaControls} idp=${"mask-" + i} a=${m} set=${setMask(i)} sl=${sl} />
+          <${AreaControls} idp=${"mask-" + i} a=${m} set=${setMask(i)} sl=${sl} follow=${followMask(i)} busy=${measuring} />
         </div>`) : html`<p class="t-small muted">The clip shows only inside its masks. Shapes are on the clip's picture and move with it.</p>`}
     </div>
 
     ${track === "v1" || clip.sourceIn != null ? html`<${BackgroundSection} targets=${[clip]} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mattes=${mattes} />` : null}
     ${track === "v1" || clip.sourceIn != null ? html`<${SkinSection} targets=${[clip]} projectId=${projectId} mainVideo=${mainVideo} aspect=${aspect} doOp=${doOp} H=${H} liveOp=${liveOp} toast=${toast} />` : null}
     <div class="col" style="gap:8px" id="effects-panel">
-      <div class="row between"><b class="t-label">Blur, pixelate, sharpen</b><span class="row" style="gap:4px">
+      <div class="row between"><b class="t-label">Blur, pixelate, sharpen, darken</b><span class="row wrap" style="gap:4px;justify-content:flex-end">
         <${Btn} kind="ghost" size="xs" id="fx-add-blur" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "blur", amount: 30 }]))}>+ Blur<//>
         <${Btn} kind="ghost" size="xs" id="fx-add-pixelate" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "pixelate", amount: 20 }]))}>+ Pixelate<//>
-        <${Btn} kind="ghost" size="xs" id="fx-add-sharpen" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "sharpen", amount: 25 }]))}>+ Sharpen<//></span></div>
+        <${Btn} kind="ghost" size="xs" id="fx-add-sharpen" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "sharpen", amount: 25 }]))}>+ Sharpen<//>
+        <${Btn} kind="ghost" size="xs" id="fx-add-darken" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "darken", amount: 40 }]))}>+ Darken<//>
+        ${canFollow && html`<${Btn} kind="ghost" size="xs" id="fx-add-spotlight" disabled=${effects.length >= 4 || measuring} title="Darkens everything but the face, following it" onClick=${() => withFaces(eop([...effects, { type: "darken", amount: 55, area: { shape: "ellipse", invert: true, feather: 0.08, follow: "face" } }]))}>+ Spotlight<//>`}</span></div>
       ${effects.map((e, i) => html`<div key=${i} class="col card flat" style="gap:6px;padding:10px" data-effect=${i}>
-        <div class="row between"><span class="t-small">${{ blur: "Blur", pixelate: "Pixelate", sharpen: "Sharpen" }[e.type]}</span>
+        <div class="row between"><span class="t-small">${{ blur: "Blur", pixelate: "Pixelate", sharpen: "Sharpen", darken: "Darken" }[e.type]}</span>
           <span class="row" style="gap:6px"><select class="input sm" id=${"fx-area-" + i} value=${e.area?.shape || "all"} onChange=${(ev) => setEffect(i)({ ...e, area: ev.target.value === "all" ? undefined : { ...BOX(ev.target.value), w: 0.3, h: 0.3, x: 0.35, y: 0.25 } }, true)}><option value="all">Whole picture</option><option value="rect">Rectangle</option><option value="ellipse">Ellipse</option></select>
           <button class="btn icon sm quiet" aria-label="Remove" id=${"fx-del-" + i} onClick=${() => doOp(eop(effects.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
         <${OpSlider} id=${"fx-amount-" + i} label="Amount" value=${e.amount} min=${1} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => setEffect(i)({ ...e, amount: v })} ...${sl} />
-        ${e.area && html`<${AreaControls} idp=${"fx-" + i} a=${e.area} set=${(a, now) => setEffect(i)({ ...e, area: a }, now)} sl=${sl} />`}
+        ${e.area && html`<${AreaControls} idp=${"fx-" + i} a=${e.area} set=${(a, now) => setEffect(i)({ ...e, area: a }, now)} sl=${sl} follow=${followFx(i)} busy=${measuring} />`}
       </div>`)}
     </div>
 
     ${track === "v2" && html`<label class="t-small row" style="gap:6px" id="under-row"><input type="checkbox" id="under-v1" checked=${!!clip.under} onChange=${(e) => doOp({ op: "set_under", clipId: clip.id, under: e.target.checked })} />Behind the main picture (shows where V1 is keyed, masked or framed smaller)</label>`}
     ${hdrRow(timeline, doOp)}
-    <p class="t-small muted" id="color-note">The picture here is drawn with the render's own numbers: the same LUT, key, masks, blur and sharpen.</p>
+    <p class="t-small muted" id="color-note">The picture here is drawn with the render's own numbers: the same LUT, key, masks (moving ones too), blur, sharpen and darken.</p>
   </div></div>`;
 }
 

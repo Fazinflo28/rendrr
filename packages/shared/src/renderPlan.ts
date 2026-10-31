@@ -13,7 +13,7 @@ import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr,
 import { audioSettings, type AudioMixSettings } from "./timeline";
 import { buildStyledAss, captionStyleOf, isMatted, layoutCaptions, styleText, textMatteAss, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
-import { areaPicture, buildLut, matteBlocks, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
+import { areaAt, areaPicture, buildLut, matteBlocks, moving, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean; transfer?: HdrTransfer };
@@ -94,7 +94,10 @@ export type LookOp = { grade?: Grade; lut?: string; lutHdr?: string; key?: Chrom
 export type MatteOp = { videoId: string; blocks: number[] };
 /** What a look file holds; lookFileData() writes it. shadow and border: a card's, in its framed place; gradient: what
  *  is behind V1 (a colour is a gradient from it to itself). */
+/** moving (Phase 3): masks or an area with keys, drawn over footage from..to of the clip as a grey video in footage time
+ *  (the worker writes it: movingFrames), put through the clip's own trim and speed in the graph as the picture is. */
 export type LookFile = { kind: "lut"; grade: Grade; hdr?: HdrTransfer } | { kind: "hdr"; hdr: HdrTransfer } | { kind: "mask"; masks: Mask[] } | { kind: "area"; area: Area }
+  | { kind: "moving"; masks?: Mask[]; area?: Area; from: number; to: number }
   | { kind: "shadow"; card: CardLook; framing: Framing | null } | { kind: "border"; card: CardLook; framing: Framing | null } | { kind: "gradient"; gradient: { from: string; to: string; angle?: number } } | { kind: "pattern"; pattern: Pattern };
 /** A V1 clip drawn as a card: its shadow under it and its border over it (crop and corners are in its mask). */
 export type CardOp = { shadow?: { file: string; color: string }; border?: { file: string; color: string } };
@@ -528,12 +531,13 @@ export function planRender(input: PlanInput): RenderPlan {
   const hdrVideos = new Set(parts.map((p) => p.videoId).filter((v) => infoOf(v)?.hdr || input.hdrFootage?.[v]));
   const hdrT: HdrTransfer | null = kind === "final" && (tl.export?.hdr ?? "keep") === "keep" && hdrSrc ? hdrSrc.transfer ?? "pq" : null;
   const lookFiles: Record<string, LookFile> = {};
-  const file = (spec: LookFile) => { const name = `${spec.kind}_${hashOf(spec)}.${spec.kind === "mask" || spec.kind === "area" || spec.kind === "shadow" || spec.kind === "border" ? "pgm" : spec.kind === "gradient" || spec.kind === "pattern" ? "ppm" : "cube"}`; lookFiles[name] = spec; return name; };
+  const file = (spec: LookFile) => { const name = `${spec.kind}_${hashOf(spec)}.${spec.kind === "mask" || spec.kind === "area" || spec.kind === "shadow" || spec.kind === "border" ? "pgm" : spec.kind === "gradient" || spec.kind === "pattern" ? "ppm" : spec.kind === "moving" ? "mkv" : "cube"}`; lookFiles[name] = spec; return name; };
   const hdr = hdrT ? { transfer: hdrT, lut: file({ kind: "hdr", hdr: hdrT }) } : null;
   // Phase 7: a final's codec (HDR kept is always HEVC 10-bit); previews are H.264.
   const codec: Codec = kind === "final" && (hdr || tl.export?.codec === "hevc") ? "hevc" : "h264";
   const looks: Record<string, LookOp> = {};
   const mattes: Record<string, MatteOp> = {};
+  const stillMoving = new Set<string>();
   const missingLuts = new Set<string>();
   // The person's matte: the blocks of footage the clip plays, with 2 s each side for transitions.
   const matteFor = (c: { sourceVideoId: string; sourceIn: number; sourceOut: number }) => {
@@ -542,10 +546,20 @@ export function planRender(input: PlanInput): RenderPlan {
     mattes[name] = { videoId: c.sourceVideoId, blocks };
     return name;
   };
-  const lookFor = (c: ClipLook & { id: string; cardLook?: CardLook; sourceVideoId?: string; sourceIn?: number; sourceOut?: number }) => {
+  const lookFor = (c: ClipLook & { id: string; cardLook?: CardLook; sourceVideoId?: string; sourceIn?: number; sourceOut?: number; reverse?: boolean }, range?: { from: number; to: number }) => {
     const grade = c.grade && gradeIsActive(c.grade) ? { ...c.grade } : undefined;
     if (grade?.lut && !input.luts?.[grade.lut.id]) { missingLuts.add(grade.lut.id); delete grade.lut; }
     const g = grade && gradeIsActive(grade) ? grade : undefined;
+    // Phase 3: moving masks and areas follow the clip's footage time; a reversed clip keeps them where they are at its
+    // first footage second (said in the plan).
+    const span = range ?? (c.sourceIn != null && c.sourceOut != null ? { from: c.sourceIn, to: c.sourceOut } : null);
+    const still = !span || !!c.reverse;
+    if (still && [...(c.masks ?? []), ...(c.effects ?? []).map((e) => e.area), c.skin?.area].some((a) => moving(a))) stillMoving.add(c.id);
+    const fix = <A extends Area>(a: A): A => (still && moving(a) ? areaAt(a, span?.from ?? a.keys![0].at) : a);
+    const picOf = (spec: { masks: Mask[] } | { area: Area }): string => {
+      const mv = "masks" in spec ? spec.masks.some((m) => moving(m)) : moving(spec.area);
+      return mv && span && !still ? file({ kind: "moving", ...spec, from: r3(span.from), to: r3(span.to) }) : file("masks" in spec ? { kind: "mask", masks: spec.masks.map(fix) } : { kind: "area", area: fix(spec.area) });
+    };
     // A card's crop and corners are one more mask (drawn as masks are, in the render and the player).
     const masks = masksWithCard(c.masks, c.cardLook);
     const skin = skinActive(c.skin) ? c.skin! : undefined;
@@ -554,9 +568,9 @@ export function planRender(input: PlanInput): RenderPlan {
     looks[c.id] = {
       ...(g ? { grade: g, lut: file({ kind: "lut", grade: g }), ...(hdr ? { lutHdr: file({ kind: "lut", grade: g, hdr: hdr.transfer }) } : {}) } : {}),
       ...(c.key ? { key: c.key } : {}),
-      ...(masks?.length ? { masks, mask: file({ kind: "mask", masks }) } : {}),
-      ...(c.effects?.length ? { effects: c.effects.map((e) => ({ ...e, px: effectPx(e, width, height), ...(e.area ? { file: file({ kind: "area", area: e.area }) } : {}) })) } : {}),
-      ...(skin ? { skin: { skin, p: skinParams(skin, width, height), ...(skin.area ? { file: file({ kind: "area", area: skin.area }) } : {}) } } : {}),
+      ...(masks?.length ? { masks, mask: picOf({ masks }) } : {}),
+      ...(c.effects?.length ? { effects: c.effects.map((e) => ({ ...e, px: effectPx(e, width, height), ...(e.area ? { file: picOf({ area: e.area }) } : {}) })) } : {}),
+      ...(skin ? { skin: { skin, p: skinParams(skin, width, height), ...(skin.area ? { file: picOf({ area: skin.area }) } : {}) } } : {}),
       ...(subject ? { subject } : {}),
       alpha: !!c.key || !!masks?.length || !!subject,
     };
@@ -599,7 +613,7 @@ export function planRender(input: PlanInput): RenderPlan {
     : bgIn.pattern ? { file: file({ kind: "pattern", pattern: bgIn.pattern }), text: backgroundText(bgIn) }
     : bgIn.videoId ? (input.brollSeconds?.[bgIn.videoId] ? { videoId: bgIn.videoId, seconds: input.brollSeconds[bgIn.videoId], text: backgroundText(bgIn) } : null)
     : (() => { const sg = backgroundSigma(bgIn.blur!, width, height); return { blur: sg, scale: backgroundScale(sg, width, height), text: backgroundText(bgIn) }; })();
-  for (const b of [...broll, ...under]) lookFor((tl.tracks.v2 as (V2Clip & ClipLook)[]).find((x) => x.id === b.clipId)!);
+  for (const b of [...broll, ...under]) lookFor((tl.tracks.v2 as (V2Clip & ClipLook)[]).find((x) => x.id === b.clipId)!, { from: b.sourceStart, to: b.sourceStart + (b.end - b.start) });
   const sound = view.sound.map((x) => ({ ...x, start: r3(x.start), end: r3(x.end) }));
   const sources = Array.from(new Set([main, ...parts.map((p) => p.videoId), ...sound.map((x) => x.videoId)])).filter((v) => parts.some((p) => p.videoId === v) || sound.some((x) => x.videoId === v));
   const videos = Object.fromEntries(sources.map((v) => [v, { hasAudio: infoOf(v)!.hasAudio, hdr: !!infoOf(v)!.hdr, ...(infoOf(v)!.hdr ? { transfer: infoOf(v)!.transfer ?? "pq" } : {}) }]));
@@ -622,6 +636,7 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
     ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr", background?.text),
+    ...(stillMoving.size ? [`Moving masks: held where they are at the clip's start on ${Array.from(stillMoving).slice(0, 4).join(", ")} (reversed)`] : []),
     ...(Object.keys(cards).length || v1.some((c) => hasCard((c as { cardLook?: CardLook }).cardLook)) ? [`Cards: ${(v1 as (SeqClip & { cardLook?: CardLook })[]).filter((c) => hasCard(c.cardLook)).slice(0, 4).map((c) => `${c.id} ${cardLookText(c.cardLook!)}`).join("; ")}`] : []),
     ...(background ? [`Behind V1: ${background.text}`] : bgIn?.videoId ? ["Behind V1: the background video is not in the library or not ready: black instead"] : []),
     ...(audio.some((a) => a.kind === "voice") ? [`Voice: "${voFile!.name}" plays in place of every clip's own sound, from ${r3(vo!.start)}s (${r3(voFile!.seconds)}s file, edit ${r3(total)}s${Math.abs(vo!.start + voFile!.seconds - total) > 0.05 ? `: ${vo!.start + voFile!.seconds > total ? "the file runs past the edit's end" : "the file ends before the edit"}` : ""}${vo!.editSeconds != null && Math.abs(vo!.editSeconds - total) > 0.05 ? `; the edit was ${r3(vo!.editSeconds)}s when the voice was set: a cut since then is not in the file, so it is out of sync after it` : ""})`] : []),
@@ -715,8 +730,28 @@ export function lookFileData(spec: LookFile, plan: { width: number; height: numb
   if (spec.kind === "gradient") return ppm(gradientPicture(spec.gradient, W, H), W, H);
   if (spec.kind === "pattern") return ppm(patternPicture(spec.pattern, W, H), W, H);
   if (spec.kind === "hdr") return cubeText(hdrLut(spec.hdr), undefined, "SDR into HDR");
+  if (spec.kind === "moving") throw new Error("A moving mask is a video: write it with movingFrames.");
   const lut = spec.grade.lut ? luts[spec.grade.lut.id] : null;
   return cubeText(spec.hdr ? hdrLut(spec.hdr, gradeFn(spec.grade, lut)) : buildLut(spec.grade, lut));
+}
+
+/**
+ * Phase 3: a moving look file as frames of grey (8-bit, row by row): its masks or its area where they are at each output
+ * frame's footage time, from `from` to just past `to`. At a working size (at most 480 wide; the render scales it up to
+ * the frame: a soft edge does not need every pixel). A frame like the one before it is the same array.
+ */
+export function movingFrames(spec: Extract<LookFile, { kind: "moving" }>, plan: { width: number; height: number; fps?: number }): { w: number; h: number; count: number; fps: number; frame: (i: number) => Uint8Array } {
+  const fps = plan.fps || 30, w = Math.max(2, Math.round(Math.min(plan.width, 480) / 2) * 2), h = Math.max(2, Math.round((plan.height * w) / plan.width / 2) * 2);
+  const count = Math.ceil((spec.to - spec.from) * fps) + 3;
+  let last = "", px: Uint8Array = new Uint8Array(w * h);
+  const frame = (i: number) => {
+    const t = spec.from + i / fps;
+    const now = spec.masks ? { masks: spec.masks.map((m) => areaAt(m, t)) } : { area: areaAt(spec.area!, t) };
+    const key = JSON.stringify(now);
+    if (key !== last) { px = now.masks ? maskPicture(now.masks, w, h) : areaPicture(now.area, w, h)!; last = key; }
+    return px;
+  };
+  return { w, h, count, fps, frame };
 }
 
 /**
@@ -922,8 +957,20 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
   const PF = hdr ? "yuv420p10le" : "yuv420p", PFA = hdr ? "yuva420p10le" : "yuva420p";
   const looks = plan.looks ?? {};
   const lookPath = (name: string) => { const x = files.looks?.[name]; if (!x) throw new RenderPlanError(`A colour file of this edit is missing (${name}). Render again.`); return x; };
-  /** A look picture (mask or area, .pgm) as a grey stream `frames` long. */
-  const picture = (name: string, frames: number, tag: string) => {
+  const isMovingFile = (name?: string) => !!name && plan.lookFiles?.[name]?.kind === "moving";
+  const isMovingLook = (l: LookOp) => isMovingFile(l.mask) || !!l.effects?.some((e) => isMovingFile(e.file)) || isMovingFile(l.skin?.file);
+  /**
+   * A look picture (mask or area) as a grey stream `frames` long: a still one (.pgm) repeated, or (Phase 3) a moving
+   * one read in footage time and put through `steps` (the segment's own trim and speed, as its picture), at the output
+   * size.
+   */
+  const picture = (name: string, frames: number, tag: string, steps?: string) => {
+    const spec = plan.lookFiles?.[name];
+    if (spec?.kind === "moving") {
+      inputs.push("-i", lookPath(name));
+      g.push(`[${idx++}:v]setpts=PTS+${n6(spec.from)}/TB,fps=${R},format=gray,${steps ?? `trim=end_frame=${frames}`},scale=${W}:${H}:flags=bilinear,format=gray,setsar=1,trim=end_frame=${frames}[lp${tag}]`);
+      return `lp${tag}`;
+    }
     inputs.push("-loop", "1", "-framerate", R, "-t", n3(frames / FPS + 1), "-i", lookPath(name));
     g.push(`[${idx++}:v]format=gray,setsar=1,trim=end_frame=${frames}[lp${tag}]`);
     return `lp${tag}`;
@@ -966,7 +1013,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
    * the full picture (grainextract / grainmerge), so the texture finer than the working size stays. YUV 4:4:4 out (8-bit;
    * 10-bit for HDR footage).
    */
-  const skinChain = (inp: string, so: SkinOp, dom: "sdr" | "hdr", frames: number, tag: string): string => {
+  const skinChain = (inp: string, so: SkinOp, dom: "sdr" | "hdr", frames: number, tag: string, steps?: string): string => {
     const p = so.p, t = `${tag}k`, full = p.ww === W && p.wh === H, T = SKIN_TONE;
     const deep = dom === "hdr", F = deep ? "yuv444p10le" : "yuv444p", M = deep ? 1023 : 255, mid = deep ? 512 : 128, lo = deep ? 64 : 16, span = deep ? 876 : 219;
     if (full) g.push(`[${inp}]format=${F},split=3[kx${t}][ka${t}][km${t}]`);
@@ -980,7 +1027,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     g.push(`[kmc${t}][kmy${t}]lut2=c0='x*clip((y-${T.lumaFloor})/${T.lumaSoft},0,1)*${T.strength}'[kmk${t}]`);
     g.push(`[kmk${t}]dilation=coordinates=90,erosion=coordinates=90,gblur=sigma=1,scale=${p.ww}:${p.wh}:flags=bilinear,setrange=pc[kmw${t}]`);
     let mk = `kmw${t}`;
-    if (so.file) { g.push(`[${picture(so.file, frames, "k" + t)}]scale=${p.ww}:${p.wh}:flags=area,setrange=pc[kar${t}]`); g.push(`[${mk}][kar${t}]blend=all_mode=multiply[kmx${t}]`); mk = `kmx${t}`; }
+    if (so.file) { g.push(`[${picture(so.file, frames, "k" + t, steps)}]scale=${p.ww}:${p.wh}:flags=area,setrange=pc[kar${t}]`); g.push(`[${mk}][kar${t}]blend=all_mode=multiply[kmx${t}]`); mk = `kmx${t}`; }
     g.push(`[${mk}]${deep ? "format=gray10le," : ""}split=3[kg0${t}][kg1${t}][kg2${t}];[kg0${t}][kg1${t}][kg2${t}]mergeplanes=0x001020:${F}[kmg${t}]`);
     // The retouch at the working size.
     g.push(`[ka${t}]extractplanes=y+u+v[kwy${t}][kwu${t}][kwv${t}]`);
@@ -1020,11 +1067,11 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
    * despill, the grade (lut3d), blur/pixelate mixed in by their areas (maskedmerge), the masks into the alpha. In an
    * HDR output an SDR picture goes through the SDR-into-HDR LUT (with its grade, 16-bit). dom: what [inp] holds.
    */
-  const colorChain = (input: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string): { out: string; alpha: boolean } => {
+  const colorChain = (input: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string, steps?: string): { out: string; alpha: boolean } => {
     const toHdr = !!hdr && dom === "sdr";
     if (!look && !toHdr) return { out: input, alpha: false };
     // The skin retouch first, on the picture's own YUV: the skin is found by its own colour, not the graded one.
-    const inp = look?.skin ? skinChain(input, look.skin, dom, frames, tag) : input;
+    const inp = look?.skin ? skinChain(input, look.skin, dom, frames, tag, steps) : input;
     // 16-bit RGB after the key: lut3d truncates its output, which at 8 bits would darken a grade by half a level.
     const rgbF = "gbrp16le";
     let rgb = `lc${tag}`, alpha: string | null = null;
@@ -1041,16 +1088,17 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     else if (dom === "sdr") { g.push(`[${rgb}]format=${rgbF}[ll${tag}]`); rgb = `ll${tag}`; }
     (look?.effects ?? []).forEach((e, j) => {
       const sk = e.type === "sharpen" ? sharpenKernel(e.amount, e.px) : null, km = sk ? `'${sk.m.join(" ")}'` : "";
-      const fx = e.type === "blur" ? `gblur=sigma=${e.px}:steps=4` : e.type === "pixelate" ? `pixelize=width=${e.px}:height=${e.px}:mode=avg` : `convolution=0m=${km}:1m=${km}:2m=${km}:0rdiv=1/${sk!.div}:1rdiv=1/${sk!.div}:2rdiv=1/${sk!.div}`, t2 = `${tag}_${j}`;
+      const dk = n3(1 - e.amount / 100);
+      const fx = e.type === "blur" ? `gblur=sigma=${e.px}:steps=4` : e.type === "pixelate" ? `pixelize=width=${e.px}:height=${e.px}:mode=avg` : e.type === "darken" ? `colorchannelmixer=rr=${dk}:gg=${dk}:bb=${dk}` : `convolution=0m=${km}:1m=${km}:2m=${km}:0rdiv=1/${sk!.div}:1rdiv=1/${sk!.div}:2rdiv=1/${sk!.div}`, t2 = `${tag}_${j}`;
       if (!e.file) { g.push(`[${rgb}]${fx},format=${rgbF}[le${t2}]`); rgb = `le${t2}`; return; }
       g.push(`[${rgb}]split[la${t2}][lb${t2}]`);
       g.push(`[lb${t2}]${fx},format=${rgbF}[lf${t2}]`);
-      g.push(`[${picture(e.file, frames, "e" + t2)}]format=${rgbF}[lm${t2}]`);
+      g.push(`[${picture(e.file, frames, "e" + t2, steps)}]format=${rgbF}[lm${t2}]`);
       g.push(`[la${t2}][lf${t2}][lm${t2}]maskedmerge[le${t2}]`);
       rgb = `le${t2}`;
     });
     if (look?.mask) {
-      const mk = picture(look.mask, frames, "m" + tag);
+      const mk = picture(look.mask, frames, "m" + tag, steps);
       if (alpha) { g.push(`[${alpha}][${mk}]blend=all_mode=multiply[lq${tag}]`); alpha = `lq${tag}`; } else alpha = mk;
     }
     // remove_background: the person's matte (put through the clip's own steps by drawSeg) into the alpha.
@@ -1118,7 +1166,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       const s = Math.max(start, u.start), e = Math.min(end, u.end), n = Math.max(1, Math.round((e - s) * FPS)), t = `${tag}u${j}`;
       inputs.push("-ss", n3(u.sourceStart + (s - u.start)), "-t", n3(e - s + 0.25), "-i", path);
       g.push(`[${idx++}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[ua${t}]`);
-      const c = colorChain(`ua${t}`, looks[u.clipId], "sdr", n, t);
+      const c = colorChain(`ua${t}`, looks[u.clipId], "sdr", n, t, `trim=start=${n6(u.sourceStart + (s - u.start))},setpts=PTS-STARTPTS`);
       let ov = c.out;
       if (u.keys?.length) { motionChain(g, ov, `um${t}`, u.keys, s - u.start, n, W, H, false, t, { hdr: !!hdr, fr }); ov = `um${t}`; }
       g.push(`[${ov}]settb=${TB},setpts=PTS-STARTPTS+${Math.round((s - start) * FPS)}[ub${t}]`);
@@ -1242,10 +1290,11 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       // remove_background: the matte through the same trim, speed, turn and fit (not reversed clips: they keep theirs).
       // Phase 2: a main part under a layer behind the person reads one too (plan.person.parts), kept apart.
       const personM = /^\d+$/.test(tag) ? plan.person?.parts[Number(tag)] : undefined;
+      // A stream in footage time made to follow this segment as its picture does (its trim, speed, freeze).
+      const steps = r < 0 ? undefined : r === 0 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N}`
+        : r !== 1 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(x)}${exact ? pad : ""}`;
       if ((lk?.subject || personM) && r >= 0) {
         const mt = matteIn(lk?.subject?.matte ?? personM!, x.srcIn, r === 0 ? x.srcIn + 1 / FPS : x.srcOut + 1 / FPS);
-        const steps = r === 0 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N}`
-          : r !== 1 ? `trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(x)}${exact ? pad : ""}`;
         const both = !!lk?.subject && !!personM;
         g.push(`[${mt}]${steps},${turnOf(x.rotate)}${fitFor(x.framing)},format=gray${both ? `,split[mf${tag}][mp${tag}]` : `[${lk?.subject ? "mf" : "mp"}${tag}]`}`);
         if (lk?.subject) mattesFor[tag] = `mf${tag}`;
@@ -1261,7 +1310,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       if (!lk && !hdr && !frm && !m) { g.push(`${chain},format=yuv420p[${out}]`); return; }
       if (!lk && !hdr) g.push(`${chain},format=yuv420p${blurBg ? `,split[pf${tag}][pbs${tag}]` : `[pf${tag}]`}`);
       else g.push(`${chain}${blurBg ? `,split[pc${tag}][pbs${tag}]` : `[pc${tag}]`}`);
-      const c = !lk && !hdr ? { out: `pf${tag}`, alpha: false } : colorChain(`pc${tag}`, lk, dom, N, tag);
+      const c = !lk && !hdr ? { out: `pf${tag}`, alpha: false } : colorChain(`pc${tag}`, lk, dom, N, tag, steps && `${steps},tpad=stop_mode=clone:stop=2`);
       let cur = c.out;
       // Phase 6: what shows around or through the clip is what is behind V1 (black, the background, or b-roll laid under it).
       const behind = () => (underClips.length || bg ? baseOf(x.start, N, tag, blurBg ? `pbs${tag}` : undefined, dom) : null);
@@ -1279,7 +1328,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     // One video, one look, all at normal speed and still: cut, join, then fit once (the same graph model A used).
     // Otherwise each part is drawn on its own first.
     const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
-    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject) && !Object.keys(plan.person?.parts ?? {}).length;
+    const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject || isMovingLook(l)) && !Object.keys(plan.person?.parts ?? {}).length;
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId, p.srcIn, p.srcOut)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
     const withPerson = !!plan.person?.windows.length && Object.keys(personFor).length > 0;
     const blackFrom = new Set<number>();

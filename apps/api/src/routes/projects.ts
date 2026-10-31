@@ -3,7 +3,7 @@ import { prisma, Prisma } from "@rendrr/db";
 import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { skinFaceAreas, speakerCentres } from "../services/color";
+import { faceTracks, skinFaceAreas, speakerCentres } from "../services/color";
 import { createCanvas } from "../services/canvas";
 import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
@@ -159,6 +159,17 @@ export default async function projects(app: FastifyInstance) {
     const ok = new Set(mine.map((v) => v.id));
     const areas = await skinFaceAreas(clips.filter((c) => ok.has(c.videoId)).map((c) => ({ id: c.id, sourceVideoId: c.videoId, sourceIn: c.srcIn, sourceOut: c.srcOut, rotate: c.rotate, framing: c.focus ? { focus: c.focus } : undefined })), "", aspect ?? p.aspect);
     return { areas };
+  });
+
+  // Phase 3 in the editor: each clip's face over it (the editor's own clips, saved or not), as set_masks and set_effects
+  // take it for a shape that follows the face.
+  app.post("/projects/:id/face-tracks", async (req) => {
+    const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    const { clips, aspect } = SkinAreasInput.parse(req.body);
+    const mine = await prisma.video.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.videoId))) }, userId: req.user!.id }, select: { id: true } });
+    const ok = new Set(mine.map((v) => v.id));
+    const tracks = await faceTracks(clips.filter((c) => ok.has(c.videoId)).map((c) => ({ id: c.id, sourceVideoId: c.videoId, sourceIn: c.srcIn, sourceOut: c.srcOut, rotate: c.rotate, framing: c.focus ? { focus: c.focus } : undefined })), "", aspect ?? p.aspect);
+    return { tracks };
   });
 
   // remove_background in the editor: the links of a video's matte blocks over footage from..to (null: being made).

@@ -56,6 +56,13 @@ export const SHAPES = ["rect", "ellipse", "path"] as const;
 export const MASK_MODES = ["add", "subtract", "intersect"] as const;
 const coord = z.number().min(-1).max(2);
 /**
+ * Phase 3: a rect's or an ellipse's box at a moment of its clip (`at`: the clip's own footage seconds). Between keys
+ * the box moves in a straight line; before the first and after the last it stays.
+ */
+export const AreaKeySchema = z.object({ at: z.number().min(0).max(24 * 3600), x: coord, y: coord, w: z.number().min(0.001).max(3), h: z.number().min(0.001).max(3) });
+export type AreaKey = z.infer<typeof AreaKeySchema>;
+export const MAX_AREA_KEYS = 3000;
+/**
  * A shape on the clip's picture, in shares of the frame (0,0 top left; 1,1 bottom right), before framing and
  * keyframes move the clip: rect and ellipse by their box (x, y = top left, w, h), path by its points (a polygon).
  * feather: soft edge as a share of the frame's short side; invert: the outside instead.
@@ -68,19 +75,26 @@ export const AreaSchema = z.object({
   invert: z.boolean().optional(),
   /** rect: rounded corners, as a share of the box's shorter side (0.5 = round ends). */
   radius: z.number().min(0).max(0.5).optional(),
+  /** Phase 3: the box over time (a moving rect or ellipse). follow "face": Rendrr made the keys from the speaker's face,
+   *  measured over the clip (the box keeps its place and size against the face). */
+  keys: z.array(AreaKeySchema).max(MAX_AREA_KEYS).optional(),
+  follow: z.enum(["face"]).optional(),
 }).superRefine((a, ctx) => {
+  if (a.shape === "path" && (a.keys?.length || a.follow)) ctx.addIssue({ code: "custom", message: "keys and follow move a rect or an ellipse, not a path" });
   if (a.shape === "path" && !a.points) ctx.addIssue({ code: "custom", message: "a path needs points (at least 3)" });
-  if (a.shape !== "path" && (a.x == null || a.y == null || a.w == null || a.h == null)) ctx.addIssue({ code: "custom", message: `a ${a.shape} needs x, y, w and h` });
+  // A shape that follows the face may leave its box out: it is an ellipse round the face (forehead to neck).
+  if (a.shape !== "path" && a.follow !== "face" && (a.x == null || a.y == null || a.w == null || a.h == null)) ctx.addIssue({ code: "custom", message: `a ${a.shape} needs x, y, w and h` });
 });
 export type Area = z.infer<typeof AreaSchema>;
 /** A mask: the clip shows only inside its masks. add: joins the masks before it; subtract: cuts it out; intersect: keeps
  *  only the overlap. */
 export const MaskSchema = AreaSchema.and(z.object({ mode: z.enum(MASK_MODES).optional() }));
 export type Mask = Area & { mode?: (typeof MASK_MODES)[number] };
-export const EFFECTS = ["blur", "pixelate", "sharpen"] as const;
+export const EFFECTS = ["blur", "pixelate", "sharpen", "darken"] as const;
 /** Blur (amount 1-100: 100 = a Gaussian of 5% of the short side), pixelate (amount 1-100: blocks of amount/10 % of the
- *  short side) or sharpen (an unsharp mask, amount 1-100: 100 adds twice the detail, 20 is a light touch), over the
- *  whole picture or inside an area. */
+ *  short side), sharpen (an unsharp mask, amount 1-100: 100 adds twice the detail, 20 is a light touch) or darken
+ *  (Phase 3: amount % darker, 100 = black; outside an ellipse on the face it is a spotlight), over the whole picture or
+ *  inside an area. */
 export const EffectSchema = z.object({ type: z.enum(EFFECTS), amount: z.number().min(1).max(100), area: AreaSchema.optional() });
 export type Effect = z.infer<typeof EffectSchema>;
 
@@ -101,6 +115,65 @@ export function faceSkinArea(b: [number, number, number, number]): Area {
   const w = b[2] - b[0], h = b[3] - b[1], cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2 + FACE_AREA.down * h, aw = w * FACE_AREA.w, ah = h * FACE_AREA.h;
   const r4 = (v: number) => Math.round(v * 10000) / 10000;
   return { shape: "ellipse", x: r4(cx - aw / 2), y: r4(cy - ah / 2), w: r4(aw), h: r4(ah), feather: FACE_AREA.feather };
+}
+/** Phase 3: a clip's face measured over it, as the render places it: [footage second, x0, y0, x1, y1] (shares of the frame). */
+export type FaceTrack = [number, number, number, number, number][];
+export const FaceTracksSchema = z.record(z.array(z.tuple([z.number(), z.number(), z.number(), z.number(), z.number()])).max(200_000).nullable());
+/** Phase 3: an area moves when it has keys at two or more moments. */
+export const moving = (a: Area | undefined): boolean => !!a?.keys && a.keys.length > 1 && a.keys.some((k) => k.at !== a.keys![0].at);
+/** Phase 3: the area at `t` (the clip's footage seconds): its box from its keys (a straight line between them). */
+export function areaAt<A extends Area>(a: A, t: number): A {
+  const ks = a.keys;
+  if (!ks?.length) return a;
+  let k = ks[0];
+  if (t > ks[0].at) {
+    const j = ks.findIndex((x) => x.at >= t);
+    if (j < 0) k = ks[ks.length - 1];
+    else {
+      const p = ks[j - 1], q = ks[j], u = q.at > p.at ? (t - p.at) / (q.at - p.at) : 1;
+      k = { at: t, x: p.x + (q.x - p.x) * u, y: p.y + (q.y - p.y) * u, w: p.w + (q.w - p.w) * u, h: p.h + (q.h - p.h) * u };
+    }
+  }
+  return { ...a, x: k.x, y: k.y, w: k.w, h: k.h };
+}
+/**
+ * Phase 3: keys for an area that follows the face, from the face's box on screen over the clip ([at, x0, y0, x1, y1],
+ * shares of the frame). With its own box, the area keeps its place and size against the face where the face is first
+ * seen; without one it is an ellipse round the face (forehead to neck). Keys a little apart where the face is still
+ * (a key is kept where the box would be off by more than 0.4% of the frame without it), at most MAX_AREA_KEYS.
+ */
+export function followFace(a: Area, track: FaceTrack): Area {
+  if (!track.length) return a;
+  const [, fx0, fy0, fx1, fy1] = track[0], fw = fx1 - fx0, fh = fy1 - fy0;
+  const own = a.shape !== "path" && a.x != null && a.y != null && a.w != null && a.h != null;
+  const rel = own ? { x: (a.x! - fx0) / fw, y: (a.y! - fy0) / fh, w: a.w! / fw, h: a.h! / fh } : null;
+  const r4 = (v: number) => Math.round(v * 10000) / 10000;
+  const all: AreaKey[] = track.map(([at, x0, y0, x1, y1]) => {
+    const w = x1 - x0, h = y1 - y0;
+    if (rel) return { at, x: r4(x0 + rel.x * w), y: r4(y0 + rel.y * h), w: r4(rel.w * w), h: r4(rel.h * h) };
+    const f = faceSkinArea([x0, y0, x1, y1]);
+    return { at, x: f.x!, y: f.y!, w: f.w!, h: f.h! };
+  });
+  const keys = simplifyKeys(all, 0.004);
+  const first = keys[0];
+  return { ...a, shape: a.shape === "path" ? "ellipse" : a.shape, x: first.x, y: first.y, w: first.w, h: first.h, ...(own ? {} : { feather: a.feather ?? FACE_AREA.feather }), keys, follow: "face" };
+}
+/** Keys left out where a straight line between their neighbours is within `tol` of them (Douglas-Peucker on the box). */
+export function simplifyKeys(ks: AreaKey[], tol: number): AreaKey[] {
+  if (ks.length <= 2) return ks;
+  const keep = new Uint8Array(ks.length); keep[0] = keep[ks.length - 1] = 1;
+  const off = (a: AreaKey, b: AreaKey, m: AreaKey) => { const u = b.at > a.at ? (m.at - a.at) / (b.at - a.at) : 0; return Math.max(...(["x", "y", "w", "h"] as const).map((p) => Math.abs(a[p] + (b[p] - a[p]) * u - m[p]))); };
+  const stack: [number, number][] = [[0, ks.length - 1]];
+  while (stack.length) {
+    const [i, j] = stack.pop()!;
+    let best = -1, far = tol;
+    for (let k = i + 1; k < j; k++) { const d = off(ks[i], ks[j], ks[k]); if (d > far) { far = d; best = k; } }
+    if (best >= 0) { keep[best] = 1; stack.push([i, best], [best, j]); }
+  }
+  let out = ks.filter((_, i) => keep[i]);
+  // Over the limit: every other key left out until it fits (first and last kept).
+  while (out.length > MAX_AREA_KEYS) out = out.filter((_, i) => i % 2 === 0 || i === out.length - 1);
+  return out;
 }
 /** A natural retouch: what retouch_skin sets when it is sent without values. */
 export const SKIN_DEFAULTS = { smooth: 35, blemishes: 40, even: 35, brighten: 0 } as const;
@@ -396,8 +469,8 @@ export function sharpenKernel(amount: number, size: number): { m: number[]; div:
   m[c] += div + a * d;
   return { m, div };
 }
-/** The effect's size in pixels at W x H: blur sigma, block size, or sharpen's kernel. */
-export const effectPx = (e: Effect, W: number, H: number) => (e.type === "blur" ? blurSigma(e.amount, W, H) : e.type === "pixelate" ? pixelBlock(e.amount, W, H) : sharpenSize(W, H));
+/** The effect's size in pixels at W x H: blur sigma, block size, or sharpen's kernel (darken has none). */
+export const effectPx = (e: Effect, W: number, H: number) => (e.type === "blur" ? blurSigma(e.amount, W, H) : e.type === "pixelate" ? pixelBlock(e.amount, W, H) : e.type === "darken" ? 0 : sharpenSize(W, H));
 
 // ---------------------------------------------------------------------------------------------
 // Key: FFmpeg's colorkey and despill (the player's shader repeats these)
@@ -497,7 +570,7 @@ export function gradeText(g: Grade, lutName?: (id: string) => string | undefined
   return out.join(", ") || "none";
 }
 const pct = (n: number) => `${Math.round(n * 100)}%`;
-export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}`;
+export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}${a.follow === "face" ? ` following the face (${a.keys?.length ?? 0} keys)` : moving(a) ? ` moving (${a.keys!.length} keys, ${+a.keys![0].at.toFixed(2)}-${+a.keys![a.keys!.length - 1].at.toFixed(2)}s)` : ""}`;
 export const chromaKeyText = (k: ChromaKey) => `${k.color} similarity ${k.similarity} blend ${k.blend}${k.spill ? ` spill ${k.spill}` : ""}`;
 export const masksText = (ms: Mask[]) => ms.map((m, i) => `${i && m.mode && m.mode !== "add" ? m.mode + " " : ""}${areaText(m)}`).join(", ");
 export const effectsText = (es: Effect[]) => es.map((e) => `${e.type} ${e.amount}${e.area ? ` in ${areaText(e.area)}` : ""}`).join(", ");

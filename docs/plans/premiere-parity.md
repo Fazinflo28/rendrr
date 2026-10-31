@@ -20,8 +20,9 @@ plugin hosting, hardware I/O, localization) are out of scope.
 2. **Text behind the subject and track mattes.** 2a (done, 30 October): text layers and graphics behind the person.
    2b (done, 30 October): Track Matte Key: a video inside text, and text cut out of its card. Shape wipes move to
    phase 12's transitions.
-3. **Animated and tracked masks.** Mask keyframes, masks that follow a face or the subject, masks that limit one
-   effect (face blur that follows, spotlight, grade one area).
+3. **Animated and tracked masks (done, 31 October).** Mask keys on rects and ellipses, masks and effect areas that
+   follow the speaker's face, darken and a spotlight, a face blur that follows. Left for later: path keyframes,
+   tracking an object other than a face.
 4. **Blend modes and opacity** on overlay layers (Screen, Multiply, Overlay, Add, Soft Light), for light leaks,
    textures and brand overlays.
 5. **Deeper colour.** Highlights / shadows / whites / blacks, vibrance, colour wheels, HSL secondary, hue vs sat,

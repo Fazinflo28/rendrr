@@ -81,4 +81,17 @@ describe("skin retouch through the connector", { skip: !ready && "needs DATABASE
     await tool("apply_edits", { projectId, edits: [{ op: "retouch_skin" }] });
     assert.deepEqual((await v1Of(projectId))[0].skin!.area, areas[c.id]);
   });
+
+  it("phase 3: a spotlight that follows the face: apply_edits measures the face and the shape gets keys", async () => {
+    const out = await tool("apply_edits", { projectId, edits: [{ op: "set_effects", all: true, effects: [{ type: "darken", amount: 55, area: { shape: "ellipse", invert: true, feather: 0.08, follow: "face" } }] }] });
+    assert.match(out.text, /darken 55 in outside ellipse .* following the face \(\d+ keys\)/);
+    const [c] = (await v1Of(projectId)) as unknown as { effects: { area: { follow: string; keys: { at: number; x: number; w: number }[] } }[] }[];
+    const a = c.effects[0].area;
+    assert.equal(a.follow, "face");
+    // The face stays put (0.25-0.35 across): the keys hold an ellipse centred on it.
+    assert.ok(a.keys.length >= 2);
+    for (const k of a.keys) assert.ok(Math.abs(k.x + k.w / 2 - 0.3) < 0.01, `centred on the face (${k.x}, ${k.w})`);
+    const bareOut = await tool("apply_edits", { projectId: bare, edits: [{ op: "set_effects", all: true, effects: [{ type: "blur", amount: 40, area: { shape: "ellipse", follow: "face" } }] }] });
+    assert.match(bareOut.text, /no face measured on them: the shape stays where it is there/);
+  });
 });
