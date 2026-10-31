@@ -146,6 +146,23 @@ check(await until(async () => (await page.locator(`.lfcard[data-folder="${modId}
 check(await until(async () => (await page.locator(`.vcard[data-id="${v2}"]`).count()) === 1), "Course's own video is back in the Library");
 check(await until(async () => !(await page.locator(".modal").count())), "the delete window closes");
 
+// 6c. Import a whole Google Drive folder: open it in the picker, Import this folder; the Library opens on a folder
+// named after it, its Drive folders inside, no video picked one by one.
+await page.locator("#upload").click(); await page.locator("#src-drive").click();
+if (await page.locator("#connect-drive").count()) { await page.locator("#connect-drive").click(); }
+await page.locator("#drive-list").waitFor(); await page.waitForTimeout(300);
+check(await page.locator("#drive-import-hint").isVisible() && !(await page.locator("#drive-import-folder").count()), "at the top of My Drive there is nothing to import, and a hint says how");
+await page.locator('[data-folder-id="fd2"]').click();
+await page.locator("#drive-import-folder").waitFor();
+check((await page.locator("#drive-import-bar").innerText()).includes("Client footage"), "inside a Drive folder: Import this folder, naming it");
+await page.locator("#drive-import-folder").click();
+check(await until(async () => (await page.locator("#folder-title").count()) && (await page.locator("#folder-title").innerText()).toLowerCase().includes("client footage"), 6000), "the Library opens on the imported folder");
+check(await until(async () => (await page.locator(".lfcard", { hasText: "BFS Health" }).count()) === 1), "its Drive folder comes in as a folder inside it");
+await page.locator(".lfcard", { hasText: "BFS Health" }).click();
+check(await until(async () => (await page.locator(".vcard").count()) > 0), "the videos from the Drive folder are in it, without picking them");
+await page.screenshot({ path: join(here, "dist", "library-drive-import.png") });
+await page.locator("#folder-back").click(); await page.locator("#lib-folders").waitFor();
+
 // 7. Phone width: the folder row fits.
 await page.setViewportSize({ width: 390, height: 844 }); await page.locator("#new-folder").click(); await page.locator("#folder-name-input").fill("Interviews"); await page.locator("#folder-save").click(); await page.waitForTimeout(400);
 await until(async () => (await page.locator(".lfcard", { hasText: "Interviews" }).count()) === 1); await page.locator('input[aria-label="Find footage"]').scrollIntoViewIfNeeded();

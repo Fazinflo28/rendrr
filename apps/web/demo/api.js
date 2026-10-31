@@ -235,5 +235,30 @@ Object.assign(api, {
 const sounds = {};
 globalThis.__rendrrDemoSound = (key, f) => { if (f) sounds[key] = URL.createObjectURL(f); };
 
+// A whole demo Drive folder: library folders named after it and its folders, its videos linked into them.
+Object.assign(api, {
+  importDriveFolder: async (f, o = {}) => {
+    await wait(400);
+    const all = (await Promise.all(["root", "fd1", "fd2", "fd3"].map((x) => listDriveFiles(x)))).flatMap((r) => r.files);
+    const known = new Set(all.map((x) => x.id));
+    let added = 0, made = 0;
+    const folderIn = (name, parentId) => {
+      const same = libFolders.find((x) => (x.parentId || null) === (parentId || null) && x.name.toLowerCase() === name.toLowerCase());
+      if (same) return same;
+      const nf = { id: "lf" + Math.random().toString(36).slice(2, 8), name, parentId: parentId || null, updated: Date.now() }; libFolders.push(nf); made++; return nf;
+    };
+    const put = async (id, name, parentId, depth) => {
+      const lf = folderIn(name, parentId);
+      const ids = (DEMO_FILES[id] || []).filter((x) => known.has(x));
+      if (ids.length) { const out = await addFromDrive(ids); out.forEach((v) => { inFolder[v.id] = lf.id; if (o.kind) kinds[v.id] = o.kind; }); added += out.length; }
+      if (o.subfolders !== false && depth < 6) for (const sub of DEMO_TREE[id] || []) await put(sub, DEMO_FOLDERS[sub], lf.id, depth + 1);
+      return lf;
+    };
+    const top = await put(f.id, f.name || DEMO_FOLDERS[f.id] || "Drive folder", o.libraryFolderId || null, 1);
+    if (!added) throw folderErr(`"${top.name}" has no videos.`);
+    return { folder: (await api.listLibraryFolders()).find((x) => x.id === top.id), added, moved: 0, folders: made, truncated: false };
+  },
+});
+
 export { api };
 export const API_BASE = "";

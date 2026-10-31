@@ -1,12 +1,12 @@
 import { AppError, deleteObjects, deletePrefix, drive, enqueue, env, features, headObject, notFound, signGet, signPut, type ProxyJob, type AnalyzeJob, encrypt } from "@rendrr/core";
 import { prisma, type Video } from "@rendrr/db";
-import { breakdownAsText, DAY_MS, DriveAddInput, FolderProjectInput, LibraryFolderInput, LibraryFolderPatchInput, MoveVideosInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
+import { breakdownAsText, DAY_MS, DriveAddInput, DriveFolderImportInput, LIBRARY_FOLDER_MAX_DEPTH, FolderProjectInput, LibraryFolderInput, LibraryFolderPatchInput, MoveVideosInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { projectOut, videoOut } from "../serialize";
 import { purgeProjectFiles } from "../services/projects";
-import { createLibraryFolder, deleteLibraryFolder, libraryFolderFull, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, updateLibraryFolder } from "../services/libraryFolders";
+import { createLibraryFolder, deleteLibraryFolder, folderTree, libraryFolderFull, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, updateLibraryFolder } from "../services/libraryFolders";
 
 /** The folder new videos go in: the user's own, or none. */
 async function intoFolder(userId: string, id?: string | null): Promise<string | null> {
@@ -22,6 +22,25 @@ async function ownedVideo(userId: string, id: string): Promise<Video> {
   const v = await prisma.video.findUnique({ where: { id } });
   if (!v || v.userId !== userId) throw notFound("That video is not in your library any more.");
   return v;
+}
+
+/** One Drive file linked as a video (its preview made by the worker), in a library folder or none. */
+async function linkDriveFile(userId: string, f: drive.DriveFile & { sampleKey?: string }, o: { stub: boolean; kind?: VideoKind | null; libraryFolderId?: string | null }) {
+  const v = await prisma.video.create({ data: {
+    userId, name: stripExt(f.name), seconds: f.seconds, sizeBytes: BigInt(f.sizeBytes || 0), originalSize: BigInt(f.sizeBytes || 0), originalName: f.name,
+    orientation: f.width && f.height ? orientationOf(f.width, f.height) : "Landscape", source: "drive", driveFileId: f.id, status: "linking", art: randomArt(), kind: o.kind || "footage", libraryFolderId: o.libraryFolderId ?? null,
+    sourceKey: o.stub ? f.sampleKey ?? null : null,
+  } });
+  await enqueue<ProxyJob>("proxy", { videoId: v.id });
+  return v;
+}
+
+/** The library folder called `name` inside `parentId` (any case), made if it is not there: importing the same Drive
+ *  folder again fills the same library folder. */
+async function folderNamed(userId: string, name: string, parentId: string | null) {
+  const n = name.replace(/\//g, "-").trim().slice(0, 80) || "Untitled folder";
+  const same = await prisma.libraryFolder.findFirst({ where: { userId, parentId, name: { equals: n, mode: "insensitive" } }, orderBy: { createdAt: "asc" } });
+  return { folder: same ?? (await createLibraryFolder(userId, n, parentId)), made: !same };
 }
 
 async function driveConn(userId: string) {
@@ -185,16 +204,42 @@ export default async function library(app: FastifyInstance) {
       for (const fid of Array.from(new Set(fileIds))) {
         const f = await drive.getFile(userId, fid, conn.stub);
         if (!f) continue;
-        const v = await prisma.video.create({ data: {
-          userId, name: stripExt(f.name), seconds: f.seconds, sizeBytes: BigInt(f.sizeBytes || 0), originalSize: BigInt(f.sizeBytes || 0), originalName: f.name,
-          orientation: f.width && f.height ? orientationOf(f.width, f.height) : "Landscape", source: "drive", driveFileId: f.id, status: "linking", art: randomArt(), kind: kind || "footage", libraryFolderId: inFolder,
-          sourceKey: conn.stub ? (f as { sampleKey?: string }).sampleKey ?? null : null,
-        } });
-        await enqueue<ProxyJob>("proxy", { videoId: v.id });
-        out.push(v);
+        out.push(await linkDriveFile(userId, f, { stub: conn.stub, kind, libraryFolderId: inFolder }));
       }
       if (!out.length) throw new AppError("Pick at least one video.", 400);
       return Promise.all(out.map(videoOut));
+    });
+
+    // A whole Drive folder: a library folder named after it, every video in it linked, its folders made the same way
+    // down (up to 200 videos and the library's depth). A video already in the library is moved into its folder, not
+    // linked twice. Importing the same folder again adds only what is new.
+    a.post("/videos/drive-folder", async (req) => {
+      const b = DriveFolderImportInput.parse(req.body);
+      const userId = req.user!.id;
+      const conn = await driveConn(userId);
+      const parent = b.libraryFolderId ? await ownLibraryFolder(userId, b.libraryFolderId) : null;
+      const depthLeft = LIBRARY_FOLDER_MAX_DEPTH - (parent ? (await folderTree(userId)).depth(parent) : 0);
+      if (depthLeft < 1) throw new AppError("That folder is as deep as folders go. Import into a folder higher up.", 400, "too-deep");
+      const name = (b.name || "").trim() || (await drive.folderName(userId, b.folderId, conn.stub));
+      const walked = await drive.walkFolder(userId, { id: b.folderId, name, driveId: b.driveId }, conn.stub, { maxDepth: b.subfolders === false ? 1 : depthLeft, maxFiles: 200 });
+      if (!walked.files) throw new AppError(`"${name}" has no videos${b.subfolders === false || !walked.folders ? "" : ", its folders neither"}.`, 400, "folder-empty");
+      const linked = new Map((await prisma.video.findMany({ where: { userId, source: "drive", status: { not: "missing" }, driveFileId: { not: null } }, select: { id: true, driveFileId: true } })).map((v) => [v.driveFileId!, v.id]));
+      let added = 0, moved = 0, made = 0;
+      const put = async (node: drive.DriveTree, parentId: string | null): Promise<string> => {
+        const { folder, made: isNew } = await folderNamed(userId, node.name, parentId);
+        if (isNew) made++;
+        for (const f of node.files) {
+          const have = linked.get(f.id);
+          if (have) { await prisma.video.update({ where: { id: have }, data: { libraryFolderId: folder.id } }); moved++; continue; }
+          const full = conn.stub ? await drive.getFile(userId, f.id, true) : f; // the fake Drive keeps its sample file on the file
+          const v = await linkDriveFile(userId, full ?? f, { stub: conn.stub, kind: b.kind, libraryFolderId: folder.id });
+          linked.set(f.id, v.id); added++;
+        }
+        for (const sub of node.folders) await put(sub, folder.id);
+        return folder.id;
+      };
+      const topId = await put(walked.tree, parent?.id ?? null);
+      return { folder: await libraryFolderFull(userId, topId), added, moved, folders: made, truncated: walked.truncated };
     });
 
     // Built-in sample footage: processed on the server, original kept so exports work without asking.

@@ -43,6 +43,12 @@ const kind = z.enum(["footage", "reference"]).optional(); // reference: a video 
 /** A library folder the new videos go in (videos of one kind kept together); null or left out: loose in the library. */
 const libraryFolderId = id.nullable().optional();
 export const DriveAddInput = z.object({ fileIds: z.array(z.string().min(1).max(200)).min(1, "Pick at least one video.").max(50), kind, libraryFolderId });
+/** A whole Drive folder into the Library: a library folder named after it (inside libraryFolderId if given), its
+ *  videos linked, its folders made the same way down (subfolders false: only its own videos). */
+export const DriveFolderImportInput = z.object({
+  folderId: z.string().min(1, "Open a folder in Drive first.").max(200), driveId: z.string().max(200).optional(), name: z.string().max(200).optional(),
+  kind, libraryFolderId, subfolders: z.boolean().optional(),
+});
 export const ReconnectInput = z.object({ fileId: z.string().min(1, "Pick the file in Drive to reconnect it.").max(200) });
 
 export const LocalFilesInput = z.object({

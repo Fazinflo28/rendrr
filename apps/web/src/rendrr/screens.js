@@ -118,12 +118,15 @@ const SourceBadge = ({ source, size = "sm" }) => html`<span class=${"tag src " +
 const DRIVE_HOME = { id: "root", name: "My Drive" };
 const DRIVE_PLACES = [{ ...DRIVE_HOME, icon: "drive" }, { view: "shared", name: "Shared with me", icon: "shared" }, { view: "recent", name: "Recent videos", icon: "clock" }];
 const placeKey = (p) => p.view || p.id;
-function DrivePicker({ onAdd, single, addLabel, onLocal }) {
+function DrivePicker({ onAdd, single, addLabel, onLocal, onImportFolder, importInto }) {
   const toast = useToast();
   const dq = useAsync(() => api.getDriveStatus(), []);
   const [trail, setTrail] = useState([DRIVE_HOME]); const [sel, setSel] = useState([]); const [busy, setBusy] = useState(false);
-  const [text, setText] = useState(""); const [drives, setDrives] = useState([]);
+  const [text, setText] = useState(""); const [drives, setDrives] = useState([]); const [withSubs, setWithSubs] = useState(true);
   const here = trail[trail.length - 1];
+  // A real folder is open (not My Drive's top, a view or a search): it can be imported whole.
+  const inFolder = !!onImportFolder && !!here.id && here.id !== "root" && !here.view && here.id !== here.driveId;
+  const importHere = async () => { setBusy(true); try { await onImportFolder({ id: here.id, name: here.name, driveId: here.driveId }, withSubs); } finally { setBusy(false); } };
   const fq = useAsync(async () => {
     if (!dq.data?.connected) return null;
     const top = here.id === "root" && !here.view;
@@ -165,11 +168,14 @@ function DrivePicker({ onAdd, single, addLabel, onLocal }) {
             ${fq.data?.truncated && html`<p class="t-small muted" style="padding:10px 12px">Showing the first ${folders.length + files.length}. Search to find a video by name.</p>`}`}</div>
       </div>
     </div>
+    ${inFolder && html`<div class="row between dimport" id="drive-import-bar"><span class="t-small"><${Icon} name="folder" size="14" /> Bring in all of <b>${here.name}</b>${importInto ? html` into <b>${importInto.name}</b>` : ""}: a folder in your Library with every video in it. No need to pick them.</span>
+      <span class="row" style="gap:10px;flex:none"><label class="t-small row" style="gap:6px"><input type="checkbox" id="drive-import-subs" checked=${withSubs} onChange=${(e) => setWithSubs(e.target.checked)} />With its folders</label><${Btn} id="drive-import-folder" icon="folder" disabled=${busy} onClick=${importHere}>${busy ? "Importing…" : "Import this folder"}<//></span></div>`}
+    ${!inFolder && onImportFolder && !here.view && html`<p class="t-small muted" id="drive-import-hint">To bring in a whole folder, open it, then press Import this folder.</p>`}
     <div class="row between dfoot"><span class="t-small muted">Your raw files stay in your Drive. We only keep a light preview copy.</span><span class="row" style="gap:12px;flex:none">${sel.length > 0 && html`<span class="t-small row" style="gap:8px"><b id="drive-count">${sel.length} selected</b>${!single && html`<button class="dlink" onClick=${() => setSel([])}>Clear</button>`}</span>`}<${Btn} id="drive-add" disabled=${sel.length === 0 || busy} onClick=${async () => { setBusy(true); try { await onAdd(sel); } finally { setBusy(false); } }}>${addLabel || ("Add " + (sel.length || "") + (sel.length === 1 ? " video" : " videos"))}<//></span></div>
   </div>`;
 }
 function AddFootageModal({ onClose, initialKind = "footage", folder = null }) {
-  const { startUpload, addFromDrive } = useApp();
+  const { startUpload, addFromDrive, importDriveFolder } = useApp();
   const [tab, setTab] = useState("drive"); const [over, setOver] = useState(false); const fileRef = useRef();
   const [asRef, setAsRef] = useState(initialKind === "reference"); const kind = asRef ? "reference" : undefined;
   useEffect(() => { api.getDriveStatus().then((s) => { if (!s.connected && s.available === false) setTab("local"); }).catch(() => {}); }, []);
@@ -180,7 +186,7 @@ function AddFootageModal({ onClose, initialKind = "footage", folder = null }) {
       <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick videos from your Drive</span></span><span class="tag accent">Recommended</span></button>
       <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="src-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>From your computer</b><span class="t-small muted">Pick files or drag and drop</span></span></button>
     </div>
-    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind, folder?.id)} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
+    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind, folder?.id)} onImportFolder=${(f, subs) => importDriveFolder(f, kind, folder?.id, subs)} importInto=${folder} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
       <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs), kind, folder?.id); e.target.value = ""; }} />
       <div class=${"drop" + (over ? " over" : "")} id="local-drop" style="padding:40px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); const fs = e.dataTransfer.files; if (fs?.length) startUpload(Array.from(fs), kind, folder?.id); }}>
         <div class="ico"><${Icon} name="laptop" /></div><b class="t-heading">Drop videos here</b><p class="muted t-small">Files stay on your computer. We make a light preview in your browser.</p>
@@ -358,6 +364,7 @@ function LibraryPage() {
     setPick((x) => (x.includes(v.id) ? x.filter((i) => i !== v.id) : [...x, v.id]));
   };
   const stopPicking = () => { setPicking(false); setPick([]); };
+  useEffect(() => { const o = (e) => { if (e.detail) { openFolder(e.detail); setSearch(""); } fq.reload(); }; window.addEventListener("rendrr:openfolder", o); return () => window.removeEventListener("rendrr:openfolder", o); }, []);
   useEffect(() => { const k = () => { q.reload(); fq.reload(); }; window.addEventListener("rendrr:library", k); return () => window.removeEventListener("rendrr:library", k); }, []);
   // Local previews are made in this tab: if it goes away mid preview, they pause until the user comes back.
   useEffect(() => { const vis = () => { if (document.hidden) { api.pauseLocalPreviews(); } q.reload(); }; document.addEventListener("visibilitychange", vis); window.addEventListener("pagehide", api.pauseLocalPreviews); return () => { document.removeEventListener("visibilitychange", vis); window.removeEventListener("pagehide", api.pauseLocalPreviews); }; }, []);
@@ -384,6 +391,7 @@ function LibraryPage() {
           ${cur && html`<div class="row wrap" id="folder-actions" style="gap:8px">
               <${Btn} size="sm" icon="scissors" id="folder-edit" onClick=${editFolder}>Edit this folder<//>
               <${Btn} kind="ghost" size="sm" icon="plus" id="folder-add" onClick=${() => openAdd("footage", cur)}>Add videos<//>
+              <${Btn} kind="ghost" size="sm" icon="folder" id="folder-new" onClick=${() => setNameModal({ parent: cur })}>New folder<//>
               <${Btn} kind="ghost" size="sm" icon="edit" id="folder-rename" onClick=${() => setNameModal({ folder: cur })}>Rename<//>
               <${Btn} kind="ghost" size="sm" icon="folder" id="folder-move" onClick=${() => setMoveFolder(cur)}>Move<//>
               <${Btn} kind="quiet" size="sm" icon="trash" id="folder-delete" onClick=${() => setDelFolder(cur)}>Delete folder<//></div>`}

@@ -128,6 +128,31 @@ export async function browse(userId: string, b: DriveBrowse, stub: boolean): Pro
   };
 }
 
+/** A Drive folder and everything under it, for importing a whole folder: its videos and its folders, the same way
+ *  down (to maxDepth levels, at most maxFiles videos in all; past that it says truncated). */
+export type DriveTree = { id: string; name: string; files: DriveFile[]; folders: DriveTree[] };
+export async function walkFolder(userId: string, root: { id: string; name: string; driveId?: string }, stub: boolean, limits = { maxDepth: 6, maxFiles: 200 }): Promise<{ tree: DriveTree; files: number; folders: number; truncated: boolean }> {
+  let files = 0, folders = 0, truncated = false;
+  const walk = async (f: { id: string; name: string; driveId?: string }, depth: number): Promise<DriveTree> => {
+    const l = await browse(userId, { view: "folder", folderId: f.id, driveId: f.driveId }, stub);
+    if (l.truncated) truncated = true;
+    const room = Math.max(0, limits.maxFiles - files);
+    const mine = l.files.slice(0, room);
+    if (mine.length < l.files.length) truncated = true;
+    files += mine.length;
+    const node: DriveTree = { id: f.id, name: f.name, files: mine, folders: [] };
+    if (depth >= limits.maxDepth) { if (l.folders.length) truncated = true; return node; }
+    for (const sub of l.folders) {
+      if (files >= limits.maxFiles) { truncated = true; break; }
+      folders++;
+      node.folders.push(await walk({ id: sub.id, name: sub.name, driveId: sub.driveId ?? f.driveId }, depth + 1));
+    }
+    return node;
+  };
+  const tree = await walk(root, 1);
+  return { tree, files, folders, truncated };
+}
+
 /** Shared drives the user is a member of (empty for most personal accounts). */
 export async function sharedDrives(userId: string, stub: boolean): Promise<DriveFolder[]> {
   if (stub || !features().drive) return [];

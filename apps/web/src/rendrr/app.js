@@ -97,6 +97,18 @@ function App() {
     catch (e) { toast(e.message, { icon: "alert", ms: 4000 }); }
     ping();
   }, [go]);
+  // A whole Drive folder: the Library opens on the folder it made.
+  const importDriveFolder = useCallback(async (f, kind, libraryFolderId, subfolders) => {
+    try {
+      const r = await api.importDriveFolder(f, { kind, libraryFolderId, subfolders });
+      setAddOpen(false);
+      try { sessionStorage.setItem("rendrr:libfolder", r.folder.id); } catch { /* private window */ }
+      go("/library"); window.dispatchEvent(new CustomEvent("rendrr:openfolder", { detail: r.folder.id }));
+      const parts = [r.added && `${r.added} ${r.added === 1 ? "video" : "videos"} linked`, r.moved && `${r.moved} already in your library moved in`, r.folders > 1 && `${r.folders} folders made`].filter(Boolean);
+      toast(`Imported "${r.folder.name}": ${parts.join(", ") || "nothing new"}${r.truncated ? ". Only the first 200 videos came in." : "."}`, { icon: "drive", tone: "brand", ms: 4500 });
+      ping();
+    } catch (e) { toast(e.message, { icon: "alert" }); }
+  }, [go]);
   const addFromDrive = useCallback(async (ids, kind, libraryFolderId) => { try { const out = await api.addFromDrive(ids, kind, libraryFolderId); setAddOpen(false); go("/library"); toast(out.length + (out.length === 1 ? " video" : " videos") + " linked from Drive" + (kind === "reference" ? " as references" : ""), { icon: "drive", tone: "brand" }); ping(); } catch (e) { toast(e.message, { icon: "alert" }); } }, [go]);
 
   const match = ROUTES.find(([re]) => re.test(route)) || NOT_FOUND;
@@ -107,7 +119,7 @@ function App() {
   useEffect(() => { if (pathname === "/login" && auth === "out") setLogin({ after: null, mode: "login" }); }, [pathname, auth]);
   const requireUser = useCallback((fn) => { if (user) fn(); else setLogin({ after: () => setTimeout(fn, 0), mode: "login" }); }, [user]);
   const page = guarded ? (auth === "checking" ? null : html`<${HomePage} />`) : match[1](m);
-  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addFromDrive, theme, setTheme, addOpen, openAdd: (kind, folder) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage", folder: folder && folder.id ? folder : null })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser };
+  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addFromDrive, importDriveFolder, theme, setTheme, addOpen, openAdd: (kind, folder) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage", folder: folder && folder.id ? folder : null })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser };
   // Closing the login on a private page goes back to Explore.
   const onCloseLogin = () => { const leave = login?.leave; setLogin(null); if (leave || pathname === "/login") go("/explore"); };
   return html`<${NavCtx.Provider} value=${{ route, go }}><${AppCtx.Provider} value=${ctx}>

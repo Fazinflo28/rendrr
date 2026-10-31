@@ -1179,3 +1179,7 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .lfrow.on { box-shadow: 0 0 0 2px var(--accent); opacity: 1; }
 #move-new-name { flex: 1; min-width: 0; }
 @media (max-width: 640px) { .lfgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } #folder-actions > * { flex: 1 1 auto; } }
+/* Drive picker: import the open folder whole. */
+.dimport { gap: 12px; padding: 10px 14px; border-radius: var(--r-md); background: var(--accent-soft); flex-wrap: wrap; }
+.dimport > span:first-child { min-width: 0; flex: 1 1 260px; }
+@media (max-width: 640px) { .dimport > span:last-child { width: 100%; justify-content: space-between; } }

@@ -199,6 +199,12 @@ export const api: any = {
   // kind "reference": a video whose style to copy (Rendrr reads it like footage; the AI matches it).
   // libraryFolderId: the library folder the new videos go in.
   addFromDrive: async (fileIds: string[], kind?: string, libraryFolderId?: string) => (await post("/videos/drive", { fileIds, ...(kind ? { kind } : {}), ...(libraryFolderId ? { libraryFolderId } : {}) })).map(remember),
+  // A whole Drive folder (and its folders): a library folder named after it with every video linked.
+  importDriveFolder: async (f: { id: string; name?: string; driveId?: string }, o: { kind?: string; libraryFolderId?: string; subfolders?: boolean } = {}) => {
+    const r = await post("/videos/drive-folder", { folderId: f.id, ...(f.name ? { name: f.name } : {}), ...(f.driveId ? { driveId: f.driveId } : {}), ...(o.kind ? { kind: o.kind } : {}), ...(o.libraryFolderId ? { libraryFolderId: o.libraryFolderId } : {}), ...(o.subfolders === false ? { subfolders: false } : {}) })
+      .catch((e: any) => { if (isMissingRoute(e)) throw fail("Importing a Drive folder is not on the server yet: it is still being updated. Pick the videos for now, or try again in a few minutes.", "server-old"); throw e; });
+    return r;
+  },
   addFromComputer: async (files: File[] | null, onProgress?: (p: any) => void, kind?: string, libraryFolderId?: string) => {
     const list = files && files.length ? Array.from(files) : null;
     if (!list) throw fail("Pick a video file first.");
