@@ -357,6 +357,16 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 4: blend modes and opacity (31 October)
+
+| Question | Decision |
+|---|---|
+| Which layers | B-roll over V1 and graphics: the layers with their own picture. Not b-roll behind V1 (set_under), not text (libass draws it straight onto the frame; a text layer fades with set_keyframes opacity). |
+| Which formulas | W3C compositing (CSS mix-blend-mode), which are Photoshop's and Premiere's. The editor draws with CSS, so the render had to match it: FFmpeg's built-in modes are the same formulas with the picture on top, except dodge and burn (the layer goes on top) and soft light (FFmpeg's is another curve: an expression of the W3C one). A render of all 12 modes over 16 colour pairs checks it. |
+| How the render blends | Only the frames under the layer: the picture over that time is taken out, blended with the layer in RGB (gbrp; gbrp16le for HDR), mixed back by the layer's alpha times its opacity (maskedmerge), and laid back in place. Frames outside are untouched, and a plain layer draws exactly as before. |
+| Opacity alone | Multiplied into the layer's alpha (lutyuv), then overlaid as before. |
+| Limits | One mode per layer for the whole clip (no blend keyframes); dodge and burn magnify compression noise where they divide by a small number, as they do anywhere. |
+
 ## Premiere parity, phase 3: masks that move and follow the face (31 October)
 
 | Question | Decision |

@@ -15,6 +15,7 @@ import { editToFootage, RENDRR_MARK } from "./marks";
 import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { libraryItem, libraryParams } from "./library";
+import { BlendModeSchema, blendText, type BlendMode } from "./blend";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
 import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
 import {
@@ -180,6 +181,8 @@ const EDIT_OPS = [
   z.object({ op: z.literal("remove_background"), ...lookTargets, edge: z.number().min(-20).max(20).optional(), soft: z.number().min(0).max(100).optional(), invert: z.boolean().optional(), off: z.boolean().optional() }),
   // A b-roll clip behind V1 (shows where V1 is keyed, masked, framed smaller or moved away) or back over it.
   z.object({ op: z.literal("set_under"), clipId, under: z.boolean() }),
+  // Phase 4: how b-roll (V2) or a graphic (V3) lies over the picture: a blend mode and its opacity (0-1). normal at 1 = plain.
+  z.object({ op: z.literal("set_blend"), clipId: clipId.optional(), clipIds: z.array(clipId).min(1).max(200).optional(), blend: BlendModeSchema.optional(), opacity: z.number().min(0).max(1).optional() }),
   // How the final file is made: hdr keep (HDR footage stays HDR) or sdr (converted).
   z.object({ op: z.literal("set_export"), hdr: z.enum(["keep", "sdr"]).optional(), resolution: z.enum(RESOLUTIONS).optional(), codec: z.enum(CODECS).optional() }),
   // ---- marks: notes on the footage, kept with the edit; they never change the video ----
@@ -1201,6 +1204,27 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const next = withTracks(tl, "v2", (tl.tracks.v2 as Clip[]).map((x) => { if (x.id !== c.id) return x; const { under: _u, ...rest } = x as Clip & { under?: boolean }; return (op.under ? { ...rest, under: true } : rest) as Clip; }));
       return { snap: { ...snap, timeline: next }, summary: `${name(c)}: ${op.under ? "behind V1 (shows where V1 is keyed, masked, framed smaller or moved)" : "over V1"}` };
     }
+    case "set_blend": {
+      const ids = op.clipIds ?? (op.clipId ? [op.clipId] : []);
+      if (!ids.length) throw new EditError("set_blend needs clipId or clipIds (b-roll on V2, graphics on V3).");
+      if (op.blend === undefined && op.opacity === undefined) throw new EditError("set_blend needs blend or opacity.");
+      let t = tl;
+      const said: string[] = [];
+      for (const id of ids) {
+        const track = (t.tracks.v2 as Clip[]).some((x) => x.id === id) ? "v2" : (t.tracks.v3 as Clip[]).some((x) => x.id === id) ? "v3" : null;
+        if (!track) throw new EditError(`There is no clip "${id}" on V2 or V3.`);
+        const c = findClip(t, track, id) as Clip & { kind?: string; under?: boolean; blend?: BlendMode; opacity?: number };
+        if (track === "v2" && c.kind !== "broll") throw new EditError(`Clip "${id}" on V2 is a zoom: blend modes are for b-roll and graphics.`);
+        if (track === "v2" && c.under) throw new EditError(`Clip "${id}" is behind V1 (set_under): a blend mode is for a layer over the picture.`);
+        if (track === "v3" && c.kind !== "graphic") throw new EditError(`Clip "${id}" on V3 is ${c.kind === "text" ? "a text layer" : "a caption"}: blend modes are for b-roll and graphics (a text layer fades with set_keyframes opacity).`);
+        const blend = op.blend ?? c.blend, opacity = op.opacity ?? c.opacity;
+        const { blend: _b, opacity: _o, ...rest } = c;
+        const next = { ...rest, ...(blend && blend !== "normal" ? { blend } : {}), ...(opacity != null && opacity < 1 ? { opacity: Math.round(opacity * 1000) / 1000 } : {}) } as Clip;
+        t = withTracks(t, track, (t.tracks[track] as Clip[]).map((x) => (x.id === id ? next : x)));
+        said.push(`${track === "v2" ? "b-roll" : "graphic"} ${c.label || id} (${id}): ${blendText(blend, opacity) || "normal"}`);
+      }
+      return { snap: { ...snap, timeline: t }, summary: said.join("; ") };
+    }
     case "set_export": {
       if (!op.hdr && !op.resolution && !op.codec) throw new EditError("set_export needs hdr, resolution or codec.");
       const ex = { ...(tl.export ?? {}) };
@@ -1519,6 +1543,9 @@ export function lookText(tl: Timeline): string {
 /** v1Offset / v1Limit: a page of the V1 sequence (default the first maxPerTrack clips). clipNote: more to say about a
  *  V1 clip (get_project: its sound at the edges and the pauses inside). */
 export type SummaryOpts = { v1Offset?: number; v1Limit?: number; clipNote?: (c: SeqClip) => string };
+/** Phase 4: " blend screen 60%" for a layer that is not plain. */
+const blendNote = (c: Record<string, unknown>) => { const t = blendText(c.blend as BlendMode | undefined, c.opacity as number | undefined); return t ? ` blend ${t}` : ""; };
+
 export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 60, mainVideoId?: string, lutName?: (id: string) => string | undefined, footage?: FootageInfo, opts: SummaryOpts = {}): string {
   const words = allWords(tr);
   const tl = layoutTimeline(asSequence(snap.timeline, words, mainVideoId), words);
@@ -1565,7 +1592,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
       const auto = k === "a2" ? autoMusicFades(c.end - c.start) : { fadeIn: 0, fadeOut: 0 };
       const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
       const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
-      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.inside ? ` video ${(c.inside as TextInside).videoId}@${(c.inside as TextInside).from} inside the letters` : ""}${c.cutout ? " cut out of the card" : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
+      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}${blendNote(c)}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}${blendNote(c)}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.inside ? ` video ${(c.inside as TextInside).videoId}@${(c.inside as TextInside).from} inside the letters` : ""}${c.cutout ? " cut out of the card" : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
       const lk = k === "v2" ? lookTags(c as Clip & ClipLook) : "";
       const on = (c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "") + (Array.isArray(c.keys) && c.keys.length ? ` keys ${(c.keys as Key[]).map((k) => k.t).join(",")}s` : "") + (c.under ? " under V1" : "") + (lk ? " " + lk : "");
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;

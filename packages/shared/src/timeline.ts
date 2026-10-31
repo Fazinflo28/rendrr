@@ -1,3 +1,4 @@
+import { BlendModeSchema } from "./blend";
 import { z } from "zod";
 import { catalogMusic, catalogSfx } from "./catalog";
 import { CaptionStyleSchema, CardSchema, TEXT_ANIMS, TextInsideSchema, TextStyleSchema } from "./captions";
@@ -46,7 +47,9 @@ export const V2ClipSchema = ClipSchema.extend({
   keys,
   ...look,
   /** Drawn behind V1 instead of over it: it shows where V1 is keyed, masked, framed smaller or moved away. */
-  under: z.boolean().optional(),
+  under: z.boolean().optional(),  /** Phase 4: how it lies over the picture (b-roll over V1): a blend mode and its opacity (0-1). */
+  blend: BlendModeSchema.optional(),
+  opacity: z.number().min(0).max(1).optional(),
 });
 
 export const V3ClipSchema = ClipSchema.extend({
@@ -67,7 +70,9 @@ export const V3ClipSchema = ClipSchema.extend({
   /** Text layers (Phase 2b): a library video plays inside the letters (a track matte), or the letters are cut out of
    *  the card so the picture under it shows through them. */
   inside: TextInsideSchema.optional(),
-  cutout: z.boolean().optional(),
+  cutout: z.boolean().optional(),  /** Phase 4 (graphics): how it lies over the picture: a blend mode and its opacity (0-1). */
+  blend: BlendModeSchema.optional(),
+  opacity: z.number().min(0).max(1).optional(),
 });
 
 export const A2ClipSchema = ClipSchema.extend({

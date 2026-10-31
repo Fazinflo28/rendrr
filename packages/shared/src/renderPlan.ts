@@ -11,6 +11,7 @@ import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, dialogueExpr, duckExpr, speechRanges, type DialogueSpan } from "./audio";
 import { audioSettings, type AudioMixSettings } from "./timeline";
+import { blendFilter, blendText, type BlendMode } from "./blend";
 import { buildStyledAss, captionStyleOf, isMatted, layoutCaptions, styleText, textMatteAss, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
 import { areaAt, areaPicture, buildLut, matteBlocks, moving, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
@@ -49,7 +50,8 @@ export type PlanInput = {
 /** through: the zoom transition (in to the cut, out after it). */
 export type ZoomOp = { start: number; end: number; scale: number; mode: "punch" | "push" | "through" };
 /** keys: keyframes in seconds from the overlay's start (a b-roll clip with keys is a picture-in-picture). */
-export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string; keys?: Key[]; behind?: boolean };
+/** blend, opacity (Phase 4): how the layer lies over the picture (normal at full opacity when left out). */
+export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string; keys?: Key[]; behind?: boolean; blend?: BlendMode; opacity?: number };
 /**
  * Phase 2b: a text layer drawn from a mask, on its side of the person (behind: before the person is laid back), after
  * that side's graphics and before its other text layers. mask: an ASS file drawn white on black from the layer's start
@@ -385,6 +387,9 @@ export function buildAss(events: CaptionEvent[], look: CaptionLook, width: numbe
 // ---------------------------------------------------------------------------------------------
 // planRender
 // ---------------------------------------------------------------------------------------------
+/** Phase 4: a layer's blend mode and opacity for the plan (nothing when it is plain). */
+const layerBlend = (c: { blend?: BlendMode; opacity?: number }) => ({ ...(c.blend && c.blend !== "normal" ? { blend: c.blend } : {}), ...(c.opacity != null && c.opacity < 1 ? { opacity: c.opacity } : {}) });
+
 export function planRender(input: PlanInput): RenderPlan {
   // A timeline stored in model A (an old version, or a project the migration left on A) renders exactly as before.
   if (!isSequence(input.snapshot.timeline)) return planRenderA(input);
@@ -443,7 +448,7 @@ export function planRender(input: PlanInput): RenderPlan {
       const end = Math.min(sp.end, sp.start + (len - ss));
       // On whole frames, so the render and the player show it on exactly the same frames.
       const fs = onFrame(sp.start), fe = onFrame(end);
-      if (fe - fs >= 0.05) ((c as { under?: boolean }).under ? under : broll).push({ clipId: c.id, start: fs, end: fe, sourceStart: ss, videoId: c.videoId, ...(c.keys?.length ? { keys: c.keys } : {}) });
+      if (fe - fs >= 0.05) ((c as { under?: boolean }).under ? under : broll).push({ clipId: c.id, start: fs, end: fe, sourceStart: ss, videoId: c.videoId, ...(c.keys?.length ? { keys: c.keys } : {}), ...(!c.under ? layerBlend(c) : {}) });
     }
   }
   const graphics: OverlayOp[] = [];
@@ -452,7 +457,7 @@ export function planRender(input: PlanInput): RenderPlan {
     const sp = placed(c);
     // A custom graphic can start part way into its recording (add_graphic from); a template is drawn for each clip.
     const from = !findTemplate(c.graphicId) && c.sourceStart ? c.sourceStart : 0;
-    if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: from, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}), ...(c.behind ? { behind: true } : {}) });
+    if (sp && onFrame(sp.end) - onFrame(sp.start) >= 0.05) graphics.push({ clipId: c.id, start: onFrame(sp.start), end: onFrame(sp.end), sourceStart: from, graphicId: c.graphicId, ...(c.keys?.length ? { keys: c.keys } : {}), ...(c.behind ? { behind: true } : {}), ...layerBlend(c) });
   }
   const audio: AudioOp[] = [];
   // Keys come from the catalog only (see catalogMusic), whatever the stored clip says; the user's own files from the
@@ -633,6 +638,7 @@ export function planRender(input: PlanInput): RenderPlan {
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
+    ...([...broll, ...graphics].some((x) => x.blend || x.opacity != null) ? [`Blend: ${[...broll, ...graphics].filter((x) => x.blend || x.opacity != null).slice(0, 6).map((x) => `${x.videoId ? "b-roll" : "graphic"} ${x.clipId} ${blendText(x.blend, x.opacity)}`).join(", ")}`] : []),
     ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
     ...colorLines(looks, under, missingLuts, hdr, Array.from(new Set(parts.filter((p) => hdrVideos.has(p.videoId)).map((p) => p.clipIds[0]))), kind, hdrVideos.size > 0, tl.export?.hdr === "sdr", background?.text),
@@ -1529,6 +1535,28 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     }
     person = "vperson";
   }
+  // Phase 4: a layer's opacity (normal mode): its alpha times the opacity.
+  const fadeTo = (o: number | undefined) => (o != null && o < 1 ? `format=${cc.PFA},lutyuv=a='val*${n3(o)}',` : "");
+  /**
+   * Phase 4: a layer with a blend mode. [layer] runs from the layer's start (pts 0), full frame, n frames. The picture
+   * over those frames is taken out, blended with the layer in RGB (16-bit for HDR), mixed back by the layer's alpha
+   * times its opacity (maskedmerge), and laid back over the picture in its place: frames outside are untouched.
+   */
+  const blendWindow = (base: string, layer: string, op: OverlayOp, n: number, tag: string): string => {
+    const deep = !!plan.hdr, RGB = deep ? "gbrp16le" : "gbrp", RGBA = deep ? "gbrap16le" : "gbrap", GR = deep ? "gray16le" : "gray", mat = deep ? "bt2020" : "bt709";
+    const bf = blendFilter(op.blend as Exclude<BlendMode, "normal">, deep ? 65535 : 255), o = op.opacity ?? 1;
+    const S = n6(op.start), E = n6(op.start + n / FPS), rgb = (f: string) => `scale=in_color_matrix=${mat}:in_range=tv:flags=accurate_rnd,format=${f}`;
+    g.push(`[${base}]split[bo${tag}][bw${tag}]`);
+    g.push(`[bw${tag}]trim=start=${S}:end=${E},setpts=PTS-STARTPTS,${rgb(RGB)},split[bp${tag}][bq${tag}]`);
+    g.push(`[${layer}]${rgb(RGBA)},split[lc${tag}][la${tag}]`);
+    g.push(`[lc${tag}]format=${RGB}[lr${tag}]`);
+    g.push(`[la${tag}]alphaextract,format=${GR}${o < 1 ? `,lut=c0='val*${n3(o)}'` : ""},split=3[l0${tag}][l1${tag}][l2${tag}]`);
+    g.push(`[l0${tag}][l1${tag}][l2${tag}]mergeplanes=0x001020:${RGB}[lm${tag}]`);
+    g.push(bf.layerOnTop ? `[lr${tag}][bp${tag}]${bf.filter}[lf${tag}]` : `[bp${tag}][lr${tag}]${bf.filter}[lf${tag}]`);
+    g.push(`[bq${tag}][lf${tag}][lm${tag}]maskedmerge,scale=out_color_matrix=${mat}:out_range=tv:flags=accurate_rnd,format=${cc.PF},setpts=PTS+${S}/TB[lw${tag}]`);
+    g.push(`[bo${tag}][lw${tag}]overlay=enable='between(t,${S},${n6(op.end - 0.5 / FPS)})':eof_action=pass${deep ? `:format=auto,format=${cc.PF}` : ""}[lv${tag}]`);
+    return `lv${tag}`;
+  };
   // 4. B-roll overlays (video only; the dialogue keeps playing underneath).
   plan.broll.forEach((b, i) => {
     const path = files.broll?.[b.clipId];
@@ -1543,9 +1571,14 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
       g.push(`[${bi}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[bk${i}]`);
       let cur = cc.colorChain(`bk${i}`, look, "sdr", n, `b${i}`).out;
       if (b.keys?.length) { motionChain(g, cur, `bm${i}`, b.keys, 0, n, W, H, false, `b${i}`, { hdr: !!plan.hdr, fr }); cur = `bm${i}`; }
-      g.push(`[${cur}]settb=${TB},setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
+      if (b.blend) { g.push(`[${cur}]settb=${TB},setpts=PTS-STARTPTS[brl${i}]`); v = blendWindow(v, `brl${i}`, b, n, `b${i}`); return; }
+      g.push(`[${cur}]${fadeTo(b.opacity)}settb=${TB},setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
+    } else if (b.blend) {
+      g.push(`[${bi}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n},settb=${TB},setpts=PTS-STARTPTS[brl${i}]`);
+      v = blendWindow(v, `brl${i}`, b, n, `b${i}`);
+      return;
     } else
-    g.push(`[${bi}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,settb=${TB},setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
+    g.push(`[${bi}:v]fps=${R},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,${fadeTo(b.opacity)}settb=${TB},setpts=PTS-STARTPTS+${Math.round(b.start * FPS)}[br${i}]`);
     g.push(`[${v}][br${i}]overlay=0:0:enable='between(t,${n6(b.start)},${n6(b.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vb${i}]`);
     v = `vb${i}`;
   });
@@ -1563,13 +1596,16 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     // Started part way in (add_graphic from): put on the frame grid first, then cut. The recording keeps one picture
     // for a still stretch, so seeking the file would skip the picture already showing at that time.
     const from = gr.sourceStart > 0 ? `fps=${R},trim=start_frame=${Math.round(gr.sourceStart * FPS)},setpts=PTS-STARTPTS,` : "";
-    if (gr.keys?.length) {
-      // Keyframed graphic: centred on a transparent frame, then moved, scaled, turned and faded.
-      g.push(`[${gi}:v]${from}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=${R},tpad=stop_mode=clone:stop=${hold ? -1 : 2},trim=end_frame=${n}${toHdr}[gk${i}]`);
-      motionChain(g, `gk${i}`, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`, { hdr: !!plan.hdr, fr });
-      g.push(`[gm${i}]setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
+    if (gr.keys?.length || gr.blend) {
+      // Keyframed graphic: centred on a transparent frame, then moved, scaled, turned and faded. Phase 4: a graphic with
+      // a blend mode is centred on a transparent frame too, and blended over the picture's frames under it.
+      g.push(`[${gi}:v]${from}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps=${R},tpad=stop_mode=clone:stop=${hold || gr.blend ? -1 : 2},trim=end_frame=${n}${toHdr}[gk${i}]`);
+      let gc = `gk${i}`;
+      if (gr.keys?.length) { motionChain(g, gc, `gm${i}`, gr.keys, 0, n, W, H, false, `g${i}`, { hdr: !!plan.hdr, fr }); gc = `gm${i}`; }
+      if (gr.blend) { g.push(`[${gc}]setpts=PTS-STARTPTS[grl${i}]`); v = blendWindow(v, `grl${i}`, gr, n, `g${i}`); return; }
+      g.push(`[${gc}]${fadeTo(gr.opacity)}setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     } else
-    g.push(`[${gi}:v]${from}${hold ? `fps=${R},tpad=stop_mode=clone:stop=-1,trim=end_frame=${n},` : ""}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease${toHdr},setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
+    g.push(`[${gi}:v]${from}${hold ? `fps=${R},tpad=stop_mode=clone:stop=-1,trim=end_frame=${n},` : ""}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease${toHdr},${fadeTo(gr.opacity)}setpts=PTS-STARTPTS+${n3(gr.start)}/TB[gr${i}]`);
     g.push(`[${v}][gr${i}]overlay=(W-w)/2:(H-h)/2:enable='between(t,${n6(gr.start)},${n6(gr.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vg${i}]`);
     v = `vg${i}`;
   };

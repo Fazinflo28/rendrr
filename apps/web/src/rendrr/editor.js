@@ -25,7 +25,7 @@ import { ExportModal, timeLeft } from "./export";
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
-import { ASPECT_RATIO, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { ASPECT_RATIO, BLEND_MODES, blendCss, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -198,6 +198,9 @@ function TemplateFrame({ graphicId, params, start, end, t, aspect }) {
   return html`<div ref=${box} style="position:absolute;inset:0;overflow:hidden;pointer-events:none"><iframe ref=${fr} title="graphic" sandbox="allow-scripts" srcDoc=${doc} onLoad=${post} style=${{ width: w, height: h, border: 0, background: "transparent", colorScheme: "light", transform: `scale(${k})`, transformOrigin: "0 0" }} /></div>`;
 }
 
+// Phase 4: the blend modes by their names in Premiere.
+const BLEND_NAME = { normal: "Normal", multiply: "Multiply", screen: "Screen", overlay: "Overlay", "soft-light": "Soft Light", "hard-light": "Hard Light", add: "Add (Linear Dodge)", lighten: "Lighten", darken: "Darken", difference: "Difference", exclusion: "Exclusion", "color-dodge": "Color Dodge", "color-burn": "Color Burn" };
+
 // What the render lays over the footage at this moment: b-roll, then (Phase 2) the graphics and text layers behind the
 // person and the person laid back over them, then the other graphics, text layers and captions.
 function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts, person = null }) {
@@ -205,10 +208,12 @@ function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts, person
   const b = frame.broll && media.broll[frame.broll.videoId];
   // Keyframed overlays move as the render's perspective filter moves them (Phase 5).
   const moved = (m, child) => (m ? html`<div style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(m) }}>${child}</div>` : child);
+  // Phase 4: a layer's blend mode and opacity, as the render's blend: the outermost box, so it blends with the picture.
+  const blended = (x, child) => (x.blend || x.opacity != null ? html`<div data-blend=${x.blend || "normal"} style=${{ position: "absolute", inset: 0, pointerEvents: "none", mixBlendMode: blendCss(x.blend), opacity: x.opacity ?? 1 }}>${child}</div>` : child);
   const gfx = (g) => { const m = media.graphicClips[g.clipId]; const c = clips.find((x) => x.id === g.clipId);
-    return moved(g.motion, m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`); };
+    return blended(g, moved(g.motion, m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`)); };
   const backText = frame.texts.some((x) => x.layer.behind);
-  return html`${b && moved(frame.broll.motion, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} />`)}
+  return html`${b && blended(frame.broll, moved(frame.broll.motion, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} />`))}
     ${frame.graphics.filter((g) => g.behind).map(gfx)}
     ${plan && backText && html`<${TextLayers} key="behind" plan=${plan} frame=${frame} only="behind" media=${media} playing=${playing} />`}
     ${person}
@@ -590,6 +595,11 @@ function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek 
   return html`<div class="pb" id="clip-panel" style="padding-top:16px"><div class="col" style="gap:16px">
     <div class="t-small muted" id="clip-name">${clip.label || clip.id} · ${len.toFixed(2)}s in the edit${v1 ? " · " + speedText(clip) : ""}</div>
     ${track === "v3" && (clip.kind === "text" || clip.kind === "graphic") && html`<label class="t-small row" style="gap:6px" title="The person is drawn over it from an AI matte of the footage (people only), like a title behind the speaker"><input type="checkbox" id="clip-behind" checked=${!!clip.behind} onChange=${(e) => doOp({ op: "behind_person", clipIds: [clip.id], off: !e.target.checked })} />Behind the person</label>`}
+    ${((track === "v2" && clip.kind === "broll" && !clip.under) || (track === "v3" && clip.kind === "graphic")) && html`<div class="col" style="gap:8px" id="blend-panel">
+      <div class="row between" style="align-items:flex-end"><b class="t-label">Blend</b>
+        <select class="input sm" id="clip-blend" value=${clip.blend || "normal"} onChange=${(e) => doOp({ op: "set_blend", clipId: clip.id, blend: e.target.value })}>${BLEND_MODES.map((m) => html`<option key=${m} value=${m}>${BLEND_NAME[m]}</option>`)}</select></div>
+      <${OpSlider} id="clip-opacity" label="Opacity" value=${clip.opacity ?? 1} min=${0} max=${1} step=${0.01} show=${(v) => Math.round(v * 100) + "%"} opFor=${(v) => ({ op: "set_blend", clipId: clip.id, opacity: v })} ...${sl} />
+      <span class="t-small muted">Screen and Add for light leaks and glows; Multiply and Overlay for textures.</span></div>`}
     ${v1 && html`<div class="col" style="gap:10px" id="speed-panel">
       <b class="t-label">Speed</b>
       ${clip.freeze ? html`<${OpSlider} id="freeze-len" label="Freeze length" value=${clip.freeze} min=${0.1} max=${10} step=${0.1} show=${(v) => v + " s"} opFor=${(x) => sp({ freeze: x })} ...${sl} />`

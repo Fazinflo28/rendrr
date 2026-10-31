@@ -2,6 +2,7 @@
 // (planRender), so the player and the rendered file agree: which video and footage moment plays, which sound plays
 // (it can come from another clip: J/L cuts), the caption on screen, the zoom, the b-roll and graphics on top, and
 // whether the dialogue is muted. Times are edit seconds.
+import type { BlendMode } from "./blend";
 import { editOf, rateOf, srcAt, type PicturePart, type Range, type SoundPart } from "./sequence";
 import type { RenderPlan, Seg, TransitionOp, ZoomOp } from "./renderPlan";
 import { dbToLin, dialogueGain, duckFactor, fadeFactor } from "./audio";
@@ -127,8 +128,9 @@ export type LiveFrame = {
   texts: { layer: TextLayer; opacity: number; scale: number; dy: number; look?: { x: number; y: number; scale: number; rotation: number; opacity: number } }[];
   zoom: number;
   muted: boolean;              // the dialogue is silent here
-  broll: { clipId: string; videoId: string; src: number; motion: Motion | null } | null;
-  graphics: { clipId: string; graphicId: string; t: number; start: number; end: number; motion: Motion | null; behind: boolean }[];
+  /** blend, opacity (Phase 4): how it lies over the picture (CSS mix-blend-mode and opacity in the player). */
+  broll: { clipId: string; videoId: string; src: number; motion: Motion | null; blend?: BlendMode; opacity?: number } | null;
+  graphics: { clipId: string; graphicId: string; t: number; start: number; end: number; motion: Motion | null; behind: boolean; blend?: BlendMode; opacity?: number }[];
   /** Phase 5: the picture's rate (1 normal, below 0 reversed, 0 frozen), its V1 keyframe motion, the transition on. */
   rate: number;
   motion: Motion | null;
@@ -164,8 +166,8 @@ export function liveFrame(plan: RenderPlan, t0: number, clock = sequenceClock(pl
     texts: (plan.texts ?? []).filter((x) => inside(t, x)).map((x) => ({ layer: x, ...textAnimAt(x.anim, t - x.start, x.end - x.start, plan.height), ...(x.keys?.length ? { look: textLookAt(x, t - x.start, plan.width, plan.height) } : {}) })),
     zoom: zoomAt(plan.zooms, t),
     muted: plan.dialogueMutes.some((m) => inside(t, m)),
-    broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start), motion: ov(br, "v2:") } : null,
-    graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start + g.sourceStart, start: g.start, end: g.end, motion: ov(g, "v3:"), behind: !!g.behind })),
+    broll: br ? { clipId: br.clipId, videoId: br.videoId!, src: br.sourceStart + (t - br.start), motion: ov(br, "v2:"), ...(br.blend ? { blend: br.blend } : {}), ...(br.opacity != null ? { opacity: br.opacity } : {}) } : null,
+    graphics: plan.graphics.filter((g) => inside(t, g) && g.graphicId).map((g) => ({ clipId: g.clipId, graphicId: g.graphicId!, t: t - g.start + g.sourceStart, start: g.start, end: g.end, motion: ov(g, "v3:"), behind: !!g.behind, ...(g.blend ? { blend: g.blend } : {}), ...(g.opacity != null ? { opacity: g.opacity } : {}) })),
     rate: pic ? pic.rate : 1,
     motion: part && part.clipIds.length === 1 ? clipMotionAt(plan, part.clipIds[0], t) : null,
     transition: transitionNow(plan, t),

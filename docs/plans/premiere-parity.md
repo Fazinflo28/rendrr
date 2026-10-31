@@ -23,7 +23,7 @@ plugin hosting, hardware I/O, localization) are out of scope.
 3. **Animated and tracked masks (done, 31 October).** Mask keys on rects and ellipses, masks and effect areas that
    follow the speaker's face, darken and a spotlight, a face blur that follows. Left for later: path keyframes,
    tracking an object other than a face.
-4. **Blend modes and opacity** on overlay layers (Screen, Multiply, Overlay, Add, Soft Light), for light leaks,
+4. **Blend modes and opacity (done, 31 October)** on b-roll and graphics: 12 modes and opacity, for light leaks,
    textures and brand overlays.
 5. **Deeper colour.** Highlights / shadows / whites / blacks, vibrance, colour wheels, HSL secondary, hue vs sat,
    vignette; scopes in the editor.

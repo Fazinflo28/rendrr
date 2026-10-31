@@ -26,3 +26,4 @@ export * from "./library";
 export * from "./libraryHtml";
 export * from "./styleFile";
 export * from "./waveform";
+export * from "./blend";
