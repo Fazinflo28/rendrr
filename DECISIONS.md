@@ -357,6 +357,16 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 8: Morph Cut (31 October)
+
+| Question | Decision |
+|---|---|
+| What it does | A transition on a jump cut: the window's frames are made from A's frame at its start and B's at its end, by motion-compensated interpolation (FFmpeg minterpolate: bidirectional block motion, overlapped blocks, variable block size, search 64 px), so a head that moved between the takes slides across instead of jumping. It replaces the window's real frames (as Premiere's does). |
+| What minterpolate needs | It gives nothing for two frames (it works on the frames round each pair) and stops at a scene change: each frame goes in twice (A, A, B, B, D apart), the stretch between the second A and the first B is kept, and scene detection is off. Found by the render test: the first version showed B all through the window. |
+| Handles | None: each side's own frames (A's last before the window, B's first after it). |
+| The player | Shows a dissolve over the window (the morph is drawn in the render). |
+| Limits | Small moves morph cleanly; a big change of pose or framing smears, as Premiere's does. |
+
 ## Premiere parity, phase 7: Warp Stabilizer (31 October)
 
 | Question | Decision |

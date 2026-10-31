@@ -31,7 +31,8 @@ plugin hosting, hardware I/O, localization) are out of scope.
    hearing pan, EQ and reverb live in the editor (a WebAudio graph), a parametric EQ.
 7. **Warp Stabilizer (done, 31 October)** for hand-held footage: vidstab's two passes, smoothness, a zoom that hides
    the edges. Left for later: stabilizing ramped clips and b-roll, showing it live in the player.
-8. **Morph Cut** for jump cuts in talking heads.
+8. **Morph Cut (done, 31 October)** for jump cuts in talking heads (motion-compensated interpolation). Left for
+   later: a face-aware warp, the morph live in the player.
 9. **Adjustment layers** over a time range (affect b-roll and graphics too).
 10. **Multicam with audio sync** for two-camera podcasts.
 11. **Crop, flip, anchor, drop shadow, motion blur on any clip**; optical-flow slow motion and eased speed ramps.

@@ -172,7 +172,9 @@ export function rampSteps(ramp: RampPoint[], a: number, b: number, reverse = fal
 // Transitions: centred on the cut, `duration` long. Each side is drawn at an offset (px) with an opacity; a dip lays a
 // colour over the picture; zoom scales the picture; whip blurs along its move.
 // ---------------------------------------------------------------------------------------------
-export const TRANSITIONS = ["cut", "dissolve", "dip-black", "dip-white", "whip", "zoom", "slide"] as const;
+/** morph (Phase 8): Premiere's Morph Cut for a jump cut in a talking head: the last frame before the window flows into the
+ *  first frame after it (motion-compensated in the render; the player shows a dissolve). */
+export const TRANSITIONS = ["cut", "dissolve", "dip-black", "dip-white", "whip", "zoom", "slide", "morph"] as const;
 export type TransitionType = (typeof TRANSITIONS)[number];
 export const DIRS = ["left", "right", "up", "down"] as const;
 export type Dir = (typeof DIRS)[number];
@@ -197,7 +199,7 @@ export function transitionAt(tr: { type: TransitionType; dir?: Dir }, p: number,
   const [dx, dy] = dirVec(tr.dir);
   const still: SideLook = { x: 0, y: 0, opacity: 1 };
   const look: TransitionLook = { a: still, b: still, color: null, zoom: 1, blur: { x: 0, y: 0 } };
-  if (tr.type === "dissolve") look.b = { x: 0, y: 0, opacity: q };
+  if (tr.type === "dissolve" || tr.type === "morph") look.b = { x: 0, y: 0, opacity: q };
   else if (tr.type === "slide") { const e = 1 - smooth(q); look.b = { x: -dx * W * e, y: -dy * H * e, opacity: 1 }; }
   else if (tr.type === "whip") {
     const e = smooth(q);

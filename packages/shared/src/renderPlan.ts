@@ -851,6 +851,10 @@ export function planTransitions(view: SequenceView, clipById: Map<string, SeqCli
     const sides = (USES_HANDLES as string[]).includes(tr.type) ? {
       a: [...pic.filter((p) => p.end > start + 1e-9 && p.start < at - 1e-9).map((p) => seg(p, Math.max(start, p.start), Math.min(at, p.end), p.clipIds[p.clipIds.length - 1])), seg(aPart, at, end, aPart.clipIds[aPart.clipIds.length - 1])],
       b: [seg(bPart, start, at, bPart.clipIds[0]), ...pic.filter((p) => p.start < end - 1e-9 && p.end > at + 1e-9).map((p) => seg(p, Math.max(at, p.start), Math.min(end, p.end), p.clipIds[0]))],
+    } : tr.type === "morph" ? {
+      // Phase 8: each side's own frames only (the morph runs from A's frame at the window's start to B's at its end).
+      a: pic.filter((p) => p.end > start + 1e-9 && p.start < at - 1e-9).map((p) => seg(p, Math.max(start, p.start), Math.min(at, p.end), p.clipIds[p.clipIds.length - 1])),
+      b: pic.filter((p) => p.start < end - 1e-9 && p.end > at + 1e-9).map((p) => seg(p, Math.max(at, p.start), Math.min(end, p.end), p.clipIds[0])),
     } : {};
     out.push({ ...base, ...sides, type: tr.type, start: r3(start), end: r3(end), ...(note ? { note } : {}) });
   });
@@ -1448,6 +1452,17 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       const [dx, dy] = dirVec(t.dir);
       const p = `(t/${n6(D)})`;
       if (t.type === "dissolve") g.push(`[${b}]format=${PFA},fade=t=in:st=0:d=${n6(D)}:alpha=1[tbf${i}];[${a}][tbf${i}]overlay=format=auto,format=${PF}[tx${i}]`);
+      else if (t.type === "morph") {
+        // Phase 8 (Morph Cut): A's frame at the window's start and B's at its end, D apart, and the frames between made by
+        // motion-compensated interpolation (minterpolate: block motion both ways, overlapped blocks), so the head moves
+        // from one place to the other instead of jumping. minterpolate gives nothing for two frames (it needs the frames
+        // round the pair) and stops at a scene change: each frame goes in twice, the stretch between the second A and the
+        // first B is kept, and scene detection is off.
+        const n = Math.max(1, Math.round(D * FPS)), ms = Math.round(D * 1000);
+        g.push(`[${a}]trim=end_frame=1,setpts=PTS-STARTPTS,split[mfa${i}][mfc${i}]`);
+        g.push(`[${b}]reverse,trim=end_frame=1,setpts=PTS-STARTPTS,split[mfb${i}][mfd${i}]`);
+        g.push(`[mfa${i}][mfc${i}][mfb${i}][mfd${i}]concat=n=4:v=1:a=0,settb=1/1000,setpts=N*${ms},minterpolate=fps=${R}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:search_param=64:scd=none,trim=start=${n6(ms / 1000)},setpts=PTS-STARTPTS,trim=end_frame=${n},format=${PF}[tx${i}]`);
+      }
       else if (t.type === "slide") g.push(`[${a}][${b}]overlay=x='${-dx * W}*(1-${smoothExpr(p)})':y='${-dy * H}*(1-${smoothExpr(p)})':eval=frame${hdr ? ":format=auto" : ""},format=${PF}[tx${i}]`);
       else {
         // Whip: both sides move together, blurred along the move (strongest at the cut).
