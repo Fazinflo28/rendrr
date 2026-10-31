@@ -11,7 +11,7 @@ import { autoMusicFades, CLEANUP_KNOBS, cleanupText } from "./audio";
 import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema, presetStyle, styleText, TEXT_ANIMS, TEXT_PRESETS, TextInsideSchema, textPreset, TextStylePatchSchema, TextStyleSchema, type Card, type TextAnim, type TextInside, type TextStyle } from "./captions";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
 import { EXPORT_FORMATS, MARK_KINDS, type Angle, type Mark, type MarkEdit, type Multicam } from "./timeline";
-import { multicamText } from "./multicam";
+import { multicamText, planText, type AnglePlanPart } from "./multicam";
 import { editToFootage, RENDRR_MARK } from "./marks";
 import { AnchorSchema, DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
@@ -215,6 +215,12 @@ const EDIT_OPS = [
   // from `at` to the next change of angle (as cutting live in Premiere's multicam monitor). Times: main-footage
   // seconds, or edit seconds with edit true. Clips are split at the range's ends.
   z.object({ op: z.literal("switch_angle"), angle: z.string().min(1).max(80), clipId: clipId.optional(), clipIds: z.array(clipId).max(2000).optional(), start: t.optional(), end: t.optional(), at: t.optional(), edit }),
+  // Phase 13: cut to whoever speaks, from each camera's own sound (the server works out the plan from the measured
+  // loudness; the editor and the AI send the settings). cameras: the angles to cut between ("main" and angle names or
+  // ids; default all); wide: the camera for when both speak; minShot: the shortest shot (s); start/end: main-footage
+  // seconds (default the whole edit). plan: filled by the server.
+  z.object({ op: z.literal("multicam_auto"), cameras: z.array(z.string().min(1).max(80)).max(9).optional(), wide: z.string().min(1).max(80).optional(), minShot: z.number().min(0.5).max(30).optional(), start: t.optional(), end: t.optional(),
+    plan: z.array(z.object({ start: t, end: t, angle: z.string().min(1).max(80) })).max(5000).optional() }),
   // Phase 4: how b-roll (V2) or a graphic (V3) lies over the picture: a blend mode and its opacity (0-1). normal at 1 = plain.
   z.object({ op: z.literal("set_blend"), clipId: clipId.optional(), clipIds: z.array(clipId).min(1).max(200).optional(), blend: BlendModeSchema.optional(), opacity: z.number().min(0).max(1).optional() }),
   // How the final file is made: hdr keep (HDR footage stays HDR) or sdr (converted).
@@ -1324,6 +1330,36 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const mc: Multicam = { angles, ...(audio ? { audio } : {}) };
       const next = clearAngles({ ...tl, multicam: mc }, new Set(angles.map((a) => a.videoId)));
       return { snap: { ...snap, timeline: next }, summary: `multicam: ${multicamText(mc, nameOf)}${unsure.length ? `. The sync of ${unsure.join(", ")} is unsure (their sound barely matches the main video's): check it in a preview, or give offset by hand` : ""}. switch_angle picks which camera V1 shows` };
+    }
+    case "multicam_auto": {
+      const nameOf = (id: string) => ctx.getVideo?.(id)?.name;
+      const angles = tl.multicam?.angles ?? [];
+      if (!angles.length) throw new EditError("This edit has no multicam: add the other cameras with multicam first.");
+      if (!op.plan) throw new EditError("multicam_auto is worked out from the cameras' sound on the server: send it with apply_edits (or press Cut to whoever speaks in the editor).");
+      const known = new Set(["main", ...angles.map((a) => a.videoId)]);
+      const plan = (op.plan as AnglePlanPart[]).filter((p) => p.end - p.start > 1e-3).sort((a, b) => a.start - b.start);
+      const bad = plan.find((p) => !known.has(p.angle));
+      if (bad) throw new EditError(`The plan names "${bad.angle}", which is not a camera of this edit.`);
+      const angleAt = (x: number) => plan.find((p) => x >= p.start - 1e-6 && x < p.end - 1e-6)?.angle;
+      // Split the main camera's V1 clips at every change inside them, then give each piece the camera of its middle.
+      let next = tl;
+      for (const p of plan.slice(1)) {
+        const hit = seqClips(next).find((c) => c.sourceVideoId === main && p.start > c.sourceIn + 0.05 && p.start < c.sourceOut - 0.05);
+        if (hit) next = splitSeqClip(next, hit.id, p.start).tl;
+      }
+      let changed = 0;
+      const v1 = seqClips(next).map((c) => {
+        if (c.sourceVideoId !== main) return c;
+        const a = angleAt((c.sourceIn + c.sourceOut) / 2);
+        if (!a) return c;
+        const { angle: was, ...rest } = c;
+        const now = a === "main" ? undefined : a;
+        if (now !== was) changed++;
+        return (now ? { ...rest, angle: now } : rest) as SeqClip;
+      });
+      const label = (a: string) => (a === "main" ? "main camera" : angles.find((x) => x.videoId === a)?.name ?? nameOf(a) ?? a);
+      const span = plan.length ? `footage ${fmtClock(plan[0].start)} to ${fmtClock(plan[plan.length - 1].end)}` : "";
+      return { snap: { ...snap, timeline: withTracks(next, "v1", v1) }, summary: `cut to whoever speaks over ${span}: ${planText(plan, label)}${op.minShot ? `; shots at least ${op.minShot} s` : ""}${op.wide ? `; ${label(op.wide)} when both speak` : ""}${changed ? "" : " (the clips already showed those cameras)"}` };
     }
     case "switch_angle": {
       const nameOf = (id: string) => ctx.getVideo?.(id)?.name;

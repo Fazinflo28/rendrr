@@ -118,3 +118,91 @@ export function multicamText(m: Multicam, nameOf?: (videoId: string) => string |
   const list = m.angles.map((a) => `${a.name || nameOf?.(a.videoId) || a.videoId} (${signed(a.offset)}${a.score != null ? `, sync ${a.score.toFixed(2)}` : ", set by hand"}${a.rotate ? `, turned ${a.rotate}°` : ""})`);
   return `${m.angles.length} ${m.angles.length === 1 ? "angle" : "angles"}: ${list.join(", ")}; sound: ${m.audio === "follow" ? "each angle's own" : "the main video's"}`;
 }
+
+// ---------------- Phase 13: cut to whoever speaks ----------------
+/** A stretch of the main video's footage and the camera it shows ("main", or an angle's videoId). */
+export type AnglePlanPart = { start: number; end: number; angle: string };
+/** A camera's sound: its loudness every 10 ms (dBFS, its own time) and its offset (its time = main time + offset). */
+export type SpeakerSource = { angle: string; db: ArrayLike<number>; offset: number };
+export type SpeakerPlanOpts = { from: number; to: number; minShot?: number; margin?: number; wide?: string; lead?: number; step?: number };
+
+/**
+ * Who speaks when, from each camera's own sound: in a two-camera podcast each person is loudest on the camera (or
+ * mic) nearest them. Every `step` (0.1 s), each camera's level over the last half second is compared with its own room
+ * noise (its 20th percentile); a camera 6 dB over its noise and `margin` dB (default 3) louder than every other one
+ * leads. Both speaking at once: the wide camera if one is given, else the shot stays. Silence: the shot stays. Shots
+ * shorter than `minShot` (default 2 s) go into the one before; each cut comes `lead` (0.2 s) before the voice, as an
+ * editor cuts. Returns the stretches over from..to, in main-footage seconds.
+ */
+export function speakerPlan(sources: SpeakerSource[], o: SpeakerPlanOpts): AnglePlanPart[] {
+  const step = o.step ?? 0.1, minShot = o.minShot ?? 2, margin = o.margin ?? 3, lead = o.lead ?? 0.2;
+  const from = Math.max(0, o.from), to = Math.max(from, o.to);
+  const n = Math.max(1, Math.round((to - from) / step));
+  if (!sources.length) return [{ start: from, end: to, angle: "main" }];
+  const half = 40; // 0.4 s of 10 ms frames behind each moment (the voice so far), 0.05 s ahead
+  const levels = sources.map((s) => {
+    const out = new Float64Array(n);
+    for (let k = 0; k < n; k++) {
+      const i = Math.round((from + k * step + s.offset) / 0.01);
+      let sum = 0, cnt = 0;
+      for (let j = Math.max(0, i - half); j <= i + 5 && j < s.db.length; j++) { if (j >= 0) { sum += Math.pow(10, s.db[j] / 10); cnt++; } }
+      out[k] = cnt ? 10 * Math.log10(sum / cnt + 1e-12) : -Infinity;
+    }
+    const finite = Array.from(out).filter(Number.isFinite).sort((a, b) => a - b);
+    const floor = finite.length ? finite[Math.floor(finite.length * 0.2)] : 0;
+    return out.map((v) => (Number.isFinite(v) ? v - floor : -Infinity));
+  });
+  // Who leads each step: one voice clearly over the others, both at once (the wide camera, if any), or nobody.
+  const raw: (string | null)[] = new Array(n);
+  for (let k = 0; k < n; k++) {
+    const order = sources.map((s, i) => ({ a: s.angle, v: levels[i][k] })).sort((x, y) => y.v - x.v);
+    const best = order[0], second = order[1];
+    raw[k] = best.v >= 6 && (!second || best.v - second.v >= margin) ? best.a : best.v >= 6 && second && second.v >= 6 && o.wide ? o.wide : null;
+  }
+  // A new camera only once it has led for `hold` (0.4 s) with nobody else leading in between: a syllable over the
+  // other person, or a laugh, does not flip the shot. The cut goes where it started leading.
+  const hold = Math.max(1, Math.round(0.4 / step));
+  const pick: string[] = new Array(n);
+  let cur = "";
+  for (let k = 0; k < n; k++) {
+    const c = raw[k];
+    if (c && c !== cur) {
+      let led = 0, other = false;
+      for (let j = k; j < n && j < k + hold * 3 && led < hold; j++) { if (raw[j] === c) led++; else if (raw[j] && raw[j] !== c) { other = true; break; } }
+      if (led >= hold && !other) cur = c;
+      else if (!cur) cur = c;
+    }
+    pick[k] = cur;
+  }
+  const first = pick.find(Boolean) || (o.wide ?? sources[0].angle);
+  for (let k = 0; k < n && !pick[k]; k++) pick[k] = first;
+  let parts: AnglePlanPart[] = [];
+  for (let k = 0; k < n; k++) {
+    const t = from + k * step;
+    const last = parts[parts.length - 1];
+    if (last && last.angle === pick[k]) last.end = Math.min(to, t + step);
+    else parts.push({ start: t, end: Math.min(to, t + step), angle: pick[k] });
+  }
+  // Too-short shots go into the one before (the first into the one after), until none is left.
+  for (let changed = true; changed && parts.length > 1;) {
+    changed = false;
+    const i = parts.findIndex((p) => p.end - p.start < minShot - 1e-9);
+    if (i < 0) break;
+    if (i === 0) parts[1].start = parts[0].start; else parts[i - 1].end = parts[i].end;
+    parts.splice(i, 1);
+    parts = parts.reduce<AnglePlanPart[]>((acc, p) => { const l = acc[acc.length - 1]; if (l && l.angle === p.angle) l.end = p.end; else acc.push({ ...p }); return acc; }, []);
+    changed = true;
+  }
+  // Cut a little before the voice.
+  for (let i = 1; i < parts.length; i++) { const t = Math.max(parts[i - 1].start + 0.5, parts[i].start - lead); parts[i - 1].end = t; parts[i].start = t; }
+  const r3 = (x: number) => Math.round(x * 1000) / 1000;
+  return parts.map((p) => ({ start: r3(p.start), end: r3(p.end), angle: p.angle }));
+}
+
+/** "4 cuts: Cam B 46%, main 38%, Wide 16%" */
+export function planText(plan: AnglePlanPart[], nameOf: (angle: string) => string): string {
+  const total = plan.reduce((a, p) => a + (p.end - p.start), 0) || 1;
+  const share = new Map<string, number>();
+  for (const p of plan) share.set(p.angle, (share.get(p.angle) ?? 0) + (p.end - p.start));
+  return `${Math.max(0, plan.length - 1)} ${plan.length - 1 === 1 ? "cut" : "cuts"}: ${Array.from(share).sort((a, b) => b[1] - a[1]).map(([a, s]) => `${nameOf(a)} ${Math.round((s / total) * 100)}%`).join(", ")}`;
+}

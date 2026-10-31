@@ -27,7 +27,7 @@ import { addLibraryItem, getLibraryItem, listLibrary, searchIcons, withIcons } f
 import { analyzeReference, styleFileLines, styleFileOut } from "./services/styleFiles";
 import { openProjects } from "./services/claudeApp";
 import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, latestFinal } from "./services/driveSave";
-import { resolveMulticam } from "./services/multicam";
+import { resolveMulticam, resolveMulticamAuto } from "./services/multicam";
 import { ensureLibraryFolderPath, findLibraryFolder, folderFootage, listLibraryFolders, moveVideos, projectFromLibraryFolder } from "./services/libraryFolders";
 import { resolveSoundRefs, soundFromSource, soundLine, soundOut, soundsText, soundUploadLink } from "./services/sounds";
 import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
@@ -197,7 +197,9 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e.op === "set_grade" && e.lut?.cube ? { ...e, lut: { ...e.lut, cube: `${e.lut.cube.length} characters` } } : e)) };
   // Phase 6: match_color gets the clips' measured frames (the worker reads them; a failure stops here, loudly).
   // Phase 10: multicam angles sent without an offset are synced by their sound.
-  const ready = await withMeasurements(projectId, withIcons(await resolveMulticam(c.userId, (p0.timeline as unknown as Timeline).mainVideoId || p0.videoId, await resolveSoundRefs(c.userId, await resolveLutRefs(c.userId, await rerecordFirst(c.userId, edits)), c.ai ?? undefined))));
+  const mainVid = (p0.timeline as unknown as Timeline).mainVideoId || p0.videoId;
+  const synced = await resolveMulticam(c.userId, mainVid, await resolveSoundRefs(c.userId, await resolveLutRefs(c.userId, await rerecordFirst(c.userId, edits)), c.ai ?? undefined));
+  const ready = await withMeasurements(projectId, withIcons(await resolveMulticamAuto(c.userId, mainVid, p0.timeline as unknown as Timeline, synced)));
   const luts = ready.some((e) => e.op === "match_color") ? await lutsFor(c.userId, p0.timeline as unknown as Timeline) : undefined;
   const r = await applyTimelineChange(projectId, ready.length === 1 ? ready[0] : { op: "batch", ops: ready }, actorFor(c, "apply_edits", logged), { luts });
   const v = await prisma.video.findUniqueOrThrow({ where: { id: p0.videoId }, include: { analysis: true } });

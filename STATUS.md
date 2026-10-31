@@ -21,6 +21,13 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Multicam: cut to whoever speaks (phase 13, 31 October)
+
+- **Cut to whoever speaks.** In the Multicam page: the person loudest on their own camera's mic gets the shot. Options: the camera to use when both talk (or keep the shot), the shortest shot (1, 2, 3 or 5 s). A camera must lead 0.4 s before the shot changes, and each cut comes 0.2 s before the voice.
+- **Number keys.** 1 is the main camera, 2 to 9 the others: press one to cut there at the playhead, while it plays too. Each monitor shows its key.
+- **Claude.** apply_edits `multicam_auto {cameras?, wide?, minShot?, start?, end?}`; the server works out the cuts from the measured sound and the result names the cuts and each camera's share.
+- **Tests.** packages/shared/test/multicam-auto.test.ts (two voices on two cameras, an interjection, both talking), apps/api/test/multicam-auto.test.ts (measured sound in storage, apply_edits and the editor's route), apps/web/demo/multicam.mjs (keys and the button).
+
 ## Library folders (31 October)
 
 - **Folders in the Library.** New folder makes one; a video goes in with its folder button, Select then Move to folder, or by dragging its card onto the folder. Rename and Delete folder (its videos stay in the Library). Add videos inside a folder puts new uploads straight in it.

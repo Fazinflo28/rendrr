@@ -8,7 +8,7 @@ import { api } from "./api";
 const signed = (x) => `${x >= 0 ? "+" : "-"}${Math.abs(x).toFixed(3)} s`;
 
 /** One camera's small monitor: muted, kept on the moment the playhead is at (main time + its offset). */
-function Monitor({ id, url, name, t, playing, on, rotate, onPick }) {
+function Monitor({ id, url, name, t, playing, on, rotate, onPick, keyNo }) {
   const ref = useRef(null);
   useEffect(() => {
     const el = ref.current; if (!el || t == null) return;
@@ -20,7 +20,7 @@ function Monitor({ id, url, name, t, playing, on, rotate, onPick }) {
   return html`<button class=${"mc-mon" + (on ? " on" : "")} data-angle=${id} title=${`Cut to ${name} here`} onClick=${onPick}>
     <div class="mc-pic">${url ? html`<video ref=${ref} src=${url} muted playsinline preload="auto" crossorigin="anonymous" style=${rotate ? { transform: `rotate(${rotate}deg)` } : null} />` : html`<span class="t-small muted">No preview</span>`}
       ${out && html`<span class="mc-out t-small">No footage here</span>`}</div>
-    <span class="mc-name">${name}</span></button>`;
+    <span class="mc-name">${keyNo ? html`<kbd class="mc-key">${keyNo}</kbd>` : null}${name}</span></button>`;
 }
 
 export function MulticamTab({ projectId, timeline, lay, view, main, mainName, library, at, playing, urls, doOp, addVideo, toast }) {
@@ -43,11 +43,44 @@ export function MulticamTab({ projectId, timeline, lay, view, main, mainName, li
   };
   const cut = (angle) => { if (mainT == null) { toast("The playhead is on a clip of another video: angles replace the main video's picture."); return; } doOp({ op: "switch_angle", angle, at: Math.round(at * 1000) / 1000, edit: true }); };
   const choices = library.filter((v) => v.id !== main && !mc.angles.some((a) => a.videoId === v.id));
+  // Phase 13: number keys cut live (1 = main, 2 = the first other camera...), as in Premiere's multicam monitor.
+  const order = ["main", ...mc.angles.map((a) => a.videoId)];
+  const cutRef = useRef(cut); cutRef.current = cut;
+  useEffect(() => {
+    if (!mc.angles.length) return;
+    const onKey = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || "") || e.target?.isContentEditable) return;
+      const n = Number(e.key);
+      if (Number.isInteger(n) && n >= 1 && n <= order.length) { e.preventDefault(); cutRef.current(order[n - 1]); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [order.join("|")]);
+  // Phase 13: cut to whoever speaks, from each camera's own sound (worked out on the server).
+  const [wide, setWide] = useState(""); const [minShot, setMinShot] = useState("2");
+  const auto = async () => {
+    setBusy("auto");
+    try {
+      const o = { ...(wide ? { wide } : {}), minShot: Number(minShot) };
+      const { plan } = await api.multicamAuto(projectId, o);
+      doOp({ op: "multicam_auto", ...o, plan });
+    } catch (e) { toast(e.message); } finally { setBusy(""); }
+  };
   return html`<div class="pb" id="multicam-panel" style="padding-top:16px"><div class="col" style="gap:16px">
     <p class="t-small muted" style="margin:0">Other cameras of the same take, synced to the main video by their sound. Click a camera to cut to it from the playhead to the next change, as you would live in Premiere's multicam monitor. The words, cuts and timing stay the main video's.</p>
     ${mc.angles.length > 0 && html`<div class="mc-grid" id="multicam-monitors">
-      <${Monitor} id="main" url=${urls[main]} name=${"Main · " + (mainName || "camera 1")} t=${mainT} playing=${playing} on=${showing === "main"} onPick=${() => cut("main")} />
-      ${mc.angles.map((a) => html`<${Monitor} key=${a.videoId} id=${a.videoId} url=${urls[a.videoId]} name=${nameOf(a)} t=${mainT == null ? null : mainT + a.offset} playing=${playing} on=${showing === a.videoId} rotate=${a.rotate} onPick=${() => cut(a.videoId)} />`)}
+      <${Monitor} id="main" keyNo=${1} url=${urls[main]} name=${"Main · " + (mainName || "camera 1")} t=${mainT} playing=${playing} on=${showing === "main"} onPick=${() => cut("main")} />
+      ${mc.angles.map((a, i) => html`<${Monitor} key=${a.videoId} id=${a.videoId} keyNo=${i + 2 <= 9 ? i + 2 : null} url=${urls[a.videoId]} name=${nameOf(a)} t=${mainT == null ? null : mainT + a.offset} playing=${playing} on=${showing === a.videoId} rotate=${a.rotate} onPick=${() => cut(a.videoId)} />`)}
+    </div>
+    <p class="t-small muted" style="margin:0" id="multicam-keys-hint">Keys 1 to ${Math.min(9, order.length)} cut to a camera at the playhead, while it plays too.</p>
+    <div class="card flat col" id="multicam-auto-box" style="gap:10px;padding:12px">
+      <div><b class="t-label">Cut to whoever speaks</b><p class="t-small muted" style="margin:2px 0 0">Rendrr listens to each camera's own sound: the person loudest on their mic gets the shot. Then fix any cut with the keys.</p></div>
+      <div class="row wrap" style="gap:8px;align-items:flex-end">
+        <label class="t-small" style="display:grid;gap:4px;min-width:150px">When both speak<select class="input sm" id="multicam-auto-wide" value=${wide} onChange=${(e) => setWide(e.target.value)}>
+          <option value="">Keep the shot</option><option value="main">${"Main · " + (mainName || "camera 1")}</option>${mc.angles.map((a) => html`<option key=${a.videoId} value=${a.videoId}>${nameOf(a)}</option>`)}</select></label>
+        <label class="t-small" style="display:grid;gap:4px">Shortest shot<select class="input sm" id="multicam-auto-min" value=${minShot} onChange=${(e) => setMinShot(e.target.value)}>${["1", "2", "3", "5"].map((v) => html`<option key=${v} value=${v}>${v} s</option>`)}</select></label>
+        <${Btn} size="sm" icon="spark" id="multicam-auto" disabled=${!!busy} onClick=${auto}>${busy === "auto" ? "Listening…" : "Cut to whoever speaks"}<//>
+      </div>
     </div>`}
     <div class="col" style="gap:8px" id="multicam-angles">
       <b class="t-label">Cameras</b>

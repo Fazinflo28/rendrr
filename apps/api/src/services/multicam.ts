@@ -3,7 +3,7 @@
 // The editor asks for one angle's sync (its route); apply_edits fills the offsets the AI left out.
 import { AppError } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { syncEnvelope, syncOffset, type SyncResult } from "@rendrr/shared";
+import { speakerPlan, syncEnvelope, syncOffset, type AnglePlanPart, type SpeakerSource, type SyncResult, type Timeline } from "@rendrr/shared";
 import { audioFramesOf, deepOf } from "./deep";
 
 export type AngleSync = SyncResult & { videoId: string; name: string; rotate?: 0 | 90 | 180 | 270 };
@@ -47,6 +47,65 @@ export async function resolveMulticam<T extends { op: string }>(userId: string, 
       filled.push({ ...a, offset: s.offset, score: s.score, ...(a.name ? {} : { name: s.name }), ...(a.rotate == null && s.rotate ? { rotate: s.rotate } : {}) });
     }
     out.push({ ...e, angles: filled });
+  }
+  return out;
+}
+
+// ---------------- Phase 13: cut to whoever speaks ----------------
+async function loudnessOf(userId: string, videoId: string): Promise<{ db: Int8Array; name: string }> {
+  const d = await deepOf(userId, videoId);
+  if (!d.ready || !d.audio) throw new AppError(d.note ?? `"${d.name}" has no sound measurements yet: ask again in a minute.`, 409, "not-ready");
+  const f = await audioFramesOf(d.audio);
+  if (!f || f.n < 100) throw new AppError(`"${d.name}" has no sound to tell who speaks by.`, 400, "no-sound");
+  return { db: f.db, name: d.name };
+}
+
+type AutoSettings = { cameras?: string[]; wide?: string; minShot?: number; start?: number; end?: number };
+type AngleLike = { videoId: string; offset: number; name?: string };
+
+/** The cameras a multicam_auto names ("main", an angle's videoId or name), and its plan from their sound. */
+export async function autoPlan(userId: string, mainVideoId: string, tl: Pick<Timeline, "tracks"> & { multicam?: { angles: AngleLike[] } }, o: AutoSettings): Promise<AnglePlanPart[]> {
+  const angles = tl.multicam?.angles ?? [];
+  if (!angles.length) throw new AppError("This edit has no multicam: add the other cameras first.", 400, "no-multicam");
+  const resolve = (ref: string) => {
+    if (ref === "main" || ref === mainVideoId) return "main";
+    const a = angles.find((x) => x.videoId === ref || (x.name ?? "").toLowerCase() === ref.toLowerCase());
+    if (!a) throw new AppError(`"${ref}" is not a camera of this edit (${["main", ...angles.map((x) => x.name ?? x.videoId)].join(", ")}).`, 400, "invalid-input");
+    return a.videoId;
+  };
+  const picked = o.cameras?.length ? Array.from(new Set(o.cameras.map(resolve))) : ["main", ...angles.map((a) => a.videoId)];
+  const wide = o.wide ? resolve(o.wide) : undefined;
+  const speakers = picked.filter((a) => a !== wide);
+  if (speakers.length < 2 && !wide) throw new AppError("Name at least two cameras to cut between.", 400, "invalid-input");
+  const v1 = (tl.tracks.v1 as unknown as { sourceVideoId?: string; sourceIn: number; sourceOut: number }[]).filter((c) => c.sourceVideoId === mainVideoId);
+  if (!v1.length) throw new AppError("No V1 clip plays the main video.", 400, "invalid-input");
+  const from = o.start ?? Math.min(...v1.map((c) => c.sourceIn)), to = o.end ?? Math.max(...v1.map((c) => c.sourceOut));
+  if (!(to - from >= 1)) throw new AppError("That stretch is under a second.", 400, "invalid-input");
+  const sources: SpeakerSource[] = [];
+  for (const a of speakers) {
+    const l = await loudnessOf(userId, a === "main" ? mainVideoId : a);
+    sources.push({ angle: a, db: l.db, offset: a === "main" ? 0 : angles.find((x) => x.videoId === a)!.offset });
+  }
+  return speakerPlan(sources, { from, to, minShot: o.minShot, wide });
+}
+
+/** multicam_auto edits without a plan get one, against the timeline as the batch has it by then (angles a multicam
+ *  earlier in the same batch adds count). */
+export async function resolveMulticamAuto<T extends { op: string }>(userId: string, mainVideoId: string, tl: Timeline, edits: T[]): Promise<T[]> {
+  if (!edits.some((e) => e.op === "multicam_auto" && !(e as { plan?: unknown }).plan)) return edits;
+  let angles: AngleLike[] = [...((tl.multicam?.angles as AngleLike[] | undefined) ?? [])];
+  const out: T[] = [];
+  for (const e of edits) {
+    if (e.op === "multicam") {
+      const m = e as unknown as { angles?: AngleLike[]; remove?: string[]; off?: boolean };
+      if (m.off) angles = [];
+      for (const a of m.angles ?? []) { const i = angles.findIndex((x) => x.videoId === a.videoId); const merged = { ...(i >= 0 ? angles[i] : {}), ...a } as AngleLike; if (i >= 0) angles[i] = merged; else angles.push(merged); }
+      if (m.remove) angles = angles.filter((a) => !m.remove!.includes(a.videoId));
+    }
+    if (e.op === "multicam_auto" && !(e as { plan?: unknown }).plan) {
+      const plan = await autoPlan(userId, mainVideoId, { tracks: tl.tracks, multicam: { angles: angles.filter((a) => a.offset != null) } }, e as unknown as AutoSettings);
+      out.push({ ...e, plan });
+    } else out.push(e);
   }
   return out;
 }

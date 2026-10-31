@@ -1,11 +1,11 @@
 import { AppError, applyTimelineChange, matteBlockUrls, notFound, projectChannel, restoreVersion, signGet } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
-import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot } from "@rendrr/shared";
+import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot, type Timeline } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { faceTracks, skinFaceAreas, speakerCentres } from "../services/color";
 import { createCanvas } from "../services/canvas";
-import { syncAngle } from "../services/multicam";
+import { autoPlan, syncAngle } from "../services/multicam";
 import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
@@ -180,6 +180,14 @@ export default async function projects(app: FastifyInstance) {
     const { videoId } = z.object({ videoId: z.string().min(1).max(80) }).parse(req.body);
     const main = ((p.timeline as unknown as { mainVideoId?: string }).mainVideoId) || p.videoId;
     return syncAngle(req.user!.id, main, videoId);
+  });
+
+  // Phase 13: cut to whoever speaks. The editor sends the settings; the plan comes back and goes in a multicam_auto.
+  app.post("/projects/:id/multicam-auto", async (req) => {
+    const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    const b = z.object({ cameras: z.array(z.string().min(1).max(80)).max(9).optional(), wide: z.string().min(1).max(80).optional(), minShot: z.number().min(0.5).max(30).optional(), start: z.number().min(0).optional(), end: z.number().min(0).optional() }).parse(req.body ?? {});
+    const tl = p.timeline as unknown as Timeline;
+    return { plan: await autoPlan(req.user!.id, tl.mainVideoId || p.videoId, tl as never, b) };
   });
 
   // remove_background in the editor: the links of a video's matte blocks over footage from..to (null: being made).

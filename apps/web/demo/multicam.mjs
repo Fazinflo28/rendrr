@@ -47,6 +47,20 @@ if (process.env.SHOT) await page.screenshot({ path: "/tmp/multicam.png" });
 check(await page.locator(`.mc-mon[data-angle="${camId}"].on`).count() === 1, "clicked: that camera is on at the playhead");
 const labels = await page.locator('.clip.video').evaluateAll((cs) => cs.map((c) => c.getAttribute("title") || c.textContent));
 check(labels.some((l) => l.includes(camName.slice(0, 12))), "the V1 clip says its camera");
+// Phase 13: number keys cut live (1 = main, 2 = the new camera), and Cut to whoever speaks.
+check(JSON.stringify(await page.locator(".mc-mon .mc-key").allTextContents()) === JSON.stringify(["1", "2"]), "each monitor shows its number key");
+await page.locator("#multicam-keys-hint").click(); // focus on the panel, not a field
+await page.keyboard.press("1"); await sleep(400);
+check(await page.locator('.mc-mon[data-angle="main"].on').count() === 1, "key 1: the main camera at the playhead");
+await page.keyboard.press("2"); await sleep(400);
+check(await page.locator(`.mc-mon[data-angle="${camId}"].on`).count() === 1, "key 2: the new camera at the playhead");
+const before = await page.locator('.clip.video').count();
+await page.locator("#multicam-auto-min").selectOption("3");
+await page.locator("#multicam-auto").click(); await sleep(900);
+const autoLabels = await page.locator('.clip.video').evaluateAll((cs) => cs.map((c) => c.getAttribute("title") || c.textContent));
+const onCam = autoLabels.filter((l) => l.includes(camName.slice(0, 12))).length;
+check(autoLabels.length > before && onCam > 0 && onCam < autoLabels.length, `Cut to whoever speaks: the main camera's clips split and shared between both cameras (${onCam} of ${autoLabels.length} on ${camName})`);
+check(errors.length === 0, "no page errors after the auto cut");
 // Its offset by hand.
 await page.locator(`#mc-offset-${camId}`).fill("2.5"); await page.locator(`#mc-offset-${camId}`).press("Enter"); await page.locator(`#mc-offset-${camId}`).blur(); await sleep(300);
 check((await page.locator(`[data-sync="${camId}"]`).textContent()) === "+2.500 s · set by hand", "offset set by hand");

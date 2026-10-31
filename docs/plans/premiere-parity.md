@@ -51,3 +51,23 @@ plugin hosting, hardware I/O, localization) are out of scope.
     4444), bitrate and frame rate; glow, grain, RGB split, camera shake, mirror, corner pin (vignette came in phase 5);
     push, wipe, iris, cross zoom, film dissolve, clock wipe, barn doors, iris diamond. Left for later: the new effects
     live in the player, GIF longer than a minute, more shape wipes.
+
+## Phases 13 on: the "left for later" items, in order of value
+
+13. **Multicam: cut to whoever speaks (done, 31 October).** Each camera's own sound every 10 ms against its room
+    noise: the person loudest on their mic gets the shot; a camera must lead 0.4 s before the shot changes; shots
+    shorter than the shortest shot (default 2 s) go into the one before; cuts come 0.2 s before the voice; a wide camera
+    when both talk. The multicam_auto op (the server fills its plan), the editor's Cut to whoever speaks, and number
+    keys 1-9 that cut live at the playhead. Left for later: speaker labels from the transcriber (one shared mic).
+14. **Colour: hue vs hue, luma vs sat, RGB parade.**
+15. **Audio live in the editor** (pan, EQ and reverb heard while editing, a WebAudio graph) and a parametric EQ.
+16. **Masked and keyframed adjustment layers.**
+17. **Anchor and motion blur on text layers; a border on b-roll cards.**
+18. **Subject mask on b-roll and reversed clips.**
+19. **The newer effects live in the player** (glow, grain, RGB split, shake, mirror).
+20. **More shape wipes; GIFs longer than a minute.**
+21. **Warp Stabilizer on b-roll and ramped clips.**
+22. **Multicam sync by timecode.**
+
+Hardest, last: mask path keyframes (bezier masks that change shape), tracking an object other than a face, a
+face-aware Morph Cut.
