@@ -1,6 +1,6 @@
 import { AppError, applyTimelineChange, matteBlockUrls, notFound, projectChannel, restoreVersion, signGet } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
-import { CreateFolderInput, CreateProjectInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot, type Timeline } from "@rendrr/shared";
+import { COMMENT_IMAGES_MAX, CommentImageInput, CreateFolderInput, CreateProjectInput, DrawingInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot, type Timeline } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { faceTracks, skinFaceAreas, speakerCentres } from "../services/color";
@@ -12,7 +12,7 @@ import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } fro
 import { projectChat } from "../services/aiChat";
 import { editorMarks } from "../services/marks";
 import { createFolder, createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference } from "../services/projects";
-import { deleteComment, editNote } from "../services/commentMedia";
+import { addNote, deleteComment, editNote } from "../services/commentMedia";
 
 /** A picture of each edit for its card: a frame of its latest render (the edit as it looks), else its footage's
  *  thumbnail. Signed for an hour. */
@@ -249,10 +249,13 @@ export default async function projects(app: FastifyInstance) {
 
   // ---------------- comments (editor side) ----------------
   // The user's own notes on an edit, at a moment of the video. Client comments arrive through review links.
-  app.post("/projects/:id/comments", async (req) => {
+  // A drawing on the picture and pictures (up to 4) can come with it, as from the app in the chat; then the text may be
+  // empty.
+  const NoteInput = z.object({ time: ProjectCommentInput.shape.time, text: z.string().trim().max(2000, "That comment is too long.").default(""), drawing: DrawingInput.optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional() });
+  app.post("/projects/:id/comments", { bodyLimit: 8 * 1024 * 1024 }, async (req) => {
     const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
-    const { time, text } = ProjectCommentInput.parse(req.body);
-    const n = await prisma.projectComment.create({ data: { projectId: p.id, userId: req.user!.id, time, text } });
+    const i = NoteInput.parse(req.body);
+    const n = await addNote(req.user!.id, p.id, i);
     return noteOut(n, req.user!.name);
   });
 

@@ -393,9 +393,10 @@ export const api: any = {
     return patch(`/comments/${enc(commentId)}`, { text: text.trim() });
   },
   deleteComment: (commentId: string) => del(`/comments/${enc(commentId)}`),
-  addProjectComment: (projectId: string, { time, text }: any) => {
-    if (!text?.trim()) throw fail("Write a comment first.");
-    return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: text.trim() });
+  /** drawing: strokes on the picture ({w, h, strokes}); images: [{type, data (base64), name, w, h}] (up to 4). */
+  addProjectComment: (projectId: string, { time, text, drawing, images }: any) => {
+    if (!text?.trim() && !drawing?.strokes?.length && !images?.length) throw fail("Write a comment, draw on the picture or add a picture first.");
+    return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: (text || "").trim(), ...(drawing?.strokes?.length ? { drawing } : {}), ...(images?.length ? { images } : {}) });
   },
   approveReview: (t: string) => post(`/public/reviews/${enc(t)}/approve`, {}, { auth: false, headers: reviewHeaders(t) }),
   requestChanges: (t: string, note: string) => post(`/public/reviews/${enc(t)}/changes`, { note }, { auth: false, headers: reviewHeaders(t) }),

@@ -69,6 +69,28 @@ const TOOLS = [["select", "V", "Select", "Click to select, drag a clip to reorde
 const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "Pause"], ["L", "Forward 5 seconds"], ...TOOLS.map(([, k, l, d]) => [k, `${l}: ${d.charAt(0).toLowerCase() + d.slice(1)}`]), ["S", "Snapping on or off"], ["Shift Z", "Zoom the timeline to fit"], ["Cmd K", "Split at the playhead"], ["Alt drag", "Drag a dialogue edge: J or L cut"], ["Delete", "Cut selected words or clip"], ["Cmd Z", "Undo"], ["Cmd Shift Z", "Redo"], ["?", "Show shortcuts"]];
 // The right panel, like Higgsfield's: Edit and Comments. Edit lists the tools in two groups, each opens on its own page
 // with a back arrow. Tool key: label, icon.
+// The comment composer: pen colours (as the app in the chat), quick emoji, and a picture made small enough to keep.
+const PENS = ["#ff3b30", "#ffd60a", "#34c759", "#0a84ff", "#ffffff"];
+const EMOJI = ["👍", "👎", "❤️", "🔥", "😂", "😮", "👀", "✅", "❌", "⚠️", "✂️", "🎵", "🎬", "💡", "⏩", "⏪"];
+async function readCommentImage(file) {
+  const b64 = (blob) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = () => no(r.error); r.readAsDataURL(blob); });
+  const bmp = await createImageBitmap(file);
+  let w = bmp.width, h = bmp.height, type = file.type, data;
+  if (file.size <= 1_000_000 && Math.max(w, h) <= 2400) data = await b64(file);
+  else {
+    const k = Math.min(1, 1600 / Math.max(w, h)), cv = document.createElement("canvas");
+    cv.width = Math.round(w * k); cv.height = Math.round(h * k);
+    cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+    type = "image/jpeg"; w = cv.width; h = cv.height;
+    data = cv.toDataURL("image/jpeg", 0.85).split(",")[1];
+    if (data.length > 1_400_000) data = cv.toDataURL("image/jpeg", 0.6).split(",")[1];
+  }
+  const t = document.createElement("canvas"); t.width = 96; t.height = 72;
+  const tk = Math.max(96 / bmp.width, 72 / bmp.height);
+  t.getContext("2d").drawImage(bmp, (96 - bmp.width * tk) / 2, (72 - bmp.height * tk) / 2, bmp.width * tk, bmp.height * tk);
+  return { local: Math.random().toString(36).slice(2), type, data, name: file.name || null, w, h, thumb: t.toDataURL("image/jpeg", 0.8) };
+}
+
 const PANEL_TOOLS = { transcript: ["Transcript", "lines"], clip: ["Speed & motion", "gauge"], text: ["Text & captions", "type"], audio: ["Audio", "wave"], color: ["Color", "drop"], multicam: ["Multicam", "monitor"], style: ["Reference", "image"], ai: ["What your AI did", "spark"] };
 const PANEL_GROUPS = [["Edit video", "edit", ["transcript", "clip", "text", "audio", "color", "multicam"]], ["Your AI", "spark", ["style", "ai"]]];
 const r2 = (n) => Math.round(n * 100) / 100;
@@ -1247,7 +1269,42 @@ function EditorInner({ project, reload, ai, keep }) {
   // What each tool in the Edit list has going on, in a word or two.
   const toolHint = { transcript: S.cut.length ? `${S.cut.length} cut` : "", clip: sel ? sel.track.toUpperCase() + " clip" : "", text: S.captionsOn ? "Captions on" : "", audio: S.voice ? "Your voice file" : "", multicam: S.multicam?.angles?.length ? `${S.multicam.angles.length + 1} cameras` : "", style: reference ? "Attached" : "", ai: chat.length ? String(chat.length) : "" };
   const [draft, setDraft] = useState(""); const [posting, setPosting] = useState(false);
-  const postComment = async () => { if (!draft.trim()) return; setPosting(true); try { const c = await api.addProjectComment(project.id, { time: pb.time, text: draft }); setComments((x) => [...x, c].sort((a, b) => a.time - b.time)); setDraft(""); toast("Comment added at " + fmtTime(c.time), { icon: "comment" }); } catch (e) { toast(e.message); } finally { setPosting(false); } };
+  // The composer (as Higgsfield's): the moment, a drawing on the picture, emoji, pictures, a round send button.
+  const [cDraw, setCDraw] = useState(false), [cStrokes, setCStrokes] = useState([]), [cPen, setCPen] = useState(PENS[0]), [cImgs, setCImgs] = useState([]), [cEmoji, setCEmoji] = useState(false);
+  const cFile = useRef(null), cLive = useRef(null), cText = useRef(null);
+  const canPost = !!draft.trim() || cStrokes.length > 0 || cImgs.length > 0;
+  const postComment = async () => {
+    if (!canPost) return;
+    setPosting(true);
+    try {
+      const c = await api.addProjectComment(project.id, { time: pb.time, text: draft, drawing: cStrokes.length ? { w: plan?.width || 1280, h: plan?.height || 720, strokes: cStrokes } : undefined, images: cImgs.map(({ type, data, name, w, h }) => ({ type, data, name: name || undefined, w, h })) });
+      setComments((x) => [...x, c].sort((a, b) => a.time - b.time));
+      setDraft(""); setCStrokes([]); setCImgs([]); setCDraw(false); setCEmoji(false);
+      toast("Comment added at " + fmtTime(c.time), { icon: "comment" });
+    } catch (e) { toast(e.message); } finally { setPosting(false); }
+  };
+  const addCImages = async (files) => {
+    const list = Array.from(files || []).filter((f) => /^image\/(jpeg|png|webp)$/.test(f.type));
+    if (!list.length) { if (files?.length) toast("Add a JPEG, PNG or WebP picture."); return; }
+    if (cImgs.length + list.length > 4) toast("Up to 4 pictures on a comment.");
+    const got = [];
+    for (const f of list.slice(0, Math.max(0, 4 - cImgs.length))) { try { got.push(await readCommentImage(f)); } catch { toast("Could not read " + (f.name || "that picture") + "."); } }
+    setCImgs((x) => [...x, ...got].slice(0, 4));
+    if (cFile.current) cFile.current.value = "";
+  };
+  const addEmoji = (em) => { const el = cText.current, at = el ? el.selectionStart ?? draft.length : draft.length; setDraft(draft.slice(0, at) + em + draft.slice(at)); setCEmoji(false); setTimeout(() => { el?.focus(); el?.setSelectionRange(at + em.length, at + em.length); }, 0); };
+  // Drawing on the picture: strokes in shares of the frame, at the comment's moment (the player paused there).
+  const drawDown = (e) => {
+    if (!cDraw) return;
+    e.preventDefault(); e.currentTarget.setPointerCapture?.(e.pointerId);
+    const r = e.currentTarget.getBoundingClientRect(), pt = (ev) => [Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))].map((v) => Math.round(v * 1000) / 1000);
+    cLive.current = { c: cPen, w: 0.004, p: pt(e) };
+    const move = (ev) => { if (!cLive.current) return; cLive.current = { ...cLive.current, p: [...cLive.current.p, ...pt(ev)].slice(0, 4000) }; setCStrokes((x) => [...x]); };
+    const up = () => { const st = cLive.current; cLive.current = null; window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); if (st && st.p.length >= 4) setCStrokes((x) => [...x, st].slice(0, 80)); else setCStrokes((x) => [...x]); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  };
+  const poly = (st, i) => html`<polyline key=${i} points=${st.p.reduce((a, v, k) => (k % 2 ? a + "," + v : a + (k ? " " : "") + v), "")} fill="none" stroke=${st.c} stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />`;
+  const drawOverlay = (cDraw || cStrokes.length) && !pb.playing ? html`<svg class=${"cmt-ink" + (cDraw ? " drawing" : "")} id="comment-draw-layer" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Your drawing for this comment" onPointerDown=${drawDown}>${cStrokes.map(poly)}${cLive.current ? poly(cLive.current, "live") : null}</svg>` : null;
   const resolve = async (c) => { try { const u = await api.resolveComment(c.id, !c.resolved); setComments((x) => x.map((i) => (i.id === c.id ? { ...i, resolved: u.resolved } : i))); } catch (e) { toast(e.message); } };
   // Comments from the Rendrr app in Claude can carry a drawing and pictures; the user's own notes can be edited, any deleted.
   const [cEdit, setCEdit] = useState(null); // { id, text }
@@ -1296,8 +1353,8 @@ function EditorInner({ project, reload, ai, keep }) {
         <div style="flex:1;min-height:0;display:flex;justify-content:center">${watch
           ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
           : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
-          : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} mattes=${mattes} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} onBox=${(b) => { setColorMode(null); setBoxDraft(b); }} />` : null}${inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+          : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${drawOverlay || inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
+          : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} mattes=${mattes} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} onBox=${(b) => { setColorMode(null); setBoxDraft(b); }} />` : null}${drawOverlay || inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
       </div>
       <div class="tl">
       <div class="tl-bar">
@@ -1372,7 +1429,7 @@ function EditorInner({ project, reload, ai, keep }) {
         ${rtab === "comments" && html`<div class="pb cmts" id="comments-panel">
           <div class="cm-head"><div class="seg sm" role="tablist" aria-label="Which comments">${[["open", "Open", comments.filter((c) => !c.resolved).length], ["all", "All", comments.length], ["done", "Done", comments.filter((c) => c.resolved).length]].map(([k, l, n]) => html`<button key=${k} role="tab" aria-selected=${cFilter === k} class=${cFilter === k ? "on" : ""} id=${"cm-filter-" + k} onClick=${() => setCFilter(k)}>${l} <span class="muted">${n}</span></button>`)}</div></div>
           <div class="col cm-list" id="comment-list">
-            ${comments.length === 0 ? html`<div class="state" style="padding:28px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="comment" /></div><b class="t-label">No comments yet</b><p class="t-small">Pause where something should change and write it below. Clients can comment too, from a review link.</p></div>`
+            ${comments.length === 0 ? html`<div class="cm-empty" id="comments-empty"><span class="cm-empty-ico"><${Icon} name="comment" size="22" /></span><b>No comments yet</b><p class="t-small muted">Pause where something should change and leave a note: write, draw on the picture or add a picture. Clients can comment too, from a review link.</p></div>`
             : shownComments.length === 0 ? html`<p class="t-small muted" style="padding:16px 4px">${cFilter === "open" ? "Every comment is resolved." : "No resolved comments yet."}</p>`
             : shownComments.map((c) => html`<div key=${c.id} class=${"cmt" + (c.resolved ? " done" : "") + (Math.abs(pb.time - c.time) < 0.05 && c.time > 0 ? " now" : "")} data-comment=${c.id} onClick=${(e) => { if (!e.target.closest("button, a, input, form") && c.time > 0) { pb.setPlaying(false); pb.seek(c.time); } }}>
                 <span class=${"gava" + (c.mine ? "" : " client")}>${initials(c.author)}</span>
@@ -1386,10 +1443,26 @@ function EditorInner({ project, reload, ai, keep }) {
                   ${(c.drawing || c.images?.length) ? html`<div class="row cmt-media">${c.drawing && html`<button class="cmt-badge" onClick=${() => showInk(c)}>✎ Drawing</button>`}${(c.images || []).map((im) => html`<a key=${im.id} href=${im.url} target="_blank" rel="noopener noreferrer" title=${im.name || "Picture"}><img class="cmt-img" src=${im.url} alt=${im.name || "Picture"} /></a>`)}</div>` : null}</div>
               </div>`)}
           </div>
-          <form class="cbox" onSubmit=${(e) => { e.preventDefault(); postComment(); }}>
-            <textarea id="comment-input" class="cbox-text" rows="2" placeholder="Leave a comment at this moment…" value=${draft} onInput=${(e) => setDraft(e.target.value)} onFocus=${() => pb.setPlaying(false)} onKeyDown=${(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); postComment(); } }} />
-            <div class="row" style="gap:6px"><button type="button" class="tc big" title="The comment goes at this moment" onClick=${() => pb.setPlaying(false)}>${fmtTime(pb.time, true)}</button><div class="grow" />
-              <${Btn} size="sm" type="submit" id="comment-post" disabled=${!draft.trim() || posting}>${posting ? "…" : "Comment"}<//></div>
+          <form class="cbox" id="comment-box" onSubmit=${(e) => { e.preventDefault(); postComment(); }} onDragOver=${(e) => e.preventDefault()} onDrop=${(e) => { e.preventDefault(); addCImages(e.dataTransfer?.files); }} onPaste=${(e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addCImages(fs); } }}>
+            ${cDraw && html`<div class="cbox-draw" id="comment-draw-bar"><span class="t-small muted">Draw on the picture</span>
+              <span class="row" style="gap:4px">${PENS.map((col) => html`<button key=${col} type="button" class=${"cbox-pen" + (cPen === col ? " on" : "")} style=${{ background: col }} aria-label=${"Pen colour " + col} onClick=${() => setCPen(col)} />`)}</span><div class="grow" />
+              <button type="button" class="cmt-act" id="comment-draw-undo" disabled=${!cStrokes.length} onClick=${() => setCStrokes((x) => x.slice(0, -1))}>Undo</button>
+              <button type="button" class="cmt-act" id="comment-draw-clear" disabled=${!cStrokes.length} onClick=${() => setCStrokes([])}>Clear</button>
+              <button type="button" class="cmt-act strong" id="comment-draw-done" onClick=${() => setCDraw(false)}>Done</button></div>`}
+            ${(cImgs.length > 0 || (cStrokes.length > 0 && !cDraw)) && html`<div class="cbox-media" id="comment-attached">
+              ${cStrokes.length > 0 && !cDraw && html`<span class="cmt-badge">✎ Drawing<button type="button" class="cbox-x" aria-label="Remove the drawing" onClick=${() => setCStrokes([])}><${Icon} name="x" size="10" /></button></span>`}
+              ${cImgs.map((im) => html`<span key=${im.local} class="cbox-thumb"><img src=${im.thumb} alt=${im.name || "Picture"} /><button type="button" class="cbox-x" aria-label="Remove this picture" onClick=${() => setCImgs((x) => x.filter((y) => y.local !== im.local))}><${Icon} name="x" size="10" /></button></span>`)}</div>`}
+            <textarea id="comment-input" ref=${cText} class="cbox-text" rows="2" placeholder="Leave a comment at this moment…" value=${draft} onInput=${(e) => setDraft(e.target.value)} onFocus=${() => pb.setPlaying(false)} onKeyDown=${(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); postComment(); } }} />
+            <div class="cbox-bar">
+              <button type="button" class="cbox-time" id="comment-time" title="The comment goes at this moment" onClick=${() => pb.setPlaying(false)}><${Icon} name="clock" size="13" />${fmtTime(pb.time, true)}</button>
+              <button type="button" class=${"cbox-icon" + (cDraw ? " on" : "")} id="comment-draw" aria-label="Draw on the picture" aria-pressed=${cDraw} title="Draw on the picture" onClick=${() => { pb.setPlaying(false); setCDraw(!cDraw); setCEmoji(false); if (!cDraw) setTimeout(() => document.getElementById("comment-draw-layer")?.scrollIntoView({ block: "nearest", behavior: "smooth" }), 60); }}><${Icon} name="edit" size="16" /></button>
+              <span class="cbox-pop-wrap"><button type="button" class=${"cbox-icon" + (cEmoji ? " on" : "")} id="comment-emoji" aria-label="Add an emoji" aria-expanded=${cEmoji} title="Emoji" onClick=${() => setCEmoji(!cEmoji)}><${Icon} name="smile" size="16" /></button>
+                ${cEmoji && html`<div class="cbox-pop" id="comment-emoji-pop" role="menu">${EMOJI.map((em) => html`<button key=${em} type="button" role="menuitem" class="cbox-em" onClick=${() => addEmoji(em)}>${em}</button>`)}</div>`}</span>
+              <button type="button" class="cbox-icon" id="comment-picture" aria-label="Add a picture" title="Add a picture (or paste or drop one)" disabled=${cImgs.length >= 4} onClick=${() => cFile.current?.click()}><${Icon} name="image" size="16" /></button>
+              <input ref=${cFile} type="file" accept="image/jpeg,image/png,image/webp" multiple id="comment-file" style="display:none" onChange=${(e) => addCImages(e.target.files)} />
+              <div class="grow" />
+              <button type="submit" class="cbox-send" id="comment-post" aria-label="Post the comment" title="Post (Ctrl+Enter)" disabled=${!canPost || posting}>${posting ? html`<span class="spin" />` : html`<${Icon} name="send" size="16" />`}</button>
+            </div>
           </form>
         </div>`}
         ${rtab === "clip" && html`<${ClipTab} clip=${sel && isV1(sel.track) ? selV1 : selClip} track=${sel?.track} plan=${plan} first=${!!selV1 && lay.tracks.v1.find((c) => c.end - c.start > 0.01)?.id === selV1.id} at=${pb.time} srcAt=${(id, t) => view.editToSource(id, t)} onSeek=${(t) => pb.seek(t)} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
