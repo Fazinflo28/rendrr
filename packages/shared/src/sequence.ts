@@ -282,6 +282,8 @@ export type SeqClip = Clip & {
   sourceVideoId: string; sourceIn: number; sourceOut: number; audioStart?: number; audioMuted?: boolean; audioGain?: number; audioFadeIn?: number; audioFadeOut?: number; rotate?: Rotation; framing?: Framing;
   speed?: number; reverse?: boolean; ramp?: RampPoint[]; freeze?: number; transition?: Transition; keys?: Key[];
   grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[];
+  /** Phase 10: the multicam angle (video id) its picture comes from. */
+  angle?: string;
 };
 /** The clip plays at normal speed, forwards. */
 export const normalSpeed = (c: Partial<SeqClip>) => (!c.speed || c.speed === 1) && !c.reverse && !c.ramp?.length && !c.freeze;
@@ -396,14 +398,36 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
   // 1. What each clip keeps: its footage minus cut words (main footage) and anything past the video's end, as segments
   // in play order, each at one rate. A freeze is one frame held; a ramp is cut into steps; a reversed clip plays its
   // segments last first.
-  type Raw = { clip: SeqClip; srcIn: number; srcOut: number; rate: number; hold: number };
+  // Phase 10 (multicam): a clip's picture can come from an angle (another camera of the same take, `offset` seconds
+  // later in its file). Where the angle has no footage the clip shows its own.
+  type Pic = { videoId: string; offset: number; rotate: Rotation; framing: Framing | null };
+  type Raw = { clip: SeqClip; srcIn: number; srcOut: number; rate: number; hold: number; pic?: Pic };
   const raws: Raw[] = [];
   const FRAME = 1 / (fps || 30);
+  const picOf = new Map<string, Pic>();
+  for (const c of v1) {
+    const ang = c.angle && c.sourceVideoId === main ? tl.multicam?.angles.find((a) => a.videoId === c.angle) : undefined;
+    if (!ang) continue;
+    const f = ang.framing ?? (c.framing ? { scale: c.framing.scale, x: c.framing.x, y: c.framing.y } : null);
+    picOf.set(c.id, { videoId: ang.videoId, offset: ang.offset, rotate: (ang.rotate ?? 0) as Rotation, framing: plainFraming(f) });
+  }
+  /** The stretch of a clip's footage (main video seconds) its angle has footage for. */
+  const covered = (p: Pic) => { const len = lenOf(p.videoId); return { lo: -p.offset, hi: len != null ? len - p.offset : Infinity }; };
+  const withAngle = (r: Raw): Raw[] => {
+    const p = picOf.get(r.clip.id);
+    if (!p) return [r];
+    const { lo, hi } = covered(p);
+    if (r.rate === 0) return [r.srcIn >= lo && r.srcIn + FRAME <= hi + 1e-9 ? { ...r, pic: p } : r];
+    const a = Math.max(r.srcIn, lo), b = Math.min(r.srcOut, hi);
+    if (b - a <= 1e-6) return [r];
+    const out = [a - r.srcIn > 1e-6 ? { ...r, srcOut: a } : null, { ...r, srcIn: a, srcOut: b, pic: p }, r.srcOut - b > 1e-6 ? { ...r, srcIn: b } : null].filter((x): x is Raw => !!x);
+    return r.rate < 0 ? out.reverse() : out;
+  };
   for (const c of v1) {
     const len = lenOf(c.sourceVideoId);
     if (c.freeze) {
       const f = len != null ? Math.min(c.sourceIn, Math.max(0, len - FRAME)) : c.sourceIn;
-      raws.push({ clip: c, srcIn: f, srcOut: f + FRAME, rate: 0, hold: c.freeze });
+      raws.push(...withAngle({ clip: c, srcIn: f, srcOut: f + FRAME, rate: 0, hold: c.freeze }));
       continue;
     }
     let rs: Range[] = [{ start: c.sourceIn, end: c.sourceOut }];
@@ -412,24 +436,25 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
     rs = rs.filter((r) => r.end - r.start > 1e-6);
     if (c.reverse) rs.reverse();
     for (const r of rs) {
-      if (c.ramp?.length) for (const st of rampSteps(c.ramp, r.start, r.end, !!c.reverse)) raws.push({ clip: c, srcIn: st.srcIn, srcOut: st.srcOut, rate: c.reverse ? -st.speed : st.speed, hold: 0 });
-      else raws.push({ clip: c, srcIn: r.start, srcOut: r.end, rate: (c.speed || 1) * (c.reverse ? -1 : 1), hold: 0 });
+      if (c.ramp?.length) for (const st of rampSteps(c.ramp, r.start, r.end, !!c.reverse)) raws.push(...withAngle({ clip: c, srcIn: st.srcIn, srcOut: st.srcOut, rate: c.reverse ? -st.speed : st.speed, hold: 0 }));
+      else raws.push(...withAngle({ clip: c, srcIn: r.start, srcOut: r.end, rate: (c.speed || 1) * (c.reverse ? -1 : 1), hold: 0 }));
     }
   }
 
   // 2. Parts: footage that continues (same video, rate, turn and framing) plays as one part, so the picture only cuts
   // where it really jumps. Parts under 0.04 s of edit are dropped, as in model A.
-  type P = { videoId: string; srcIn: number; srcOut: number; rate: number; hold: number; look: SeqClip; raws: Raw[] };
+  type P = { videoId: string; srcIn: number; srcOut: number; rate: number; hold: number; look: SeqClip; raws: Raw[]; pic?: Pic };
+  const samePic = (a?: Pic, b?: Pic) => (!a && !b) || (!!a && !!b && a.videoId === b.videoId && a.offset === b.offset && a.rotate === b.rotate && sameFraming(a.framing, b.framing));
   const editLen = (p: { srcIn: number; srcOut: number; rate: number; hold: number }) => (p.rate === 0 ? p.hold : (p.srcOut - p.srcIn) / Math.abs(p.rate));
   const join = (list: P[], p: P) => {
     const last = list[list.length - 1];
-    const goesOn = !!last && last.videoId === p.videoId && last.rate === p.rate && p.rate !== 0 && sameLook(last.look, p.look)
+    const goesOn = !!last && last.videoId === p.videoId && last.rate === p.rate && p.rate !== 0 && sameLook(last.look, p.look) && samePic(last.pic, p.pic)
       && (p.rate > 0 ? Math.abs(p.srcIn - last.srcOut) <= 1e-6 : Math.abs(p.srcOut - last.srcIn) <= 1e-6);
     if (goesOn) { if (p.rate > 0) last.srcOut = p.srcOut; else last.srcIn = p.srcIn; last.raws.push(...p.raws); }
     else list.push(p);
   };
   let parts: P[] = [];
-  for (const r of raws) join(parts, { videoId: r.clip.sourceVideoId, srcIn: r.srcIn, srcOut: r.srcOut, rate: r.rate, hold: r.hold, look: r.clip, raws: [r] });
+  for (const r of raws) join(parts, { videoId: r.clip.sourceVideoId, srcIn: r.srcIn, srcOut: r.srcOut, rate: r.rate, hold: r.hold, look: r.clip, raws: [r], ...(r.pic ? { pic: r.pic } : {}) });
   parts = parts.filter((p) => editLen(p) >= 0.04);
   if (fps) {
     // A part at normal speed keeps its footage to the millisecond: its sound is cut exactly where the edit says (only
@@ -481,7 +506,9 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
     acc += editLen(p);
     const part: PicturePart = { videoId: p.videoId, srcIn: p.srcIn, srcOut: p.srcOut, start, end: acc, rotate: (p.look.rotate ?? 0) as Rotation, framing: plainFraming(p.look.framing), clipIds: Array.from(new Set(p.raws.map((r) => r.clip.id))) };
     if (p.rate !== 1) part.rate = p.rate;
-    const shown = fps ? onFrames(part, lenOf(p.videoId), fps) : part;
+    // An angle's picture: its own video at the same moment, turned and fitted as the angle is.
+    const pic: PicturePart = p.pic ? { ...part, videoId: p.pic.videoId, srcIn: p.srcIn + p.pic.offset, srcOut: p.srcOut + p.pic.offset, rotate: p.pic.rotate, framing: p.pic.framing } : part;
+    const shown = fps ? onFrames(pic, lenOf(pic.videoId), fps) : pic;
     if (shown) picture.push(shown);
     if (p.rate === 0) { pieces.push({ clipId: p.raws[0].clip.id, videoId: p.videoId, srcIn: p.srcIn, srcOut: p.srcOut, start, end: acc, rate: 0 }); continue; }
     // Each clip's share of the part (the first and last reach the part's ends, which the frame rounding may move).
@@ -527,7 +554,21 @@ export function sequenceView(tl: Timeline, words: Word[], opts: ViewOpts = {}): 
     D.push(Math.min(Math.max(d, prev.start, D[k - 1]), cur.end));
   }
   const sound: SoundPart[] = [];
-  const pushSound = (s: SoundPart) => {
+  // Phase 10: with the multicam's sound "follow", a clip on an angle plays that angle's own sound where it has some.
+  const follow = tl.multicam?.audio === "follow";
+  const pushSound = (s0: SoundPart) => {
+    const p = follow ? picOf.get(s0.clipId) : undefined;
+    if (!p || s0.end - s0.start <= 1e-9) { pushOne(s0); return; }
+    const { lo, hi } = covered(p), r = rateOf(s0);
+    if (r === 0) { pushOne(s0.srcIn >= lo && s0.srcIn < hi ? { ...s0, videoId: p.videoId, srcIn: s0.srcIn + p.offset, srcOut: s0.srcOut + p.offset } : s0); return; }
+    const at = (x: number) => (r > 0 ? s0.start + (x - s0.srcIn) / r : s0.start + (s0.srcOut - x) / -r);
+    const a = Math.max(s0.srcIn, lo), b = Math.min(s0.srcOut, hi);
+    if (b - a <= 1e-6) { pushOne(s0); return; }
+    const seg = (x: number, y: number, on: boolean): SoundPart => { const t0 = at(r > 0 ? x : y), t1 = at(r > 0 ? y : x); return { ...s0, start: t0, end: t1, ...(on ? { videoId: p.videoId, srcIn: x + p.offset, srcOut: y + p.offset } : { srcIn: x, srcOut: y }) }; };
+    const segs = [a - s0.srcIn > 1e-6 ? seg(s0.srcIn, a, false) : null, seg(a, b, true), s0.srcOut - b > 1e-6 ? seg(b, s0.srcOut, false) : null].filter((x): x is SoundPart => !!x);
+    for (const x of r > 0 ? segs : segs.reverse()) pushOne(x);
+  };
+  const pushOne = (s: SoundPart) => {
     if (s.end - s.start <= 1e-9) return;
     const last = sound[sound.length - 1];
     if (last && rateOf(last) === 1 && rateOf(s) === 1 && last.videoId === s.videoId && last.muted === s.muted && Math.abs(last.srcOut - s.srcIn) <= 1e-6 && Math.abs(last.end - s.start) <= 1e-6) { last.srcOut = s.srcOut; last.end = s.end; }

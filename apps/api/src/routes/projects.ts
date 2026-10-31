@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { faceTracks, skinFaceAreas, speakerCentres } from "../services/color";
 import { createCanvas } from "../services/canvas";
+import { syncAngle } from "../services/multicam";
 import { authenticate } from "../auth";
 import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
@@ -170,6 +171,15 @@ export default async function projects(app: FastifyInstance) {
     const ok = new Set(mine.map((v) => v.id));
     const tracks = await faceTracks(clips.filter((c) => ok.has(c.videoId)).map((c) => ({ id: c.id, sourceVideoId: c.videoId, sourceIn: c.srcIn, sourceOut: c.srcOut, rotate: c.rotate, framing: c.focus ? { focus: c.focus } : undefined })), "", aspect ?? p.aspect);
     return { tracks };
+  });
+
+  // Phase 10 in the editor: an angle's sync to the edit's main video by their sound (the editor then sends multicam with
+  // the offset, as its other ops).
+  app.post("/projects/:id/multicam-sync", async (req) => {
+    const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    const { videoId } = z.object({ videoId: z.string().min(1).max(80) }).parse(req.body);
+    const main = ((p.timeline as unknown as { mainVideoId?: string }).mainVideoId) || p.videoId;
+    return syncAngle(req.user!.id, main, videoId);
   });
 
   // remove_background in the editor: the links of a video's matte blocks over footage from..to (null: being made).

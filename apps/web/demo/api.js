@@ -171,6 +171,7 @@ Object.assign(api, {
   matte: async (_id, _v, from, to) => ({ turn: 0, block: 10, blocks: Object.fromEntries(Array.from({ length: Math.floor(to / 10) - Math.floor(from / 10) + 1 }, (_, i) => [Math.floor(from / 10) + i, null])) }),
   skinAreas: async (_id, clips) => { await wait(150); return { areas: Object.fromEntries(clips.map((c) => [c.id, { shape: "ellipse", x: 0.36, y: 0.08, w: 0.28, h: 0.62, feather: 0.04 }])) }; },
   // Phase 3: a face that drifts right over each clip ([footage second, x0, y0, x1, y1] on screen).
+  multicamSync: async (_id, videoId) => { await wait(200); const v = await getVideo(videoId).catch(() => null); return { videoId, name: v?.name || videoId, offset: 1.234, score: 0.87, margin: 3.1, overlap: 120, sure: true }; },
   faceTracks: async (_id, clips) => { await wait(150); return { tracks: Object.fromEntries(clips.map((c) => [c.id, Array.from({ length: Math.max(2, Math.round((c.srcOut - c.srcIn) * 10) + 1) }, (_, i) => { const t = c.srcIn + i / 10, x = 0.38 + Math.min(0.2, i * 0.004); return [Math.round(t * 1000) / 1000, x, 0.12, x + 0.24, 0.6]; })])) }; },
   speakerCentres: async (_id, clips) => { await wait(150); return { centers: Object.fromEntries(clips.map((c) => [c.id, { x: 0.38, y: 0.42 }])) }; },
 });

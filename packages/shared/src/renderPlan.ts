@@ -10,7 +10,7 @@ import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing, Resolution, Cod
 import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
 import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, clipFxChain, clipFxText, dialogueExpr, duckExpr, keyExpr, reverbWet, speechRanges, type AudioKey, type DialogueSpan, type Eq, type Reverb } from "./audio";
-import { audioSettings, type AudioMixSettings } from "./timeline";
+import { audioSettings, sourceVideoIds, type AudioMixSettings } from "./timeline";
 import { blendFilter, blendText, type BlendMode } from "./blend";
 import { buildStyledAss, captionStyleOf, isMatted, layoutCaptions, styleText, textMatteAss, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
@@ -408,6 +408,14 @@ export function buildAss(events: CaptionEvent[], look: CaptionLook, width: numbe
 /** Phase 4: a layer's blend mode and opacity for the plan (nothing when it is plain). */
 const layerBlend = (c: { blend?: BlendMode; opacity?: number }) => ({ ...(c.blend && c.blend !== "normal" ? { blend: c.blend } : {}), ...(c.opacity != null && c.opacity < 1 ? { opacity: c.opacity } : {}) });
 
+/** Phase 10: how much of the edit each camera shows, and whose sound plays. */
+function multicamLine(m: NonNullable<Snapshot["timeline"]["multicam"]>, view: SequenceView, main: string, total: number): string {
+  const on = new Map<string, number>();
+  for (const p of view.picture) on.set(p.videoId, (on.get(p.videoId) ?? 0) + (p.end - p.start));
+  const share = (id: string) => `${Math.round(((on.get(id) ?? 0) / Math.max(total, 1e-6)) * 100)}%`;
+  return `Multicam: main camera ${share(main)}, ${m.angles.map((a) => `${a.name ?? a.videoId} ${share(a.videoId)} (offset ${a.offset >= 0 ? "+" : ""}${a.offset.toFixed(3)}s)`).join(", ")}; sound: ${m.audio === "follow" ? "each angle's own" : "the main video's"}`;
+}
+
 export function planRender(input: PlanInput): RenderPlan {
   // A timeline stored in model A (an old version, or a project the migration left on A) renders exactly as before.
   if (!isSequence(input.snapshot.timeline)) return planRenderA(input);
@@ -416,8 +424,10 @@ export function planRender(input: PlanInput): RenderPlan {
   const words = allWords(transcript);
   const main = mainVideoOf(tl);
   const infoOf = (vid: string) => (vid === main ? input.source : input.sources?.[vid]);
-  const used = Array.from(new Set([main, ...(tl.tracks.v1 as unknown as { sourceVideoId: string }[]).map((c) => c.sourceVideoId)]));
+  const used = Array.from(new Set([main, ...sourceVideoIds(tl)]));
   const missing = used.filter((v) => !infoOf(v));
+  const angleIds = new Set((tl.multicam?.angles ?? []).map((a) => a.videoId));
+  if (missing.some((v) => angleIds.has(v))) throw new RenderPlanError(`A multicam angle is no longer in your library or not ready (${missing.filter((v) => angleIds.has(v)).join(", ")}). Remove it (multicam remove), then render again.`);
   if (missing.length) throw new RenderPlanError(`A clip on V1 plays a video that is no longer in your library (${missing.join(", ")}). Remove that clip, then render again.`);
   // Every part starts and ends on a frame of the output (30 fps; a final at its footage's rate, Phase 7), so each part
   // is a whole number of frames and picture and sound stay together however many cuts there are. Footage beyond a
@@ -688,6 +698,7 @@ export function planRender(input: PlanInput): RenderPlan {
     zooms.length ? `Zoom: ${zooms.length} (${zooms.filter((z) => z.mode === "punch").length} punch, ${zooms.filter((z) => z.mode === "push").length} slow push)` : "Zoom: none",
     broll.length ? `B-roll overlays: ${broll.length}` : "B-roll overlays: none",
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
+    ...(tl.multicam?.angles.length ? [multicamLine(tl.multicam, view, main, total)] : []),
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),

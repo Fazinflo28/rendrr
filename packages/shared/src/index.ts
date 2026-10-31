@@ -18,6 +18,7 @@ export * from "./audio";
 export * from "./captions";
 export * from "./motion";
 export * from "./look";
+export * from "./multicam";
 export * from "./marks";
 export * from "./deep";
 export * from "./cardLook";

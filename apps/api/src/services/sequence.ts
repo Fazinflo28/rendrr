@@ -1,12 +1,13 @@
 import { signGet } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { allWords, isSequence, outputDuration, type Alignment, type Silence, type Snapshot, type Timeline, type Transcript } from "@rendrr/shared";
+import { allWords, isSequence, outputDuration, sourceVideoIds, type Alignment, type Silence, type Snapshot, type Timeline, type Transcript } from "@rendrr/shared";
 import { convertChecked } from "@rendrr/shared/migrate";
 
-/** Video ids a sequence plays on V1, other than its main footage. */
+/** Video ids a sequence plays on V1 (its clips' footage and its multicam angles), other than its main footage. */
 export function otherVideoIds(tl: Timeline, mainId: string): string[] {
   if (!isSequence(tl)) return [];
-  return Array.from(new Set((tl.tracks.v1 as unknown as { sourceVideoId?: string }[]).map((c) => c.sourceVideoId).filter((v): v is string => !!v && v !== mainId)));
+  // Every multicam angle, shown or not: the editor's camera monitors play them all.
+  return Array.from(new Set([...sourceVideoIds(tl), ...(tl.multicam?.angles ?? []).map((a) => a.videoId)])).filter((v) => v !== mainId);
 }
 
 /** The other videos on V1 with what the ops and the check need: transcripts and silences (the user's own videos only). */

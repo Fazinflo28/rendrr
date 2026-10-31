@@ -20,6 +20,7 @@ import { StyleArt, CreateLinkModal, ReferencePicker, VideoOrderPicker } from "./
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
 import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./color";
+import { MulticamTab } from "./multicam";
 import { ExportModal, timeLeft } from "./export";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
@@ -66,8 +67,8 @@ const TOOLS = [["select", "V", "Select", "Click to select, drag a clip to reorde
 const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "Pause"], ["L", "Forward 5 seconds"], ...TOOLS.map(([, k, l, d]) => [k, `${l}: ${d.charAt(0).toLowerCase() + d.slice(1)}`]), ["S", "Snapping on or off"], ["Shift Z", "Zoom the timeline to fit"], ["Cmd K", "Split at the playhead"], ["Alt drag", "Drag a dialogue edge: J or L cut"], ["Delete", "Cut selected words or clip"], ["Cmd Z", "Undo"], ["Cmd Shift Z", "Redo"], ["?", "Show shortcuts"]];
 // The right panel, like Higgsfield's: Edit and Comments. Edit lists the tools in two groups, each opens on its own page
 // with a back arrow. Tool key: label, icon.
-const PANEL_TOOLS = { transcript: ["Transcript", "lines"], clip: ["Speed & motion", "gauge"], text: ["Text & captions", "type"], audio: ["Audio", "wave"], color: ["Color", "drop"], style: ["Reference", "image"], ai: ["What your AI did", "spark"] };
-const PANEL_GROUPS = [["Edit video", "edit", ["transcript", "clip", "text", "audio", "color"]], ["Your AI", "spark", ["style", "ai"]]];
+const PANEL_TOOLS = { transcript: ["Transcript", "lines"], clip: ["Speed & motion", "gauge"], text: ["Text & captions", "type"], audio: ["Audio", "wave"], color: ["Color", "drop"], multicam: ["Multicam", "monitor"], style: ["Reference", "image"], ai: ["What your AI did", "spark"] };
+const PANEL_GROUPS = [["Edit video", "edit", ["transcript", "clip", "text", "audio", "color", "multicam"]], ["Your AI", "spark", ["style", "ai"]]];
 const r2 = (n) => Math.round(n * 100) / 100;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
@@ -776,12 +777,12 @@ function EditorInner({ project, reload, ai, keep }) {
   const footDur = project.timeline.duration;
   // The edit is a sequence. A project stored before Phase 2 is shown converted (the server stores it so at the next save).
   const tl = useMemo(() => asSequence(project.timeline, words, project.videoId, project.video?.seconds || footDur), [project, words]);
-  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, captionStyle: tl.captionStyle, audio: tl.audio, export: tl.export, media: tl.media, voice: tl.voice ?? null, background: tl.background ?? null });
+  const H = useHistory({ name: project.name, styleId: project.styleId, aspect: project.aspect, cut: tl.cut, tracks: tl.tracks, captionsOn: tl.captionsOn, captionLook: tl.captionLook, captionText: tl.captionText, captionStyle: tl.captionStyle, audio: tl.audio, export: tl.export, media: tl.media, voice: tl.voice ?? null, background: tl.background ?? null, multicam: tl.multicam ?? null });
   const S = H.state;
   // The edit as the server and the renderer see it, the place of every clip in it, and the render plan the live
   // player draws from. Times on the timeline and in the player are EDIT seconds.
   const initial = useRef(S).current;
-  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio, export: s.export, media: s.media, voice: s.voice ?? null, background: s.background ?? undefined });
+  const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio, export: s.export, media: s.media, voice: s.voice ?? null, background: s.background ?? undefined, multicam: s.multicam ?? undefined });
   const timeline = useMemo(() => tlOf(S), [S]);
   const lay = useMemo(() => layoutTimeline(timeline, words), [timeline, words]);
   const view = useMemo(() => sequenceView(lay, words), [lay, words]);
@@ -884,7 +885,7 @@ function EditorInner({ project, reload, ai, keep }) {
     getSound: (id) => { const x = (project.sounds || {})[id]; return x ? { id, name: x.name, seconds: x.seconds, ready: true } : undefined; },
     sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others, lib.library]);
   const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
-  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export, media: t.media, voice: t.voice ?? null, background: t.background ?? null, aspect: r.snap.aspect, name: r.snap.name }, summary: r.summary }; };
+  const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export, media: t.media, voice: t.voice ?? null, background: t.background ?? null, multicam: t.multicam ?? null, aspect: r.snap.aspect, name: r.snap.name }, summary: r.summary }; };
   const say = (t) => t.charAt(0).toUpperCase() + t.slice(1);
   const doOp = (op, tell = true) => { try { const r = opOn(H.state, op); H.commit(r.state); if (tell) toast(say(r.summary), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
   const liveOp = (base, op) => { try { H.replace(opOn(base, op).state); return true; } catch { return false; } };
@@ -942,6 +943,8 @@ function EditorInner({ project, reload, ai, keep }) {
   const fit = () => setZoom(Math.max(ZMIN, Math.min(ZMAX, Math.floor(((canvasRef.current?.parentElement?.clientWidth || 900) - 40) / Math.max(1, dur)))));
   // Clips of other videos: their preview copies, so they play here at once. Several go in one after another, from the
   // playhead (or the end), as one change.
+  // Phase 10: a camera's preview copy, so its monitor and the player can show it.
+  const addVideo = async (id) => { if (id === main || others[id]) return; const v = await api.getVideo(id); setAdded((a) => ({ ...a, [id]: { name: v.name, seconds: v.seconds, width: v.width, height: v.height, url: v.proxyUrl || null, transcript: [] } })); };
   const addClip = async ({ items, at }) => {
     setAddOpen(false);
     for (const { video } of items) {
@@ -1103,7 +1106,7 @@ function EditorInner({ project, reload, ai, keep }) {
   const ticks = []; for (let k = 0; k * tickStep <= dur; k++) ticks.push(r2(k * tickStep));
   const v1ById = useMemo(() => new Map(lay.tracks.v1.map((c) => [c.id, c])), [lay]);
   const clipText = (k, c) => {
-    if (k === "v1") { const vn = c.sourceVideoId !== main ? others[c.sourceVideoId]?.name || "Other video" : ""; const sp = c.freeze ? " · freeze" : c.ramp?.length ? " · ramp" : (c.speed && c.speed !== 1 ? ` · ${c.speed}x` : "") + (c.reverse ? " · reversed" : ""); return (vn && vn !== c.label ? vn + " · " : "") + (c.label || vn) + (c.rotate ? ` ↻${c.rotate}°` : "") + sp; }
+    if (k === "v1") { const vn = c.sourceVideoId !== main ? others[c.sourceVideoId]?.name || "Other video" : ""; const sp = c.freeze ? " · freeze" : c.ramp?.length ? " · ramp" : (c.speed && c.speed !== 1 ? ` · ${c.speed}x` : "") + (c.reverse ? " · reversed" : ""); const ang = c.angle && S.multicam?.angles?.find((a) => a.videoId === c.angle); const an = ang ? " · " + (ang.name || others[ang.videoId]?.name || "Angle") : ""; return (vn && vn !== c.label ? vn + " · " : "") + (c.label || vn) + an + (c.rotate ? ` ↻${c.rotate}°` : "") + sp; }
     if (k === "a1") { const v = v1ById.get(c.id); const j = v && c.start < v.start - 0.005, l = v && v.end < c.end - 0.005; return "Dialogue" + (j ? " · J" : "") + (l ? " · L" : "") + (c.audioMuted ? " · muted" : "") + (v?.audioGain ? " · " + dB(v.audioGain) : ""); }
     if (k === "a2" || k === "a3") { const a = planAudio.get(c.id); return c.label + (a ? " · " + dB(a.gainDb) : ""); }
     return c.label;
@@ -1136,7 +1139,7 @@ function EditorInner({ project, reload, ai, keep }) {
   useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, rtab]);
   useEffect(() => { const el = document.getElementById("comment-list"); if (el) el.scrollTop = el.scrollHeight; }, [comments.length, rtab]);
   // What each tool in the Edit list has going on, in a word or two.
-  const toolHint = { transcript: S.cut.length ? `${S.cut.length} cut` : "", clip: sel ? sel.track.toUpperCase() + " clip" : "", text: S.captionsOn ? "Captions on" : "", audio: S.voice ? "Your voice file" : "", style: reference ? "Attached" : "", ai: chat.length ? String(chat.length) : "" };
+  const toolHint = { transcript: S.cut.length ? `${S.cut.length} cut` : "", clip: sel ? sel.track.toUpperCase() + " clip" : "", text: S.captionsOn ? "Captions on" : "", audio: S.voice ? "Your voice file" : "", multicam: S.multicam?.angles?.length ? `${S.multicam.angles.length + 1} cameras` : "", style: reference ? "Attached" : "", ai: chat.length ? String(chat.length) : "" };
   const [draft, setDraft] = useState(""); const [posting, setPosting] = useState(false);
   const postComment = async () => { if (!draft.trim()) return; setPosting(true); try { const c = await api.addProjectComment(project.id, { time: pb.time, text: draft }); setComments((x) => [...x, c].sort((a, b) => a.time - b.time)); setDraft(""); toast("Comment added at " + fmtTime(c.time), { icon: "comment" }); } catch (e) { toast(e.message); } finally { setPosting(false); } };
   const resolve = async (c) => { try { const u = await api.resolveComment(c.id, !c.resolved); setComments((x) => x.map((i) => (i.id === c.id ? { ...i, resolved: u.resolved } : i))); } catch (e) { toast(e.message); } };
@@ -1283,6 +1286,7 @@ function EditorInner({ project, reload, ai, keep }) {
           </form>
         </div>`}
         ${rtab === "clip" && html`<${ClipTab} clip=${sel && isV1(sel.track) ? selV1 : selClip} track=${sel?.track} plan=${plan} first=${!!selV1 && lay.tracks.v1.find((c) => c.end - c.start > 0.01)?.id === selV1.id} at=${pb.time} srcAt=${(id, t) => view.editToSource(id, t)} onSeek=${(t) => pb.seek(t)} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
+        ${rtab === "multicam" && html`<${MulticamTab} projectId=${project.id} timeline=${timeline} lay=${lay} view=${view} main=${main} mainName=${project.video?.name} library=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} at=${pb.time} playing=${pb.playing} urls=${urls} doOp=${doOp} addVideo=${addVideo} toast=${toast} />`}
         ${rtab === "color" && html`<${ColorTab} clip=${colorClip} track=${sel?.track} projectId=${project.id} mainVideo=${main} aspect=${S.aspect} clips=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")]} lutList=${lutQ.data || []} reloadLuts=${() => lutQ.reload()} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mode=${colorMode} setMode=${setColorMode} draft=${pathDraft} setDraft=${setPathDraft} toast=${toast} mattes=${mattes} adjust=${{ clips: lay.tracks.v3.filter((c) => c.kind === "adjust"), sel: sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "adjust") || null : null, at: pb.time, dur, select: (id) => setSel(id ? { track: "v3", id } : null) }} />`}
         ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} here=${Math.max(0, Math.min(soundLen, pb.time - soundStart))} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} voice=${S.voice ? { ...S.voice, name: (project.sounds || {})[S.voice.soundId]?.name } : null} />`}
         ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} videos=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} />`}

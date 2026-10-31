@@ -357,6 +357,18 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 10: multicam (31 October)
+
+| Question | Decision |
+|---|---|
+| What an angle is | Another camera of the same take (a library video) in the edit's multicam, with its offset: its second at the main video's second 0. A V1 clip's `angle` picks the camera its picture comes from. The clip's footage, cut words, transcript and timing stay the main video's, so every other op works as before. |
+| Sync | By sound, on the server: each video's loudness every 10 ms (the deep measurements, already made for every video) less its own 1 s average, so a near and a far microphone match; the two slid past each other by FFT cross-correlation; the lag chosen by its strength against chance (a short overlap that happens to agree does not win); the peak to a fraction of a frame. Measured: 13.374 s found to under 6 ms on a camera 14 dB quieter with more room noise; 2.37 s to 0.1 ms on rendered files; unrelated recordings score about 0.11 and are not "sure" (0.3 and a margin of 1.5 needed), and the result says so. |
+| Switching | switch_angle over clips, a range (clips split at its ends), or from `at` to the next change of camera (as cutting live in Premiere's multicam monitor). "main" goes back. |
+| Sound | "main" (default): the main video's sound under every camera, as most podcasts are mixed. "follow": each camera's own sound with its picture. |
+| No footage | Where an angle has no footage (it started later or stopped sooner) the clip shows and plays its own. |
+| The render | An angle's picture is a part of its own video at the main moment plus the offset, fitted with the angle's own turn and framing (not the main camera's face focus). The worker downloads only the angles the edit shows. |
+| The editor | A Multicam page: add a camera (synced by the server), a monitor per camera that follows the playhead (click one to cut to it from there), each camera's offset by hand, sync again, the sound choice, remove, off. V1 clips name their camera. |
+
 ## Premiere parity, phase 9: adjustment layers (31 October)
 
 | Question | Decision |

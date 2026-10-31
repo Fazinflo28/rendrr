@@ -37,6 +37,9 @@ export const V1ClipSchema = ClipSchema.extend({
   ...look,
   /** Drawn as a card: crop, rounded corners, drop shadow, border (with framing to shrink and place it). */
   cardLook: CardLookSchema.optional(),
+  /** Phase 10 (multicam): the picture comes from this angle (a video in the edit's multicam), at the same moment by
+   *  its sync offset; the clip's footage, cuts and words stay the main video's. */
+  angle: z.string().max(80).optional(),
 });
 
 export const V2ClipSchema = ClipSchema.extend({
@@ -132,6 +135,24 @@ export function fitCrop(focus: Focus | null | undefined, pw: number, ph: number,
   return { cx: sw - W > 0.5 ? clamp01((focus.x * sw - W / 2) / (sw - W)) : 0.5, cy: sh - H > 0.5 ? clamp01((focus.y * sh - H * 0.4) / (sh - H)) : 0.4 };
 }
 
+/**
+ * Phase 10: multicam. The other cameras of the same take, each synced to the main video by its sound: offset = the
+ * angle's second at the main video's second 0 (angle time = main time + offset). score: how sure the sync is (0-1).
+ * rotate and framing: the angle's own (a camera filmed sideways; where its fit cuts). audio: "main" (default) keeps
+ * the main video's sound under every angle; "follow" plays each angle's own sound with its picture.
+ */
+export const AngleSchema = z.object({
+  videoId: z.string().min(1).max(80),
+  offset: z.number().min(-86400).max(86400),
+  name: z.string().max(40).optional(),
+  score: z.number().min(0).max(1).optional(),
+  rotate: RotationSchema.optional(),
+  framing: FramingSchema.optional(),
+});
+export type Angle = z.infer<typeof AngleSchema>;
+export const MulticamSchema = z.object({ angles: z.array(AngleSchema).max(8), audio: z.enum(["main", "follow"]).optional() });
+export type Multicam = z.infer<typeof MulticamSchema>;
+
 /** Dialogue cleanup and voice presets, like Premiere's Essential Sound (see audio.ts CLEANUP_PRESETS); set_audio can
  *  change their main numbers by hand. */
 export const CLEANUPS = ["none", "light", "voice", "noisy", "balanced", "podcast", "roomy", "warm", "bright", "radio", "phone", "soft", "punchy"] as const;
@@ -222,6 +243,8 @@ export const TimelineSchema = z.object({
   framing: FramingSchema.optional(),
   audio: AudioSettingsSchema.optional(),
   export: ExportSchema.optional(),
+  /** Phase 10: the other cameras (multicam), synced by sound; a V1 clip's angle picks one. */
+  multicam: MulticamSchema.optional(),
   /** What is behind V1 (shows where it is framed smaller, cropped, rounded, keyed, masked or has its background removed). Missing: black. */
   background: BackgroundSchema.optional(),
   /** The AI's marks on the footage (Rendrr's own come from the analysis, never stored here). */
@@ -254,6 +277,12 @@ export function libraryVideoIds(tl: Timeline): string[] {
     tl.background?.videoId,
     ...tl.tracks.v3.map((c) => (c as { inside?: { videoId?: string } }).inside?.videoId),
   ].filter((x): x is string => !!x)));
+}
+/** The videos an edit's V1 picture and dialogue come from: the clips' own footage and the multicam angles they show. */
+export function sourceVideoIds(tl: Timeline): string[] {
+  const v1 = tl.tracks.v1 as unknown as { sourceVideoId?: string; angle?: string }[];
+  const angles = new Set((tl.multicam?.angles ?? []).map((a) => a.videoId));
+  return Array.from(new Set([...v1.map((c) => c.sourceVideoId), ...v1.map((c) => (c.angle && angles.has(c.angle) ? c.angle : undefined))].filter((x): x is string => !!x)));
 }
 export type TrackName = keyof Tracks;
 export const TRACK_NAMES: TrackName[] = ["v1", "v2", "v3", "a1", "a2", "a3"];

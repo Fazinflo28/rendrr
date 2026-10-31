@@ -37,7 +37,10 @@ plugin hosting, hardware I/O, localization) are out of scope.
    (footage, b-roll, graphics); text and captions stay on top as they are. Left for later: keyframed and masked
    adjustment layers, their grade in an HDR output, the full grade live in the player (it shows exposure, contrast,
    saturation, blur and darken).
-10. **Multicam with audio sync** for two-camera podcasts.
+10. **Multicam with audio sync (done, 31 October)** for two-camera podcasts: other cameras synced to the main video by
+    their sound, cut between them by range or live from the playhead, the main sound or each camera's own. Left for
+    later: syncing by timecode, a 4-up monitor that plays in step while you cut with number keys, cutting to whoever
+    speaks (from the transcript's speakers).
 11. **Crop, flip, anchor, drop shadow, motion blur on any clip**; optical-flow slow motion and eased speed ramps.
 12. **Deliverables.** SRT / VTT export, export with transparency, GIF, audio only, bitrate and frame-rate settings,
     YouTube chapters from markers; more effects (glow, grain, vignette, RGB split, camera shake, mirror, corner pin) and

@@ -10,7 +10,8 @@ import {
 import { autoMusicFades, CLEANUP_KNOBS, cleanupText } from "./audio";
 import { CaptionStylePatchSchema, CaptionStyleSchema, captionStyleOf, CardSchema, presetStyle, styleText, TEXT_ANIMS, TEXT_PRESETS, TextInsideSchema, textPreset, TextStylePatchSchema, TextStyleSchema, type Card, type TextAnim, type TextInside, type TextStyle } from "./captions";
 import { allWords, type Line, type Silence, type Transcript, type Word } from "./transcript";
-import { MARK_KINDS, type Mark, type MarkEdit } from "./timeline";
+import { MARK_KINDS, type Angle, type Mark, type MarkEdit, type Multicam } from "./timeline";
+import { multicamText } from "./multicam";
 import { editToFootage, RENDRR_MARK } from "./marks";
 import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
@@ -198,6 +199,16 @@ const EDIT_OPS = [
   // under it (footage, b-roll, graphics; text and captions stay as they are). clipId changes one (grade and effects
   // replaced); delete_clip removes it.
   z.object({ op: z.literal("adjustment_layer"), clipId: clipId.optional(), start: z.number().min(0).optional(), end: z.number().min(0).optional(), edit: z.boolean().optional(), grade: GradeSchema.optional(), effects: z.array(EffectSchema).max(4).optional(), label: z.string().max(80).optional() }),
+  // Phase 10: multicam. angles: other cameras of the same take (library videos), added or changed by videoId; offset:
+  // the angle's second at the main video's second 0 (left out: Rendrr's server syncs it by the sound); rotate and
+  // framing: the angle's own. audio: "main" keeps the main video's sound under every angle, "follow" plays each
+  // angle's own. remove: angles to take out; off: no multicam (every clip back on the main camera).
+  z.object({ op: z.literal("multicam"), angles: z.array(z.object({ videoId: z.string().min(1).max(80), offset: z.number().min(-86400).max(86400).optional(), name: z.string().max(40).optional(), rotate: RotationSchema.optional(), framing: FramingSchema.nullable().optional(), score: z.number().min(0).max(1).optional() })).max(8).optional(),
+    audio: z.enum(["main", "follow"]).optional(), remove: z.array(z.string().max(80)).max(8).optional(), off: z.boolean().optional() }),
+  // Which camera V1 shows: angle = an angle's videoId or name, or "main". Over clipId / clipIds, a range start..end, or
+  // from `at` to the next change of angle (as cutting live in Premiere's multicam monitor). Times: main-footage
+  // seconds, or edit seconds with edit true. Clips are split at the range's ends.
+  z.object({ op: z.literal("switch_angle"), angle: z.string().min(1).max(80), clipId: clipId.optional(), clipIds: z.array(clipId).max(2000).optional(), start: t.optional(), end: t.optional(), at: t.optional(), edit }),
   // Phase 4: how b-roll (V2) or a graphic (V3) lies over the picture: a blend mode and its opacity (0-1). normal at 1 = plain.
   z.object({ op: z.literal("set_blend"), clipId: clipId.optional(), clipIds: z.array(clipId).min(1).max(200).optional(), blend: BlendModeSchema.optional(), opacity: z.number().min(0).max(1).optional() }),
   // How the final file is made: hdr keep (HDR footage stays HDR) or sdr (converted).
@@ -1233,6 +1244,81 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const next = withTracks(tl, "v2", (tl.tracks.v2 as Clip[]).map((x) => { if (x.id !== c.id) return x; const { under: _u, ...rest } = x as Clip & { under?: boolean }; return (op.under ? { ...rest, under: true } : rest) as Clip; }));
       return { snap: { ...snap, timeline: next }, summary: `${name(c)}: ${op.under ? "behind V1 (shows where V1 is keyed, masked, framed smaller or moved)" : "over V1"}` };
     }
+    case "multicam": {
+      const cur = tl.multicam ?? { angles: [] };
+      const nameOf = (id: string) => ctx.getVideo?.(id)?.name;
+      const clearAngles = (x: Timeline, keep: Set<string>) => withTracks(x, "v1", (x.tracks.v1 as SeqClip[]).map((c) => { if (!c.angle || keep.has(c.angle)) return c; const { angle: _a, ...rest } = c; return rest as SeqClip; }));
+      if (op.off) {
+        const { multicam: _m, ...rest } = tl;
+        return { snap: { ...snap, timeline: clearAngles(rest as Timeline, new Set()) }, summary: "multicam off: every clip shows the main camera" };
+      }
+      let angles = [...cur.angles];
+      const find = (id: string) => angles.find((a) => a.videoId === id || (a.name ?? nameOf(a.videoId) ?? "").toLowerCase() === id.toLowerCase());
+      for (const id of op.remove ?? []) { const a = find(id); if (!a) throw new EditError(`"${id}" is not an angle of this edit.`); angles = angles.filter((x) => x !== a); }
+      const unsure: string[] = [];
+      for (const a of op.angles ?? []) {
+        if (a.videoId === main) throw new EditError("The main video is the multicam's main camera already: list the other cameras.");
+        if (ctx.getVideo && !ctx.getVideo(a.videoId)) throw new EditError(`There is no video "${a.videoId}" in your library. Use list_footage for the ids.`);
+        const had = angles.find((x) => x.videoId === a.videoId);
+        const offset = a.offset ?? had?.offset;
+        if (offset == null) throw new EditError(`Angle ${nameOf(a.videoId) ?? a.videoId} has no sync offset yet: send this edit through Rendrr's server (apply_edits), which syncs it by its sound, or give offset (the angle's second at the main video's second 0).`);
+        const score = a.offset != null ? a.score : had?.score;
+        const framing = a.framing === null ? undefined : a.framing ?? had?.framing;
+        const next: Angle = { videoId: a.videoId, offset: Math.round(offset * 10000) / 10000, ...(a.name ?? had?.name ? { name: a.name ?? had?.name } : {}), ...(score != null ? { score } : {}), ...(a.rotate ?? had?.rotate ? { rotate: a.rotate ?? had?.rotate } : {}), ...(framing ? { framing } : {}) };
+        if (score != null && score < 0.3) unsure.push(next.name ?? nameOf(a.videoId) ?? a.videoId);
+        angles = had ? angles.map((x) => (x === had ? next : x)) : [...angles, next];
+      }
+      if (angles.length > 8) throw new EditError("A multicam has at most 8 angles besides the main camera.");
+      const audio = op.audio ?? cur.audio;
+      const mc: Multicam = { angles, ...(audio ? { audio } : {}) };
+      const next = clearAngles({ ...tl, multicam: mc }, new Set(angles.map((a) => a.videoId)));
+      return { snap: { ...snap, timeline: next }, summary: `multicam: ${multicamText(mc, nameOf)}${unsure.length ? `. The sync of ${unsure.join(", ")} is unsure (their sound barely matches the main video's): check it in a preview, or give offset by hand` : ""}. switch_angle picks which camera V1 shows` };
+    }
+    case "switch_angle": {
+      const nameOf = (id: string) => ctx.getVideo?.(id)?.name;
+      const angles = tl.multicam?.angles ?? [];
+      const toMain = op.angle === "main" || op.angle === main;
+      const ang = toMain ? undefined : angles.find((a) => a.videoId === op.angle || (a.name ?? nameOf(a.videoId) ?? "").toLowerCase() === op.angle.toLowerCase());
+      if (!toMain && !ang) throw new EditError(angles.length ? `"${op.angle}" is not an angle of this edit (${angles.map((a) => a.name ?? nameOf(a.videoId) ?? a.videoId).join(", ")}, or "main").` : "This edit has no multicam: add the other cameras with multicam first.");
+      const label = ang ? ang.name ?? nameOf(ang.videoId) ?? ang.videoId : "the main camera";
+      let next = tl;
+      let ids: string[];
+      let range = "";
+      if (op.clipId || op.clipIds) {
+        ids = op.clipIds ?? [op.clipId!];
+        for (const id of ids) findClip(tl, "v1", id);
+      } else {
+        const v = view();
+        let s: number, e: number;
+        if (op.at != null) {
+          s = toEdit(op.at, op.edit);
+          const k = v.clips.findIndex((c) => s >= c.start - 1e-6 && s < c.end - 1e-6);
+          if (k < 0) throw new EditError("Nothing plays there.");
+          const v1 = seqClips(tl), angleAt = (i: number) => (v1[i].sourceVideoId === main ? v1[i].angle ?? "" : null);
+          const was = angleAt(k);
+          let j = k;
+          while (j + 1 < v1.length && angleAt(j + 1) === was) j++;
+          e = v.clips[j].end;
+        } else if (op.start != null && op.end != null) { s = toEdit(op.start, op.edit); e = toEdit(op.end, op.edit); }
+        else throw new EditError("switch_angle needs clipId, clipIds, start and end, or at.");
+        if (e - s < 0.1) throw new EditError("That stretch is under 0.1 s of the edit.");
+        const splitAt = (x: Timeline, t0: number) => { const w = sequenceView(x, words); const hit = w.clips.find((c) => t0 > c.start + 0.05 && t0 < c.end - 0.05); return hit ? splitSeqClip(x, hit.id, w.editToSource(hit.id, t0)).tl : x; };
+        next = splitAt(splitAt(next, s), e);
+        const w = sequenceView(next, words);
+        ids = w.clips.filter((c) => c.end - c.start > 1e-6 && c.start >= s - 0.051 && c.end <= e + 0.051).map((c) => c.id);
+        range = ` from edit ${fmtClock(s)} to ${fmtClock(e)}`;
+      }
+      const set = new Set(ids), other: string[] = [];
+      const v1 = (next.tracks.v1 as SeqClip[]).map((c) => {
+        if (!set.has(c.id)) return c;
+        if (c.sourceVideoId !== main) { other.push(c.id); return c; }
+        const { angle: _a, ...rest } = c;
+        return (ang ? { ...rest, angle: ang.videoId } : rest) as SeqClip;
+      });
+      const n = ids.length - other.length;
+      if (!n) throw new EditError(`Those clips play another video, not the main camera: angles replace the main video's picture only.`);
+      return { snap: { ...snap, timeline: withTracks(next, "v1", v1) }, summary: `${n} ${n === 1 ? "clip" : "clips"}${range} on ${label}${ang && tl.multicam?.audio !== "follow" ? " (the main video's sound)" : ""}${other.length ? `; left as they are (another video): ${other.join(", ")}` : ""}` };
+    }
     case "adjustment_layer": {
       if (op.grade?.lut && ctx.getLut && !ctx.getLut(op.grade.lut.id)) throw new EditError(`There is no LUT "${op.grade.lut.id}" in your LUTs.`);
       const fx = { ...(op.grade && gradeIsActive(op.grade) ? { grade: op.grade } : {}), ...(op.effects?.length ? { effects: op.effects } : {}) };
@@ -1604,6 +1690,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
   lines.push(`Footage length ${tl.duration.toFixed(1)}s, edit length ${view.total.toFixed(1)}s, aspect ${snap.aspect}${look ? ", " + look : ""}${snap.styleId ? `, style ${snap.styleId}` : ""}.`);
   lines.push(`Cut words: ${tl.cut.length}. Captions ${tl.captionsOn ? "on (" + (tl.captionStyle ? "own style: " + styleText(tl.captionStyle) : tl.captionLook) + ")" : "off"}. Edited caption lines: ${Object.entries(tl.captionText).filter(([id, txt]) => { const l = tr.find((x) => x.id === id); return l && l.words.map((w) => w.text).join(" ") !== txt; }).length}.`);
   lines.push(`Sound: ${audioText(audioSettings(tl))}.`);
+  if (tl.multicam?.angles.length) lines.push(`Multicam: ${multicamText(tl.multicam)}; V1 clips without an angle show the main camera.`);
   lines.push(exportText(snap, footage) + ".");
   lines.push("V1 plays in this order, back to back: id video footageIn-footageOut @editStart-editEnd. Ops on a V1 clip take its own footage seconds. Its dialogue (A1) follows it; J/L cuts and mutes are shown on it. Other tracks: id @editStart-editEnd on <V1 clip> at <its footage second>; they move with that clip. Their op times are main-footage seconds (where it first plays), or edit seconds with edit:true.");
   const v1 = tl.tracks.v1 as SeqClip[];
@@ -1614,6 +1701,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
     const extra: string[] = [];
     if (p.pieces.length && p.soundStart < p.start - 0.005) extra.push(`J ${(p.soundStart - p.start).toFixed(2)}`);
     if (p.pieces.length && p.soundEnd > p.end + 0.005) extra.push(`L +${(p.soundEnd - p.end).toFixed(2)}`);
+    if (c.angle && tl.multicam?.angles.some((a) => a.videoId === c.angle)) { const a = tl.multicam.angles.find((x) => x.videoId === c.angle)!; extra.push(`angle ${a.name ? `${a.name} (${a.videoId})` : a.videoId}`); }
     if (c.audioMuted) extra.push("muted");
     if (c.audioGain) extra.push(`dialogue ${c.audioGain > 0 ? "+" : ""}${c.audioGain} dB`);
     if (c.audioFadeIn || c.audioFadeOut) extra.push(`fades ${c.audioFadeIn ?? 0}/${c.audioFadeOut ?? 0}s`);
