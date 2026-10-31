@@ -7,6 +7,10 @@ const files = new Map<string, File>();            // videoId -> File held by thi
 const handles = new Map<string, any>();           // videoId -> FileSystemFileHandle (survives reloads, Chrome/Edge)
 const pendingHandles: Promise<any>[] = [];        // handles captured from the last drop, matched to files by name
 const running = new Set<string>();
+// Previews are made in this tab, two at a time: a whole folder of videos waits its turn instead of freezing the page.
+const queue: string[] = [];
+const AT_ONCE = 2;
+function pump() { while (running.size < AT_ONCE && queue.length) { const id = queue.shift()!; if (files.has(id) && !running.has(id)) run(id); } }
 const isBrowser = typeof window !== "undefined";
 
 // ---------------- remembered file handles (IndexedDB) ----------------
@@ -180,6 +184,7 @@ async function run(videoId: string) {
   } finally {
     running.delete(videoId);
     window.dispatchEvent(new Event("rendrr:library"));
+    pump();
   }
 }
 
@@ -194,6 +199,36 @@ function pickFile(): Promise<{ file: File; handle?: any }> {
     document.body.appendChild(i);
     i.click();
   });
+}
+
+// ---------- a whole folder from the computer ----------
+const VIDEO_EXT = /\.(mp4|mov|m4v|webm|mkv|avi|mts|m2ts|3gp|wmv|mpg|mpeg)$/i;
+/** A video file (by type, or by name when the browser gives no type). */
+export const isVideoFile = (f: File) => (f.type ? f.type.startsWith("video/") : VIDEO_EXT.test(f.name)) && !f.name.startsWith(".");
+/** The folders a file sat in inside the folder picked or dropped, the picked folder first ("Course/Module 1"); "" for a
+ *  file picked on its own. */
+export const folderOfFile = (f: File) => {
+  const own = (f as any).rendrrFolder as string | undefined;
+  if (own !== undefined) return own;
+  const rel = (f as any).webkitRelativePath as string | undefined;
+  return rel && rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+};
+/** Files from a drop, folders included (walked all the way down). Call it inside the drop event: the browser only
+ *  lets the folder be read from there; the reading itself finishes afterwards. Plain files come back as they are. */
+export function filesFromDrop(dt: DataTransfer | null | undefined): Promise<File[]> {
+  const entries = Array.from(dt?.items || []).map((it) => (it.kind === "file" ? (it as any).webkitGetAsEntry?.() : null)).filter(Boolean);
+  if (!entries.some((e: any) => e.isDirectory)) return Promise.resolve(Array.from(dt?.files || []));
+  const out: File[] = [];
+  const readAll = (dir: any): Promise<any[]> => new Promise((resolve) => {
+    const r = dir.createReader(), all: any[] = [];
+    const next = () => r.readEntries((batch: any[]) => { if (!batch.length) resolve(all); else { all.push(...batch); next(); } }, () => resolve(all));
+    next();
+  });
+  const walk = async (e: any, path: string): Promise<void> => {
+    if (e.isFile) { const f: File = await new Promise((res, rej) => e.file(res, rej)); (f as any).rendrrFolder = path; out.push(f); return; }
+    if (e.isDirectory) { const p = path ? `${path}/${e.name}` : e.name; for (const c of await readAll(e)) await walk(c, p); }
+  };
+  return Promise.all(entries.map((e: any) => walk(e, ""))).then(() => out);
 }
 
 export const localJobs = {
@@ -213,7 +248,8 @@ export const localJobs = {
   has: (videoId: string) => files.has(videoId) || handles.has(videoId),
   file: (videoId: string) => files.get(videoId) || null,
   running: () => Array.from(running),
-  start(videoId: string) { if (files.has(videoId)) run(videoId); },
+  start(videoId: string) { if (files.has(videoId) && !running.has(videoId) && !queue.includes(videoId)) { queue.push(videoId); pump(); } },
+  waiting: (videoId: string) => queue.includes(videoId),
   /** Makes sure this page holds the file: remembered handle (asks permission) or a picker. Call from a click. */
   async ensureFile(videoId: string, expectedName?: string) {
     if (files.has(videoId)) return files.get(videoId)!;

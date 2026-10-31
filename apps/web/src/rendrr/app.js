@@ -91,9 +91,19 @@ function App() {
   const startUpload = useCallback(async (files, kind, libraryFolderId) => {
     go("/library"); setAddOpen(false); const list = files ? (files.length != null ? Array.from(files) : [files]) : null;
     if (!list?.length) return;
-    toast("Preparing " + (list.length === 1 ? list[0].name : list.length + " files") + (kind === "reference" ? " as a reference" : ""), { icon: "laptop" });
+    // A folder picked or dropped whole: the Library makes the same folders and opens the top one.
+    const top = list.map((f) => f.rendrrFolder ?? (f.webkitRelativePath && f.webkitRelativePath.includes("/") ? f.webkitRelativePath.split("/")[0] : "")).find(Boolean)?.split("/")[0];
+    toast("Preparing " + (top ? `the folder "${top}"` : list.length === 1 ? list[0].name : list.length + " files") + (kind === "reference" ? " as a reference" : ""), { icon: "laptop" });
     const job = api.addFromComputer(list, undefined, kind, libraryFolderId); setTimeout(ping, 50);
-    try { await job; toast("Keep this tab open while we prepare your preview.", { icon: "clock", ms: 3500 }); }
+    try {
+      const made = await job;
+      if (top) {
+        const fs = await api.listLibraryFolders().catch(() => []);
+        const f = fs.find((x) => (x.parentId || null) === (libraryFolderId || null) && x.name.toLowerCase() === top.toLowerCase());
+        if (f) { try { sessionStorage.setItem("rendrr:libfolder", f.id); } catch { /* private window */ } window.dispatchEvent(new CustomEvent("rendrr:openfolder", { detail: f.id })); }
+      }
+      toast(`${top ? `${made.length} ${made.length === 1 ? "video" : "videos"} from "${top}". ` : ""}Keep this tab open while we prepare your preview${made.length > 1 ? "s, two at a time" : ""}.`, { icon: "clock", ms: 4000 });
+    }
     catch (e) { toast(e.message, { icon: "alert", ms: 4000 }); }
     ping();
   }, [go]);

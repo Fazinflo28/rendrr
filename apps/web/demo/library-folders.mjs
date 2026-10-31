@@ -163,6 +163,25 @@ check(await until(async () => (await page.locator(".vcard").count()) > 0), "the 
 await page.screenshot({ path: join(here, "dist", "library-drive-import.png") });
 await page.locator("#folder-back").click(); await page.locator("#lib-folders").waitFor();
 
+// 6d. A whole folder from the computer: Choose a folder; the Library makes the same folders and opens the top one; only
+// the videos come in (a text file in it is left out).
+const tmp = (await import("node:fs")).mkdtempSync(join((await import("node:os")).tmpdir(), "lf-"));
+const fsx = await import("node:fs");
+fsx.mkdirSync(join(tmp, "Shoot", "Day 1"), { recursive: true });
+fsx.writeFileSync(join(tmp, "Shoot", "Intro.mp4"), "x"); fsx.writeFileSync(join(tmp, "Shoot", "notes.txt"), "x");
+fsx.writeFileSync(join(tmp, "Shoot", "Day 1", "Take 1.mp4"), "x"); fsx.writeFileSync(join(tmp, "Shoot", "Day 1", "Take 2.mov"), "x");
+const beforeVids = await page.evaluate(async () => (await (await import("rendrr-fake-api").catch(() => ({ api: null }))).api?.listVideos?.())?.length ?? -1).catch(() => -1);
+await page.locator("#upload").click(); await page.locator("#src-local").click();
+check(await page.locator("#local-choose-folder").isVisible(), "From your computer offers Choose a folder");
+await page.locator("#local-folder-input").setInputFiles(join(tmp, "Shoot"));
+check(await until(async () => (await page.locator("#folder-title").count()) > 0 && (await page.locator("#folder-title").innerText()).toLowerCase().includes("shoot"), 6000), "the Library opens on a folder named after the one picked");
+check(await until(async () => (await page.locator(".lfcard", { hasText: "Day 1" }).count()) === 1), "its folder inside comes in as a folder");
+check(await until(async () => (await page.locator(".vcard").count()) === 1), "the top folder holds its one video (the text file is left out)");
+await page.locator(".lfcard", { hasText: "Day 1" }).click();
+check(await until(async () => (await page.locator(".vcard").count()) === 2), "the inner folder holds its two videos");
+await page.locator("#folder-back").click(); await page.locator("#lib-folders").waitFor();
+fsx.rmSync(tmp, { recursive: true, force: true }); void beforeVids;
+
 // 7. Phone width: the folder row fits.
 await page.setViewportSize({ width: 390, height: 844 }); await page.locator("#new-folder").click(); await page.locator("#folder-name-input").fill("Interviews"); await page.locator("#folder-save").click(); await page.waitForTimeout(400);
 await until(async () => (await page.locator(".lfcard", { hasText: "Interviews" }).count()) === 1); await page.locator('input[aria-label="Find footage"]').scrollIntoViewIfNeeded();

@@ -219,6 +219,33 @@ describe("library folders", { skip: !ready && "needs DATABASE_URL and REDIS_URL"
     await assert.rejects(tool("list_footage", { libraryFolder: "Raw" }), /More than one folder is called "Raw": .* Say which with its path or id/);
   });
 
+  it("a whole folder from the computer: the same folders made (inside the open one), each video in its own; again reuses them", async () => {
+    const files = [
+      { name: "Intro.mp4", size: 10, type: "video/mp4", folder: `Shoot ${run}` },
+      { name: "Take 1.mp4", size: 10, type: "video/mp4", folder: `Shoot ${run}/Day 1` },
+      { name: "Take 2.mov", size: 10, type: "video/quicktime", folder: `Shoot ${run}/Day 1` },
+      { name: "Loose.mp4", size: 10, type: "video/mp4" },
+    ];
+    const r = await call("POST", "/videos/local", { files });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const shoot = (await prisma.libraryFolder.findFirst({ where: { userId, parentId: null, name: `Shoot ${run}` } }))!;
+    const day = (await prisma.libraryFolder.findFirst({ where: { userId, parentId: shoot.id, name: "Day 1" } }))!;
+    assert.deepEqual(r.body.map((v: { libraryFolderId: string | null }) => v.libraryFolderId), [shoot.id, day.id, day.id, null]);
+    // Into an open folder, and a second time: the same folders, not new ones.
+    const host = (await call("POST", "/library/folders", { name: `Host ${run}` })).body;
+    const into = await call("POST", "/videos/local", { files: files.slice(0, 2), libraryFolderId: host.id });
+    const inner = (await prisma.libraryFolder.findFirst({ where: { userId, parentId: host.id, name: `Shoot ${run}` } }))!;
+    assert.equal(into.body[0].libraryFolderId, inner.id);
+    await call("POST", "/videos/local", { files: files.slice(1, 2), libraryFolderId: host.id });
+    assert.equal(await prisma.libraryFolder.count({ where: { userId, parentId: inner.id, name: "Day 1" } }), 1);
+    // Up to 200 at once.
+    const many = Array.from({ length: 201 }, (_, i) => ({ name: `c${i}.mp4`, size: 1, folder: "Big" }));
+    const big = await call("POST", "/videos/local", { files: many });
+    assert.equal(big.status, 400);
+    assert.match(big.body.error.message, /up to 200 videos at once/);
+    await prisma.video.deleteMany({ where: { userId, source: "local" } });
+  });
+
   it("the connector: list_footage shows folders and filters by one; move_footage makes a folder by name; create_project libraryFolder", async () => {
     const a = await video(`Hook take ${run}`), b = await video(`Body take ${run}`);
     const mv = await tool("move_footage", { videoIds: [a, b], libraryFolder: `Ads ${run}` });

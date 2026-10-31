@@ -12,6 +12,11 @@ const kinds = {}; // videoId -> "footage" | "reference" (the design's fake backe
 const inFolder = {}; // videoId -> library folder id (the design's fake backend has no library folders)
 const libFolders = []; // { id, name, updated }
 const withKind = (v) => (v ? { ...v, kind: kinds[v.id] || "footage", libraryFolderId: inFolder[v.id] || null } : v);
+const libFolderIn = (name, parentId) => {
+  const same = libFolders.find((x) => (x.parentId || null) === (parentId || null) && x.name.toLowerCase() === name.toLowerCase());
+  if (same) return same;
+  const nf = { id: "lf" + Math.random().toString(36).slice(2, 8), name, parentId: parentId || null, updated: Date.now() }; libFolders.push(nf); return nf;
+};
 const folderErr = (msg) => Object.assign(new Error(msg), { code: "invalid-input" });
 
 // "What Claude sees" for demo footage: drawn contact sheets and a breakdown made by the real shared code.
@@ -96,7 +101,22 @@ Object.assign(api, {
   createProject: async ({ videoIds, videoId, ...rest }) => createProject({ ...rest, videoId: (Array.isArray(videoIds) && videoIds[0]) || videoId }),
   updateVideo: async (id, body) => { await wait(300); if (body.kind) kinds[id] = body.kind; if (body.libraryFolderId !== undefined) { if (body.libraryFolderId) inFolder[id] = body.libraryFolderId; else delete inFolder[id]; } return withKind(await getVideo(id)); },
   addFromDrive: async (ids, kind, fid) => { const out = await addFromDrive(ids); out.forEach((v) => { if (kind) kinds[v.id] = kind; if (fid) inFolder[v.id] = fid; }); return out.map(withKind); },
-  addFromComputer: async (files, onProgress, kind, fid) => { const out = await addFromComputer(files, onProgress); (out || []).forEach((v) => { if (kind) kinds[v.id] = kind; if (fid) inFolder[v.id] = fid; }); return (out || []).map(withKind); },
+  // A folder picked or dropped whole: its videos only, each in a library folder like the one it sat in.
+  addFromComputer: async (files, onProgress, kind, fid) => {
+    const list = Array.from(files || []);
+    const where = (f) => f.rendrrFolder ?? (f.webkitRelativePath && f.webkitRelativePath.includes("/") ? f.webkitRelativePath.slice(0, f.webkitRelativePath.lastIndexOf("/")) : "");
+    const fromFolder = list.some((f) => where(f));
+    const vids = fromFolder ? list.filter((f) => (f.type ? f.type.startsWith("video/") : /\.(mp4|mov|m4v|webm|mkv)$/i.test(f.name)) && !f.name.startsWith(".")) : list;
+    if (!vids.length) throw folderErr("There are no videos in that folder.");
+    const out = await addFromComputer(vids, onProgress);
+    (out || []).forEach((v, i) => {
+      if (kind) kinds[v.id] = kind;
+      let parent = fid || null;
+      for (const part of (where(vids[i] || {}) || "").split("/").filter(Boolean)) parent = libFolderIn(part, parent).id;
+      if (parent) inFolder[v.id] = parent;
+    });
+    return (out || []).map(withKind);
+  },
   // Library folders, kept in this tab (folders inside folders too).
   listLibraryFolders: async () => {
     const vs = await listVideos(); const all = Array.isArray(vs) ? vs : [];

@@ -257,8 +257,25 @@ export default async function library(app: FastifyInstance) {
     // ---------------- local files: the browser makes the preview, we only receive it ----------------
     a.post("/videos/local", async (req) => {
       const { files, kind, libraryFolderId } = LocalFilesInput.parse(req.body);
-      const inFolder = await intoFolder(req.user!.id, libraryFolderId);
-      const made = await Promise.all(files.map((f) => prisma.video.create({ data: { kind: kind || "footage", libraryFolderId: inFolder,
+      const userId = req.user!.id;
+      const inFolder = await intoFolder(userId, libraryFolderId);
+      // A folder picked whole: the same folders in the Library (inside the open one), each file in its own. A level
+      // deeper than folders go lands in the deepest one allowed.
+      const room = LIBRARY_FOLDER_MAX_DEPTH - (inFolder ? (await folderTree(userId)).depth(await ownLibraryFolder(userId, inFolder)) : 0);
+      const made_folders = new Map<string, string>();
+      const folderFor = async (path?: string): Promise<string | null> => {
+        const parts = (path || "").split("/").map((x) => x.trim()).filter(Boolean).slice(0, Math.max(0, room));
+        if (!parts.length) return inFolder;
+        const key = parts.join("/").toLowerCase();
+        if (made_folders.has(key)) return made_folders.get(key)!;
+        let parent = inFolder;
+        for (const p of parts) parent = (await folderNamed(userId, p, parent)).folder.id;
+        made_folders.set(key, parent!);
+        return parent;
+      };
+      const where: (string | null)[] = [];
+      for (const f of files) where.push(await folderFor(f.folder));
+      const made = await Promise.all(files.map((f, i) => prisma.video.create({ data: { kind: kind || "footage", libraryFolderId: where[i],
         userId: req.user!.id, name: stripExt(f.name).slice(0, 200), sizeBytes: BigInt(f.size), originalSize: BigInt(f.size), originalName: f.name,
         source: "local", status: "previewing", progress: 0, art: randomArt(),
       } })));
