@@ -175,7 +175,7 @@ const EDIT_OPS = [
     // HSL secondaries (the list replaces them; [] or null removes them), Hue vs Sat.
     highlights: signed100.nullable().optional(), shadows: signed100.nullable().optional(), whites: signed100.nullable().optional(), blacks: signed100.nullable().optional(), vibrance: signed100.nullable().optional(),
     wheels: z.object({ shadows: WheelSchema.nullable().optional(), midtones: WheelSchema.nullable().optional(), highlights: WheelSchema.nullable().optional() }).nullable().optional(),
-    hsl: z.array(HslSchema).max(4).nullable().optional(), hueSat: CurveSchema.nullable().optional() }),
+    hsl: z.array(HslSchema).max(4).nullable().optional(), hueSat: CurveSchema.nullable().optional(), hueHue: CurveSchema.nullable().optional(), lumaSat: CurveSchema.nullable().optional() }),
   // A clip's grade onto other clips (with: also its key, masks, blur/pixelate).
   z.object({ op: z.literal("copy_grade"), from: clipId, to: z.array(clipId).max(2000).optional(), all: z.boolean().optional(), video: z.string().max(80).optional(), with: z.array(z.enum(["grade", "key", "masks", "effects", "skin", "subject"])).max(6).optional() }),
   // Clips' colour matched to a reference clip from measured frames (the server measures them; the result is a grade).

@@ -63,6 +63,10 @@ export const GradeSchema = z.object({
   hsl: z.array(HslSchema).max(4).optional(),
   /** Phase 5: Hue vs Sat: points [hue 0-1, saturation 0-1 where 0.5 leaves it], round the hue circle. */
   hueSat: CurveSchema.optional(),
+  /** Phase 14: Hue vs Hue: points [hue 0-1, shift 0-1 where 0.5 leaves it; 0 = -180°, 1 = +180°] round the hue circle
+   *  (greys keep theirs). Luma vs Sat: points [luma 0-1, saturation 0-1 where 0.5 leaves it] (0.25 = half). */
+  hueHue: CurveSchema.optional(),
+  lumaSat: CurveSchema.optional(),
   curves: CurvesSchema.optional(),
   lut: LutRefSchema.optional(),
 });
@@ -72,7 +76,7 @@ export type Grade = z.infer<typeof GradeSchema>;
 export type GradePatch = { [K in keyof Grade]?: unknown };
 export function mergeGrade(base: Grade, patch: GradePatch): Grade {
   const g: Grade = { ...base }, p = patch as Record<string, unknown>;
-  for (const f of ["exposure", "contrast", "temperature", "tint", "saturation", "lut", "highlights", "shadows", "whites", "blacks", "vibrance", "hueSat"] as const) {
+  for (const f of ["exposure", "contrast", "temperature", "tint", "saturation", "lut", "highlights", "shadows", "whites", "blacks", "vibrance", "hueSat", "hueHue", "lumaSat"] as const) {
     const v = p[f];
     if (v === null) delete g[f]; else if (v !== undefined) (g as Record<string, unknown>)[f] = v;
   }
@@ -280,7 +284,7 @@ export function matteAllowanceMs(timeline: unknown): number {
 export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[]; skin?: Skin; subject?: Subject };
 export const hasLook = (c: ClipLook | null | undefined) => !!c && (!!c.grade && gradeIsActive(c.grade) || !!c.key || !!c.masks?.length || !!c.effects?.length || skinActive(c.skin) || !!c.subject);
 export const gradeIsActive = (g: Grade | undefined) => !!g && (!!g.exposure || !!g.contrast || !!g.temperature || !!g.tint || (g.saturation != null && g.saturation !== 100) || !!g.lut || !!g.curves && Object.values(g.curves).some(Boolean)
-  || !!g.highlights || !!g.shadows || !!g.whites || !!g.blacks || !!g.vibrance || wheelsActive(g.wheels) || !!g.hsl?.length || !!g.hueSat?.length);
+  || !!g.highlights || !!g.shadows || !!g.whites || !!g.blacks || !!g.vibrance || wheelsActive(g.wheels) || !!g.hsl?.length || !!g.hueSat?.length || !!g.hueHue?.length || !!g.lumaSat?.length);
 const wheelsActive = (w: Grade["wheels"]) => !!w && WHEELS.some((k) => !!w[k]?.amount || !!w[k]?.luma);
 
 // ---------------------------------------------------------------------------------------------
@@ -396,12 +400,26 @@ export function hueCurveFn(points: Curve): (h: number) => number {
     return a[1] + (b[1] - a[1]) * e;
   };
 }
-/** HSL secondaries and Hue vs Sat: each qualifier weighs the pixel by its hue's distance and its saturation, then turns
- *  its hue, scales its saturation and moves its brightness by that weight. */
+/** A curve of values over 0-1 (not round): smooth between its points, flat past the first and the last. */
+export function valueCurveFn(points: Curve): (x: number) => number {
+  const p = [...points].sort((a, b) => a[0] - b[0]);
+  return (x) => {
+    if (x <= p[0][0]) return p[0][1];
+    const j = p.findIndex((q) => q[0] > x);
+    if (j < 0) return p[p.length - 1][1];
+    const a = p[j - 1], b = p[j], t = (x - a[0]) / (b[0] - a[0] || 1), e = t * t * (3 - 2 * t);
+    return a[1] + (b[1] - a[1]) * e;
+  };
+}
+/** HSL secondaries, Hue vs Hue, Hue vs Sat and Luma vs Sat: each qualifier weighs the pixel by its hue's distance and
+ *  its saturation, then turns its hue, scales its saturation and moves its brightness by that weight; the curves turn
+ *  the hue by the hue (greys left alone), scale the saturation by the hue and by the brightness. */
 function hueStep(g: Grade): ((p: [number, number, number]) => [number, number, number]) | null {
   const qs = g.hsl ?? [], hs = g.hueSat?.length ? hueCurveFn(g.hueSat) : null;
-  if (!qs.length && !hs) return null;
+  const hh = g.hueHue?.length ? hueCurveFn(g.hueHue) : null, ls = g.lumaSat?.length ? valueCurveFn(g.lumaSat) : null;
+  if (!qs.length && !hs && !hh && !ls) return null;
   return (p) => {
+    const y = LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2];
     let [h, s, v] = rgbHsv(p[0], p[1], p[2]);
     for (const q of qs) {
       const range = q.range ?? 40, dist = Math.abs(((h * 360 - q.hue + 540) % 360) - 180);
@@ -411,7 +429,9 @@ function hueStep(g: Grade): ((p: [number, number, number]) => [number, number, n
       s = clamp01(s * (1 + ((q.saturation ?? 100) / 100 - 1) * w));
       v = clamp01(v + ((q.lightness ?? 0) / 100) * 0.5 * w);
     }
+    if (hh) h = (h + (hh(h) - 0.5) * smooth(0.03, 0.12, s) + 1) % 1;
     if (hs) s = clamp01(s * 2 * hs(h));
+    if (ls) s = clamp01(s * 2 * ls(y));
     return hsvRgb(h, s, v);
   };
 }
@@ -456,7 +476,7 @@ export function gradeFn(g: Grade, lut?: Lut | null): (r: number, gg: number, b: 
 export const LUT_SIZE = 33;
 /** Phase 5: a finer LUT for a grade with HSL secondaries or Hue vs Sat (their edges are sharp between 33 points). The
  *  render and the player both use this size, so they stay the same. */
-export const lutSizeFor = (g: Grade) => (g.hsl?.length || g.hueSat?.length ? 49 : LUT_SIZE);
+export const lutSizeFor = (g: Grade) => (g.hsl?.length || g.hueSat?.length || g.hueHue?.length || g.lumaSat?.length ? 49 : LUT_SIZE);
 /** The grade as a 3D LUT: size^3 RGB triplets, red changing fastest (the .cube order). */
 export function buildLut(g: Grade, lut?: Lut | null, size = LUT_SIZE): Float32Array {
   const f = gradeFn(g, lut);
@@ -720,6 +740,8 @@ export function gradeText(g: Grade, lutName?: (id: string) => string | undefined
   for (const k of WHEELS) { const w = g.wheels?.[k]; if (w?.amount || w?.luma) out.push(`${k} wheel${w.amount ? ` ${Math.round(w.hue ?? 0)}° ${w.amount}` : ""}${w.luma ? ` luma ${sgn(w.luma)}` : ""}`); }
   for (const q of g.hsl ?? []) out.push(`HSL ${Math.round(q.hue)}°±${(q.range ?? 40) / 2}${q.hueShift ? ` hue ${sgn(q.hueShift)}°` : ""}${q.saturation != null && q.saturation !== 100 ? ` sat ${q.saturation}%` : ""}${q.lightness ? ` light ${sgn(q.lightness)}` : ""}`);
   if (g.hueSat?.length) out.push(`hue vs sat (${g.hueSat.length} points)`);
+  if (g.hueHue?.length) out.push(`hue vs hue (${g.hueHue.filter((q) => Math.abs(q[1] - 0.5) > 0.002).map((q) => `${Math.round(q[0] * 360)}° ${sgn(Math.round((q[1] - 0.5) * 360))}°`).join(", ") || "flat"})`);
+  if (g.lumaSat?.length) out.push(`luma vs sat (${g.lumaSat.map((q) => `${Math.round(q[0] * 100)}% → ${Math.round(q[1] * 200)}%`).join(", ")})`);
   const ch = CURVE_CHANNELS.filter((c) => g.curves?.[c]);
   if (ch.length) out.push(`curves ${ch.join("/")}`);
   if (g.lut) { const nm = lutName?.(g.lut.id); out.push(`LUT ${nm ? `"${nm}"` : g.lut.id}${g.lut.amount != null && g.lut.amount < 1 ? ` ${Math.round(g.lut.amount * 100)}%` : ""}${g.lut.input ? " (input)" : ""}`); }

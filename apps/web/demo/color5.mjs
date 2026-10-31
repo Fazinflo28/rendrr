@@ -49,6 +49,15 @@ check(/shadows wheel 2[2-5]\d° \d+ luma \+10/.test(await page.locator("#color-c
 
 await slide("grade-huesat-red", 0.2);
 check(await val("grade-huesat-red") === "40%", "Hue vs Sat: reds at 40%");
+// Phase 14: Hue vs Hue (greens toward teal) and Luma vs Sat (less colour in the shadows).
+await slide("grade-huehue-green", 40);
+check(await val("grade-huehue-green") === "+40°", "Hue vs Hue: greens +40°");
+check(/hue vs hue \(120° \+40°\)/.test(await page.locator("#color-clip").textContent()), "the grade line says hue vs hue");
+await slide("grade-lumasat-shadows", 40);
+check(await val("grade-lumasat-shadows") === "40%", "Luma vs Sat: shadows at 40%");
+check(/luma vs sat \(0% → 100%, 25% → 40%, 50% → 100%/.test(await page.locator("#color-clip").textContent()), "the grade line says luma vs sat");
+await page.locator("#grade-huehue-reset").click(); await sleep(300);
+check(!/hue vs hue/.test(await page.locator("#color-clip").textContent()), "Reset takes Hue vs Hue off");
 await page.locator("#grade-hsl-add-sky").click(); await sleep(300);
 check(await page.locator('[data-hsl="0"]').count() === 1, "+ Sky adds an HSL secondary");
 await slide("grade-hsl-0-sat", 150);
@@ -61,6 +70,20 @@ await page.locator("#clip-scopes-on").check(); await page.locator("#clip-wavefor
 const lit = await page.evaluate(() => { const c = document.getElementById("clip-waveform"); const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 1] > 60) n++; return n; });
 const err = await page.locator("#clip-scopes .t-small.muted").count();
 check(lit > 200 || err > 0, `the waveform draws the picture (${lit} lit points${err ? "; the demo's video cannot be read" : ""})`);
+// Phase 14: the RGB parade: three columns, red, green and blue. The demo's own video cannot be read by a canvas, so a
+// readable picture (a canvas stream of red, green and blue bands) is put in front for the scopes to measure.
+await page.evaluate(() => {
+  const c = document.createElement("canvas"); c.width = 160; c.height = 90; const g = c.getContext("2d");
+  const paint = () => { g.fillStyle = "#d02020"; g.fillRect(0, 0, 53, 90); g.fillStyle = "#20c020"; g.fillRect(53, 0, 54, 90); g.fillStyle = "#2030d0"; g.fillRect(107, 0, 53, 90); };
+  paint(); setInterval(paint, 100);
+  const v = document.createElement("video"); v.muted = true; v.autoplay = true; v.setAttribute("data-on", "1"); v.srcObject = c.captureStream(10);
+  v.style.cssText = "position:fixed;left:-500px;top:0;width:160px"; document.body.prepend(v); v.play().catch(() => {});
+});
+await sleep(600);
+await page.locator("#clip-scope-mode").selectOption("rgb"); await sleep(900);
+if (process.env.DEBUG) console.log(await page.evaluate(() => { const v = document.querySelector('video[data-on="1"]'); return JSON.stringify({ src: v?.src?.slice(0, 40), so: !!v?.srcObject, rs: v?.readyState, t: v?.currentTime, w: v?.videoWidth, err: document.querySelector("#clip-scopes .t-small.muted")?.textContent }); }));
+const cols = await page.evaluate(() => { const c = document.getElementById("clip-waveform"); const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data, w = c.width, third = Math.floor(w / 3); const n = [0, 0, 0]; for (let i = 0; i < d.length; i += 4) { const x = (i / 4) % w, k = Math.min(2, Math.floor(x / third)); if (d[i + k] > 60 && d[i + k] > d[i + ((k + 1) % 3)] + 30) n[k]++; } return n; });
+check(cols[0] > 30 && cols[1] > 30 && cols[2] > 30, `the RGB parade draws red, green and blue columns (${cols.join(", ")} lit points)`);
 check(warns.filter((x) => /look (shader|program)/.test(x)).length === 0, "no shader errors");
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close();

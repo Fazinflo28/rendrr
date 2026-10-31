@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Colour curves and RGB parade (phase 14, 31 October)
+
+- **Hue vs Hue.** Color tab: turn each of six colours toward another (greens toward teal), up to 90° either way; greys stay grey.
+- **Luma vs Sat.** Color tab: saturation at five brightnesses (less colour in the shadows, richer midtones).
+- **RGB parade.** The scopes have a Luma waveform / RGB parade switch.
+- Both curves live in the grade's LUT, so the player and the render use the same numbers. Measured: the rendered file matches the shared grade (mean difference 2.15 of 255, against 2.13 for a plain render), and a green moved from 115° to 155°.
+- **Claude.** set_grade `hueHue`, `lumaSat` (curves of [x, value] points; 0.5 = as is).
+- **Tests.** packages/shared/test/color14.test.ts, apps/worker/test/color14-render.test.ts, apps/web/demo/color5.mjs (sliders and the parade).
+
 ## Multicam: cut to whoever speaks (phase 13, 31 October)
 
 - **Cut to whoever speaks.** In the Multicam page: the person loudest on their own camera's mic gets the shot. Options: the camera to use when both talk (or keep the shot), the shortest shot (1, 2, 3 or 5 s). A camera must lead 0.4 s before the shot changes, and each cut comes 0.2 s before the voice.

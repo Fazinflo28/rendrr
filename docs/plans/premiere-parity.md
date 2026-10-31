@@ -59,7 +59,9 @@ plugin hosting, hardware I/O, localization) are out of scope.
     shorter than the shortest shot (default 2 s) go into the one before; cuts come 0.2 s before the voice; a wide camera
     when both talk. The multicam_auto op (the server fills its plan), the editor's Cut to whoever speaks, and number
     keys 1-9 that cut live at the playhead. Left for later: speaker labels from the transcriber (one shared mic).
-14. **Colour: hue vs hue, luma vs sat, RGB parade.**
+14. **Colour: hue vs hue, luma vs sat, RGB parade (done, 31 October).** Lumetri's Hue vs Hue (a turn by hue, greys
+    left alone) and Luma vs Sat (saturation by brightness), both in the grade's LUT (49 points) so the render and the
+    player draw them alike; the Color tab's six-colour and five-brightness sliders; the scopes' RGB parade.
 15. **Audio live in the editor** (pan, EQ and reverb heard while editing, a WebAudio graph) and a parametric EQ.
 16. **Masked and keyframed adjustment layers.**
 17. **Anchor and motion blur on text layers; a border on b-roll cards.**

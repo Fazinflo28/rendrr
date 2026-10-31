@@ -6,7 +6,7 @@ import { useState, useEffect, useRef, useMemo, html, Btn, Icon } from "./ui";
 import { api } from "./api";
 import { OpColor, OpSlider, OpWheel } from "./controls";
 import { createLookRenderer } from "./look-gl";
-import { areaAt, areaPicture, buildLut, hueCurveFn, sampleLut, WHEELS, moving, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, lutSizeFor, maskPicture, mergeGrade, parseCube, SKIN_DEFAULTS, spillType, SUBJECT_DEFAULTS } from "@rendrr/shared";
+import { areaAt, areaPicture, buildLut, hueCurveFn, valueCurveFn, sampleLut, WHEELS, moving, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, lutSizeFor, maskPicture, mergeGrade, parseCube, SKIN_DEFAULTS, spillType, SUBJECT_DEFAULTS } from "@rendrr/shared";
 
 // ---------------------------------------------------------------------------------------------
 // Imported LUTs: their numbers, loaded once per page.
@@ -233,6 +233,8 @@ function AreaControls({ idp, a, set, sl, follow, busy }) {
 // player and the render draw them with the same numbers), and scopes.
 const WHEEL_NAME = { shadows: "Shadows", midtones: "Midtones", highlights: "Highlights" };
 const HUE_BANDS = [["Red", 0], ["Yellow", 60], ["Green", 120], ["Cyan", 180], ["Blue", 240], ["Magenta", 300]];
+// Phase 14: Luma vs Sat at five brightnesses.
+const LUMA_BANDS = [["Blacks", 0], ["Shadows", 0.25], ["Midtones", 0.5], ["Highlights", 0.75], ["Whites", 1]];
 const HSL_PRESETS = [["Skin", { hue: 25, range: 40, satMin: 0.15 }], ["Sky", { hue: 210, range: 50 }], ["Greens", { hue: 110, range: 60 }]];
 
 /** The grade's Phase 5 controls; idp keeps the ids apart (a clip's page and the whole edit's). */
@@ -240,6 +242,13 @@ function GradeMore({ idp, g, gop, doOp, sl }) {
   const hsCurve = g.hueSat?.length ? hueCurveFn(g.hueSat) : null;
   const band = (i) => (hsCurve ? hsCurve(HUE_BANDS[i][1] / 360) : 0.5);
   const setBand = (i, v) => { const pts = HUE_BANDS.map((b, j) => [b[1] / 360, Math.round((j === i ? v : band(j)) * 1000) / 1000]); return gop({ hueSat: pts.every((q) => Math.abs(q[1] - 0.5) < 0.005) ? null : pts }); };
+  // Phase 14: Hue vs Hue (a turn in degrees at six colours) and Luma vs Sat (saturation at five brightnesses).
+  const hhCurve = g.hueHue?.length ? hueCurveFn(g.hueHue) : null;
+  const hhDeg = (i) => (hhCurve ? Math.round((hhCurve(HUE_BANDS[i][1] / 360) - 0.5) * 360) : 0);
+  const setHh = (i, deg) => { const pts = HUE_BANDS.map((b, j) => [b[1] / 360, Math.round((0.5 + (j === i ? deg : hhDeg(j)) / 360) * 1000) / 1000]); return gop({ hueHue: pts.every((q) => Math.abs(q[1] - 0.5) < 0.002) ? null : pts }); };
+  const lsCurve = g.lumaSat?.length ? valueCurveFn(g.lumaSat) : null;
+  const lsPct = (i) => (lsCurve ? Math.round(lsCurve(LUMA_BANDS[i][1]) * 200) : 100);
+  const setLs = (i, pct) => { const pts = LUMA_BANDS.map((b, j) => [b[1], Math.round(((j === i ? pct : lsPct(j)) / 200) * 1000) / 1000]); return gop({ lumaSat: pts.every((q) => Math.abs(q[1] - 0.5) < 0.003) ? null : pts }); };
   const hsl = g.hsl || [];
   const setQ = (i, patch) => gop({ hsl: hsl.map((q, j) => (j === i ? { ...q, ...patch } : q)) });
   const tone = (k, label) => html`<div class="grow"><${OpSlider} id=${`${idp}-${k}`} label=${label} value=${g[k] || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ [k]: v })} ...${sl} /></div>`;
@@ -256,6 +265,12 @@ function GradeMore({ idp, g, gop, doOp, sl }) {
     <div class="col" style="gap:4px" id=${idp + "-huesat"}><div class="row between"><span class="t-small muted">Hue vs Sat</span>
       <span style=${{ visibility: g.hueSat ? "visible" : "hidden" }}><${Btn} kind="ghost" size="xs" id=${idp + "-huesat-reset"} disabled=${!g.hueSat} onClick=${() => doOp(gop({ hueSat: null }), false)}>Reset<//></span></div>
       ${HUE_BANDS.map(([n, h], i) => html`<${OpSlider} key=${n} id=${`${idp}-huesat-${n.toLowerCase()}`} label=${html`<span style=${{ color: `hsl(${h},80%,60%)` }}>■</span> ${n}`} value=${band(i)} min=${0} max=${1} step=${0.01} show=${(v) => Math.round(v * 200) + "%"} opFor=${(v) => setBand(i, v)} ...${sl} />`)}</div>
+    <div class="col" style="gap:4px" id=${idp + "-huehue"}><div class="row between"><span class="t-small muted">Hue vs Hue</span>
+      <span style=${{ visibility: g.hueHue ? "visible" : "hidden" }}><${Btn} kind="ghost" size="xs" id=${idp + "-huehue-reset"} disabled=${!g.hueHue} onClick=${() => doOp(gop({ hueHue: null }), false)}>Reset<//></span></div>
+      ${HUE_BANDS.map(([n, h], i) => html`<${OpSlider} key=${n} id=${`${idp}-huehue-${n.toLowerCase()}`} label=${html`<span style=${{ color: `hsl(${h},80%,60%)` }}>■</span> ${n}`} value=${hhDeg(i)} min=${-90} max=${90} step=${1} show=${(v) => sgn(v) + "°"} opFor=${(v) => setHh(i, v)} ...${sl} />`)}</div>
+    <div class="col" style="gap:4px" id=${idp + "-lumasat"}><div class="row between"><span class="t-small muted">Luma vs Sat</span>
+      <span style=${{ visibility: g.lumaSat ? "visible" : "hidden" }}><${Btn} kind="ghost" size="xs" id=${idp + "-lumasat-reset"} disabled=${!g.lumaSat} onClick=${() => doOp(gop({ lumaSat: null }), false)}>Reset<//></span></div>
+      ${LUMA_BANDS.map(([n], i) => html`<${OpSlider} key=${n} id=${`${idp}-lumasat-${n.toLowerCase()}`} label=${n} value=${lsPct(i)} min=${0} max=${200} step=${1} show=${(v) => v + "%"} opFor=${(v) => setLs(i, v)} ...${sl} />`)}</div>
     <div class="col" style="gap:6px" id=${idp + "-hsl"}><div class="row between"><span class="t-small muted">HSL secondaries</span><span class="row" style="gap:4px">
       ${HSL_PRESETS.map(([n, q]) => html`<${Btn} key=${n} kind="ghost" size="xs" id=${`${idp}-hsl-add-${n.toLowerCase()}`} disabled=${hsl.length >= 4} onClick=${() => doOp(gop({ hsl: [...hsl, q] }))}>+ ${n}<//>`)}</span></div>
       ${hsl.length ? hsl.map((q, i) => html`<div key=${i} class="col card flat" style="gap:6px;padding:10px" data-hsl=${i}>
@@ -276,7 +291,7 @@ function GradeMore({ idp, g, gop, doOp, sl }) {
  * while open.
  */
 export function Scopes({ idp, grade, luts }) {
-  const [on, setOn] = useState(false), [err, setErr] = useState("");
+  const [on, setOn] = useState(false), [err, setErr] = useState(""), [mode, setMode] = useState("luma");
   const wave = useRef(null), vec = useRef(null);
   const key = JSON.stringify(grade || null);
   useEffect(() => {
@@ -300,21 +315,31 @@ export function Scopes({ idp, grade, luts }) {
         let r = px[o] / 255, g = px[o + 1] / 255, b = px[o + 2] / 255;
         if (lut) [r, g, b] = sampleLut(lut, r, g, b);
         const Y = 0.2126 * r + 0.7152 * g + 0.0722 * b, cb = (b - Y) / 1.8556, cr = (r - Y) / 1.5748;
-        const wx = Math.floor((x * W1) / w), wy = Math.min(H1 - 1, Math.max(0, Math.round((1 - Y) * (H1 - 1))));
-        add(wi, (wy * W1 + wx) * 4, 40, 90, 40);
+        const wy = (v) => Math.min(H1 - 1, Math.max(0, Math.round((1 - v) * (H1 - 1))));
+        if (mode === "rgb") {
+          // Phase 14: RGB parade: red, green and blue side by side, each a waveform of its own channel.
+          // Each column keeps its colour however many points land on it: its own channel builds up, the others stop at 90.
+          const third = Math.floor(W1 / 3), px3 = Math.floor((x * (third - 2)) / w);
+          const tint = (o, k) => { const d = wi.data; for (let c = 0; c < 3; c++) d[o + c] = c === k ? Math.min(255, d[o + c] + 90) : Math.min(90, d[o + c] + 12); d[o + 3] = 255; };
+          tint((wy(r) * W1 + px3) * 4, 0);
+          tint((wy(g) * W1 + third + px3) * 4, 1);
+          tint((wy(b) * W1 + 2 * third + px3) * 4, 2);
+        } else add(wi, (wy(Y) * W1 + Math.floor((x * W1) / w)) * 4, 40, 90, 40);
         const vx = Math.round(H1 / 2 + cb * H1 * 0.9), vy = Math.round(H1 / 2 - cr * H1 * 0.9);
         if (vx >= 0 && vx < H1 && vy >= 0 && vy < H1) add(vi, (vy * H1 + vx) * 4, 60, 110, 60);
       }
       wv.putImageData(wi, 0, 0); vv.putImageData(vi, 0, 0);
       wv.strokeStyle = "rgba(255,255,255,.25)"; for (const t of [0, 0.25, 0.5, 0.75, 1]) { const yy = Math.round((1 - t) * (H1 - 1)) + 0.5; wv.beginPath(); wv.moveTo(0, yy); wv.lineTo(W1, yy); wv.stroke(); }
+      if (mode === "rgb") { wv.strokeStyle = "rgba(255,255,255,.35)"; for (const k of [1, 2]) { const xx = Math.floor(W1 / 3) * k - 1.5; wv.beginPath(); wv.moveTo(xx, 0); wv.lineTo(xx, H1); wv.stroke(); } }
       vv.strokeStyle = "rgba(255,255,255,.25)"; vv.beginPath(); vv.arc(H1 / 2, H1 / 2, H1 * 0.45, 0, Math.PI * 2); vv.stroke();
       vv.strokeStyle = "rgba(255,200,150,.5)"; vv.beginPath(); vv.moveTo(H1 / 2, H1 / 2); vv.lineTo(H1 / 2 + Math.cos((123 * Math.PI) / 180) * H1 * 0.45, H1 / 2 - Math.sin((123 * Math.PI) / 180) * H1 * 0.45); vv.stroke();
     };
     draw(); const t = setInterval(draw, 250);
     return () => clearInterval(t);
-  }, [on, key]);
+  }, [on, key, mode]);
   return html`<div class="col" style="gap:6px" id=${idp + "-scopes"}>
-    <label class="t-small row" style="gap:6px"><input type="checkbox" id=${idp + "-scopes-on"} checked=${on} onChange=${(e) => setOn(e.target.checked)} />Scopes (waveform and vectorscope)</label>
+    <div class="row between" style="gap:6px"><label class="t-small row" style="gap:6px"><input type="checkbox" id=${idp + "-scopes-on"} checked=${on} onChange=${(e) => setOn(e.target.checked)} />Scopes (waveform and vectorscope)</label>
+      ${on && html`<select class="input sm" id=${idp + "-scope-mode"} value=${mode} onChange=${(e) => setMode(e.target.value)} style="width:auto"><option value="luma">Luma waveform</option><option value="rgb">RGB parade</option></select>`}</div>
     ${on && html`<div class="row" style="gap:6px;align-items:flex-start"><canvas ref=${wave} id=${idp + "-waveform"} width="256" height="128" style="width:66%;background:#000;border-radius:4px" />
       <canvas ref=${vec} id=${idp + "-vectorscope"} width="128" height="128" style="width:33%;background:#000;border-radius:50%" /></div>
       ${err && html`<span class="t-small muted">${err}</span>`}`}</div>`;
@@ -597,7 +622,7 @@ function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLu
   const v1 = clips.filter((c) => c.sourceIn != null);
   const g = v1[0]?.grade || {};
   const same = (f) => v1.every((c) => JSON.stringify((c.grade || {})[f] ?? null) === JSON.stringify(g[f] ?? null));
-  const mixed = ["exposure", "contrast", "temperature", "tint", "saturation", "lut", "highlights", "shadows", "whites", "blacks", "vibrance", "wheels", "hsl", "hueSat"].filter((f) => !same(f));
+  const mixed = ["exposure", "contrast", "temperature", "tint", "saturation", "lut", "highlights", "shadows", "whites", "blacks", "vibrance", "wheels", "hsl", "hueSat", "hueHue", "lumaSat"].filter((f) => !same(f));
   const gop = (patch) => ({ op: "set_grade", all: true, ...patch });
   const sl = { H, liveOp };
   const fx = v1[0]?.effects || [];
