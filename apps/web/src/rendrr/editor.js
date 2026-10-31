@@ -72,6 +72,23 @@ const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "P
 // The comment composer: pen colours (as the app in the chat), quick emoji, and a picture made small enough to keep.
 const PENS = ["#ff3b30", "#ffd60a", "#34c759", "#0a84ff", "#ffffff"];
 const EMOJI = ["👍", "👎", "❤️", "🔥", "😂", "😮", "👀", "✅", "❌", "⚠️", "✂️", "🎵", "🎬", "💡", "⏩", "⏪"];
+/** A comment's drawing as a clear PNG the size of the picture (up to 1280 wide), base64: the AI sees it on the frame. */
+function drawingPng(d) {
+  try {
+    const W = Math.min(1280, d.w), H = Math.max(1, Math.round((W * d.h) / d.w));
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    const g = cv.getContext("2d"); if (!g) return null;
+    g.lineCap = "round"; g.lineJoin = "round";
+    for (const st of d.strokes) {
+      g.strokeStyle = st.c; g.lineWidth = Math.max(1, st.w * W); g.beginPath();
+      for (let k = 0; k + 1 < st.p.length; k += 2) { const x = st.p[k] * W, y = st.p[k + 1] * H; k ? g.lineTo(x, y) : g.moveTo(x, y); }
+      if (st.p.length === 2) g.lineTo(st.p[0] * W + 0.1, st.p[1] * H);
+      g.stroke();
+    }
+    return cv.toDataURL("image/png").split(",")[1] || null;
+  } catch { return null; }
+}
+
 async function readCommentImage(file) {
   const b64 = (blob) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = () => no(r.error); r.readAsDataURL(blob); });
   const bmp = await createImageBitmap(file);
@@ -873,7 +890,8 @@ function AddClipModal({ main, at, onAdd, onClose }) {
 function EditorPage({ id }) {
   const q = useAsync(() => api.getProject(id), [id]);
   const { go } = useNav();
-  // When your AI changes this edit, load its new version (the editor remounts on the new version).
+  // When your AI changes this edit, load its new version (the editor remounts on the new version, and on more
+  // changes folded into the same version: the project's time tells them apart).
   useEffect(() => api.watchProject(id, (m) => { if (m && m.by !== "user") q.reload(); }), [id]);
   // The AI tab's messages live here, not in EditorInner: an AI's change remounts EditorInner on the new version.
   const [chat, setChat] = useState(null);
@@ -881,7 +899,7 @@ function EditorPage({ id }) {
   useEffect(() => { setChat(null); keep.current = { tab: "edit", time: 0 }; }, [id]);
   // A new version from the AI brings its new messages with it.
   useEffect(() => { if (q.data?.aiChat) setChat(null); }, [q.data?.version]);
-  return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version} project=${p} reload=${q.reload} keep=${keep} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])) }} />`}<//>`;
+  return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version + ":" + (p.updated || 0)} project=${p} reload=${q.reload} keep=${keep} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])) }} />`}<//>`;
 }
 
 function EditorInner({ project, reload, ai, keep }) {
@@ -982,6 +1000,8 @@ function EditorInner({ project, reload, ai, keep }) {
   const pb = usePlayback(dur, { seq: !fresh });
   useEffect(() => { if (keep.current.time > 0) pb.seek(Math.min(keep.current.time, dur)); }, []);
   useEffect(() => { keep.current.time = pb.time; }, [pb.time]);
+  // For the browser tests: where the playhead is, and moving it.
+  useEffect(() => { if (typeof window === "undefined") return; window.__rendrrPlayhead = () => pb.time; window.__rendrrSeek = (t) => pb.seek(t); }, [pb.time]);
   // "Watch preview": the rendered file plays in the same player, without the live overlays.
   const [watch, setWatch] = useState(null);
   const wpb = usePlayback(watch?.seconds || 1);
@@ -1271,13 +1291,17 @@ function EditorInner({ project, reload, ai, keep }) {
   const [draft, setDraft] = useState(""); const [posting, setPosting] = useState(false);
   // The composer (as Higgsfield's): the moment, a drawing on the picture, emoji, pictures, a round send button.
   const [cDraw, setCDraw] = useState(false), [cStrokes, setCStrokes] = useState([]), [cPen, setCPen] = useState(PENS[0]), [cImgs, setCImgs] = useState([]), [cEmoji, setCEmoji] = useState(false);
-  const cFile = useRef(null), cLive = useRef(null), cText = useRef(null);
+  const cFile = useRef(null), cLive = useRef(null), cText = useRef(null), cAt = useRef(null);
+  useEffect(() => { if (!cStrokes.length && !cLive.current) cAt.current = null; }, [cStrokes]);
   const canPost = !!draft.trim() || cStrokes.length > 0 || cImgs.length > 0;
   const postComment = async () => {
     if (!canPost) return;
     setPosting(true);
     try {
-      const c = await api.addProjectComment(project.id, { time: pb.time, text: draft, drawing: cStrokes.length ? { w: plan?.width || 1280, h: plan?.height || 720, strokes: cStrokes } : undefined, images: cImgs.map(({ type, data, name, w, h }) => ({ type, data, name: name || undefined, w, h })) });
+      // A drawing belongs to the frame it was drawn on (the player may have moved since); it goes with a PNG of itself
+      // so the AI can see it on that frame (get_comments images), as the Claude app's drawings do.
+      const d = cStrokes.length ? { w: plan?.width || 1280, h: plan?.height || 720, strokes: cStrokes } : null;
+      const c = await api.addProjectComment(project.id, { time: d && cAt.current != null ? cAt.current : pb.time, text: draft, drawing: d ? { ...d, png: drawingPng(d) || undefined } : undefined, images: cImgs.map(({ type, data, name, w, h }) => ({ type, data, name: name || undefined, w, h })) });
       setComments((x) => [...x, c].sort((a, b) => a.time - b.time));
       setDraft(""); setCStrokes([]); setCImgs([]); setCDraw(false); setCEmoji(false);
       toast("Comment added at " + fmtTime(c.time), { icon: "comment" });
@@ -1296,12 +1320,22 @@ function EditorInner({ project, reload, ai, keep }) {
   // Drawing on the picture: strokes in shares of the frame, at the comment's moment (the player paused there).
   const drawDown = (e) => {
     if (!cDraw) return;
-    e.preventDefault(); e.currentTarget.setPointerCapture?.(e.pointerId);
-    const r = e.currentTarget.getBoundingClientRect(), pt = (ev) => [Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))].map((v) => Math.round(v * 1000) / 1000);
+    e.preventDefault();
+    // One stroke at a time: a second finger does not start another over it.
+    if (cLive.current) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    if (cAt.current == null) cAt.current = pb.time;
+    const id = e.pointerId, r = e.currentTarget.getBoundingClientRect(), pt = (ev) => [Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))].map((v) => Math.round(v * 1000) / 1000);
     cLive.current = { c: cPen, w: 0.004, p: pt(e) };
-    const move = (ev) => { if (!cLive.current) return; cLive.current = { ...cLive.current, p: [...cLive.current.p, ...pt(ev)].slice(0, 4000) }; setCStrokes((x) => [...x]); };
-    const up = () => { const st = cLive.current; cLive.current = null; window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); if (st && st.p.length >= 4) setCStrokes((x) => [...x, st].slice(0, 80)); else setCStrokes((x) => [...x]); };
-    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+    const move = (ev) => { if (ev.pointerId !== id || !cLive.current) return; cLive.current = { ...cLive.current, p: [...cLive.current.p, ...pt(ev)].slice(0, 4000) }; setCStrokes((x) => [...x]); };
+    // Lifted, or taken over by the system (a scroll, a call): the stroke ends and nothing stays listening.
+    const up = (ev) => {
+      if (ev && ev.pointerId !== id) return;
+      const st = cLive.current; cLive.current = null;
+      for (const [n, f] of [["pointermove", move], ["pointerup", up], ["pointercancel", up]]) window.removeEventListener(n, f);
+      if (st && st.p.length >= 4) setCStrokes((x) => [...x, st].slice(0, 80)); else setCStrokes((x) => [...x]);
+    };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
   };
   const poly = (st, i) => html`<polyline key=${i} points=${st.p.reduce((a, v, k) => (k % 2 ? a + "," + v : a + (k ? " " : "") + v), "")} fill="none" stroke=${st.c} stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />`;
   const drawOverlay = (cDraw || cStrokes.length) && !pb.playing ? html`<svg class=${"cmt-ink" + (cDraw ? " drawing" : "")} id="comment-draw-layer" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Your drawing for this comment" onPointerDown=${drawDown}>${cStrokes.map(poly)}${cLive.current ? poly(cLive.current, "live") : null}</svg>` : null;

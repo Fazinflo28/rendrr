@@ -147,11 +147,14 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
       const first = await tx.aiAction.findFirst({ where: { projectId, afterVersion: v }, orderBy: { createdAt: "asc" }, select: { beforeVersion: true } });
       foldedFrom = first?.beforeVersion ?? v - 1;
     } else {
-      if (latest && !latest.sealed) await tx.projectVersion.update({ where: { id: latest.id }, data: { sealed: true } });
+      // Sealing is not a change of the version: its time stays (the editor's stale check and the samples' reuse read it).
+      if (latest && !latest.sealed) await tx.projectVersion.update({ where: { id: latest.id }, data: { sealed: true, updatedAt: latest.updatedAt } });
       v = (latest?.v ?? 0) + 1;
       const note = actor.kind === "user" ? (change.op === "replace" ? "Your edits" : out.summary.charAt(0).toUpperCase() + out.summary.slice(1)) : `${displayAi(actor.kind)}: ${out.summary}`;
       // An AI's version stays open for the rest of its change (sealed by a render, a share or the user's next change).
-      await tx.projectVersion.create({ data: { projectId, v, note: note.slice(0, 300), timeline: out.snap as unknown as Prisma.InputJsonValue, createdBy: actor.kind, sealed: false } });
+      // An AI's undo or restore is closed at once: the next change is a version of its own, so undoing that one comes
+      // back here, not to before the change that was undone.
+      await tx.projectVersion.create({ data: { projectId, v, note: note.slice(0, 300), timeline: out.snap as unknown as Prisma.InputJsonValue, createdBy: actor.kind, sealed: isAi(actor.kind) && change.op === "restore_snapshot" } });
     }
     await tx.project.update({
       where: { id: projectId },
@@ -200,7 +203,7 @@ export async function sealLatestVersion(projectId: string) {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT 1 FROM "Project" WHERE id = ${projectId} FOR UPDATE`;
     const latest = await tx.projectVersion.findFirst({ where: { projectId }, orderBy: { v: "desc" } });
-    if (latest && !latest.sealed) await tx.projectVersion.update({ where: { id: latest.id }, data: { sealed: true } });
+    if (latest && !latest.sealed) await tx.projectVersion.update({ where: { id: latest.id }, data: { sealed: true, updatedAt: latest.updatedAt } });
     return latest?.v ?? 1;
   }, { timeout: 10_000, maxWait: 10_000 });
 }

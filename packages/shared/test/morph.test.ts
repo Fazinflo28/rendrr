@@ -72,6 +72,13 @@ describe("face-aware Morph Cut", () => {
     expect(p.operations.join("\n")).toMatch(/morph plain 0\.2\ds/);
     const g = ffmpegArgs(p, { source: "/in.mp4", output: "/o.mp4", morphFaces: { b: face } } as PlanFiles, source, { loudnessGainDb: 0 }).filterGraph;
     expect(g).toMatch(/minterpolate/);
+    // Sent again to every cut without face: the plain one stays plain (face true changes it).
+    const three = applyOp(s.snap, { op: "set_clips", track: "v1", clips: [{ id: "a", start: 1, end: 5, label: "" }, { id: "b", start: 6, end: 8, label: "" }, { id: "c", start: 8.5, end: 10, label: "" }] } as Op, ctx).snap;
+    const all = applyOp(three, { op: "set_transition", all: true, type: "morph", duration: 0.4 } as Op, ctx);
+    expect(all.summary).toMatch(/1 kept plain as before: b/);
+    const ts = planRender({ kind: "preview", snapshot: all.snap, transcript: tr, source, videoId: "v" }).transitions!;
+    expect(ts.find((x) => x.clipId === "b")!.face).toBe(false);
+    expect(ts.find((x) => x.clipId === "c")!.face).toBeUndefined();
     s = applyOp(s.snap, { op: "set_transition", clipId: "b", type: "morph", face: true } as Op, ctx);
     expect(planRender({ kind: "preview", snapshot: s.snap, transcript: tr, source, videoId: "v" }).transitions![0].face).toBeUndefined();
   });

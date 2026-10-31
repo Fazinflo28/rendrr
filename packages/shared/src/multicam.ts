@@ -126,9 +126,25 @@ export function multicamText(m: Multicam, nameOf?: (videoId: string) => string |
  * minute at 29.97, 4 at 59.94, but not every tenth minute), and the count is turned into seconds at the file's real
  * frame rate. null: not a timecode.
  */
-export function timecodeSeconds(tc: string | null | undefined, fps: number): number | null {
+/** A probed frame rate as the exact rate it stands for: 23.98 is 24000/1001, 29.97 is 30000/1001 (a probe rounds them). */
+export function exactFps(fps: number): number {
+  for (const k of [24, 25, 30, 48, 50, 60, 120]) {
+    if (Math.abs(fps - k) < 0.005) return k;
+    if (Math.abs(fps - (k * 1000) / 1001) < 0.02) return (k * 1000) / 1001;
+  }
+  return fps;
+}
+/** How long a timecode day lasts in real seconds at this rate (non-drop timecode on 29.97 runs 0.1% slow: 86486.4 s). */
+export function timecodeDay(tc: string | null | undefined, fps: number): number {
+  const f = exactFps(fps), nominal = Math.round(f), drop = /[;,]\d{2,3}\s*$/.test(tc ?? "");
+  let frames = 86400 * nominal;
+  if (drop && (nominal === 30 || nominal === 60)) frames -= (nominal === 30 ? 2 : 4) * (1440 - 144);
+  return frames / (Math.abs(f - nominal) < 0.005 ? nominal : drop ? (nominal * 1000) / 1001 : f);
+}
+export function timecodeSeconds(tc: string | null | undefined, fps0: number): number | null {
   const m = /^\s*(\d{1,2})[:.](\d{2})[:.](\d{2})([:;.,])(\d{2,3})\s*$/.exec(tc ?? "");
-  if (!m || !(fps > 0)) return null;
+  if (!m || !(fps0 > 0)) return null;
+  const fps = exactFps(fps0);
   const [hh, mm, ss, ff] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[5])];
   if (mm > 59 || ss > 59) return null;
   const nominal = Math.round(fps), drop = m[4] === ";" || m[4] === ",";
@@ -139,23 +155,29 @@ export function timecodeSeconds(tc: string | null | undefined, fps: number): num
     frames -= per * (minutes - Math.floor(minutes / 10));
   }
   // Frames turned into seconds at the frames real rate (non-drop timecode on 29.97 footage runs 0.1% slow of the clock).
-  return frames / (Math.abs(fps - nominal) < 0.01 ? nominal : drop ? nominal * 1000 / 1001 : fps);
+  return frames / (Math.abs(fps - nominal) < 0.005 ? nominal : drop ? nominal * 1000 / 1001 : fps);
 }
+/** A start timecode that says nothing about when the camera rolled: 00:00:00:00, a camera's default (record run from
+ *  zero, never jammed). */
+const unset = (tc: string | null | undefined) => /^\s*0?0[:.]00[:.]00[:;.,]00?0\s*$/.test(tc ?? "");
 
 /** The angle's second at the main video's second 0, from both files' start timecodes (angle time = main time + offset):
  *  two recordings that started at 10:00:00 and 10:00:05 are 5 s apart. A take over midnight wraps. null without both. */
 export function timecodeOffset(main: { timecode?: string | null; fps: number }, angle: { timecode?: string | null; fps: number }): number | null {
+  if (unset(main.timecode) || unset(angle.timecode)) return null;
   const a = timecodeSeconds(main.timecode, main.fps), b = timecodeSeconds(angle.timecode, angle.fps);
   if (a == null || b == null) return null;
+  // Over midnight: the camera whose clock wrapped is a timecode day (at its own rate) further on.
   let d = a - b;
-  if (d > 43200) d -= 86400; else if (d < -43200) d += 86400;
+  const dayA = timecodeDay(main.timecode, main.fps), dayB = timecodeDay(angle.timecode, angle.fps);
+  if (d > dayB / 2) d -= dayB; else if (d < -dayA / 2) d += dayA;
   return Math.round(d * 10000) / 10000;
 }
 
 /** How an angle was lined up: timecode first; the sound checks it, and is used when timecode is missing or disagrees. */
 export type PickedSync = { offset: number; by: "timecode" | "sound"; score?: number; note: string };
-/** Sound sure enough to overrule timecode that disagrees: a clear best lag. */
-export const soundIsSure = (s: SyncResult) => s.score >= 0.5 && s.margin >= 1.3;
+/** Sound sure enough to overrule timecode that disagrees: the sound sync's own "sure" (a clear best lag). */
+export const soundIsSure = (s: SyncResult) => s.sure || (s.score >= 0.5 && s.margin >= 1.3);
 export function pickSync(tc: number | null, sound: SyncResult | null, agree = 0.1): PickedSync | null {
   if (tc != null) {
     if (!sound) return { offset: tc, by: "timecode", note: "by timecode (no sound to check it)" };

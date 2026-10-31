@@ -1149,7 +1149,9 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const plain = op.type === "morph" && (op.face === false || (op.face === undefined && ids.every(wasPlain)));
       const tr: Transition | null = op.type === "cut" ? null : { type: op.type, duration: r2(dur), ...(op.dir && (op.type === "whip" || op.type === "slide" || op.type === "push" || op.type === "wipe" || op.type === "barn-door" || op.type === "blinds") ? { dir: op.dir } : {}), ...(plain ? { face: false as const } : {}) };
       const set = new Set(ids);
-      const next = setSeq(tl, v1.map((c) => { if (!set.has(c.id)) return c; const { transition: _t, ...rest } = c; return (tr ? { ...rest, transition: tr } : rest) as SeqClip; }));
+      // A morph sent again without face keeps each cut's own choice (a cut made plain stays plain).
+      const keptPlain = tr?.type === "morph" && op.face === undefined && !plain ? ids.filter(wasPlain) : [];
+      const next = setSeq(tl, v1.map((c) => { if (!set.has(c.id)) return c; const { transition: _t, ...rest } = c; return (tr ? { ...rest, transition: keptPlain.includes(c.id) ? { ...tr, face: false as const } : tr } : rest) as SeqClip; }));
       if (!tr) return { snap: { ...snap, timeline: next }, summary: `${ids.length === 1 ? `the cut before ${name(findClip(tl, "v1", ids[0]))} is` : `${ids.length} cuts are`} plain cuts again` };
       // Say what each one became (a short clip or little footage past the cut makes it shorter).
       const nv = sequenceView(normalizeTimeline(next), words);
@@ -1158,7 +1160,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const short = planned.filter((x) => x.note);
       const where = ids.length === 1 ? `on the cut before ${name(findClip(tl, "v1", ids[0]))}${planned[0] ? ` (edit ${fmtClock(planned[0].at)})` : ""}` : `on ${ids.length} cuts`;
       const notes = short.slice(0, 4).map((x) => `${x.clipId}: ${x.end > x.start ? `${(x.end - x.start).toFixed(2)}s, ` : ""}${x.note}`);
-      return { snap: { ...snap, timeline: next }, summary: `${tr.type}${tr.dir ? ` ${tr.dir}` : ""} ${tr.duration}s ${where}${(USES_HANDLES as string[]).includes(tr.type) ? " (uses footage past the cut)" : ""}${tr.type === "morph" ? (tr.face === false ? " (plain: the face is not looked for)" : " (face-aware: the face either side is found and slid into place; a plain morph where none is found)") : ""}${notes.length ? `; ${notes.join("; ")}${short.length > 4 ? `; +${short.length - 4} more` : ""}` : ""}` };
+      return { snap: { ...snap, timeline: next }, summary: `${tr.type}${tr.dir ? ` ${tr.dir}` : ""} ${tr.duration}s ${where}${(USES_HANDLES as string[]).includes(tr.type) ? " (uses footage past the cut)" : ""}${tr.type === "morph" ? (tr.face === false ? " (plain: the face is not looked for)" : ` (face-aware: the face either side is found and slid into place; a plain morph where none is found${keptPlain.length ? `; ${keptPlain.length} kept plain as before: ${keptPlain.slice(0, 4).join(", ")}${keptPlain.length > 4 ? "…" : ""}` : ""})`) : ""}${notes.length ? `; ${notes.join("; ")}${short.length > 4 ? `; +${short.length - 4} more` : ""}` : ""}` };
     }
     case "set_keyframes": {
       const track = op.track ?? "v1";

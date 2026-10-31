@@ -428,7 +428,8 @@ export async function previewGate(projectId: string): Promise<string | null> {
   const since = prev.createdAt;
   const [notes, client, mine] = await Promise.all([
     prisma.projectComment.count({ where: { projectId, createdAt: { gt: since } } }),
-    prisma.reviewComment.count({ where: { projectId, createdAt: { gt: since } } }),
+    // The client's notes on this edit's link, or on its folder's (a folder link's general notes have no edit).
+    prisma.render.findUnique({ where: { id: prev.id }, select: { project: { select: { folderId: true } } } }).then((r) => prisma.reviewComment.count({ where: { createdAt: { gt: since }, review: { OR: [{ projectId }, ...(r?.project.folderId ? [{ folderId: r.project.folderId }] : [])] }, OR: [{ projectId: null }, { projectId }] } })),
     prisma.projectVersion.count({ where: { projectId, createdBy: "user", createdAt: { gt: since } } }),
   ]);
   if (notes || client || mine) return null;
@@ -1091,7 +1092,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     // One preview per change: the AI's second preview in a row is not rendered unless the user asked for more since
     // (newRequest) or left feedback (a comment, a change in the editor). Each render is a version the user sees and
     // costs them tokens; the AI's own fixes after a preview wait for the next request.
-    const gate = i.newRequest || i.again ? null : await previewGate(p.id);
+    const gate = i.newRequest ? null : await previewGate(p.id);
     if (gate) return { text: gate };
     const r = await startRender(c.userId, i.projectId, "preview", { by: c.ai ?? "claude" });
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);

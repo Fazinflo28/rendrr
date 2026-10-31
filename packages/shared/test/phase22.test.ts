@@ -12,7 +12,7 @@ describe("timecode", () => {
     expect(timecodeSeconds("00:00:01:15", 30)).toBe(1.5);
     expect(timecodeSeconds("10:00:00:12", 24)).toBeCloseTo(36000.5, 9);
     // 23.976: 24 frame numbers a second, played at 23.976 (0.1% slower than the clock).
-    expect(timecodeSeconds("00:00:10:00", 23.976)).toBeCloseTo(240 / 23.976, 9);
+    expect(timecodeSeconds("00:00:10:00", 23.976)).toBeCloseTo((240 * 1001) / 24000, 9);
   });
   it("drop-frame at 29.97 and 59.94: the skipped frame numbers left out, every tenth minute kept", () => {
     expect(timecodeSeconds("00:01:00;02", 29.97)).toBeCloseTo(1800 * 1001 / 30000, 9);
@@ -63,5 +63,28 @@ describe("the multicam op keeps how an angle was lined up", () => {
     const hand = applyOp(r.snap, { op: "multicam", angles: [{ videoId: "cam2", offset: 5.5 }] } as Op, ctx);
     expect(hand.snap.timeline.multicam!.angles[0].sync).toBeUndefined();
     expect(multicamText(hand.snap.timeline.multicam!)).toMatch(/set by hand/);
+  });
+});
+
+describe("timecode, from the review", () => {
+  it("a probe's 23.98 and 29.97 are the exact NTSC rates", async () => {
+    const { exactFps, timecodeOffset } = await import("../src/multicam");
+    expect(exactFps(23.98)).toBeCloseTo(24000 / 1001, 9);
+    expect(exactFps(29.97)).toBeCloseTo(30000 / 1001, 9);
+    expect(exactFps(25)).toBe(25);
+    // Two cameras rolling at 14:00:00:00, one 23.976 and one 29.97 (both non-drop): the same moment.
+    expect(timecodeOffset({ timecode: "14:00:00:00", fps: 23.98 }, { timecode: "14:00:00:00", fps: 29.97 })).toBeCloseTo(0, 3);
+  });
+  it("over midnight at 29.97 non-drop: a timecode day is 86486.4 s, not 86400", async () => {
+    const { timecodeOffset, timecodeDay } = await import("../src/multicam");
+    expect(timecodeDay("00:00:00:00", 29.97)).toBeCloseTo(86486.4, 1);
+    // Main started at 23:59:50:00, the angle 15 s later at 00:00:05:00: the angle is 15 s behind.
+    expect(timecodeOffset({ timecode: "23:59:50:00", fps: 29.97 }, { timecode: "00:00:05:00", fps: 29.97 })).toBeCloseTo(-15.015, 2);
+  });
+  it("00:00:00:00 (a camera's default, never jammed) is no timecode; a sure sound sync overrules timecode", async () => {
+    const { timecodeOffset, pickSync } = await import("../src/multicam");
+    expect(timecodeOffset({ timecode: "00:00:00:00", fps: 25 }, { timecode: "00:00:00:00", fps: 25 })).toBeNull();
+    const sound = { offset: 3.2, score: 0.42, margin: 2.5, overlap: 30, sure: true };
+    expect(pickSync(0, sound)).toMatchObject({ by: "sound", offset: 3.2 });
   });
 });

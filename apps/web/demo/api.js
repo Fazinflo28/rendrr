@@ -289,6 +289,7 @@ Object.assign(api, {
   addProjectComment: async (_projectId, { time, text, drawing, images }) => {
     if (!text?.trim() && !drawing?.strokes?.length && !images?.length) throw Object.assign(new Error("Write a comment, draw on the picture or add a picture first."), { friendly: true });
     await new Promise((r) => setTimeout(r, 120));
+    globalThis.__rendrrLastComment = { time, drawing }; // what the editor sent (the browser tests read it)
     return { id: "cm_" + Math.random().toString(36).slice(2, 8), time: Math.max(0, Number(time) || 0), text: (text || "").trim(), author: "You", mine: true, resolved: false, at: Date.now(), edited: false,
       drawing: drawing?.strokes?.length ? { w: drawing.w, h: drawing.h, strokes: drawing.strokes } : null, images: (images || []).map((im, i) => ({ id: "im" + i + Math.random().toString(36).slice(2, 5), url: `data:${im.type};base64,${im.data}`, w: im.w, h: im.h, name: im.name })) };
   },

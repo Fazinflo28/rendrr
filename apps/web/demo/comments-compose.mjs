@@ -58,6 +58,7 @@ for (const [vp, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
   await sleep(600); // the editor brings the picture into view when Draw is on (a phone's comments sit below it)
   const L = await page.locator("#comment-draw-layer").boundingBox();
   console.log(`     (${vp}: drawing layer at ${L.x.toFixed(0)},${L.y.toFixed(0)} ${L.width.toFixed(0)}x${L.height.toFixed(0)}; top element there: ${await page.evaluate(([x, y]) => { const e = document.elementFromPoint(x, y); return e ? (e.id || e.tagName + "." + e.className) : "none"; }, [L.x + L.width * 0.4, L.y + L.height * 0.4])})`);
+  const drawnAt = await page.evaluate(() => globalThis.__rendrrPlayhead?.() ?? null);
   await page.mouse.move(L.x + L.width * 0.3, L.y + L.height * 0.3); await page.mouse.down();
   for (let k = 1; k <= 8; k++) await page.mouse.move(L.x + L.width * (0.3 + k * 0.03), L.y + L.height * (0.3 + k * 0.02));
   await page.mouse.up(); await sleep(200);
@@ -67,6 +68,8 @@ for (const [vp, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
   check(!(await page.locator("#comment-post").isDisabled()), `${vp}: a drawing alone can be posted`);
   await page.locator("#comment-draw-done").click(); await sleep(200);
   check(/Drawing/.test(await page.locator("#comment-attached").textContent()), `${vp}: the drawing waits above the box`);
+  // The playhead moves on before posting: the drawing still goes at the frame it was drawn on.
+  await page.evaluate(() => globalThis.__rendrrSeek?.(4.5)); await sleep(200);
   // Emoji and a picture.
   await page.locator("#comment-input").fill("Logo here ");
   await page.locator("#comment-emoji").click(); await page.locator("#comment-emoji-pop").waitFor();
@@ -81,6 +84,9 @@ for (const [vp, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
   const txt = (await page.locator("[data-comment]").evaluateAll((els) => els.map((e) => e.textContent).join("|")));
   check(/Logo here 👍/.test(txt) && await page.locator("[data-comment] .cmt-img").count() >= 2 && /Drawing/.test(txt), `${vp}: it shows its text, drawing and picture`);
   check(await page.locator("#comment-attached").count() === 0 && (await page.locator("#comment-input").inputValue()) === "", `${vp}: the box is empty again`);
+  const sent = await page.evaluate(() => globalThis.__rendrrLastComment);
+  check(/^iVBOR/.test(sent?.drawing?.png || ""), `${vp}: the drawing goes with a PNG of itself (the AI sees it)`);
+  check(drawnAt != null && Math.abs(sent.time - drawnAt) < 0.01, `${vp}: posted at the drawing's moment (${drawnAt?.toFixed(2)}s), not the playhead's after it moved (${sent?.time?.toFixed(2)}s)`);
   void last;
   await page.close();
 }

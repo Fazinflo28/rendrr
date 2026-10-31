@@ -73,12 +73,12 @@ export async function resolveMulticam<T extends { op: string }>(userId: string, 
   for (const e of edits) {
     const angles = (e as { angles?: { videoId: string; offset?: number; name?: string; rotate?: number; score?: number }[] }).angles;
     if (e.op !== "multicam" || !angles?.some((a) => a.offset == null)) { out.push(e); continue; }
-    const filled = [];
-    for (const a of angles) {
-      if (a.offset != null) { filled.push(a); continue; }
+    // Every camera at once (each may wait a few seconds for its timecode to be read).
+    const filled = await Promise.all(angles.map(async (a) => {
+      if (a.offset != null) return a;
       const s = await syncAngle(userId, mainVideoId, a.videoId);
-      filled.push({ ...a, offset: s.offset, ...(s.checked ? { score: s.score } : {}), sync: s.by, ...(a.name ? {} : { name: s.name }), ...(a.rotate == null && s.rotate ? { rotate: s.rotate } : {}) });
-    }
+      return { ...a, offset: s.offset, ...(s.checked ? { score: s.score } : {}), sync: s.by, ...(a.name ? {} : { name: s.name }), ...(a.rotate == null && s.rotate ? { rotate: s.rotate } : {}) };
+    }));
     out.push({ ...e, angles: filled });
   }
   return out;

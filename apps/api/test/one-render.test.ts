@@ -17,7 +17,7 @@ describe("one version and one render per change", { skip: !ready && "needs DATAB
   const { TOOL_HANDLERS } = await import("../src/tools");
   const { startRender } = await import("../src/services/render");
   const { startSamples } = await import("../src/services/samples");
-  const { applyTimelineChange, queue, redis } = await import("@rendrr/core");
+  const { applyTimelineChange, queue, redis, sealLatestVersion } = await import("@rendrr/core");
   let userId = "", projectId = "";
   const c = () => ({ userId, ai: "claude" as const });
   const tool = (name: string, input: Record<string, unknown>) => TOOL_HANDLERS[name](c(), MCP_TOOLS.find((t) => t.name === name)!.input.parse(input));
@@ -31,6 +31,7 @@ describe("one version and one render per change", { skip: !ready && "needs DATAB
   });
   after(async () => {
     await queue("render").obliterate({ force: true }).catch(() => {});
+    await prisma.review.deleteMany({ where: { userId } });
     await prisma.project.deleteMany({ where: { userId } });
     await prisma.video.deleteMany({ where: { userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
@@ -72,6 +73,30 @@ describe("one version and one render per change", { skip: !ready && "needs DATAB
     assert.equal(r.version, 3);
     const after3 = await tool("apply_edits", { projectId, edits: [{ op: "set_captions", on: true }] });
     assert.match(after3.text, /Done \(v4/, "Claude's next change after the user's is a version of its own");
+    // A render or a share seals Claude's version: that is not a change, so an autosave from after Claude's change is
+    // not refused as if Claude had just changed the edit.
+    const v4 = await prisma.projectVersion.findUniqueOrThrow({ where: { projectId_v: { projectId, v: 4 } } });
+    await new Promise((r) => setTimeout(r, 1300));
+    await sealLatestVersion(projectId);
+    const sealed = await prisma.projectVersion.findUniqueOrThrow({ where: { projectId_v: { projectId, v: 4 } } });
+    assert.equal(sealed.sealed, true);
+    assert.equal(sealed.updatedAt.getTime(), v4.updatedAt.getTime(), "sealing keeps the version's time");
+    const p4 = await prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+    const ok = await applyTimelineChange(projectId, { op: "replace", timeline: { ...(p4.timeline as object), captionsOn: false } as never }, { kind: "user", userId }, { baseVersion: 4, baseAt: v4.updatedAt.getTime() + 200 });
+    assert.equal(ok.version, 5);
+  });
+
+  it("undo, then a new change, then undo: back to the undone state, not the change that was undone", async () => {
+    const at = async () => ((await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).timeline as { tracks: { v3: { kind?: string; text?: string }[] } }).tracks.v3.filter((x) => x.kind === "text").map((x) => x.text).sort();
+    const before = await at();
+    await tool("apply_edits", { projectId, edits: [{ op: "add_text", text: "A change", start: 14, end: 15, edit: true }] });
+    assert.deepEqual(await at(), [...before, "A change"].sort());
+    await tool("undo", { projectId });
+    assert.deepEqual(await at(), before);
+    const b = await tool("apply_edits", { projectId, edits: [{ op: "add_text", text: "B change", start: 16, end: 17, edit: true }] });
+    assert.doesNotMatch(b.text, /and more changes/);
+    await tool("undo", { projectId });
+    assert.deepEqual(await at(), before, "A stays undone");
   });
 
   it("one preview per request: a second is refused until the user asks again", async () => {
@@ -99,9 +124,20 @@ describe("one version and one render per change", { skip: !ready && "needs DATAB
     // Then again for the same request: refused; with newRequest (the user asked for something new in the chat): rendered.
     await tool("apply_edits", { projectId, edits: [{ op: "add_zoom", start: 12, end: 13, scale: 1.1, edit: true }] });
     assert.match((await tool("render_preview", { projectId })).text, /^Not rendered/);
+    // again (render the same version once more) does not get round it either.
+    assert.match((await tool("render_preview", { projectId, again: true })).text, /^Not rendered/);
     assert.doesNotMatch((await tool("render_preview", { projectId, newRequest: true })).text, /^Not rendered/);
     assert.equal(await prisma.render.count({ where: { projectId, kind: "preview" } }), 3);
+    // A client's note on the folder's review link (no edit named) is feedback on this edit too.
+    await prisma.render.updateMany({ where: { projectId, kind: "preview" }, data: { status: "done" } });
+    await tool("apply_edits", { projectId, edits: [{ op: "add_zoom", start: 14, end: 15, scale: 1.1, edit: true }] });
+    assert.match((await tool("render_preview", { projectId })).text, /^Not rendered/);
+    const folderId = (await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).folderId;
+    const rv = await prisma.review.create({ data: { token: `one_${run}`, userId, folderId } });
+    await prisma.reviewComment.create({ data: { reviewToken: rv.token, projectId: null, time: 0, text: "Shorter please", author: "Client" } });
+    assert.doesNotMatch((await tool("render_preview", { projectId })).text, /^Not rendered/);
+    assert.equal(await prisma.render.count({ where: { projectId, kind: "preview" } }), 4);
     // Previews the user asks for in the editor are never counted.
-    assert.equal(await prisma.render.count({ where: { projectId, kind: "preview", by: "claude" } }), 3);
+    assert.equal(await prisma.render.count({ where: { projectId, kind: "preview", by: "claude" } }), 4);
   });
 });

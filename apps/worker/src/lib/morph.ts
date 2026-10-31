@@ -60,6 +60,9 @@ export async function morphFaces(plan: RenderPlan, files: PlanFiles, dir: string
     // A's first frame of the window and B's last (the frames the morph runs between).
     const a = t.a[0], b = t.b[t.b.length - 1], af = fileOf(a), bf = fileOf(b);
     if (!af || !bf) continue;
+    // A side drawn from a stabilized copy (shifted and zoomed frame by frame) or moved by keyframes is not the picture
+    // read here: the face would be placed off target. Those cuts keep the plain morph.
+    if ([a.clipId, b.clipId].some((id) => plan.stabilized?.[id] || plan.clipMotion?.[id])) continue;
     const fa = await frameOf(af, a, srcAt(a, a.start), w, h, signal), fb = await frameOf(bf, b, srcAt(b, Math.max(b.start, b.end - 1 / fps)), w, h, signal);
     if (fa && fb) jobs.push({ id: t.clipId, a, b, fa, fb });
   }
