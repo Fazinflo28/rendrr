@@ -17,7 +17,7 @@ import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { libraryItem, libraryParams } from "./library";
 import { BlendModeSchema, blendText, type BlendMode } from "./blend";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
-import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
+import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, HslSchema, WheelSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
 import {
   asSequence, EditError, findClip, fmtClock, insertSeqClip, layoutTimeline, mainVideoOf, moveSeqClip, newSeqClipId, normalSpeed,
   outputDuration, plainFraming, reattach, removeEditRange, removeSourceRange, restoreSourceRange, sequenceView, splitSeqClip, toModelB, withTracks,
@@ -42,6 +42,7 @@ const edit = z.boolean().optional();
 const SOUND_SOURCE = { url: z.string().url().max(2000).optional(), driveFileId: z.string().max(200).optional(), upload: z.boolean().optional(), name: z.string().max(120).optional() };
 const clipId = z.string().max(80);
 // The ops that change an edit step by step. An AI sends a list of them in one go (the `batch` op).
+const signed100 = z.number().min(-100).max(100);
 const EDIT_OPS = [
   // wordIds cut those words (restore_words brings them back); from/to removes exactly that range, words or not.
   z.object({ op: z.literal("cut_words"), wordIds: z.array(z.string().max(40)).max(50_000).optional(), from: t.optional(), to: t.optional(), edit }),
@@ -158,7 +159,12 @@ const EDIT_OPS = [
   // by name, or with the .cube text, the server imports it and sends the id (applyOp only takes ids).
   z.object({ op: z.literal("set_grade"), ...lookTargets, reset: z.boolean().optional(),
     exposure: z.number().min(-4).max(4).nullable().optional(), contrast: z.number().min(-100).max(100).nullable().optional(), temperature: z.number().min(-100).max(100).nullable().optional(), tint: z.number().min(-100).max(100).nullable().optional(), saturation: z.number().min(0).max(200).nullable().optional(),
-    curves: z.object({ master: CurveSchema.nullable().optional(), r: CurveSchema.nullable().optional(), g: CurveSchema.nullable().optional(), b: CurveSchema.nullable().optional() }).nullable().optional(), lut: LutInputSchema.nullable().optional() }),
+    curves: z.object({ master: CurveSchema.nullable().optional(), r: CurveSchema.nullable().optional(), g: CurveSchema.nullable().optional(), b: CurveSchema.nullable().optional() }).nullable().optional(), lut: LutInputSchema.nullable().optional(),
+    // Phase 5: Lumetri's tone (highlights, shadows, whites, blacks), vibrance, wheels (each range merged; null removes it),
+    // HSL secondaries (the list replaces them; [] or null removes them), Hue vs Sat.
+    highlights: signed100.nullable().optional(), shadows: signed100.nullable().optional(), whites: signed100.nullable().optional(), blacks: signed100.nullable().optional(), vibrance: signed100.nullable().optional(),
+    wheels: z.object({ shadows: WheelSchema.nullable().optional(), midtones: WheelSchema.nullable().optional(), highlights: WheelSchema.nullable().optional() }).nullable().optional(),
+    hsl: z.array(HslSchema).max(4).nullable().optional(), hueSat: CurveSchema.nullable().optional() }),
   // A clip's grade onto other clips (with: also its key, masks, blur/pixelate).
   z.object({ op: z.literal("copy_grade"), from: clipId, to: z.array(clipId).max(2000).optional(), all: z.boolean().optional(), video: z.string().max(80).optional(), with: z.array(z.enum(["grade", "key", "masks", "effects", "skin", "subject"])).max(6).optional() }),
   // Clips' colour matched to a reference clip from measured frames (the server measures them; the result is a grade).
@@ -1091,10 +1097,17 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (op.lut && !op.lut.id) throw new EditError(`The LUT "${op.lut.name ?? "from its text"}" has to be imported first: send this edit through Rendrr's server (apply_edits), which imports it.`);
       if (op.lut) op.lut = { id: op.lut.id!, ...(op.lut.amount != null ? { amount: op.lut.amount } : {}), ...(op.lut.input != null ? { input: op.lut.input } : {}) };
       if (op.lut && ctx.getLut && !ctx.getLut(op.lut.id!)) throw new EditError(`There is no LUT "${op.lut.id}" in your LUTs. Import the .cube file in the editor's Color tab; get_project lists your LUTs.`);
-      const fields = ["exposure", "contrast", "temperature", "tint", "saturation", "lut"] as const;
+      const fields = ["exposure", "contrast", "temperature", "tint", "saturation", "lut", "highlights", "shadows", "whites", "blacks", "vibrance", "hueSat"] as const;
       const next = mapLook(tl, ids, (c) => {
         const g: Grade = op.reset ? {} : { ...(c.grade ?? {}) };
         for (const f of fields) { const v = op[f]; if (v === null) delete g[f]; else if (v !== undefined) (g as Record<string, unknown>)[f] = v; }
+        if (op.wheels === null) delete g.wheels;
+        else if (op.wheels) {
+          const w = { ...(g.wheels ?? {}) } as Record<string, unknown>;
+          for (const [k, v] of Object.entries(op.wheels)) { if (v === null) delete w[k]; else if (v) w[k] = { ...((w[k] as object) ?? {}), ...v }; }
+          if (Object.keys(w).length) g.wheels = w as Grade["wheels"]; else delete g.wheels;
+        }
+        if (op.hsl === null || op.hsl?.length === 0) delete g.hsl; else if (op.hsl) g.hsl = op.hsl;
         if (op.curves === null) delete g.curves;
         else if (op.curves) {
           const cv = { ...(g.curves ?? {}) } as Record<string, unknown>;

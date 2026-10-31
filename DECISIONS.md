@@ -357,6 +357,17 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 5: deeper colour (31 October)
+
+| Question | Decision |
+|---|---|
+| Where the new controls go | Into the grade function, so into the one 3D LUT the render (lut3d) and the player (WebGL) already share: tone, vibrance, wheels, HSL secondaries and Hue vs Sat are all a colour in, a colour out. Order: input LUT, white balance and exposure, contrast, tone, wheels, saturation, vibrance, HSL and Hue vs Sat, curves, look LUT. |
+| The formulas | Tone: the pixel's luma moved by four bumps (shadows peak at 1/3, highlights at 2/3, blacks at 0, whites at 1), the colour scaled with it so its hue stays. Wheels: each range ((1-y)^2, 4y(1-y), y^2) pushed towards its hue's colour less that colour's luma (brightness kept), plus its luma. Vibrance: saturation scaled by 1 + v(1 - saturation). HSL: a weight from the hue's distance (full within range/2, gone at range) and saturation (greys untouched), then hue turned, saturation scaled, value moved. Hue vs Sat: a curve round the hue circle, eased between points, 0.5 = as is. |
+| LUT size | 33 points, or 49 when the grade has HSL secondaries or Hue vs Sat (their edges are sharp: 33 points err by up to 9 levels, 49 by 6). Both the render and the player read lutSizeFor(grade). |
+| Vignette | An effect: darken outside a soft ellipse 120% of the frame (its own area if it has one), so it reuses the darken path in both the render and the player. |
+| Scopes | In the editor only: a 160-wide copy of the picture showing now, through the grade's LUT (17 points), as a luma waveform and a BT.709 vectorscope with the skin line. A picture the browser cannot read (no CORS) says so. |
+| The colour wheel control | Drag a dot: angle is the hue, distance the amount. It measures its own on-screen box (the panel can be drawn scaled), does not take focus on press (focus scrolled the panel under the pointer), and the Reset buttons keep their space so nothing moves while dragging. |
+
 ## Premiere parity, phase 4: blend modes and opacity (31 October)
 
 | Question | Decision |

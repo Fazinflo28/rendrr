@@ -58,6 +58,7 @@ import { createElement as h, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { liveFrame, sequenceClock } from "@rendrr/shared";
 import { SeqMedia, LiveOverlays } from ${JSON.stringify(resolve(web, "src/rendrr/editor.js"))};
+import { Scopes } from ${JSON.stringify(resolve(web, "src/rendrr/color.js"))};
 const plan = window.__PLAN, clock = sequenceClock(plan);
 const pb = { attachGate() {} };
 const media = { broll: { leak: { url: "/leak.webm", seconds: 4 } }, graphicClips: {} };
@@ -68,7 +69,8 @@ function App() {
   return h("div", { id: "stage", style: { position: "relative", width: plan.width + "px", height: plan.height + "px", overflow: "hidden", background: "#000" } },
     h("div", { style: { position: "absolute", inset: 0, overflow: "hidden", background: "#000" } },
       h(SeqMedia, { plan, clock, time: t, playing: false, urls: { v: "/main.webm" }, sounds: {}, aspect: plan.aspect, pb, broll: media.broll })),
-    h(LiveOverlays, { frame: f, clips: [], media, aspect: plan.aspect, playing: false, plan }));
+    h(LiveOverlays, { frame: f, clips: [], media, aspect: plan.aspect, playing: false, plan }),
+    h("div", { style: { position: "absolute", left: 0, top: 0, width: "300px", background: "#111" } }, h(Scopes, { idp: "t", grade: {}, luts: {} })));
 }
 createRoot(document.getElementById("root")).render(h(App));
 window.__seek = (t) => setT(t);`);
@@ -119,6 +121,13 @@ for (const [t0, what] of [[3.5, "between (plain)"], [2, "screen"], [5, "multiply
   if (what.startsWith("between")) plain = d;
   else if (d > plain + 6) fails++;
 }
+// Phase 5: the scopes read the picture showing now (the four colour bands: four columns of points on the waveform, four
+// dots on the vectorscope).
+await page.evaluate(() => window.__seek(3.5)); await page.waitForTimeout(600);
+await page.locator("#t-scopes-on").check(); await page.waitForTimeout(1200);
+const scope = await page.evaluate(() => { const lit = (id) => { const c = document.getElementById(id); if (!c) return -1; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 1] > 60) n++; return n; }; return { wave: lit("t-waveform"), vec: lit("t-vectorscope"), msg: document.querySelector("#t-scopes .muted")?.textContent || "" }; });
+rows.push(`scopes: ${scope.wave} lit points on the waveform, ${scope.vec} on the vectorscope${scope.msg ? ` (${scope.msg})` : ""}`);
+if (scope.wave < 50 || scope.vec < 4) fails++;
 console.log(rows.join("\n"));
 await browser.close(); server.close(); if (process.env.KEEP) console.log("kept " + tmp); else rmSync(tmp, { recursive: true, force: true });
 if (errs.length) { console.log("page errors:", errs); fails++; }

@@ -35,12 +35,34 @@ export type LutInput = z.infer<typeof LutInputSchema>;
  * A clip's grade. exposure: stops (+1 = twice the light); contrast -100..100 (0 = as is); temperature -100 (cooler,
  * blue) .. 100 (warmer, orange); tint -100 (green) .. 100 (magenta); saturation % (100 = as is, 0 = grey).
  */
+const signed = z.number().min(-100).max(100);
+/** Phase 5: a colour wheel (Lumetri's shadows, midtones, highlights): a push towards a hue (degrees) by amount 0-100,
+ *  and that range's brightness (luma -100..100). */
+export const WheelSchema = z.object({ hue: z.number().min(0).max(360).optional(), amount: z.number().min(0).max(100).optional(), luma: signed.optional() });
+export type Wheel = z.infer<typeof WheelSchema>;
+export const WHEELS = ["shadows", "midtones", "highlights"] as const;
+export const WheelsSchema = z.object({ shadows: WheelSchema.optional(), midtones: WheelSchema.optional(), highlights: WheelSchema.optional() });
+/** Phase 5: an HSL secondary: the colours near a hue (fully within range/2 degrees, fading out by range), at least satMin
+ *  saturated (0-1), changed: hue turned by hueShift degrees, saturation to saturation % of itself, lightness -100..100. */
+export const HslSchema = z.object({ hue: z.number().min(0).max(360), range: z.number().min(4).max(180).optional(), satMin: unit.optional(), hueShift: z.number().min(-180).max(180).optional(), saturation: z.number().min(0).max(300).optional(), lightness: signed.optional() });
+export type Hsl = z.infer<typeof HslSchema>;
 export const GradeSchema = z.object({
   exposure: z.number().min(-4).max(4).optional(),
   contrast: z.number().min(-100).max(100).optional(),
   temperature: z.number().min(-100).max(100).optional(),
   tint: z.number().min(-100).max(100).optional(),
   saturation: z.number().min(0).max(200).optional(),
+  /** Phase 5 (Lumetri's Basic tone): highlights, shadows, whites, blacks -100..100; vibrance -100..100 (saturation that
+   *  spares colours already strong). */
+  highlights: signed.optional(),
+  shadows: signed.optional(),
+  whites: signed.optional(),
+  blacks: signed.optional(),
+  vibrance: signed.optional(),
+  wheels: WheelsSchema.optional(),
+  hsl: z.array(HslSchema).max(4).optional(),
+  /** Phase 5: Hue vs Sat: points [hue 0-1, saturation 0-1 where 0.5 leaves it], round the hue circle. */
+  hueSat: CurveSchema.optional(),
   curves: CurvesSchema.optional(),
   lut: LutRefSchema.optional(),
 });
@@ -90,7 +112,9 @@ export type Area = z.infer<typeof AreaSchema>;
  *  only the overlap. */
 export const MaskSchema = AreaSchema.and(z.object({ mode: z.enum(MASK_MODES).optional() }));
 export type Mask = Area & { mode?: (typeof MASK_MODES)[number] };
-export const EFFECTS = ["blur", "pixelate", "sharpen", "darken"] as const;
+export const EFFECTS = ["blur", "pixelate", "sharpen", "darken", "vignette"] as const;
+/** Phase 5: a vignette is darken outside a soft ellipse a little larger than the frame (its own area if it has one). */
+export const VIGNETTE_AREA = { shape: "ellipse" as const, x: -0.1, y: -0.1, w: 1.2, h: 1.2, invert: true, feather: 0.3 };
 /** Blur (amount 1-100: 100 = a Gaussian of 5% of the short side), pixelate (amount 1-100: blocks of amount/10 % of the
  *  short side), sharpen (an unsharp mask, amount 1-100: 100 adds twice the detail, 20 is a light touch) or darken
  *  (Phase 3: amount % darker, 100 = black; outside an ellipse on the face it is a spotlight), over the whole picture or
@@ -224,7 +248,9 @@ export function matteAllowanceMs(timeline: unknown): number {
 /** Everything Phase 6 adds to a drawn clip (V1, b-roll). */
 export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[]; skin?: Skin; subject?: Subject };
 export const hasLook = (c: ClipLook | null | undefined) => !!c && (!!c.grade && gradeIsActive(c.grade) || !!c.key || !!c.masks?.length || !!c.effects?.length || skinActive(c.skin) || !!c.subject);
-export const gradeIsActive = (g: Grade | undefined) => !!g && (!!g.exposure || !!g.contrast || !!g.temperature || !!g.tint || (g.saturation != null && g.saturation !== 100) || !!g.lut || !!g.curves && Object.values(g.curves).some(Boolean));
+export const gradeIsActive = (g: Grade | undefined) => !!g && (!!g.exposure || !!g.contrast || !!g.temperature || !!g.tint || (g.saturation != null && g.saturation !== 100) || !!g.lut || !!g.curves && Object.values(g.curves).some(Boolean)
+  || !!g.highlights || !!g.shadows || !!g.whites || !!g.blacks || !!g.vibrance || wheelsActive(g.wheels) || !!g.hsl?.length || !!g.hueSat?.length);
+const wheelsActive = (w: Grade["wheels"]) => !!w && WHEELS.some((k) => !!w[k]?.amount || !!w[k]?.luma);
 
 // ---------------------------------------------------------------------------------------------
 // Grade -> function -> LUT
@@ -284,6 +310,81 @@ export function sampleLut(l: Lut, r: number, g: number, b: number): [number, num
   return out;
 }
 
+// Phase 5: the steps Lumetri adds, each a function of a pixel, so they go into the same LUT.
+const luma = (p: [number, number, number]) => LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2];
+const smooth = (a: number, b: number, x: number) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+/** Highlights, shadows, whites, blacks: the pixel's luma moved by four bumps (shadows peak at 1/3, highlights at 2/3,
+ *  blacks at 0, whites at 1), the colour scaled with it (moved by the same amount near black). */
+function toneStep(g: Grade): ((p: [number, number, number]) => [number, number, number]) | null {
+  const sh = (g.shadows ?? 0) / 100, hl = (g.highlights ?? 0) / 100, wh = (g.whites ?? 0) / 100, bl = (g.blacks ?? 0) / 100;
+  if (!sh && !hl && !wh && !bl) return null;
+  return (p) => {
+    const y = luma(p), u = 1 - y;
+    const y2 = clamp01(y + 0.25 * sh * 6.75 * y * u * u + 0.25 * hl * 6.75 * y * y * u + 0.2 * bl * u * u * u + 0.2 * wh * y * y * y);
+    const t = smooth(0, 0.08, y), k = y > 1e-5 ? y2 / y : 1, d = y2 - y;
+    return [clamp01(t * p[0] * k + (1 - t) * (p[0] + d)), clamp01(t * p[1] * k + (1 - t) * (p[1] + d)), clamp01(t * p[2] * k + (1 - t) * (p[2] + d))];
+  };
+}
+/** A hue (degrees) as a fully saturated colour. */
+export function hueRgb(h: number): [number, number, number] {
+  const x = (((h % 360) + 360) % 360) / 60, i = Math.floor(x), f = x - i;
+  return ([[1, f, 0], [1 - f, 1, 0], [0, 1, f], [0, 1 - f, 1], [f, 0, 1], [1, 0, 1 - f]] as [number, number, number][])[i % 6];
+}
+/** The wheels: each range (shadows (1-y)^2, midtones 4y(1-y), highlights y^2) pushed towards its hue (the hue's colour
+ *  less its own luma, so the brightness stays) and lifted by its luma. */
+function wheelStep(w: Grade["wheels"]): ((p: [number, number, number]) => [number, number, number]) | null {
+  if (!wheelsActive(w)) return null;
+  const vec = (x: Wheel | undefined): [number, number, number] => {
+    const a = (x?.amount ?? 0) / 100, l = (x?.luma ?? 0) / 100, c = hueRgb(x?.hue ?? 0), y = luma(c);
+    return [0.25 * (a * (c[0] - y) + l), 0.25 * (a * (c[1] - y) + l), 0.25 * (a * (c[2] - y) + l)];
+  };
+  const vs = vec(w!.shadows), vm = vec(w!.midtones), vh = vec(w!.highlights);
+  return (p) => {
+    const y = luma(p), ws = (1 - y) * (1 - y), wm = 4 * y * (1 - y), wh = y * y;
+    return [0, 1, 2].map((c) => clamp01(p[c] + vs[c] * ws + vm[c] * wm + vh[c] * wh)) as [number, number, number];
+  };
+}
+export function rgbHsv(r: number, g: number, b: number): [number, number, number] {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  const h = d === 0 ? 0 : mx === r ? ((g - b) / d + 6) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h / 6, mx === 0 ? 0 : d / mx, mx];
+}
+export function hsvRgb(h: number, s: number, v: number): [number, number, number] {
+  const c = hueRgb(h * 360);
+  return [v * (1 - s + s * c[0]), v * (1 - s + s * c[1]), v * (1 - s + s * c[2])];
+}
+/** Hue vs Sat: a curve round the hue circle (points [hue, value], 0.5 = no change), eased between points. */
+export function hueCurveFn(points: Curve): (h: number) => number {
+  const p = [...points].sort((a, b) => a[0] - b[0]);
+  if (p.length === 1) return () => p[0][1];
+  return (h) => {
+    let j = p.findIndex((q) => q[0] > h);
+    if (j < 0) j = 0;
+    const a = p[(j - 1 + p.length) % p.length], b = p[j];
+    const span = ((b[0] - a[0] + 1) % 1) || 1, t = ((h - a[0] + 1) % 1) / span, e = t * t * (3 - 2 * t);
+    return a[1] + (b[1] - a[1]) * e;
+  };
+}
+/** HSL secondaries and Hue vs Sat: each qualifier weighs the pixel by its hue's distance and its saturation, then turns
+ *  its hue, scales its saturation and moves its brightness by that weight. */
+function hueStep(g: Grade): ((p: [number, number, number]) => [number, number, number]) | null {
+  const qs = g.hsl ?? [], hs = g.hueSat?.length ? hueCurveFn(g.hueSat) : null;
+  if (!qs.length && !hs) return null;
+  return (p) => {
+    let [h, s, v] = rgbHsv(p[0], p[1], p[2]);
+    for (const q of qs) {
+      const range = q.range ?? 40, dist = Math.abs(((h * 360 - q.hue + 540) % 360) - 180);
+      const w = (1 - smooth(range / 2, range, dist)) * smooth(q.satMin ?? 0.1, (q.satMin ?? 0.1) + 0.1, s);
+      if (w <= 0) continue;
+      h = (h + ((q.hueShift ?? 0) / 360) * w + 1) % 1;
+      s = clamp01(s * (1 + ((q.saturation ?? 100) / 100 - 1) * w));
+      v = clamp01(v + ((q.lightness ?? 0) / 100) * 0.5 * w);
+    }
+    if (hs) s = clamp01(s * 2 * hs(h));
+    return hsvRgb(h, s, v);
+  };
+}
+
 /**
  * The grade as a function of a pixel (0-1, as displayed): [input LUT] -> white balance and exposure in linear light
  * -> contrast (around 0.5, like CSS contrast()) -> saturation (Rec. 709 luma) -> curves (master, then each channel)
@@ -301,12 +402,17 @@ export function gradeFn(g: Grade, lut?: Lut | null): (r: number, gg: number, b: 
   const master = cv.master ? curveFn(cv.master) : null, cr = cv.r ? curveFn(cv.r) : null, cg = cv.g ? curveFn(cv.g) : null, cb = cv.b ? curveFn(cv.b) : null;
   const useLut = lut && g.lut ? lut : null, amt = g.lut?.amount ?? 1, first = !!g.lut?.input;
   const mix = (a: [number, number, number], b: [number, number, number]): [number, number, number] => (amt >= 1 ? b : [a[0] + (b[0] - a[0]) * amt, a[1] + (b[1] - a[1]) * amt, a[2] + (b[2] - a[2]) * amt]);
+  const tone = toneStep(g), wheels = wheelStep(g.wheels), vib = (g.vibrance ?? 0) / 100, hues = hueStep(g);
   return (r0: number, g0: number, b0: number) => {
     let p: [number, number, number] = [r0, g0, b0];
     if (useLut && first) p = mix(p, sampleLut(useLut, p[0], p[1], p[2]));
     if (linStep) p = [clamp01(gam(lin(p[0]) * wr)), clamp01(gam(lin(p[1]) * wg)), clamp01(gam(lin(p[2]) * wb))];
     if (c !== 1) p = [clamp01((p[0] - 0.5) * c + 0.5), clamp01((p[1] - 0.5) * c + 0.5), clamp01((p[2] - 0.5) * c + 0.5)];
+    if (tone) p = tone(p);
+    if (wheels) p = wheels(p);
     if (s !== 1) { const y = LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2]; p = [clamp01(y + (p[0] - y) * s), clamp01(y + (p[1] - y) * s), clamp01(y + (p[2] - y) * s)]; }
+    if (vib) { const y = LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2], k = Math.max(0, 1 + vib * (1 - (Math.max(...p) - Math.min(...p)))); p = [clamp01(y + (p[0] - y) * k), clamp01(y + (p[1] - y) * k), clamp01(y + (p[2] - y) * k)]; }
+    if (hues) p = hues(p);
     if (master) p = [master(p[0]), master(p[1]), master(p[2])];
     if (cr) p[0] = cr(p[0]);
     if (cg) p[1] = cg(p[1]);
@@ -317,6 +423,9 @@ export function gradeFn(g: Grade, lut?: Lut | null): (r: number, gg: number, b: 
 }
 
 export const LUT_SIZE = 33;
+/** Phase 5: a finer LUT for a grade with HSL secondaries or Hue vs Sat (their edges are sharp between 33 points). The
+ *  render and the player both use this size, so they stay the same. */
+export const lutSizeFor = (g: Grade) => (g.hsl?.length || g.hueSat?.length ? 49 : LUT_SIZE);
 /** The grade as a 3D LUT: size^3 RGB triplets, red changing fastest (the .cube order). */
 export function buildLut(g: Grade, lut?: Lut | null, size = LUT_SIZE): Float32Array {
   const f = gradeFn(g, lut);
@@ -470,7 +579,7 @@ export function sharpenKernel(amount: number, size: number): { m: number[]; div:
   return { m, div };
 }
 /** The effect's size in pixels at W x H: blur sigma, block size, or sharpen's kernel (darken has none). */
-export const effectPx = (e: Effect, W: number, H: number) => (e.type === "blur" ? blurSigma(e.amount, W, H) : e.type === "pixelate" ? pixelBlock(e.amount, W, H) : e.type === "darken" ? 0 : sharpenSize(W, H));
+export const effectPx = (e: Effect, W: number, H: number) => (e.type === "blur" ? blurSigma(e.amount, W, H) : e.type === "pixelate" ? pixelBlock(e.amount, W, H) : e.type === "darken" || e.type === "vignette" ? 0 : sharpenSize(W, H));
 
 // ---------------------------------------------------------------------------------------------
 // Key: FFmpeg's colorkey and despill (the player's shader repeats these)
@@ -564,6 +673,10 @@ export function gradeText(g: Grade, lutName?: (id: string) => string | undefined
   if (g.temperature) out.push(`temp ${sgn(g.temperature)}`);
   if (g.tint) out.push(`tint ${sgn(g.tint)}`);
   if (g.saturation != null && g.saturation !== 100) out.push(`saturation ${g.saturation}%`);
+  for (const k of ["highlights", "shadows", "whites", "blacks", "vibrance"] as const) if (g[k]) out.push(`${k} ${sgn(g[k]!)}`);
+  for (const k of WHEELS) { const w = g.wheels?.[k]; if (w?.amount || w?.luma) out.push(`${k} wheel${w.amount ? ` ${Math.round(w.hue ?? 0)}° ${w.amount}` : ""}${w.luma ? ` luma ${sgn(w.luma)}` : ""}`); }
+  for (const q of g.hsl ?? []) out.push(`HSL ${Math.round(q.hue)}°±${(q.range ?? 40) / 2}${q.hueShift ? ` hue ${sgn(q.hueShift)}°` : ""}${q.saturation != null && q.saturation !== 100 ? ` sat ${q.saturation}%` : ""}${q.lightness ? ` light ${sgn(q.lightness)}` : ""}`);
+  if (g.hueSat?.length) out.push(`hue vs sat (${g.hueSat.length} points)`);
   const ch = CURVE_CHANNELS.filter((c) => g.curves?.[c]);
   if (ch.length) out.push(`curves ${ch.join("/")}`);
   if (g.lut) { const nm = lutName?.(g.lut.id); out.push(`LUT ${nm ? `"${nm}"` : g.lut.id}${g.lut.amount != null && g.lut.amount < 1 ? ` ${Math.round(g.lut.amount * 100)}%` : ""}${g.lut.input ? " (input)" : ""}`); }

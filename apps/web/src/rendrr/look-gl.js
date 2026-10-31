@@ -278,7 +278,7 @@ export function createLookRenderer(canvas) {
           const radius = Math.min(200, Math.ceil(e.px * 3));
           use("blur", { dir: [1, 0], sigma: e.px, radius }, [["pic", buf[cur].t]]); run(buf[a]);
           use("blur", { dir: [0, 1], sigma: e.px, radius }, [["pic", buf[a].t]]); run(buf[b]);
-        } else if (e.type === "darken") {
+        } else if (e.type === "darken" || e.type === "vignette") {
           use("dark", { k: 1 - e.amount / 100 }, [["pic", buf[cur].t]]); run(buf[b]);
         } else if (e.type === "sharpen") {
           use("sharp", { k: Math.round(e.amount * 2) / 100, n: e.px }, [["pic", buf[cur].t]]); run(buf[b]);

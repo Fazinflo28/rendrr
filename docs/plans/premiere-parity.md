@@ -25,8 +25,8 @@ plugin hosting, hardware I/O, localization) are out of scope.
    tracking an object other than a face.
 4. **Blend modes and opacity (done, 31 October)** on b-roll and graphics: 12 modes and opacity, for light leaks,
    textures and brand overlays.
-5. **Deeper colour.** Highlights / shadows / whites / blacks, vibrance, colour wheels, HSL secondary, hue vs sat,
-   vignette; scopes in the editor.
+5. **Deeper colour (done, 31 October).** Highlights / shadows / whites / blacks, vibrance, colour wheels, HSL
+   secondaries, hue vs sat, vignette; scopes in the editor. Left for later: hue vs hue, luma vs sat, RGB parade.
 6. **Audio.** Crossfades at cuts, volume keyframes, pan, per-clip EQ, reverb.
 7. **Warp Stabilizer** for handheld footage (shake is already measured).
 8. **Morph Cut** for jump cuts in talking heads.

@@ -14,7 +14,7 @@ import { audioSettings, type AudioMixSettings } from "./timeline";
 import { blendFilter, blendText, type BlendMode } from "./blend";
 import { buildStyledAss, captionStyleOf, isMatted, layoutCaptions, styleText, textMatteAss, textPreset, type Card, type CaptionStyle, type StyledCaption, type TextAnim, type TextLayer, type TextStyle } from "./captions";
 import { backgroundScale, backgroundSigma, backgroundText, cardBorderPicture, cardLookText, cardShadowPicture, gradientPicture, hasCard, masksWithCard, patternPicture, ppm, SHADOW_DEFAULTS, type CardLook, type Pattern } from "./cardLook";
-import { areaAt, areaPicture, buildLut, matteBlocks, moving, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
+import { areaAt, areaPicture, buildLut, lutSizeFor, VIGNETTE_AREA, matteBlocks, moving, MATTE_BLOCK, skinActive, skinChromaExpr, skinParams, skinText, SKIN_TONE, subjectText, type Skin, type SkinParams, type Subject, chromaKeyText, cubeText, effectPx, effectsText, gradeFn, gradeIsActive, gradeText, hashOf, hdrLut, hexRgb, maskPicture, masksText, pgm, sdrToHdr, sharpenKernel, spillType, type Area, type ChromaKey, type ClipLook, type Effect, type Grade, type HdrTransfer, type Lut, type Mask } from "./look";
 
 export type RenderKind = "preview" | "final";
 export type SourceInfo = { width: number; height: number; fps: number; seconds: number; hasAudio: boolean; hdr?: boolean; transfer?: HdrTransfer };
@@ -574,7 +574,8 @@ export function planRender(input: PlanInput): RenderPlan {
       ...(g ? { grade: g, lut: file({ kind: "lut", grade: g }), ...(hdr ? { lutHdr: file({ kind: "lut", grade: g, hdr: hdr.transfer }) } : {}) } : {}),
       ...(c.key ? { key: c.key } : {}),
       ...(masks?.length ? { masks, mask: picOf({ masks }) } : {}),
-      ...(c.effects?.length ? { effects: c.effects.map((e) => ({ ...e, px: effectPx(e, width, height), ...(e.area ? { file: picOf({ area: e.area }) } : {}) })) } : {}),
+      // Phase 5: a vignette without its own area darkens outside the default soft ellipse.
+      ...(c.effects?.length ? { effects: c.effects.map((e0) => { const e = !e0.area && e0.type === "vignette" ? { ...e0, area: VIGNETTE_AREA } : e0; return { ...e, px: effectPx(e, width, height), ...(e.area ? { file: picOf({ area: e.area }) } : {}) }; }) } : {}),
       ...(skin ? { skin: { skin, p: skinParams(skin, width, height), ...(skin.area ? { file: picOf({ area: skin.area }) } : {}) } } : {}),
       ...(subject ? { subject } : {}),
       alpha: !!c.key || !!masks?.length || !!subject,
@@ -738,7 +739,9 @@ export function lookFileData(spec: LookFile, plan: { width: number; height: numb
   if (spec.kind === "hdr") return cubeText(hdrLut(spec.hdr), undefined, "SDR into HDR");
   if (spec.kind === "moving") throw new Error("A moving mask is a video: write it with movingFrames.");
   const lut = spec.grade.lut ? luts[spec.grade.lut.id] : null;
-  return cubeText(spec.hdr ? hdrLut(spec.hdr, gradeFn(spec.grade, lut)) : buildLut(spec.grade, lut));
+  if (spec.hdr) return cubeText(hdrLut(spec.hdr, gradeFn(spec.grade, lut)));
+  const n = lutSizeFor(spec.grade);
+  return cubeText(buildLut(spec.grade, lut, n), n);
 }
 
 /**
@@ -1095,7 +1098,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     (look?.effects ?? []).forEach((e, j) => {
       const sk = e.type === "sharpen" ? sharpenKernel(e.amount, e.px) : null, km = sk ? `'${sk.m.join(" ")}'` : "";
       const dk = n3(1 - e.amount / 100);
-      const fx = e.type === "blur" ? `gblur=sigma=${e.px}:steps=4` : e.type === "pixelate" ? `pixelize=width=${e.px}:height=${e.px}:mode=avg` : e.type === "darken" ? `colorchannelmixer=rr=${dk}:gg=${dk}:bb=${dk}` : `convolution=0m=${km}:1m=${km}:2m=${km}:0rdiv=1/${sk!.div}:1rdiv=1/${sk!.div}:2rdiv=1/${sk!.div}`, t2 = `${tag}_${j}`;
+      const fx = e.type === "blur" ? `gblur=sigma=${e.px}:steps=4` : e.type === "pixelate" ? `pixelize=width=${e.px}:height=${e.px}:mode=avg` : e.type === "darken" || e.type === "vignette" ? `colorchannelmixer=rr=${dk}:gg=${dk}:bb=${dk}` : `convolution=0m=${km}:1m=${km}:2m=${km}:0rdiv=1/${sk!.div}:1rdiv=1/${sk!.div}:2rdiv=1/${sk!.div}`, t2 = `${tag}_${j}`;
       if (!e.file) { g.push(`[${rgb}]${fx},format=${rgbF}[le${t2}]`); rgb = `le${t2}`; return; }
       g.push(`[${rgb}]split[la${t2}][lb${t2}]`);
       g.push(`[lb${t2}]${fx},format=${rgbF}[lf${t2}]`);

@@ -4,9 +4,9 @@
 // connector's own op.
 import { useState, useEffect, useRef, useMemo, html, Btn, Icon } from "./ui";
 import { api } from "./api";
-import { OpColor, OpSlider } from "./controls";
+import { OpColor, OpSlider, OpWheel } from "./controls";
 import { createLookRenderer } from "./look-gl";
-import { areaAt, areaPicture, buildLut, moving, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, LUT_SIZE, maskPicture, parseCube, SKIN_DEFAULTS, spillType, SUBJECT_DEFAULTS } from "@rendrr/shared";
+import { areaAt, areaPicture, buildLut, hueCurveFn, sampleLut, WHEELS, moving, CURVE_CHANNELS, curveFn, fitCrop, gradeText, hashOf, hexRgb, lutSizeFor, maskPicture, parseCube, SKIN_DEFAULTS, spillType, SUBJECT_DEFAULTS } from "@rendrr/shared";
 
 // ---------------------------------------------------------------------------------------------
 // Imported LUTs: their numbers, loaded once per page.
@@ -36,7 +36,7 @@ export function lookSpec(look, W, H, luts = {}) {
   const g = look?.grade;
   const spec = {
     id, W, H,
-    lut: g ? { id: hashOf([g, lutReady]), n: LUT_SIZE, data: buildLut(g, g.lut ? luts[g.lut.id] : null) } : null,
+    lut: g ? { id: hashOf([g, lutReady]), n: lutSizeFor(g), data: buildLut(g, g.lut ? luts[g.lut.id] : null, lutSizeFor(g)) } : null,
     key: look?.key ? { rgb: hexRgb(look.key.color).map((v) => v / 255), sim: look.key.similarity, blend: look.key.blend, spill: look.key.spill, blue: spillType(look.key) === "blue" } : null,
     mask: look?.masks?.length ? { key: hashOf([look.masks, W, H]), px: maskPicture(look.masks, W, H) } : null,
     effects: (look?.effects || []).map((e) => ({ type: e.type, px: e.px, amount: e.amount, area: e.area ? { key: hashOf([e.area, W, H]), px: areaPicture(e.area, W, H) } : null })),
@@ -228,6 +228,98 @@ function AreaControls({ idp, a, set, sl, follow, busy }) {
   </div>`;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Phase 5: Lumetri's tone, vibrance, colour wheels, Hue vs Sat and HSL secondaries (all in the grade's LUT, so the
+// player and the render draw them with the same numbers), and scopes.
+const WHEEL_NAME = { shadows: "Shadows", midtones: "Midtones", highlights: "Highlights" };
+const HUE_BANDS = [["Red", 0], ["Yellow", 60], ["Green", 120], ["Cyan", 180], ["Blue", 240], ["Magenta", 300]];
+const HSL_PRESETS = [["Skin", { hue: 25, range: 40, satMin: 0.15 }], ["Sky", { hue: 210, range: 50 }], ["Greens", { hue: 110, range: 60 }]];
+
+/** The grade's Phase 5 controls; idp keeps the ids apart (a clip's page and the whole edit's). */
+function GradeMore({ idp, g, gop, doOp, sl }) {
+  const hsCurve = g.hueSat?.length ? hueCurveFn(g.hueSat) : null;
+  const band = (i) => (hsCurve ? hsCurve(HUE_BANDS[i][1] / 360) : 0.5);
+  const setBand = (i, v) => { const pts = HUE_BANDS.map((b, j) => [b[1] / 360, Math.round((j === i ? v : band(j)) * 1000) / 1000]); return gop({ hueSat: pts.every((q) => Math.abs(q[1] - 0.5) < 0.005) ? null : pts }); };
+  const hsl = g.hsl || [];
+  const setQ = (i, patch) => gop({ hsl: hsl.map((q, j) => (j === i ? { ...q, ...patch } : q)) });
+  const tone = (k, label) => html`<div class="grow"><${OpSlider} id=${`${idp}-${k}`} label=${label} value=${g[k] || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ [k]: v })} ...${sl} /></div>`;
+  return html`<div class="col" style="gap:14px" id=${idp + "-more"}>
+    <div class="col" style="gap:6px" id=${idp + "-light"}><span class="t-small muted">Light</span>
+      <div class="row" style="gap:8px">${tone("highlights", "Highlights")}${tone("shadows", "Shadows")}</div>
+      <div class="row" style="gap:8px">${tone("whites", "Whites")}${tone("blacks", "Blacks")}</div>
+      <${OpSlider} id=${idp + "-vibrance"} label="Vibrance" value=${g.vibrance || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ vibrance: v })} ...${sl} /></div>
+    <div class="col" style="gap:6px" id=${idp + "-wheels"}><div class="row between"><span class="t-small muted">Colour wheels</span>
+      <span style=${{ visibility: g.wheels ? "visible" : "hidden" }}><${Btn} kind="ghost" size="xs" id=${idp + "-wheels-reset"} disabled=${!g.wheels} onClick=${() => doOp(gop({ wheels: null }), false)}>Reset<//></span></div>
+      <div class="row" style="justify-content:space-between;gap:6px">${WHEELS.map((k) => html`<div key=${k} class="col" style="gap:4px;width:31%;align-items:stretch">
+        <${OpWheel} id=${`${idp}-wheel-${k}`} label=${WHEEL_NAME[k]} value=${g.wheels?.[k]} opFor=${(w) => gop({ wheels: { [k]: w } })} ...${sl} />
+        <${OpSlider} id=${`${idp}-wheel-${k}-luma`} label="Luma" value=${g.wheels?.[k]?.luma || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ wheels: { [k]: { luma: v } } })} ...${sl} /></div>`)}</div></div>
+    <div class="col" style="gap:4px" id=${idp + "-huesat"}><div class="row between"><span class="t-small muted">Hue vs Sat</span>
+      <span style=${{ visibility: g.hueSat ? "visible" : "hidden" }}><${Btn} kind="ghost" size="xs" id=${idp + "-huesat-reset"} disabled=${!g.hueSat} onClick=${() => doOp(gop({ hueSat: null }), false)}>Reset<//></span></div>
+      ${HUE_BANDS.map(([n, h], i) => html`<${OpSlider} key=${n} id=${`${idp}-huesat-${n.toLowerCase()}`} label=${html`<span style=${{ color: `hsl(${h},80%,60%)` }}>■</span> ${n}`} value=${band(i)} min=${0} max=${1} step=${0.01} show=${(v) => Math.round(v * 200) + "%"} opFor=${(v) => setBand(i, v)} ...${sl} />`)}</div>
+    <div class="col" style="gap:6px" id=${idp + "-hsl"}><div class="row between"><span class="t-small muted">HSL secondaries</span><span class="row" style="gap:4px">
+      ${HSL_PRESETS.map(([n, q]) => html`<${Btn} key=${n} kind="ghost" size="xs" id=${`${idp}-hsl-add-${n.toLowerCase()}`} disabled=${hsl.length >= 4} onClick=${() => doOp(gop({ hsl: [...hsl, q] }))}>+ ${n}<//>`)}</span></div>
+      ${hsl.length ? hsl.map((q, i) => html`<div key=${i} class="col card flat" style="gap:6px;padding:10px" data-hsl=${i}>
+        <div class="row between"><span class="t-small"><span style=${{ color: `hsl(${q.hue},80%,55%)` }}>■</span> Colours near ${Math.round(q.hue)}°</span>
+          <button class="btn icon sm quiet" aria-label="Remove" id=${`${idp}-hsl-del-${i}`} onClick=${() => doOp(gop({ hsl: hsl.filter((_, j) => j !== i) }), false)}><${Icon} name="x" size="12" /></button></div>
+        <div class="row" style="gap:8px"><div class="grow"><${OpSlider} id=${`${idp}-hsl-${i}-hue`} label="Hue" value=${q.hue} min=${0} max=${360} step=${1} show=${(v) => v + "°"} opFor=${(v) => setQ(i, { hue: v })} ...${sl} /></div>
+          <div class="grow"><${OpSlider} id=${`${idp}-hsl-${i}-range`} label="Range" value=${q.range ?? 40} min=${4} max=${180} step=${1} show=${(v) => "±" + v / 2 + "°"} opFor=${(v) => setQ(i, { range: v })} ...${sl} /></div></div>
+        <${OpSlider} id=${`${idp}-hsl-${i}-shift`} label="Hue shift" value=${q.hueShift || 0} min=${-180} max=${180} step=${1} show=${(v) => sgn(v) + "°"} opFor=${(v) => setQ(i, { hueShift: v })} ...${sl} />
+        <div class="row" style="gap:8px"><div class="grow"><${OpSlider} id=${`${idp}-hsl-${i}-sat`} label="Saturation" value=${q.saturation ?? 100} min=${0} max=${300} step=${1} show=${(v) => v + "%"} opFor=${(v) => setQ(i, { saturation: v })} ...${sl} /></div>
+          <div class="grow"><${OpSlider} id=${`${idp}-hsl-${i}-light`} label="Lightness" value=${q.lightness || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => setQ(i, { lightness: v })} ...${sl} /></div></div>
+      </div>`) : html`<p class="t-small muted">Change one colour only: the skin, the sky, the greens.</p>`}</div>
+  </div>`;
+}
+
+/**
+ * Phase 5: scopes of the picture showing now, through this grade (its LUT at 17 points, trilinear): a luma waveform and
+ * a vectorscope (BT.709 Cb/Cr, the skin line at 123°). From a 160-wide copy of the frame, again a few times a second
+ * while open.
+ */
+export function Scopes({ idp, grade, luts }) {
+  const [on, setOn] = useState(false), [err, setErr] = useState("");
+  const wave = useRef(null), vec = useRef(null);
+  const key = JSON.stringify(grade || null);
+  useEffect(() => {
+    if (!on) return;
+    const lut = grade && Object.keys(grade).length ? { kind: "3d", size: 17, data: buildLut(grade, grade.lut ? luts?.[grade.lut.id] : null, 17), min: [0, 0, 0], max: [1, 1, 1] } : null;
+    const src = document.createElement("canvas"); let last = "";
+    const draw = () => {
+      const el = document.querySelector('video[data-on="1"]') || document.querySelector("#color-panel video, video");
+      if (!wave.current || !vec.current) return;
+      if (!el || el.readyState < 2) { setErr("No picture to measure here yet: play or seek the edit."); return; }
+      const k = `${el.currentTime.toFixed(3)}|${el.src}`; if (k === last) return; last = k;
+      const w = 160, h = Math.max(1, Math.round((160 * (el.videoHeight || 9)) / (el.videoWidth || 16)));
+      src.width = w; src.height = h;
+      const sx = src.getContext("2d", { willReadFrequently: true });
+      let px;
+      try { sx.drawImage(el, 0, 0, w, h); px = sx.getImageData(0, 0, w, h).data; setErr(""); } catch { setErr("The picture cannot be read here (its server does not allow it)."); return; }
+      const W1 = 256, H1 = 128, wv = wave.current.getContext("2d"), vv = vec.current.getContext("2d");
+      const wi = wv.createImageData(W1, H1), vi = vv.createImageData(H1, H1), add = (img, o, r, g, b) => { img.data[o] = Math.min(255, img.data[o] + r); img.data[o + 1] = Math.min(255, img.data[o + 1] + g); img.data[o + 2] = Math.min(255, img.data[o + 2] + b); img.data[o + 3] = 255; };
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const o = (y * w + x) * 4;
+        let r = px[o] / 255, g = px[o + 1] / 255, b = px[o + 2] / 255;
+        if (lut) [r, g, b] = sampleLut(lut, r, g, b);
+        const Y = 0.2126 * r + 0.7152 * g + 0.0722 * b, cb = (b - Y) / 1.8556, cr = (r - Y) / 1.5748;
+        const wx = Math.floor((x * W1) / w), wy = Math.min(H1 - 1, Math.max(0, Math.round((1 - Y) * (H1 - 1))));
+        add(wi, (wy * W1 + wx) * 4, 40, 90, 40);
+        const vx = Math.round(H1 / 2 + cb * H1 * 0.9), vy = Math.round(H1 / 2 - cr * H1 * 0.9);
+        if (vx >= 0 && vx < H1 && vy >= 0 && vy < H1) add(vi, (vy * H1 + vx) * 4, 60, 110, 60);
+      }
+      wv.putImageData(wi, 0, 0); vv.putImageData(vi, 0, 0);
+      wv.strokeStyle = "rgba(255,255,255,.25)"; for (const t of [0, 0.25, 0.5, 0.75, 1]) { const yy = Math.round((1 - t) * (H1 - 1)) + 0.5; wv.beginPath(); wv.moveTo(0, yy); wv.lineTo(W1, yy); wv.stroke(); }
+      vv.strokeStyle = "rgba(255,255,255,.25)"; vv.beginPath(); vv.arc(H1 / 2, H1 / 2, H1 * 0.45, 0, Math.PI * 2); vv.stroke();
+      vv.strokeStyle = "rgba(255,200,150,.5)"; vv.beginPath(); vv.moveTo(H1 / 2, H1 / 2); vv.lineTo(H1 / 2 + Math.cos((123 * Math.PI) / 180) * H1 * 0.45, H1 / 2 - Math.sin((123 * Math.PI) / 180) * H1 * 0.45); vv.stroke();
+    };
+    draw(); const t = setInterval(draw, 250);
+    return () => clearInterval(t);
+  }, [on, key]);
+  return html`<div class="col" style="gap:6px" id=${idp + "-scopes"}>
+    <label class="t-small row" style="gap:6px"><input type="checkbox" id=${idp + "-scopes-on"} checked=${on} onChange=${(e) => setOn(e.target.checked)} />Scopes (waveform and vectorscope)</label>
+    ${on && html`<div class="row" style="gap:6px;align-items:flex-start"><canvas ref=${wave} id=${idp + "-waveform"} width="256" height="128" style="width:66%;background:#000;border-radius:4px" />
+      <canvas ref=${vec} id=${idp + "-vectorscope"} width="128" height="128" style="width:33%;background:#000;border-radius:50%" /></div>
+      ${err && html`<span class="t-small muted">${err}</span>`}`}</div>`;
+}
+
 export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lutList, reloadLuts, timeline, doOp, H, liveOp, mode, setMode, draft, setDraft, toast, mattes = {} }) {
   const [ch, setCh] = useState("master");
   const [ref, setRef] = useState("");
@@ -280,7 +372,8 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
   };
   const cur = g.curves?.[ch];
   return html`<div class="pb" id="color-panel" style="padding-top:16px"><div class="col" style="gap:18px">
-    <div class="t-small muted" id="color-clip">${clip.label || clip.id}${g && Object.keys(g).length ? " · " + gradeText(g, (id) => lutList.find((l) => l.id === id)?.name) : " · no grade"}</div>
+    <div class="t-small muted" id="color-clip" title=${(clip.label || clip.id) + (g && Object.keys(g).length ? " · " + gradeText(g, (id) => lutList.find((l) => l.id === id)?.name) : "")} style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${clip.label || clip.id}${g && Object.keys(g).length ? " · " + gradeText(g, (id) => lutList.find((l) => l.id === id)?.name) : " · no grade"}</div>
+    <${Scopes} idp="clip" grade=${clip.grade} luts=${lutData} />
 
     <div class="col" style="gap:8px" id="grade-panel">
       <div class="row between"><b class="t-label">Grade</b>${clip.grade && html`<${Btn} kind="ghost" size="xs" id="grade-reset" onClick=${() => doOp(gop({ reset: true }))}>Reset<//>`}</div>
@@ -289,6 +382,7 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
       <div class="row" style="gap:8px"><div class="grow"><${OpSlider} id="grade-temperature" label="Temperature" value=${g.temperature || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ temperature: v })} ...${sl} /></div>
         <div class="grow"><${OpSlider} id="grade-tint" label="Tint" value=${g.tint || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ tint: v })} ...${sl} /></div></div>
       <${OpSlider} id="grade-saturation" label="Saturation" value=${g.saturation ?? 100} min=${0} max=${200} step=${1} show=${(v) => v + "%"} opFor=${(v) => gop({ saturation: v })} ...${sl} />
+      <${GradeMore} idp="grade" g=${g} gop=${gop} doOp=${doOp} sl=${sl} />
       <div class="col" style="gap:6px" id="curves">
         <div class="row" style="gap:4px">${CURVE_CHANNELS.map((c) => html`<button key=${c} class=${"chip" + (ch === c ? " on" : "")} id=${"curve-" + c} style=${{ color: CH_COLOR[c] }} onClick=${() => setCh(c)}>${c === "master" ? "Master" : c.toUpperCase()}${g.curves?.[c] ? " ·" : ""}</button>`)}
           ${cur && html`<${Btn} kind="ghost" size="xs" id="curve-reset" onClick=${() => doOp(gop({ curves: { [ch]: null } }), false)}>Straight<//>`}</div>
@@ -348,9 +442,10 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
         <${Btn} kind="ghost" size="xs" id="fx-add-pixelate" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "pixelate", amount: 20 }]))}>+ Pixelate<//>
         <${Btn} kind="ghost" size="xs" id="fx-add-sharpen" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "sharpen", amount: 25 }]))}>+ Sharpen<//>
         <${Btn} kind="ghost" size="xs" id="fx-add-darken" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "darken", amount: 40 }]))}>+ Darken<//>
+        <${Btn} kind="ghost" size="xs" id="fx-add-vignette" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "vignette", amount: 35 }]))}>+ Vignette<//>
         ${canFollow && html`<${Btn} kind="ghost" size="xs" id="fx-add-spotlight" disabled=${effects.length >= 4 || measuring} title="Darkens everything but the face, following it" onClick=${() => withFaces(eop([...effects, { type: "darken", amount: 55, area: { shape: "ellipse", invert: true, feather: 0.08, follow: "face" } }]))}>+ Spotlight<//>`}</span></div>
       ${effects.map((e, i) => html`<div key=${i} class="col card flat" style="gap:6px;padding:10px" data-effect=${i}>
-        <div class="row between"><span class="t-small">${{ blur: "Blur", pixelate: "Pixelate", sharpen: "Sharpen", darken: "Darken" }[e.type]}</span>
+        <div class="row between"><span class="t-small">${{ blur: "Blur", pixelate: "Pixelate", sharpen: "Sharpen", darken: "Darken", vignette: "Vignette" }[e.type]}</span>
           <span class="row" style="gap:6px"><select class="input sm" id=${"fx-area-" + i} value=${e.area?.shape || "all"} onChange=${(ev) => setEffect(i)({ ...e, area: ev.target.value === "all" ? undefined : { ...BOX(ev.target.value), w: 0.3, h: 0.3, x: 0.35, y: 0.25 } }, true)}><option value="all">Whole picture</option><option value="rect">Rectangle</option><option value="ellipse">Ellipse</option></select>
           <button class="btn icon sm quiet" aria-label="Remove" id=${"fx-del-" + i} onClick=${() => doOp(eop(effects.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
         <${OpSlider} id=${"fx-amount-" + i} label="Amount" value=${e.amount} min=${1} max=${100} step=${1} show=${(v) => String(v)} opFor=${(v) => setEffect(i)({ ...e, amount: v })} ...${sl} />
@@ -439,7 +534,7 @@ function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLu
   const v1 = clips.filter((c) => c.sourceIn != null);
   const g = v1[0]?.grade || {};
   const same = (f) => v1.every((c) => JSON.stringify((c.grade || {})[f] ?? null) === JSON.stringify(g[f] ?? null));
-  const mixed = ["exposure", "contrast", "temperature", "tint", "saturation", "lut"].filter((f) => !same(f));
+  const mixed = ["exposure", "contrast", "temperature", "tint", "saturation", "lut", "highlights", "shadows", "whites", "blacks", "vibrance", "wheels", "hsl", "hueSat"].filter((f) => !same(f));
   const gop = (patch) => ({ op: "set_grade", all: true, ...patch });
   const sl = { H, liveOp };
   const fx = v1[0]?.effects || [];
@@ -470,6 +565,7 @@ function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLu
       ${g.lut && same("lut") && html`<${OpSlider} id="whole-lut-amount" label="Amount" value=${g.lut.amount ?? 1} min=${0} max=${1} step=${0.01} show=${pct} opFor=${(v) => gop({ lut: { ...g.lut, amount: v } })} ...${sl} />`}
       <span class="t-small muted">Your AI can apply a LUT too: give it the .cube file.</span>
     </div>
+    <${Scopes} idp="whole" grade=${g} luts=${lutData} />
     <div class="col" style="gap:8px" id="whole-grade">
       <div class="row between"><b class="t-label">Basic correction</b>${v1.some((c) => c.grade) && html`<${Btn} kind="ghost" size="xs" id="whole-reset" onClick=${() => doOp(gop({ reset: true }))}>Reset every clip<//>`}</div>
       ${mixed.length > 0 && html`<span class="t-small muted">Clips differ in ${mixed.join(", ")}: a slider sets that value on every clip.</span>`}
@@ -478,6 +574,7 @@ function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLu
       <div class="row" style="gap:8px"><div class="grow"><${OpSlider} id="whole-temperature" label="Temperature" value=${g.temperature || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ temperature: v })} ...${sl} /></div>
         <div class="grow"><${OpSlider} id="whole-tint" label="Tint" value=${g.tint || 0} min=${-100} max=${100} step=${1} show=${(v) => sgn(v)} opFor=${(v) => gop({ tint: v })} ...${sl} /></div></div>
       <${OpSlider} id="whole-saturation" label="Saturation" value=${g.saturation ?? 100} min=${0} max=${200} step=${1} show=${(v) => v + "%"} opFor=${(v) => gop({ saturation: v })} ...${sl} />
+      <${GradeMore} idp="whole" g=${g} gop=${gop} doOp=${doOp} sl=${sl} />
     </div>
     <div class="col" style="gap:8px" id="whole-sharpen">
       <b class="t-label">Sharpen</b>
