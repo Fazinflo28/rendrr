@@ -93,9 +93,62 @@ check(true, "the Library comes back to the open folder");
 await page.locator("#folder-delete").click(); await page.locator("#folder-delete-ok").click();
 check(await until(async () => !(await page.locator(".lfcard").count()) && (await page.locator(".vcard").count()) === before), "deleting the folder leaves its videos in the Library");
 
+// 6b. Folders inside folders: Course > Module 1, a video in the inner one, the path at the top, the counts, editing
+// the outer folder takes the inner one's videos, moving a folder (drag and the Move window), deleting the outer one.
+const make = async (name) => { await page.locator("#new-folder").click(); await page.locator("#folder-name-input").fill(name); await page.locator("#folder-save").click(); await until(async () => !(await page.locator("#folder-name-input").count())); };
+await make("Course");
+const courseId = await page.locator(".lfcard", { hasText: "Course" }).getAttribute("data-folder");
+await page.locator(`.lfcard[data-folder="${courseId}"]`).click(); await page.locator("#folder-title").waitFor();
+check((await page.locator("#new-folder").textContent()).includes("New folder here"), "inside a folder the button makes a folder here");
+await make("Module 1");
+const modId = await page.locator(".lfcard", { hasText: "Module 1" }).getAttribute("data-folder");
+check(await until(async () => (await page.locator(".lfcard").count()) === 1), "the new folder shows inside Course");
+await page.locator("#folder-back").click(); await page.locator(".vcard").first().waitFor();
+const [v1, v2] = await page.locator('.vcard[data-status="ready"]').evaluateAll((els) => els.slice(0, 2).map((e) => e.dataset.id));
+await page.locator(`[data-move="${v1}"]`).click();
+check(await page.locator(`#move-list [data-move-to="${modId}"]`).isVisible(), "the Move window lists the folder inside Course");
+const indent = await page.evaluate(([a, b]) => parseFloat(getComputedStyle(document.querySelector(`[data-move-to="${b}"]`)).paddingLeft) - parseFloat(getComputedStyle(document.querySelector(`[data-move-to="${a}"]`)).paddingLeft), [courseId, modId]);
+check(indent > 10, `a folder inside a folder is indented under it (${indent}px)`);
+await page.locator(`#move-list [data-move-to="${modId}"]`).click();
+await page.locator(`[data-move="${v2}"]`).click(); await page.locator(`#move-list [data-move-to="${courseId}"]`).click();
+check(await until(async () => (await page.locator(`.lfcard[data-folder="${courseId}"]`).textContent()).includes("2 videos · 1 folder")), "Course counts its own video and its folder's, and its folder");
+await page.locator(`.lfcard[data-folder="${courseId}"]`).click(); await page.locator(`.lfcard[data-folder="${modId}"]`).click();
+check(await until(async () => (await page.locator("#folder-title").textContent()).includes("Module 1")), "opening the inner folder");
+const crumbText = (await page.locator("#folder-crumbs").innerText()).replace(/\s+/g, " ").trim();
+check(crumbText === "Library / Course /", `the path at the top: Library / Course / (${crumbText})`);
+check((await page.locator(".vcard").count()) === 1, "the inner folder shows its one video");
+await page.locator(`#folder-crumbs [data-crumb="${courseId}"]`).click(); await until(async () => (await page.locator("#folder-title").textContent()).includes("Course"));
+await page.waitForTimeout(400); await page.screenshot({ path: join(here, "dist", "library-subfolders.png") });
+await page.locator("#folder-edit").click(); await page.locator("#np-videos-order").waitFor();
+const ord = await page.locator("#np-videos-order .vorow").evaluateAll((els) => els.map((e) => e.dataset.order));
+check(JSON.stringify(ord) === JSON.stringify([v2, v1]), "Edit this folder takes Course's own video, then its folder's");
+check((await page.locator(".modal").textContent()).includes("and its folders"), "the window says it takes the videos in its folders too");
+await page.keyboard.press("Escape"); await page.waitForTimeout(200);
+if (await page.locator("#np-videos-order").count()) await page.locator(".modal button", { hasText: "Cancel" }).click();
+// Move Module 1 to the top with the Move window, then drag it back onto Course.
+await page.locator(`.lfcard[data-folder="${modId}"]`).click(); await until(async () => (await page.locator("#folder-title").textContent()).includes("Module 1"));
+await page.locator("#folder-move").click();
+check(!(await page.locator(`#move-folder-list [data-move-to="${modId}"]`).count()), "a folder cannot be moved into itself (it is not in the list)");
+await page.locator("#move-folder-top").click();
+check(await until(async () => (await page.locator("#folder-crumbs").innerText()).replace(/\s+/g, " ").trim() === "Library /"), `Move to the top of the Library (${(await page.locator("#folder-crumbs").innerText()).trim()})`);
+await page.locator("#folder-back").click(); await page.locator(`.lfcard[data-folder="${modId}"]`).waitFor();
+const dt2 = await page.evaluateHandle(() => new DataTransfer());
+await page.locator(`.lfcard[data-folder="${modId}"]`).dispatchEvent("dragstart", { dataTransfer: dt2 });
+await page.locator(`.lfcard[data-folder="${courseId}"]`).dispatchEvent("dragover", { dataTransfer: dt2 });
+await page.locator(`.lfcard[data-folder="${courseId}"]`).dispatchEvent("drop", { dataTransfer: dt2 });
+check(await until(async () => !(await page.locator(`.lfcard[data-folder="${modId}"]`).count()) && (await page.locator(`.lfcard[data-folder="${courseId}"]`).textContent()).includes("1 folder")), "dragging a folder onto another puts it inside");
+// Delete Course: its video and Module 1 move up to the top.
+await page.locator(`.lfcard[data-folder="${courseId}"]`).click(); await page.locator("#folder-title").waitFor();
+await page.locator("#folder-delete").click();
+check((await page.locator(".modal").textContent()).includes("videos and folders move up into the Library"), "deleting says what is in it moves up");
+await page.locator("#folder-delete-ok").click();
+check(await until(async () => (await page.locator(`.lfcard[data-folder="${modId}"]`).count()) === 1 && !(await page.locator(`.lfcard[data-folder="${courseId}"]`).count())), "after deleting Course, Module 1 is at the top");
+check(await until(async () => (await page.locator(`.vcard[data-id="${v2}"]`).count()) === 1), "Course's own video is back in the Library");
+check(await until(async () => !(await page.locator(".modal").count())), "the delete window closes");
+
 // 7. Phone width: the folder row fits.
 await page.setViewportSize({ width: 390, height: 844 }); await page.locator("#new-folder").click(); await page.locator("#folder-name-input").fill("Interviews"); await page.locator("#folder-save").click(); await page.waitForTimeout(400);
-await until(async () => (await page.locator(".lfcard").count()) === 1); await page.locator('input[aria-label="Find footage"]').scrollIntoViewIfNeeded();
+await until(async () => (await page.locator(".lfcard", { hasText: "Interviews" }).count()) === 1); await page.locator('input[aria-label="Find footage"]').scrollIntoViewIfNeeded();
 const fits = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
 check(fits, "at phone width the Library has no sideways scroll");
 await page.screenshot({ path: join(here, "dist", "library-folders-phone.png") });

@@ -1,12 +1,12 @@
 import { AppError, deleteObjects, deletePrefix, drive, enqueue, env, features, headObject, notFound, signGet, signPut, type ProxyJob, type AnalyzeJob, encrypt } from "@rendrr/core";
 import { prisma, type Video } from "@rendrr/db";
-import { breakdownAsText, DAY_MS, DriveAddInput, FolderProjectInput, LibraryFolderInput, MoveVideosInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
+import { breakdownAsText, DAY_MS, DriveAddInput, FolderProjectInput, LibraryFolderInput, LibraryFolderPatchInput, MoveVideosInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { projectOut, videoOut } from "../serialize";
 import { purgeProjectFiles } from "../services/projects";
-import { createLibraryFolder, deleteLibraryFolder, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, renameLibraryFolder } from "../services/libraryFolders";
+import { createLibraryFolder, deleteLibraryFolder, libraryFolderFull, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, updateLibraryFolder } from "../services/libraryFolders";
 
 /** The folder new videos go in: the user's own, or none. */
 async function intoFolder(userId: string, id?: string | null): Promise<string | null> {
@@ -118,23 +118,28 @@ export default async function library(app: FastifyInstance) {
 
     // ---------------- library folders: videos of one kind together; a whole folder to a new edit ----------------
     a.get("/library/folders", async (req) => listLibraryFolders(req.user!.id));
-    a.post("/library/folders", async (req) => libraryFolderOut(await createLibraryFolder(req.user!.id, LibraryFolderInput.parse(req.body).name)));
+    // parentId: a subfolder inside that folder.
+    a.post("/library/folders", async (req) => {
+      const b = LibraryFolderInput.parse(req.body);
+      return libraryFolderFull(req.user!.id, (await createLibraryFolder(req.user!.id, b.name, b.parentId)).id);
+    });
+    // Rename, or move inside another folder (parentId null: to the top).
     a.patch("/library/folders/:id", async (req) => {
-      const f = await renameLibraryFolder(req.user!.id, (req.params as { id: string }).id, LibraryFolderInput.parse(req.body).name);
-      return (await listLibraryFolders(req.user!.id)).find((x) => x.id === f.id) ?? libraryFolderOut(f);
+      const f = await updateLibraryFolder(req.user!.id, (req.params as { id: string }).id, LibraryFolderPatchInput.parse(req.body));
+      return libraryFolderFull(req.user!.id, f.id);
     });
     a.delete("/library/folders/:id", async (req) => deleteLibraryFolder(req.user!.id, (req.params as { id: string }).id));
     a.post("/videos/move", async (req) => {
       const b = MoveVideosInput.parse(req.body);
       const r = await moveVideos(req.user!.id, b.videoIds, b.libraryFolderId);
-      return { moved: r.moved, folder: r.folder ? libraryFolderOut(r.folder) : null };
+      return { moved: r.moved, folder: r.folder ? await libraryFolderFull(req.user!.id, r.folder.id) : null };
     });
     // Every ready video in the folder, in name order, as one new edit. Videos not ready yet and references are left
     // out and named.
     a.post("/library/folders/:id/project", async (req) => {
       const b = FolderProjectInput.parse(req.body ?? {});
       const r = await projectFromLibraryFolder(req.user!.id, (req.params as { id: string }).id, b);
-      return { project: projectOut(r.project), videos: r.videos.length, skipped: r.skipped };
+      return { project: projectOut(r.project), videos: r.videos.length, subfolders: r.subfolders, skipped: r.skipped };
     });
 
     a.post("/videos/:id/retry", async (req) => {

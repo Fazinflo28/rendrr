@@ -24,9 +24,12 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 ## Library folders (31 October)
 
 - **Folders in the Library.** New folder makes one; a video goes in with its folder button, Select then Move to folder, or by dragging its card onto the folder. Rename and Delete folder (its videos stay in the Library). Add videos inside a folder puts new uploads straight in it.
+- **Folders inside folders.** Up to 6 levels. Inside a folder, New folder here makes one; the path shows at the top (Library / Course / Module 1). Move a folder with Move or by dragging its card onto another; never into itself. Deleting a folder moves its videos and folders up a level (a clashing name gets "(2)"). A folder card counts its folders' videos too.
 - **Edit a whole folder.** Edit this folder opens the new-edit window with every ready video in the folder, in name order (Part 2 before Part 10), named after the folder. References and videos not ready yet are left out and named. Up to 20 videos, like any edit from several videos.
-- **Claude.** list_footage lists the folders and takes libraryFolder (id or name); move_footage sorts videos into a folder (a new name makes it); create_project libraryFolder makes one edit of the folder.
-- **API.** `GET/POST /library/folders`, `PATCH/DELETE /library/folders/:id`, `POST /videos/move`, `POST /library/folders/:id/project`; `PATCH /videos/:id` and the add routes take `libraryFolderId`. Migration `20261031100000_library_folders`.
+- **Claude.** list_footage lists the folders as paths and takes libraryFolder (id, name or path); move_footage sorts videos into a folder (a new path like Course/Module 1 makes the levels); create_project libraryFolder makes one edit of the folder and its folders (its own videos first, then each folder's).
+- **Old server.** If the API is an older version without folder routes, the Library says "Folders are not on the server yet" instead of "That page does not exist."
+- **Railway.** API deploys from pushes failed from 08:25 to 10:52 (container healthy, never promoted, stopped after 8 min). A redeploy of the same build at 10:57 went live, so phases 6 to 12 and folders are on the server now.
+- **API.** `GET/POST /library/folders`, `PATCH/DELETE /library/folders/:id`, `POST /videos/move`, `POST /library/folders/:id/project`; `PATCH /videos/:id` and the add routes take `libraryFolderId`. Migrations `20261031100000_library_folders`, `20261031120000_library_subfolders`.
 - **Tests.** apps/api/test/library-folders.test.ts (routes and connector, local Postgres), apps/web/demo/library-folders.mjs (browser, desktop and phone).
 
 ## Rendrr inside Claude, one render per revision, the editing skill (29 October)

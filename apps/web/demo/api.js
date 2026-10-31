@@ -97,22 +97,38 @@ Object.assign(api, {
   updateVideo: async (id, body) => { await wait(300); if (body.kind) kinds[id] = body.kind; if (body.libraryFolderId !== undefined) { if (body.libraryFolderId) inFolder[id] = body.libraryFolderId; else delete inFolder[id]; } return withKind(await getVideo(id)); },
   addFromDrive: async (ids, kind, fid) => { const out = await addFromDrive(ids); out.forEach((v) => { if (kind) kinds[v.id] = kind; if (fid) inFolder[v.id] = fid; }); return out.map(withKind); },
   addFromComputer: async (files, onProgress, kind, fid) => { const out = await addFromComputer(files, onProgress); (out || []).forEach((v) => { if (kind) kinds[v.id] = kind; if (fid) inFolder[v.id] = fid; }); return (out || []).map(withKind); },
-  // Library folders, kept in this tab.
+  // Library folders, kept in this tab (folders inside folders too).
   listLibraryFolders: async () => {
     const vs = await listVideos(); const all = Array.isArray(vs) ? vs : [];
-    return libFolders.map((f) => { const mine = all.filter((v) => inFolder[v.id] === f.id); return { ...f, count: mine.length, seconds: mine.reduce((a, v) => a + (v.seconds || 0), 0) }; })
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+    const cmp = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+    const path = (f) => { const out = [f.name]; let p = libFolders.find((x) => x.id === f.parentId); while (p) { out.unshift(p.name); p = libFolders.find((x) => x.id === p.parentId); } return out.join(" / "); };
+    const sub = (f) => [f, ...libFolders.filter((x) => x.parentId === f.id).flatMap(sub)];
+    const stat = (ids) => { const mine = all.filter((v) => ids.includes(inFolder[v.id])); return { count: mine.length, seconds: mine.reduce((a, v) => a + (v.seconds || 0), 0) }; };
+    return libFolders.map((f) => { const own = stat([f.id]), tot = stat(sub(f).map((x) => x.id)); return { ...f, parentId: f.parentId || null, path: path(f), count: own.count, seconds: own.seconds, total: tot.count, totalSeconds: tot.seconds, folders: libFolders.filter((x) => x.parentId === f.id).length }; })
+      .sort((a, b) => cmp(a.path, b.path));
   },
-  createLibraryFolder: async (name) => {
+  createLibraryFolder: async (name, parentId) => {
     await wait(150); const n = String(name || "").trim();
     if (!n) throw folderErr("Give the folder a name.");
-    const same = libFolders.find((f) => f.name.toLowerCase() === n.toLowerCase());
-    if (same) throw folderErr(`You already have a folder called "${same.name}".`);
-    const f = { id: "lf" + Math.random().toString(36).slice(2, 8), name: n, updated: Date.now() }; libFolders.push(f);
-    return { ...f, count: 0, seconds: 0 };
+    if (n.includes("/")) throw folderErr("A folder name cannot have a / in it.");
+    const same = libFolders.find((f) => (f.parentId || null) === (parentId || null) && f.name.toLowerCase() === n.toLowerCase());
+    if (same) throw folderErr(`${parentId ? "That folder already has a folder" : "You already have a folder"} called "${same.name}".`);
+    const f = { id: "lf" + Math.random().toString(36).slice(2, 8), name: n, parentId: parentId || null, updated: Date.now() }; libFolders.push(f);
+    return { ...f, count: 0, seconds: 0, total: 0, totalSeconds: 0, folders: 0, path: n };
   },
-  renameLibraryFolder: async (id, name) => { await wait(150); const f = libFolders.find((x) => x.id === id); if (!f) throw folderErr("That folder is not in your library any more."); f.name = String(name || "").trim() || f.name; return { ...f, count: 0, seconds: 0 }; },
-  deleteLibraryFolder: async (id) => { await wait(150); const i = libFolders.findIndex((x) => x.id === id); if (i >= 0) libFolders.splice(i, 1); for (const k of Object.keys(inFolder)) if (inFolder[k] === id) delete inFolder[k]; return { ok: true }; },
+  renameLibraryFolder: async (id, name) => { await wait(150); const f = libFolders.find((x) => x.id === id); if (!f) throw folderErr("That folder is not in your library any more."); f.name = String(name || "").trim() || f.name; return { ...f }; },
+  moveLibraryFolder: async (id, parentId) => {
+    await wait(150); const f = libFolders.find((x) => x.id === id); if (!f) throw folderErr("That folder is not in your library any more.");
+    for (let p = libFolders.find((x) => x.id === parentId); p; p = libFolders.find((x) => x.id === p.parentId)) if (p.id === id) throw folderErr(`"${f.name}" cannot go inside a folder that is inside it.`);
+    f.parentId = parentId || null; return { ...f };
+  },
+  deleteLibraryFolder: async (id) => {
+    await wait(150); const i = libFolders.findIndex((x) => x.id === id); if (i < 0) return { ok: true };
+    const up = libFolders[i].parentId || null; libFolders.splice(i, 1);
+    for (const k of Object.keys(inFolder)) if (inFolder[k] === id) { if (up) inFolder[k] = up; else delete inFolder[k]; }
+    for (const f of libFolders) if (f.parentId === id) f.parentId = up;
+    return { ok: true };
+  },
   moveVideos: async (ids, fid) => { await wait(150); ids.forEach((id) => { if (fid) inFolder[id] = fid; else delete inFolder[id]; }); return { moved: ids.length }; },
   getProject: async (id) => {
     const p = await getProject(id);

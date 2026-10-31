@@ -54,7 +54,12 @@ export const VideoPatchInput = z.object({ kind: z.enum(["footage", "reference"])
 
 // Library folders: videos of one kind kept together, and a whole folder sent to a new edit.
 export const LIBRARY_FOLDER_MAX_VIDEOS = 20; // an edit starts from up to 20 videos (CreateProjectInput)
-export const LibraryFolderInput = z.object({ name: z.string().trim().min(1, "Give the folder a name.").max(80, "Keep the folder name under 80 characters.") });
+export const LIBRARY_FOLDER_MAX_DEPTH = 6; // a folder, and up to 5 levels of subfolders inside it
+const folderName = z.string().trim().min(1, "Give the folder a name.").max(80, "Keep the folder name under 80 characters.").refine((n) => !n.includes("/"), "A folder name cannot have a / in it.");
+/** parentId: the folder it goes inside (a subfolder); left out or null: at the top of the library. */
+export const LibraryFolderInput = z.object({ name: folderName, parentId: id.nullable().optional() });
+/** Rename, or move inside another folder (parentId null: to the top of the library). */
+export const LibraryFolderPatchInput = z.object({ name: folderName.optional(), parentId: id.nullable().optional() }).refine((b) => b.name !== undefined || b.parentId !== undefined, "Send a new name or where to move the folder.");
 export const MoveVideosInput = z.object({ videoIds: z.array(id).min(1, "Pick at least one video.").max(200), libraryFolderId: id.nullable() });
 export const FolderProjectInput = z.object({ name: z.string().max(200).optional().nullable(), folderId: id.optional().nullable(), aspect: z.enum(["16:9", "9:16", "1:1", "4:5"]).optional() });
 export const LocalProgressInput = z.object({ status: z.enum(["previewing", "uploading", "paused", "failed"]), progress: z.number().min(0).max(100).optional(), error: z.string().max(300).optional() });

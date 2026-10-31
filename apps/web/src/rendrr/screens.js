@@ -267,27 +267,50 @@ const BUSY = ["linking", "preview", "previewing", "uploading", "processing"];
 const ATTN = ["failed", "missing", "expired", "paused"];
 /* ---------- Library folders ---------- */
 // Name order as a person sorts it ("Part 2" before "Part 10"); the order a folder's videos go into an edit.
-const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }) || (a.date || 0) - (b.date || 0);
-function FolderNameModal({ folder, onClose, onSaved }) {
+const nameCmp = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+const byName = (a, b) => nameCmp(a.name, b.name) || (a.date || 0) - (b.date || 0);
+// Folders inside folders: the folder and every folder in it (itself first, then each subfolder in name order, depth first).
+const subtreeOf = (folders, f) => [f, ...folders.filter((x) => x.parentId === f.id).sort(byName).flatMap((x) => subtreeOf(folders, x))];
+const depthOf = (f) => (f.path || f.name).split(" / ").length;
+const fcount = (f) => { const n = f.total ?? f.count; const k = f.folders || 0; return `${n} ${n === 1 ? "video" : "videos"}${k ? ` · ${k} ${k === 1 ? "folder" : "folders"}` : ""}`; };
+function FolderNameModal({ folder, parent, onClose, onSaved }) {
   const [name, setName] = useState(folder?.name || ""); const [busy, setBusy] = useState(false); const [err, setErr] = useState(null);
-  const save = async () => { setBusy(true); setErr(null); try { const f = folder ? await api.renameLibraryFolder(folder.id, name) : await api.createLibraryFolder(name); onSaved(f, !folder); } catch (e) { setErr(e.message); setBusy(false); } };
-  return html`<${Modal} title=${folder ? "Rename folder" : "New folder"} sub=${folder ? "" : "Keep videos of one kind together: a course, a client's interviews, one shoot. You can edit a whole folder as one video."} onClose=${onClose}
+  const save = async () => { setBusy(true); setErr(null); try { const f = folder ? await api.renameLibraryFolder(folder.id, name) : await api.createLibraryFolder(name, parent?.id); onSaved(f, !folder); } catch (e) { setErr(e.message); setBusy(false); } };
+  return html`<${Modal} title=${folder ? "Rename folder" : parent ? "New folder in " + parent.name : "New folder"} sub=${folder ? "" : parent ? "A folder inside this one. Editing the outer folder takes the videos in its folders too." : "Keep videos of one kind together: a course, a client's interviews, one shoot. Folders can hold folders. You can edit a whole folder as one video."} onClose=${onClose}
     footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="folder-save" disabled=${busy || !name.trim()} onClick=${save}>${busy ? "Saving…" : folder ? "Rename" : "Make folder"}<//>`}>
-    <${Field} label="Name" id="folder-name-input"><input id="folder-name-input" class="input" value=${name} maxlength="80" autofocus placeholder="Course: module 1" onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && name.trim() && !busy) save(); }} /><//>
-    ${err && html`<p role="alert" class="t-small">${err}</p>`}
+    <${Field} label="Name" id="folder-name-input"><input id="folder-name-input" class="input" value=${name} maxlength="80" autofocus placeholder=${parent ? "Module 1" : "Course"} onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && name.trim() && !busy) save(); }} /><//>
+    ${err && html`<p role="alert" class="t-small" id="folder-error">${err}</p>`}
   <//>`;
 }
-function MoveToFolderModal({ videos, folders, onClose, onMoved }) {
+// Where videos go: every folder as a tree (a folder's folders under it, indented).
+const FolderRows = ({ folders, here, disabled, onPick, skip = new Set() }) => {
+  const tops = folders.filter((f) => !f.parentId || !folders.some((x) => x.id === f.parentId)).sort(byName);
+  return tops.flatMap((t) => subtreeOf(folders, t)).filter((f) => !skip.has(f.id)).map((f) => html`<button key=${f.id} class=${"lfrow" + (here === f.id ? " on" : "")} data-move-to=${f.id} style=${{ paddingLeft: 12 + (depthOf(f) - 1) * 18 + "px" }} disabled=${disabled || here === f.id} onClick=${() => onPick(f)}><${Icon} name="folder" size="16" /><span class="grow">${f.name}</span><span class="t-small muted">${here === f.id ? "Here now" : fcount(f)}</span></button>`);
+};
+function MoveToFolderModal({ videos, folders, onClose, onMoved, into }) {
   const toast = useToast(); const [busy, setBusy] = useState(false); const [name, setName] = useState("");
   const where = videos.length === 1 ? videos[0].libraryFolderId || null : undefined;
   const move = async (f) => { setBusy(true); try { await api.moveVideos(videos.map((v) => v.id), f ? f.id : null); onMoved(f); } catch (e) { toast(e.message); setBusy(false); } };
-  const makeAndMove = async () => { setBusy(true); try { const f = await api.createLibraryFolder(name); await api.moveVideos(videos.map((v) => v.id), f.id); onMoved(f); } catch (e) { toast(e.message); setBusy(false); } };
+  // A new folder goes where the user is (inside the open folder), like a file manager.
+  const makeAndMove = async () => { setBusy(true); try { const f = await api.createLibraryFolder(name, into?.id); await api.moveVideos(videos.map((v) => v.id), f.id); onMoved(f); } catch (e) { toast(e.message); setBusy(false); } };
   return html`<${Modal} title=${videos.length === 1 ? "Move " + videos[0].name : "Move " + videos.length + " videos"} sub="Pick the folder they go in." onClose=${onClose}>
     <div class="col" id="move-list" style="gap:6px">
-      ${folders.map((f) => html`<button key=${f.id} class=${"lfrow" + (where === f.id ? " on" : "")} data-move-to=${f.id} disabled=${busy || where === f.id} onClick=${() => move(f)}><${Icon} name="folder" size="16" /><span class="grow">${f.name}</span><span class="t-small muted">${where === f.id ? "Here now" : f.count + (f.count === 1 ? " video" : " videos")}</span></button>`)}
+      <${FolderRows} folders=${folders} here=${where} disabled=${busy} onPick=${move} />
       <button class=${"lfrow" + (where === null ? " on" : "")} id="move-out" disabled=${busy || where === null} onClick=${() => move(null)}><${Icon} name="library" size="16" /><span class="grow">No folder</span><span class="t-small muted">Loose in the Library</span></button>
     </div>
-    <div class="row" style="gap:8px;margin-top:12px"><input id="move-new-name" class="input" placeholder="New folder name" maxlength="80" value=${name} onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && name.trim() && !busy) makeAndMove(); }} /><${Btn} id="move-new" icon="plus" disabled=${busy || !name.trim()} onClick=${makeAndMove}>Make and move<//></div>
+    <div class="row" style="gap:8px;margin-top:12px"><input id="move-new-name" class="input" placeholder=${into ? "New folder in " + into.name : "New folder name"} maxlength="80" value=${name} onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && name.trim() && !busy) makeAndMove(); }} /><${Btn} id="move-new" icon="plus" disabled=${busy || !name.trim()} onClick=${makeAndMove}>Make and move<//></div>
+  <//>`;
+}
+// A folder into another folder (never into itself or a folder inside it), or to the top of the Library.
+function MoveFolderModal({ folder, folders, onClose, onMoved }) {
+  const toast = useToast(); const [busy, setBusy] = useState(false);
+  const skip = new Set(subtreeOf(folders, folder).map((f) => f.id));
+  const move = async (to) => { setBusy(true); try { await api.moveLibraryFolder(folder.id, to ? to.id : null); onMoved(to); } catch (e) { toast(e.message); setBusy(false); } };
+  return html`<${Modal} title=${"Move " + folder.name} sub="Pick the folder it goes in. Its videos and folders go with it." onClose=${onClose}>
+    <div class="col" id="move-folder-list" style="gap:6px">
+      <button class=${"lfrow" + (!folder.parentId ? " on" : "")} id="move-folder-top" disabled=${busy || !folder.parentId} onClick=${() => move(null)}><${Icon} name="library" size="16" /><span class="grow">Top of the Library</span><span class="t-small muted">${!folder.parentId ? "Here now" : ""}</span></button>
+      <${FolderRows} folders=${folders} here=${folder.parentId || undefined} disabled=${busy} onPick=${move} skip=${skip} />
+    </div>
   <//>`;
 }
 
@@ -299,19 +322,32 @@ function LibraryPage() {
   const [openF, setOpenF] = useState(() => { try { return sessionStorage.getItem("rendrr:libfolder") || null; } catch { return null; } });
   const openFolder = (id) => { setOpenF(id); setPick([]); try { if (id) sessionStorage.setItem("rendrr:libfolder", id); else sessionStorage.removeItem("rendrr:libfolder"); } catch { /* private window */ } };
   const folders = fq.data || []; const cur = openF ? folders.find((f) => f.id === openF) || null : null;
-  const folderIds = new Set(folders.map((f) => f.id)); const folderName = (id) => folders.find((f) => f.id === id)?.name;
+  const folderIds = new Set(folders.map((f) => f.id)); const folderName = (id) => { const f = folders.find((x) => x.id === id); return f && (f.path || f.name); };
+  // The folders shown as cards: those inside the open folder, or at the top.
+  const childFolders = folders.filter((f) => (openF ? f.parentId === openF : !f.parentId || !folderIds.has(f.parentId))).sort(byName);
+  const crumbs = []; for (let f = cur; f && crumbs.length < 10; f = folders.find((x) => x.id === f.parentId)) crumbs.unshift(f);
+  const parentOf = (f) => folders.find((x) => x.id === f?.parentId) || null;
   useEffect(() => { if (openF && fq.data && !cur) openFolder(null); }, [fq.data]);
-  const [nameModal, setNameModal] = useState(null); const [moveOf, setMoveOf] = useState(null); const [delFolder, setDelFolder] = useState(null); const [folderEdit, setFolderEdit] = useState(null);
+  const [nameModal, setNameModal] = useState(null); const [moveOf, setMoveOf] = useState(null); const [delFolder, setDelFolder] = useState(null); const [folderEdit, setFolderEdit] = useState(null); const [moveFolder, setMoveFolder] = useState(null);
   const reloadAll = () => { q.reload(); fq.reload(); };
-  const dropOnFolder = (f) => async (e) => { const vid = e.dataTransfer.getData("text/rendrr-video"); if (!vid) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("over"); try { await api.moveVideos([vid], f.id); toast(`Moved to ${f.name}`, { icon: "folder", tone: "brand" }); reloadAll(); } catch (er) { toast(er.message); } };
-  // Every ready video in the open folder, in name order, as one edit (the order can still be changed before creating).
+  // A video card, or another folder's card, dropped on a folder goes in it.
+  const dragKinds = (e) => Array.from(e.dataTransfer?.types || []);
+  const dropOnFolder = (f) => async (e) => {
+    const vid = e.dataTransfer.getData("text/rendrr-video"), fid = e.dataTransfer.getData("text/rendrr-folder");
+    if (!vid && !fid) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove("over");
+    if (fid === f.id) return;
+    try { if (vid) await api.moveVideos([vid], f.id); else await api.moveLibraryFolder(fid, f.id); toast(`Moved to ${f.name}`, { icon: "folder", tone: "brand" }); reloadAll(); } catch (er) { toast(er.message); }
+  };
+  // Every ready video in the open folder and its folders, as one edit: its own in name order, then each folder inside,
+  // the same way (the order can still be changed before creating).
   const editFolder = () => {
-    const mine = (q.data || []).filter((v) => v.libraryFolderId === cur.id).sort(byName);
+    const tree = subtreeOf(folders, cur), vids = q.data || [];
+    const mine = tree.flatMap((f) => vids.filter((v) => v.libraryFolderId === f.id).sort(byName));
     const use = mine.filter((v) => v.status === "ready" && v.kind !== "reference"), left = mine.filter((v) => !use.includes(v));
-    if (!mine.length) return toast(`"${cur.name}" is empty. Add videos to it first.`);
+    if (!mine.length) return toast(`"${cur.name}" is empty${tree.length > 1 ? ", its folders too" : ""}. Add videos to it first.`);
     if (!use.length) return toast(`None of the videos in "${cur.name}" are ready to edit yet.`);
-    if (use.length > 20) return toast(`"${cur.name}" has ${use.length} videos ready. An edit starts from up to 20: move some into another folder.`);
-    setFolderEdit({ ids: use.map((v) => v.id), name: cur.name, sub: `Every ready video in "${cur.name}", in name order. Change the order below if you need to.` + (left.length ? ` Left out: ${left.map((v) => v.name).join(", ")} (not ready yet, or a reference).` : "") });
+    if (use.length > 20) return toast(`"${cur.name}" has ${use.length} videos ready${tree.length > 1 ? " with its folders" : ""}. An edit starts from up to 20: edit one of its folders, or move some out.`);
+    setFolderEdit({ ids: use.map((v) => v.id), name: cur.name, sub: `Every ready video in "${cur.name}"${tree.length > 1 ? " and its folders (its own first, then each folder inside)" : ""}, in name order. Change the order below if you need to.` + (left.length ? ` Left out: ${left.map((v) => v.name).join(", ")} (not ready yet, or a reference).` : "") });
   };
   const [filter, setFilter] = useState("All"); const [search, setSearch] = useState(""); const [over, setOver] = useState(false); const [reconnect, setReconnect] = useState(null); const [remove, setRemove] = useState(null);
   // Select several videos (the parts of one video, in the order they play) and make one edit of them.
@@ -332,7 +368,7 @@ function LibraryPage() {
   const act = async (e, fn, msg) => { e.stopPropagation(); try { await fn(); if (msg) toast(msg); q.reload(); } catch (er) { toast(er.message); } };
   const filt = (v) => filter === "All" || (filter === "Ready" && v.status === "ready") || (filter === "In progress" && BUSY.includes(v.status)) || (filter === "Needs attention" && ATTN.includes(v.status)) || (filter === "References" && v.kind === "reference");
   return html`<div class="page wide" ...${dropProps}>
-    <div class="page-head"><div>${cur ? html`<div class="row" style="gap:6px"><button class="dlink t-small" id="folder-back" onClick=${() => openFolder(null)}>Library</button><span class="t-small muted">/</span></div><h1 class="t-title row" style="gap:10px" id="folder-title"><${Icon} name="folder" size="26" />${cur.name}</h1><p class="muted" id="folder-meta">${cur.count} ${cur.count === 1 ? "video" : "videos"} · ${fmtLen(cur.seconds)}. Edit the whole folder as one video, in name order.</p>` : html`<h1 class="t-title">Library</h1><p class="muted">Raw files stay in your Drive or on your computer. We keep a light preview for 30 days.</p>`}</div>
+    <div class="page-head"><div>${cur ? html`<div class="row wrap" id="folder-crumbs" style="gap:6px"><button class="dlink t-small" id="folder-back" onClick=${() => openFolder(null)}>Library</button>${crumbs.slice(0, -1).map((f) => html`<span class="t-small muted">/</span><button class="dlink t-small" data-crumb=${f.id} onClick=${() => openFolder(f.id)}>${f.name}</button>`)}<span class="t-small muted">/</span></div><h1 class="t-title row" style="gap:10px" id="folder-title"><${Icon} name="folder" size="26" />${cur.name}</h1><p class="muted" id="folder-meta">${fcount(cur)} · ${fmtLen(cur.totalSeconds ?? cur.seconds)}. Edit the whole folder as one video, in name order.</p>` : html`<h1 class="t-title">Library</h1><p class="muted">Raw files stay in your Drive or on your computer. We keep a light preview for 30 days.</p>`}</div>
       <div class="row"><div class="search" style="width:240px"><${Icon} name="search" /><input class="input sm" placeholder="Find footage" value=${search} onInput=${(e) => setSearch(e.target.value)} aria-label="Find footage" /></div>
       <${Seg} size="sm" value=${filter} options=${["All", "Ready", "In progress", "Needs attention", "References"]} onChange=${setFilter} />
       <${Btn} kind=${picking ? "secondary" : "ghost"} size="sm" icon=${picking ? "x" : "check"} id="select-videos" title="Select videos to make one edit of them, in order" onClick=${() => (picking ? stopPicking() : setPicking(true))}>${picking ? "Cancel" : "Select"}<//></div></div>
@@ -345,19 +381,21 @@ function LibraryPage() {
         const list = videos.filter((v) => here(v) && filt(v) && v.name.toLowerCase().includes(search.toLowerCase()));
         if (openF) list.sort(byName);
         return html`<div class="col" style="gap:16px">
-          ${cur ? html`<div class="row wrap" id="folder-actions" style="gap:8px">
+          ${cur && html`<div class="row wrap" id="folder-actions" style="gap:8px">
               <${Btn} size="sm" icon="scissors" id="folder-edit" onClick=${editFolder}>Edit this folder<//>
               <${Btn} kind="ghost" size="sm" icon="plus" id="folder-add" onClick=${() => openAdd("footage", cur)}>Add videos<//>
               <${Btn} kind="ghost" size="sm" icon="edit" id="folder-rename" onClick=${() => setNameModal({ folder: cur })}>Rename<//>
-              <${Btn} kind="quiet" size="sm" icon="trash" id="folder-delete" onClick=${() => setDelFolder(cur)}>Delete folder<//></div>`
-            : !search && html`<div class="col" id="lib-folders" style="gap:10px">
-              <div class="row between"><span class="row" style="gap:8px"><b class="t-label">Folders</b>${!folders.length && html`<span class="t-small muted">Keep videos of one kind together, then edit a whole folder at once.</span>`}</span><${Btn} kind="ghost" size="sm" icon="plus" id="new-folder" onClick=${() => setNameModal({})}>New folder<//></div>
-              ${folders.length > 0 && html`<div class="lfgrid">${folders.map((f) => html`<button key=${f.id} class="lfcard" data-folder=${f.id} onClick=${() => openFolder(f.id)} aria-label=${"Open folder " + f.name}
-                  onDragOver=${(e) => { if (Array.from(e.dataTransfer?.types || []).includes("text/rendrr-video")) { e.preventDefault(); e.currentTarget.classList.add("over"); } }} onDragLeave=${(e) => e.currentTarget.classList.remove("over")} onDrop=${dropOnFolder(f)}>
-                <span class="lfico"><${Icon} name="folder" size="20" /></span><span class="col" style="gap:2px;min-width:0"><b class="t-label lfname">${f.name}</b><span class="t-small muted">${f.count} ${f.count === 1 ? "video" : "videos"}${f.count ? " · " + fmtLen(f.seconds) : ""}</span></span></button>`)}</div>`}
+              <${Btn} kind="ghost" size="sm" icon="folder" id="folder-move" onClick=${() => setMoveFolder(cur)}>Move<//>
+              <${Btn} kind="quiet" size="sm" icon="trash" id="folder-delete" onClick=${() => setDelFolder(cur)}>Delete folder<//></div>`}
+          ${!search && html`<div class="col" id="lib-folders" style="gap:10px">
+              <div class="row between"><span class="row" style="gap:8px"><b class="t-label">Folders</b>${!childFolders.length && html`<span class="t-small muted">${cur ? "Make folders inside this one to sort its videos further." : "Keep videos of one kind together, then edit a whole folder at once."}</span>`}</span><${Btn} kind="ghost" size="sm" icon="plus" id="new-folder" onClick=${() => setNameModal({ parent: cur })}>${cur ? "New folder here" : "New folder"}<//></div>
+              ${childFolders.length > 0 && html`<div class="lfgrid">${childFolders.map((f) => html`<button key=${f.id} class="lfcard" data-folder=${f.id} draggable="true" onClick=${() => openFolder(f.id)} aria-label=${"Open folder " + f.name}
+                  onDragStart=${(e) => { e.dataTransfer.setData("text/rendrr-folder", f.id); e.dataTransfer.effectAllowed = "move"; }}
+                  onDragOver=${(e) => { const k = dragKinds(e); if (k.includes("text/rendrr-video") || k.includes("text/rendrr-folder")) { e.preventDefault(); e.currentTarget.classList.add("over"); } }} onDragLeave=${(e) => e.currentTarget.classList.remove("over")} onDrop=${dropOnFolder(f)}>
+                <span class="lfico"><${Icon} name="folder" size="20" /></span><span class="col" style="gap:2px;min-width:0"><b class="t-label lfname">${f.name}</b><span class="t-small muted">${fcount(f)}${(f.totalSeconds ?? f.seconds) ? " · " + fmtLen(f.totalSeconds ?? f.seconds) : ""}</span></span></button>`)}</div>`}
             </div>`}
           ${over && html`<div class="drop over"><div class="ico"><${Icon} name="laptop" /></div><h2 class="t-heading">Drop to add from your computer</h2></div>`}
-          ${list.length === 0 && cur && filter === "All" && !search ? html`<${EmptyState} icon="folder" title="This folder is empty" text="Drag videos onto the folder in the Library, use the folder button on a video, or add new ones straight into it." action=${html`<${Btn} size="sm" icon="plus" id="folder-empty-add" onClick=${() => openAdd("footage", cur)}>Add videos<//>`} />`
+          ${list.length === 0 && cur && filter === "All" && !search ? (childFolders.length ? html`<p class="t-small muted" id="folder-no-videos">No videos right in this folder. Open a folder above, or add videos here.</p>` : html`<${EmptyState} icon="folder" title="This folder is empty" text="Drag videos onto the folder in the Library, use the folder button on a video, or add new ones straight into it." action=${html`<${Btn} size="sm" icon="plus" id="folder-empty-add" onClick=${() => openAdd("footage", cur)}>Add videos<//>`} />`)
             : list.length === 0 ? (filter === "References" && !search ? html`<${EmptyState} icon="spark" title="No references yet" text="Add a video whose style you want to copy. Rendrr reads it like footage, and the AI matches its cuts and look." action=${html`<${Btn} size="sm" icon="plus" id="add-reference" onClick=${() => openAdd("reference")}>Add a reference<//>`} />`
             : html`<${EmptyState} icon="search" title="No footage matches" text="Try another filter or clear the search." action=${html`<${Btn} kind="secondary" size="sm" onClick=${() => { setFilter("All"); setSearch(""); }}>Clear filters<//>`} />`) : html`<div class="grid">
             ${list.map((v) => { const n = pick.indexOf(v.id); return html`<button key=${v.id} class=${"vcard" + (v.status !== "ready" ? " busy" : "") + (picking ? " picking" : "") + (n >= 0 ? " picked" : "")} data-id=${v.id} draggable=${!picking} onDragStart=${(e) => { e.dataTransfer.setData("text/rendrr-video", v.id); e.dataTransfer.effectAllowed = "move"; }} data-status=${v.status} aria-pressed=${picking ? n >= 0 : undefined} onClick=${() => (picking ? togglePick(v) : v.status === "ready" && go("/library/" + v.id))} aria-label=${v.name}>
@@ -385,9 +423,10 @@ function LibraryPage() {
       }}
     <//>
     ${remove && html`<${DeleteVideoModal} video=${remove} onClose=${() => setRemove(null)} onDeleted=${() => { setRemove(null); reloadAll(); }} />`}
-    ${nameModal && html`<${FolderNameModal} folder=${nameModal.folder} onClose=${() => setNameModal(null)} onSaved=${(f, made) => { setNameModal(null); toast(made ? `Folder "${f.name}" made` : "Renamed", { icon: "folder", tone: "brand" }); fq.reload(); if (made && nameModal.then) nameModal.then(f); }} />`}
-    ${moveOf && html`<${MoveToFolderModal} videos=${moveOf} folders=${folders} onClose=${() => setMoveOf(null)} onMoved=${(f) => { setMoveOf(null); stopPicking(); toast(f ? `Moved to ${f.name}` : "Taken out of the folder", { icon: "folder", tone: "brand" }); reloadAll(); }} />`}
-    ${delFolder && html`<${Modal} title=${"Delete " + delFolder.name + "?"} sub="The folder goes. Its videos stay in your library, outside any folder." onClose=${() => setDelFolder(null)} footer=${html`<${Btn} kind="ghost" onClick=${() => setDelFolder(null)}>Cancel<//><${Btn} id="folder-delete-ok" onClick=${async () => { try { await api.deleteLibraryFolder(delFolder.id); toast("Folder deleted. Its videos are in the Library.", { icon: "folder" }); setDelFolder(null); openFolder(null); reloadAll(); } catch (e) { toast(e.message); } }}>Delete folder<//>`} />`}
+    ${nameModal && html`<${FolderNameModal} folder=${nameModal.folder} parent=${nameModal.parent} onClose=${() => setNameModal(null)} onSaved=${(f, made) => { setNameModal(null); toast(made ? `Folder "${f.name}" made` : "Renamed", { icon: "folder", tone: "brand" }); fq.reload(); if (made && nameModal.then) nameModal.then(f); }} />`}
+    ${moveOf && html`<${MoveToFolderModal} videos=${moveOf} folders=${folders} into=${cur} onClose=${() => setMoveOf(null)} onMoved=${(f) => { setMoveOf(null); stopPicking(); toast(f ? `Moved to ${f.name}` : "Taken out of the folder", { icon: "folder", tone: "brand" }); reloadAll(); }} />`}
+    ${delFolder && html`<${Modal} title=${"Delete " + delFolder.name + "?"} sub=${`The folder goes. Its videos${delFolder.folders ? " and folders" : ""} move up into ${parentOf(delFolder) ? `"${parentOf(delFolder).name}"` : "the Library"}; nothing is deleted.`} onClose=${() => setDelFolder(null)} footer=${html`<${Btn} kind="ghost" onClick=${() => setDelFolder(null)}>Cancel<//><${Btn} id="folder-delete-ok" onClick=${async () => { const up = parentOf(delFolder); try { await api.deleteLibraryFolder(delFolder.id); toast(`Folder deleted. What was in it is in ${up ? up.name : "the Library"}.`, { icon: "folder" }); setDelFolder(null); openFolder(up ? up.id : null); reloadAll(); } catch (e) { toast(e.message); } }}>Delete folder<//>`} />`}
+    ${moveFolder && html`<${MoveFolderModal} folder=${moveFolder} folders=${folders} onClose=${() => setMoveFolder(null)} onMoved=${(to) => { setMoveFolder(null); toast(to ? `Moved into ${to.name}` : "Moved to the top of the Library", { icon: "folder", tone: "brand" }); fq.reload(); }} />`}
     ${folderEdit && html`<${NewProjectModal} videoIds=${folderEdit.ids} defaultName=${folderEdit.name} title=${"Edit " + folderEdit.name} sub=${folderEdit.sub} onClose=${() => setFolderEdit(null)} onCreated=${(p) => { setFolderEdit(null); toast("Edit created from the folder. Opening the editor.", { icon: "check", tone: "brand" }); go("/editor/" + p.id); }} />`}
     ${np && html`<${NewProjectModal} videoIds=${pick} title=${pick.length > 1 ? "One edit from " + pick.length + " videos" : "New edit"} onClose=${() => setNp(false)} onCreated=${(p) => { setNp(false); stopPicking(); toast("Edit created. Opening the editor.", { icon: "check", tone: "brand" }); go("/editor/" + p.id); }} />`}
     ${reconnect && html`<${Modal} title="Reconnect file" sub=${"Pick '" + reconnect.name + "' again in your Drive. The raw file was moved or deleted."} onClose=${() => setReconnect(null)} wide><${DrivePicker} single addLabel="Reconnect" onAdd=${async (ids) => { try { await api.reconnectDriveFile(reconnect.id, ids[0]); toast("Reconnected. Linking again.", { icon: "drive", tone: "brand" }); setReconnect(null); q.reload(); } catch (e) { toast(e.message); } }} /><//>`}

@@ -118,11 +118,17 @@ model LibraryFolder {
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   name      String
+  // The folder it is inside (a subfolder); null: at the top of the library. Deleting a folder moves what is in it up
+  // a level in code; the database only clears the link.
+  parentId  String?
+  parent    LibraryFolder?  @relation("LibraryFolderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  LibraryFolder[] @relation("LibraryFolderTree")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   videos    Video[]
 
   @@index([userId])
+  @@index([parentId])
 }
 
 model FootageAnalysis {

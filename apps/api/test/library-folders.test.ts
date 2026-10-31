@@ -94,7 +94,7 @@ describe("library folders", { skip: !ready && "needs DATABASE_URL and REDIS_URL"
     const v = await video(`Kept ${run}`);
     await call("POST", "/videos/move", { videoIds: [v], libraryFolderId: f.id });
     const del = await call("DELETE", `/library/folders/${f.id}`);
-    assert.deepEqual(del.body, { ok: true, moved: 1 });
+    assert.deepEqual(del.body, { ok: true, moved: 1, folders: 0, to: null });
     const kept = await prisma.video.findUniqueOrThrow({ where: { id: v } });
     assert.equal(kept.libraryFolderId, null);
   });
@@ -133,6 +133,92 @@ describe("library folders", { skip: !ready && "needs DATABASE_URL and REDIS_URL"
     assert.match(tooMany.body.error.message, /has 21 videos ready; an edit starts from up to 20/);
   });
 
+  it("folders inside folders: paths and counts, the same name in two places, moving (never into itself), depth", async () => {
+    const course = (await call("POST", "/library/folders", { name: `Course ${run}` })).body;
+    const m1 = (await call("POST", "/library/folders", { name: "Module 1", parentId: course.id })).body;
+    const m2 = (await call("POST", "/library/folders", { name: "Module 2", parentId: course.id })).body;
+    assert.equal(m1.parentId, course.id);
+    assert.equal(m1.path, `Course ${run} / Module 1`);
+    const twice = await call("POST", "/library/folders", { name: "module 1", parentId: course.id });
+    assert.equal(twice.status, 409);
+    assert.match(twice.body.error.message, /That folder already has a folder called "Module 1"/);
+    const elsewhere = await call("POST", "/library/folders", { name: "Module 1" }); // the same name at the top is fine
+    assert.equal(elsewhere.status, 200);
+    assert.equal((await call("POST", "/library/folders", { name: "a/b" })).status, 400);
+    await call("POST", "/videos/move", { videoIds: [await video(`Lesson A ${run}`, { seconds: 10 })], libraryFolderId: m1.id });
+    await call("POST", "/videos/move", { videoIds: [await video(`Lesson B ${run}`, { seconds: 20 })], libraryFolderId: m2.id });
+    const list = (await call("GET", "/library/folders")).body as { id: string; count: number; total: number; totalSeconds: number; folders: number }[];
+    const c = list.find((f) => f.id === course.id)!;
+    assert.deepEqual([c.count, c.total, c.totalSeconds, c.folders], [0, 2, 30, 2], "the course counts its modules' videos");
+    // Never into itself or a folder inside it.
+    const loop = await call("PATCH", `/library/folders/${course.id}`, { parentId: m1.id });
+    assert.equal(loop.status, 400);
+    assert.match(loop.body.error.message, /cannot go inside "Course \w+ \/ Module 1", which is inside it/);
+    assert.equal((await call("PATCH", `/library/folders/${m1.id}`, { parentId: m1.id })).status, 400);
+    // Move Module 2 to the top and back.
+    const top = await call("PATCH", `/library/folders/${m2.id}`, { parentId: null });
+    assert.deepEqual([top.body.parentId, top.body.path], [null, "Module 2"]);
+    const back = await call("PATCH", `/library/folders/${m2.id}`, { parentId: course.id });
+    assert.equal(back.body.path, `Course ${run} / Module 2`);
+    // Six levels at most.
+    let parent = m1.id;
+    for (let d = 3; d <= 6; d++) parent = (await call("POST", "/library/folders", { name: `Level ${d}`, parentId: parent })).body.id;
+    const deep = await call("POST", "/library/folders", { name: "Level 7", parentId: parent });
+    assert.equal(deep.status, 400);
+    assert.match(deep.body.error.message, /6 levels deep at most/);
+    // Someone else's folder as the parent.
+    const theirs = await prisma.libraryFolder.create({ data: { userId: otherId, name: `Theirs ${run}` } });
+    assert.equal((await call("POST", "/library/folders", { name: "Sneak", parentId: theirs.id })).status, 404);
+  });
+
+  it("deleting a folder with folders inside moves its videos and folders up a level; a clashing name gets (2)", async () => {
+    const top = (await call("POST", "/library/folders", { name: `Shoots ${run}` })).body;
+    const day = (await call("POST", "/library/folders", { name: "Day 1", parentId: top.id })).body;
+    const am = (await call("POST", "/library/folders", { name: "Morning", parentId: day.id })).body;
+    await call("POST", "/library/folders", { name: "Morning", parentId: top.id }); // already a Morning one level up
+    const v = await video(`Take ${run}`);
+    await call("POST", "/videos/move", { videoIds: [v], libraryFolderId: day.id });
+    const del = await call("DELETE", `/library/folders/${day.id}`);
+    assert.deepEqual([del.body.moved, del.body.folders, del.body.to], [1, 1, top.id]);
+    assert.equal((await prisma.video.findUniqueOrThrow({ where: { id: v } })).libraryFolderId, top.id);
+    const moved = await prisma.libraryFolder.findUniqueOrThrow({ where: { id: am.id } });
+    assert.deepEqual([moved.parentId, moved.name], [top.id, "Morning (2)"]);
+  });
+
+  it("a folder with folders inside becomes one edit: its own videos, then each folder's, in name order", async () => {
+    const course = (await call("POST", "/library/folders", { name: `Edit me ${run}` })).body;
+    const m2 = (await call("POST", "/library/folders", { name: "Module 2", parentId: course.id })).body;
+    const m10 = (await call("POST", "/library/folders", { name: "Module 10", parentId: course.id })).body;
+    const intro = await video("Intro"), b = await video("Lesson 2"), a = await video("Lesson 1"), c = await video("Final lesson");
+    await call("POST", "/videos/move", { videoIds: [intro], libraryFolderId: course.id });
+    await call("POST", "/videos/move", { videoIds: [b, a], libraryFolderId: m2.id });
+    await call("POST", "/videos/move", { videoIds: [c], libraryFolderId: m10.id });
+    const r = await call("POST", `/library/folders/${course.id}/project`, {});
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.videos, r.body.subfolders], [4, 2]);
+    const p = await prisma.project.findUniqueOrThrow({ where: { id: r.body.project.id } });
+    const v1 = (p.timeline as unknown as { tracks: { v1: { sourceVideoId?: string }[] } }).tracks.v1;
+    assert.deepEqual(Array.from(new Set(v1.map((x) => x.sourceVideoId ?? p.videoId))), [intro, a, b, c], "Intro, Module 2 (Lesson 1, Lesson 2), Module 10");
+    // The connector says the same, with each video's folder.
+    const out = await tool("create_project", { libraryFolder: `Edit me ${run}` });
+    assert.match(out.text, /4 videos back to back in name order, its folders' after its own \(Intro, Module 2 \/ Lesson 1, Module 2 \/ Lesson 2, Module 10 \/ Final lesson\)/);
+  });
+
+  it("the connector and folders inside folders: paths make the levels; a name two folders share is refused", async () => {
+    const v = await video(`Clip for path ${run}`);
+    const mv = await tool("move_footage", { videoIds: [v], libraryFolder: `Client ${run}/Interviews/Raw` });
+    assert.match(mv.text, new RegExp(`Moved 1 video into the new library folder "Client ${run} / Interviews / Raw" \\(\\w+\\) \\(3 folders made\\)`));
+    const again = await tool("move_footage", { videoIds: [v], libraryFolder: `client ${run} / interviews / raw` });
+    assert.match(again.text, /Moved 1 video into library folder "Client \w+ \/ Interviews \/ Raw"/);
+    const listed = await tool("list_footage", { libraryFolder: `Client ${run}` });
+    assert.match(listed.text, /Folders inside \(id \| name \| videos with theirs\): \w+ \| Interviews \| 1\./);
+    assert.match(listed.text, new RegExp(`Clip for path ${run} \\| footage .* \\| Interviews / Raw`));
+    const all = await tool("list_footage", {});
+    assert.match(all.text, new RegExp(`\\| Client ${run} / Interviews / Raw \\| 1`));
+    await tool("move_footage", { videoIds: [await video(`Other raw ${run}`)], libraryFolder: `Second ${run}/Raw` });
+    await assert.rejects(tool("list_footage", { libraryFolder: "Raw" }), /More than one folder is called "Raw": .* Say which with its path or id/);
+  });
+
   it("the connector: list_footage shows folders and filters by one; move_footage makes a folder by name; create_project libraryFolder", async () => {
     const a = await video(`Hook take ${run}`), b = await video(`Body take ${run}`);
     const mv = await tool("move_footage", { videoIds: [a, b], libraryFolder: `Ads ${run}` });
@@ -141,10 +227,10 @@ describe("library folders", { skip: !ready && "needs DATABASE_URL and REDIS_URL"
     assert.match(again.text, /Moved 1 video into library folder/);
     assert.equal(await prisma.libraryFolder.count({ where: { userId, name: { startsWith: "Ads" } } }), 1);
     const all = await tool("list_footage", {});
-    assert.match(all.text, new RegExp(`Library folders \\(id \\| name \\| videos\\): .*\\| Ads ${run} \\| 2`));
+    assert.match(all.text, new RegExp(`Library folders \\(id \\| path \\| videos with its folders'\\): .*\\| Ads ${run} \\| 2`));
     assert.match(all.text, new RegExp(`${a} \\| Hook take ${run} \\| footage .* \\| Ads ${run}`));
     const one = await tool("list_footage", { libraryFolder: `Ads ${run}` });
-    assert.match(one.text, new RegExp(`Library folder "Ads ${run}" .* in name order .* 1-2 of 2`));
+    assert.match(one.text, new RegExp(`Library folder "Ads ${run}" .* in the order create_project libraryFolder uses .* 1-2 of 2`));
     assert.ok(one.text.indexOf(`Body take ${run}`) < one.text.indexOf(`Hook take ${run}`), "name order: Body before Hook");
     await assert.rejects(tool("list_footage", { libraryFolder: "No such folder" }), /There is no library folder "No such folder"\. Library folders: /);
     const made = await tool("create_project", { libraryFolder: `Ads ${run}`, aspect: "9:16" });

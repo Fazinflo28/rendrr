@@ -39,6 +39,13 @@ async function finishSignIn(ticket: string) {
 const clerkMsg = (e: any, fallback: string) => fail(e?.errors?.[0]?.longMessage || e?.errors?.[0]?.message || e?.message || fallback);
 
 // ---------------- render: start, follow live progress, resolve with the result ----------------
+// A route the server does not have (it answers "That page does not exist."): the server is an older version.
+const isMissingRoute = (e: any) => e?.status === 404 && e?.message === "That page does not exist.";
+const folderRoute = async <T,>(fn: () => Promise<T>): Promise<T> => {
+  try { return await fn(); }
+  catch (e: any) { if (isMissingRoute(e)) throw fail("Folders are not on the server yet: it is still being updated. Try again in a few minutes.", "server-old"); throw e; }
+};
+
 async function runRender(kind: "preview" | "final", projectId: string, onProgress?: (p: any) => void) {
   if (DEV && demo.failNextRender) {
     demo.failNextRender = false;
@@ -130,14 +137,16 @@ export const api: any = {
   listVideos: async () => emptyIf((await get("/videos")).map(remember)),
   getVideo: async (id: string) => remember(await get(`/videos/${enc(id)}`)),
   updateVideo: async (id: string, body: { kind?: string; name?: string; libraryFolderId?: string | null }) => remember(await patch(`/videos/${enc(id)}`, body)),
-  // Library folders: videos of one kind kept together; a whole folder can become one edit.
-  listLibraryFolders: async () => get("/library/folders"),
-  createLibraryFolder: async (name: string) => post("/library/folders", { name }),
-  renameLibraryFolder: async (id: string, name: string) => patch(`/library/folders/${enc(id)}`, { name }),
-  deleteLibraryFolder: async (id: string) => del(`/library/folders/${enc(id)}`),
-  moveVideos: async (videoIds: string[], libraryFolderId: string | null) => post("/videos/move", { videoIds, libraryFolderId }),
+  // Library folders: videos of one kind kept together, folders inside folders; a whole folder can become one edit.
+  // An older server (still being updated) has no folder routes: the list is empty and the rest says so plainly.
+  listLibraryFolders: async () => { try { return await get("/library/folders"); } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },
+  createLibraryFolder: async (name: string, parentId?: string | null) => folderRoute(() => post("/library/folders", { name, ...(parentId ? { parentId } : {}) })),
+  renameLibraryFolder: async (id: string, name: string) => folderRoute(() => patch(`/library/folders/${enc(id)}`, { name })),
+  moveLibraryFolder: async (id: string, parentId: string | null) => folderRoute(() => patch(`/library/folders/${enc(id)}`, { parentId })),
+  deleteLibraryFolder: async (id: string) => folderRoute(() => del(`/library/folders/${enc(id)}`)),
+  moveVideos: async (videoIds: string[], libraryFolderId: string | null) => folderRoute(() => post("/videos/move", { videoIds, libraryFolderId })),
   projectFromLibraryFolder: async (id: string, o: { name?: string; folderId?: string; aspect?: string } = {}) => {
-    const r = await post(`/library/folders/${enc(id)}/project`, o);
+    const r = await folderRoute(() => post(`/library/folders/${enc(id)}/project`, o));
     versions[r.project.id] = r.project.version;
     return r;
   },
