@@ -64,19 +64,29 @@ export async function cleanup() {
     out.previewRenders++;
   }
 
+  // Samples (render_samples): their stills and clips go when previews do.
+  const oldSamples = await prisma.render.findMany({ where: { kind: "sample", status: "done", createdAt: { lt: new Date(now.getTime() - PREVIEW_RETENTION_DAYS * DAY_MS) } }, select: { id: true, framesKeys: true } });
+  for (const r of oldSamples) {
+    const keys = (r.framesKeys as string[]) || [];
+    if (!keys.length) continue;
+    await deleteObjects(keys);
+    await prisma.render.update({ where: { id: r.id }, data: { framesKeys: [], sizeBytes: 0 } });
+    out.previewRenders++;
+  }
+
   // Stuck work. A running render is judged against its own limit (it grows with the footage); a queued one only
   // after six hours, since it may simply be waiting behind others.
   const hourAgo = new Date(now.getTime() - 3600_000);
   const active = await prisma.render.findMany({ where: { status: { in: ["queued", "running"] } }, select: { id: true, kind: true, quality: true, status: true, createdAt: true, startedAt: true, project: { select: { timeline: true, video: { select: { seconds: true } } } } } });
   const dead = active.filter((r) => r.status === "running"
-    ? now.getTime() - (r.startedAt ?? r.createdAt).getTime() > renderTimeoutMs(r.kind === "preview" ? "preview" : "final", r.project.video.seconds, r.quality) + matteAllowanceMs(r.project.timeline) + 15 * 60_000
+    ? now.getTime() - (r.startedAt ?? r.createdAt).getTime() > renderTimeoutMs(r.kind === "final" ? "final" : "preview", r.project.video.seconds, r.quality) + matteAllowanceMs(r.project.timeline) + 15 * 60_000
     : now.getTime() - r.createdAt.getTime() > 6 * 3600_000);
   if (dead.length) await prisma.render.updateMany({ where: { id: { in: dead.map((r) => r.id) } }, data: { status: "failed", error: "Render did not finish. Nothing was lost. Try again.", finishedAt: now } });
   out.stuckRenders = dead.length;
   // Edits left on "Rendering" with nothing rendering: back to what their finished renders say.
   for (const p of await prisma.project.findMany({ where: { status: "Rendering", updatedAt: { lt: hourAgo } }, select: { id: true } })) {
     if (await prisma.render.count({ where: { projectId: p.id, status: { in: ["queued", "running"] } } })) continue;
-    const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done" }, select: { kind: true } });
+    const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done", kind: { not: "sample" } }, select: { kind: true } });
     await prisma.project.update({ where: { id: p.id }, data: { status: done.some((x) => x.kind === "final") ? "Final ready" : done.length ? "Preview ready" : "Draft" } });
   }
   // Footage: server-side steps that stopped fail with Retry; a browser-side preview whose tab went away is paused

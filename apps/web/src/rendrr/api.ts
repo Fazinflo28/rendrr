@@ -59,13 +59,18 @@ async function runRender(kind: "preview" | "final", projectId: string, onProgres
     throw fail("We could not reach your Drive file. Reconnect it and try again.", "drive");
   }
   const started = await post(`/projects/${enc(projectId)}/renders`, { kind });
+  return followRender(started, kind === "preview" ? "Preview render" : "Final render", kind === "final" ? 17 : 5, onProgress);
+}
+
+/** Follows a started render (its live events, else polling) to its end; its result once done. */
+async function followRender(started: any, label: string, minutes: number, onProgress?: (p: any) => void) {
   const id = started.renderId as string;
   const steps = started.steps || [];
   onProgress?.({ step: 0, steps, percent: 0, etaSec: null, quality: started.quality });
   let final: any = null;
   // Phase 7: as long as the server's own limit for this render (it fails loudly when that passes), plus a margin. A
   // long or 4K final can take far longer than the old fixed 17 minutes.
-  const deadline = Date.now() + (Number(started.limitMs) || (kind === "final" ? 17 : 5) * 60_000) + 3 * 60_000;
+  const deadline = Date.now() + (Number(started.limitMs) || minutes * 60_000) + 3 * 60_000;
   // Live stream first; if it drops, fall back to polling until the render ends.
   try {
     await readEvents(`/renders/${enc(id)}/events`, (ev, data) => {
@@ -80,7 +85,7 @@ async function runRender(kind: "preview" | "final", projectId: string, onProgres
     if (s.status === "done" || s.status === "failed") final = s;
     else onProgress?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent, etaSec: s.etaSec ?? null, quality: started.quality });
   }
-  if (!final) throw fail((kind === "preview" ? "Preview render" : "Final render") + " took too long. Try again.", "timeout");
+  if (!final) throw fail(label + " took too long. Try again.", "timeout");
   if (final.status === "failed") throw fail(final.error || "Render did not finish. Nothing was lost. Try again.", final.code);
   const st = final.steps?.length ? final.steps : steps;
   onProgress?.({ step: st.length, steps: st, percent: 100 });
@@ -337,6 +342,12 @@ export const api: any = {
   // ---- render ----
   renderPreview: (projectId: string, onProgress?: (p: any) => void) => runRender("preview", projectId, onProgress),
   renderFinal: (projectId: string, onProgress?: (p: any) => void) => runRender("final", projectId, onProgress),
+  // Samples: a few frames and short clips drawn as the export draws them; the set once done (its pictures and clips).
+  renderSamples: async (projectId: string, ask: { frames?: { at: number; note?: string }[]; clips?: { start: number; end?: number; note?: string }[] }, onProgress?: (p: any) => void) => {
+    const started = await post(`/projects/${enc(projectId)}/samples`, ask);
+    return (await followRender(started, "Samples", 5, onProgress))?.samples ?? null;
+  },
+  listSamples: async (projectId: string) => (await get(`/projects/${enc(projectId)}/samples`)).sets || [],
   // Local source only: the original is uploaded once for the export and deleted within 24h.
   uploadOriginalForExport: async (projectId: string, file: File | null, onProgress?: (p: any) => void) => {
     const p = await get(`/projects/${enc(projectId)}`);

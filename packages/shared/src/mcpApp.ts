@@ -40,6 +40,8 @@ export const APP_TOOLS: ToolDef[] = [
     input: z.object({ projectId: id("project"), version: z.number().int().min(1).max(100_000).optional() }) },
   { name: "app_render_preview", title: "Render a preview", app: true, write: true, description: "The Rendrr app: render a preview of the latest version when it has none.",
     input: z.object({ projectId: id("project") }) },
+  { name: "app_get_samples", title: "Samples for the app", app: true, description: "The Rendrr app: a set of samples (render_samples): its progress, each frame's picture and each clip's video, and the user's changes on them.",
+    input: z.object({ renderId: id("render") }) },
 ];
 
 /** What the app shows for one edit (app_get_project, open_projects with a projectId). */
@@ -62,6 +64,18 @@ export type AppProjectCard = {
   thumb: string | null; previewVersion: number | null; rendering: boolean; openComments: number;
 };
 export type AppProjectsPage = { projects: AppProjectCard[]; total: number; offset: number };
+/** Samples (render_samples): a few frames and short clips of an edit, shown as a storyboard to ask changes on. */
+export type AppSampleItem = { kind: "frame" | "clip"; at: number; end: number | null; note: string | null; still: string | null; clip: string | null };
+export type AppSamples = {
+  renderId: string; project: { id: string; name: string; aspect: string; version: number; editorUrl: string | null };
+  /** The edit's version the samples show. */
+  version: number;
+  status: "queued" | "running" | "done" | "failed"; percent: number; step: string | null; etaSec: number | null; error: string | null;
+  width: number | null; height: number | null;
+  items: AppSampleItem[];
+  /** The user's changes asked on these samples (comments on this render, at each sample's edit time). */
+  comments: AppComment[];
+};
 /** open_projects' structured result: the page of projects, and the edit to open when it was asked for. */
 /** With an edit open, the list is left out (the app loads it with app_list_projects when the user goes back to it). */
-export type AppOpen = Partial<AppProjectsPage> & { open: AppProjectView | null; webUrl: string | null };
+export type AppOpen = Partial<AppProjectsPage> & { open: AppProjectView | null; webUrl: string | null; samples?: AppSamples | null };

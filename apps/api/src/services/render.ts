@@ -3,6 +3,7 @@ import { AppError, enqueue, publishRender, readRender, sealLatestVersion, signGe
 import { prisma, type Render } from "@rendrr/db";
 import { FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, qualityLabel, renderTimeoutMs } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
+import { samplesView } from "./samples";
 
 export function stepsFor(kind: "preview" | "final", source: string, sample: boolean): string[] {
   if (kind === "preview") return [...PREVIEW_STEPS];
@@ -76,6 +77,6 @@ export async function renderStatus(r: Render) {
     status: r.status === "done" || r.status === "failed" ? r.status : base.status,
     step: base.step, steps: base.steps.length ? base.steps : steps, percent: r.status === "done" ? 100 : base.percent, etaSec: r.status === "done" || r.status === "failed" ? null : base.etaSec ?? null,
     error: r.error ?? base.error ?? undefined, code: r.errorCode ?? base.code ?? undefined,
-    result: r.status === "done" ? await renderResult(r) : undefined,
+    result: r.status === "done" ? (r.kind === "sample" ? { renderId: r.id, samples: await samplesView(r.userId, r.id) } : await renderResult(r)) : undefined,
   };
 }

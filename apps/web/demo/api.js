@@ -50,6 +50,10 @@ const listDriveFiles = api.listDriveFiles;
 const DEMO_TREE = { root: ["fd1", "fd2", "fd3"], fd2: ["fdB"], fdB: ["fdC"], shared: ["fdS"] };
 const DEMO_FOLDERS = { fd1: "Podcast raw", fd2: "Client footage", fd3: "B-roll", fdB: "BFS Health", fdC: "Shoot day 2", fdS: "From Sam" };
 const DEMO_FILES = { root: ["df7"], fd1: ["df1"], fdB: ["df3", "df8"], fdC: ["df4", "df6"], fd3: ["df5"], fdS: ["df2"] };
+// Samples: the preview has no renderer, so each sample is a picture saying what it shows (a frame or a clip).
+const demoSamples = {};
+const clockT = (x) => { const d = Math.round(Math.max(0, x) * 10); return Math.floor(d / 600) + ":" + String(Math.floor((d % 600) / 10)).padStart(2, "0") + "." + (d % 10); };
+const sampleStill = (label, k) => "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="${["#2b3a55", "#3c2f4f", "#24463b", "#4a3a26"][k % 4]}"/><stop offset="1" stop-color="#111"/></linearGradient></defs><rect width="960" height="540" fill="url(#g)"/><text x="480" y="290" fill="#fff" font-family="Inter, sans-serif" font-size="56" text-anchor="middle">${label}</text></svg>`);
 const logout = api.logout;
 let signedIn = false;
 const track = (fn) => async (...a) => { const r = await fn(...a); signedIn = true; return r; };
@@ -79,6 +83,17 @@ Object.assign(api, {
   captureDrop: () => {},
   restoreAsset: async () => ({ ok: true }),
   restoreVersion: async () => { await wait(400); return { ok: true }; },
+  renderSamples: async (projectId, ask, onProgress) => {
+    const steps = ["Reading timeline", "Measuring loudness", "Rendering samples", "Packing samples"];
+    for (let i = 0; i < steps.length; i++) { onProgress?.({ step: i, steps, percent: Math.round((i / steps.length) * 100) }); await wait(250); }
+    const items = [...(ask.frames || []).map((f) => ({ kind: "frame", at: f.at, end: null, note: f.note || null })), ...(ask.clips || []).map((c) => ({ kind: "clip", at: c.start, end: c.end ?? c.start + 4, note: c.note || null }))].sort((a, b) => a.at - b.at)
+      .map((x, k) => ({ ...x, still: sampleStill(x.kind === "frame" ? "Frame " + clockT(x.at) : "Clip " + clockT(x.at) + "-" + clockT(x.end), k), clip: null }));
+    const set = { renderId: "rs_" + Math.random().toString(36).slice(2, 8), project: { id: projectId, name: "", aspect: "16:9", version: 1, editorUrl: null }, version: 1, status: "done", percent: 100, step: null, etaSec: null, error: null, width: 960, height: 540, items, comments: [] };
+    (demoSamples[projectId] ||= []).unshift(set);
+    onProgress?.({ step: steps.length, steps, percent: 100 });
+    return set;
+  },
+  listSamples: async (projectId) => (demoSamples[projectId] || []).slice(0, 4),
   // The review page plays a rendered file; the demo has none, so it draws the design's preview instead.
   getReview: async (t) => {
     // globalThis.__demoVersions: as many versions as a long-running edit has; __demoLocked: a password on it (the page's checks set them).

@@ -11,7 +11,7 @@ export const MCP_INSTRUCTIONS = [
   "Comments: get_comments, fix each spot and the same kind of mistake everywhere, one render, then resolve_comment.",
   "Shorts from a long video: create_shorts (one edit per short, cut, 9:16, reframed on the speaker, captioned). Another shape of an edit: create_project fromProjectId with aspect and reframe. New client or series: create_folder.",
   "No footage (a SaaS promo, an explainer, animated type): create_project blank {seconds, color} is a blank canvas; build the video with create_graphic scenes, add_graphic, add_text, music and sound effects.",
-  "open_projects shows the user's edits, previews and comments inside the chat. Guide: rendrr://how-to-edit.",
+  "open_projects shows the user's edits, previews and comments in the chat; render_samples a few frames of a new look first. Guide: rendrr://how-to-edit.",
 ].join(" ");
 
 export const EDITING_SKILL = `# Fazinflo Editing Skill (Rendrr edition)
@@ -91,6 +91,7 @@ Every render_preview makes a version the user sees. Six previews for one request
 3. **Plan.** Group the transcript into lines. For every retake group pick the best take and note why. Mark fillers, look-downs, dark spans and crew talk. Estimate the final length.
 4. **Edit.** create_project, then ONE apply_edits with everything: cut_words (word ids, or from/to with edges checked on the sound), captions, and only the extras that were asked for. Add a short note for the user.
 5. **Check without rendering.** check_edit. Fix everything it shows in one apply_edits and check again. Look at doubtful moments with get_frames; test any graphic with test_graphic.
+   **Samples before the first preview** of a new look (graphics, titles, a grade, a motion piece): render_samples a few key moments (the hook, a title, a graphic, a transition: up to 8 frames and 3 clips of up to 6 s, with a note on what each shows). They are drawn exactly as the preview will draw them and the user sees them as a storyboard in the chat, asking for changes on each. get_samples reads those changes: make them in one apply_edits, render_samples again until the look is agreed, then render the whole preview once. A plain talking head cut needs none.
 6. **Render once.** render_preview, and read its check: clipped words, gaps at joins, clicks, fillers left, words heard against the edit (extra words mean a hidden retake or a leftover), loudness, graphics over the face. get_preview_frames to look at the picture and read what a viewer hears.
 7. **QA gate** (below). Any fail: fix all of them in one apply_edits, check_edit, render once more. Up to 3 rounds, then list what is left.
 8. **Tell the user** in 2 or 3 lines: length before and after, fillers and takes removed, look-downs removed, editor notes followed, anything uncertain (a line never said cleanly, a mixed-up take). Ask before render_final.

@@ -60,7 +60,7 @@ describe("the render", () => {
     expect(p.adjust).toEqual([{ clipId: id, start: 2, end: 5, grade: { exposure: -1 }, effects: [{ type: "darken", amount: 40 }] }]);
     expect(p.looks![id].lut).toBeTruthy();
     expect(g).toMatch(/split\[ajo0\]\[ajw0\]/);
-    expect(g).toMatch(/\[ajw0\]trim=start=2\.000000:end=5\.000000,setpts=PTS-STARTPTS\[aji0\]/);
+    expect(g).toMatch(/\[ajw0\]trim=start=2\.000000:end=5\.000000,setpts=PTS-2\.000000\/TB\[aji0\]/);
     expect(g).toMatch(/lut3d=file=.*colorchannelmixer=rr=0\.600:gg=0\.600:bb=0\.600/s);
     expect(g).toMatch(/setpts=PTS\+2\.000000\/TB\[ajl0\]/);
     expect(g).toMatch(/\[ajo0\]\[ajl0\]overlay=enable='between\(t,2\.000000,4\.983333\)':eof_action=pass\[ajv0\]/);

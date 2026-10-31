@@ -1,9 +1,9 @@
 import { deleteObject, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { formatFile } from "@rendrr/shared";
+import { formatFile, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
 import { allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
-import { ffmpegArgs, lookFileData, planRender, RenderPlanError, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
+import { ffmpegArgs, lookFileData, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -35,14 +35,18 @@ export async function renderJob(ctx: Ctx) {
   const snapshot = (version?.timeline ?? { timeline: project.timeline, name: project.name, aspect: project.aspect, styleId: project.styleId }) as unknown as Snapshot;
   const transcript = (video.analysis?.transcript as unknown as Transcript) || [];
   const steps = (r.steps as string[]) || [];
-  const kind = r.kind as "preview" | "final";
+  const kind = r.kind as "preview" | "final" | "sample";
+  // Samples: a few frames and short clips of the edit (render_samples), from the preview copy, drawn as a preview is.
+  const samples = kind === "sample" ? ((r.plan as { samples?: SamplePlan } | null)?.samples ?? null) : null;
+  if (kind === "sample" && !samples?.items?.length) throw new JobError("These samples have nothing to render. Ask for them again.", "empty", false);
+  const planKind: "preview" | "final" = kind === "final" ? "final" : "preview";
 
   // Preview has a tighter limit than the queue's 15 minutes.
   const ac = new AbortController();
   ctx.signal.addEventListener("abort", () => ac.abort(), { once: true });
   let previewTimedOut = false;
   const previewLimit = renderTimeoutMs("preview", video.seconds);
-  const armPreview = (ms: number) => (kind === "preview" ? setTimeout(() => { previewTimedOut = true; ac.abort(); }, ms) : null);
+  const armPreview = (ms: number) => (kind !== "final" ? setTimeout(() => { previewTimedOut = true; ac.abort(); }, ms) : null);
   let pt = armPreview(previewLimit);
   const signal = ac.signal;
 
@@ -76,7 +80,7 @@ export async function renderJob(ctx: Ctx) {
     // ---- Source: the preview copy for previews, the original for finals ----
     const src = join(ctx.dir, "source");
     let tempOriginalIds: string[] = [];
-    if (kind === "preview") {
+    if (kind !== "final") {
       if (!video.proxyKey) throw new JobError("The preview copy of this footage expired. Rebuild it from your Library, then render again.", "expired", false);
       await cachedCopy(video.proxyKey, src);
     } else if (video.sourceKey) {
@@ -160,16 +164,19 @@ export async function renderJob(ctx: Ctx) {
     const soundIds = Array.from(new Set([...(snapshot.timeline.tracks.a2 as { soundId?: string }[]).map((c) => c.soundId), (snapshot.timeline as { voice?: { soundId?: string } | null }).voice?.soundId].filter((x): x is string => !!x)));
     const soundRows = soundIds.length ? await prisma.sound.findMany({ where: { id: { in: soundIds }, userId: video.userId, status: "ready" } }) : [];
     const sounds = Object.fromEntries(soundRows.map((s) => [s.id, { key: s.key, seconds: s.seconds, name: s.name }]));
-    const planBase = { kind, snapshot, transcript, source: sourceInfo, videoId: video.id, sources, transcripts, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])), luts, hdrFootage, sounds };
+    const planBase = { kind: planKind, snapshot, transcript, source: sourceInfo, videoId: video.id, sources, transcripts, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])), luts, hdrFootage, sounds };
 
     // A first plan tells us the output size, so graphics can be drawn at the right resolution.
     const first = planRender(planBase);
     const graphicsReady: Record<string, boolean> = {};
     const graphicErrors: string[] = [];
     // Only graphics that are still in the edit, each drawn for the time it is on screen.
+    const sampleWins = samples ? samples.items.map((it) => sampleWindow(it, first.fps || 30)) : null;
     for (const sp of first.graphics) {
       const c = graphicClips.find((x) => x.id === sp.clipId);
       if (!c) continue;
+      // Samples: only the graphics on screen in one of them are recorded.
+      if (sampleWins && !sampleWins.some((w) => sp.end > w.from + 1e-9 && sp.start < w.to - 1e-9)) continue;
       try {
         // A long graphic is recorded here (Phase 7): its progress moves this step.
         const got = await renderGraphicClip(c, { width: first.width, height: first.height, dir: ctx.dir, userId: video.userId, signal, durationSec: sp.end - sp.start, onProgress: (f) => sendThrottled(i, 0.2 + 0.7 * f) });
@@ -184,7 +191,18 @@ export async function renderJob(ctx: Ctx) {
     }
     const plan = planRender({ ...planBase, graphicsReady });
     plan.operations.push(...graphicErrors);
-    est.outSeconds = plan.outputSeconds;
+    // Samples: the shake and the person's matte only where a sample reads them.
+    if (sampleWins) {
+      const subs = sampleWins.map((w) => windowPlan(plan, w.from, w.to));
+      if (plan.stabilize) { const keep = Object.entries(plan.stabilize).filter(([k]) => subs.some((x) => x.stabilize?.[k])); plan.stabilize = keep.length ? Object.fromEntries(keep) : undefined; }
+      if (plan.mattes) {
+        const m: NonNullable<RenderPlan["mattes"]> = {};
+        for (const x of subs) for (const [n, mo] of Object.entries(x.mattes ?? {})) m[n] = m[n] ? { ...mo, blocks: Array.from(new Set([...m[n].blocks, ...mo.blocks])).sort((a, b) => a - b) } : mo;
+        plan.mattes = Object.keys(m).length ? m : undefined;
+      }
+      est.outSeconds = sampleWins.reduce((acc, w) => acc + (w.to - w.from), 0);
+    }
+    if (!sampleWins) est.outSeconds = plan.outputSeconds;
     if (copies.length) plan.operations.push(`Other videos without an original in Rendrr use their 720p copy: ${copies.join(", ")}`);
     for (const b of [...plan.broll, ...(plan.under ?? [])]) {
       const bv = brollVideos.find((x) => x.id === b.videoId);
@@ -267,13 +285,62 @@ export async function renderJob(ctx: Ctx) {
     // ---- Measuring loudness: the mix, audio only, so the render can set it to the target exactly ----
     let mixLoudness: MixLoudness | null = null;
     const measuring = steps[i] === "Measuring loudness";
-    if (plan.audioMix?.loudness != null) {
+    // (Stills have no sound: samples measure only when one of them is a clip.)
+    if (plan.audioMix?.loudness != null && (!samples || samples.items.some((x) => x.kind === "clip"))) {
       mixLoudness = await measureMix(plan, files, sourceInfo, { dir: ctx.dir, signal, onProgress: measuring ? (f) => sendThrottled(i, f) : undefined });
     }
     if (measuring) { await send(i, 1); i++; }
     // Threads: the encoder as many as the container's CPUs (x264 left alone takes 1.5 times the host's 48), the decoders
     // twice that between them; once more after running out, one filter thread and one per decoder.
     const cpus = cpuBudget();
+    // ---- Samples: each frame or clip rendered on its own from the plan cut down to it (windowPlan): a frame as a
+    // JPEG, a clip as an MP4 with its first frame as its still. No check runs (render_preview's check is for the whole).
+    if (samples) {
+      const items = samples.items, fps = plan.fps || 30;
+      const base = `${PREFIX.previews}${video.userId}/${project.id}/${r.id}`;
+      const weightOf = (it: (typeof items)[number]) => (it.kind === "clip" ? it.end! - it.at : 0.5);
+      const total = items.reduce((acc, it) => acc + weightOf(it), 0);
+      const done: SampleDone[] = [], keys: string[] = [];
+      let spent = 0, bytes = 0;
+      est.encStart = Date.now();
+      for (const [k, it] of items.entries()) {
+        const w = sampleWindow(it, fps), sub = windowPlan(plan, w.from, w.to), still = it.kind === "frame";
+        const out = join(ctx.dir, still ? `sample-${k}.jpg` : `sample-${k}.mp4`);
+        const argsOf = (ft: number, decode = cpus * 2) => ffmpegArgs(sub, { ...files, output: out }, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, still });
+        const gp = join(ctx.dir, `graph-sample-${k}.txt`);
+        const go = async (a: ReturnType<typeof argsOf>) => { await writeFile(gp, a.filterGraph); await run("ffmpeg", a.args.map((x) => (x === "__FILTER_SCRIPT__" ? gp : x)), { signal, onProgress: (sec) => { const f = (spent + Math.min(1, sec / Math.max(0.05, w.to - w.from)) * weightOf(it)) / total; est.encFrac = f; sendThrottled(i, f); } }); };
+        try {
+          try { await go(argsOf(filterThreads(argsOf(4).filterGraph))); }
+          catch (e) { if (signal.aborted || !outOfThreads(e)) throw e; await go(argsOf(1, 1)); }
+        } catch (e) {
+          if (signal.aborted) throw e;
+          console.error("[render] sample failed:", k, (e as Error).message.slice(0, 2600));
+          throw new JobError(`Sample ${k + 1} (${it.kind} at ${it.at.toFixed(2)} s) could not be rendered. Nothing was lost. Try again.`, "ffmpeg", true);
+        }
+        const stillPath = still ? out : join(ctx.dir, `sample-${k}.jpg`);
+        if (!still) await frameAt(out, 0, stillPath, plan.width, signal);
+        const stillKey = `${base}-s${k}.jpg`;
+        await uploadFile(stillKey, stillPath, "image/jpeg");
+        keys.push(stillKey);
+        bytes += (await stat(stillPath)).size;
+        let clipKey: string | undefined;
+        if (!still) { clipKey = `${base}-c${k}.mp4`; await uploadFile(clipKey, out, "video/mp4"); keys.push(clipKey); bytes += (await stat(out)).size; }
+        done.push({ ...it, still: stillKey, ...(clipKey ? { clip: clipKey } : {}) });
+        spent += weightOf(it);
+        await send(i, spent / total);
+      }
+      est.encEnd = Date.now();
+      i = steps.length - 1;
+      await send(i, 0.5);
+      const seconds = Math.round(items.reduce((acc, it) => acc + (it.kind === "clip" ? it.end! - it.at : 0), 0) * 1000) / 1000;
+      await prisma.render.update({ where: { id: r.id }, data: {
+        status: "done", outputKey: null, sizeBytes: BigInt(bytes), seconds, framesKeys: keys, finishedAt: new Date(), quality: "540p",
+        plan: { samples: { items, done, width: plan.width, height: plan.height }, operations: plan.operations, outputSeconds: plan.outputSeconds, mix: mixLoudness } as unknown as Prisma.InputJsonValue,
+      } });
+      await usage(video.userId, "render_preview", Math.round((Math.max(seconds, items.length / fps) / 60) * 100) / 100, { projectId: project.id, renderId: r.id });
+      await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100 });
+      return { samples: done.length };
+    }
     // Phase 12: what the final is made as. Sound only goes straight to its file; the overlay export renders over black
     // first (and over white after); a GIF is made from the MP4.
     const fmt = plan.format;
@@ -487,7 +554,7 @@ export async function renderFailed(renderId: string, message: string, code?: str
   const p = await prisma.project.findUnique({ where: { id: r.projectId } });
   if (p && p.status === "Rendering") {
     // Back to what the edit had before this render: the best finished render decides.
-    const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done" }, select: { kind: true } });
+    const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done", kind: { not: "sample" } }, select: { kind: true } });
     const status = done.some((x) => x.kind === "final") ? "Final ready" : done.length || r.kind === "final" ? "Preview ready" : "Draft";
     await prisma.project.update({ where: { id: p.id }, data: { status } });
   }

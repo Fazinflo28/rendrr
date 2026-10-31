@@ -6,6 +6,8 @@ import { authenticate } from "../auth";
 import { getOwnedProject } from "../services/projects";
 import { renderResult, renderStatus, startRender } from "../services/render";
 import { listen, openSse } from "../live";
+import { samplesView, startSamples } from "../services/samples";
+import { SampleRequestSchema } from "@rendrr/shared";
 
 export default async function render(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
@@ -16,6 +18,20 @@ export default async function render(app: FastifyInstance) {
     // Phase 7: the server's time limit for this render, so the app waits as long as the server does (no less).
     const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { video: { select: { seconds: true } } } });
     return { renderId: r.id, kind, steps: r.steps, status: r.status, quality: r.quality, limitMs: renderTimeoutMs(kind, v?.video.seconds ?? 0, r.quality) };
+  });
+
+  // Samples: a few frames and short clips of the edit, drawn as the export draws them (the editor's Samples window).
+  app.post("/projects/:id/samples", async (req) => {
+    const body = SampleRequestSchema.parse(req.body ?? {});
+    const r = await startSamples(req.user!.id, (req.params as { id: string }).id, body);
+    const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { video: { select: { seconds: true } } } });
+    return { renderId: r.id, kind: "sample", steps: r.steps, status: r.status, quality: r.quality, limitMs: renderTimeoutMs("preview", v?.video.seconds ?? 0, r.quality) };
+  });
+  // The edit's latest sets of samples (the user's and Claude's), newest first.
+  app.get("/projects/:id/samples", async (req) => {
+    const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
+    const rs = await prisma.render.findMany({ where: { projectId: p.id, kind: "sample", status: { in: ["queued", "running", "done"] } }, orderBy: { createdAt: "desc" }, take: 4, select: { id: true } });
+    return { sets: await Promise.all(rs.map((r) => samplesView(req.user!.id, r.id))) };
   });
 
   async function ownedRender(userId: string, id: string) {

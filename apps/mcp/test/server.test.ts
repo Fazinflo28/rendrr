@@ -21,6 +21,7 @@ const api = createServer(async (req, res) => {
   if (req.url === "/internal/tools/get_editing_skill") return res.end(JSON.stringify({ text: "# Fazinflo Editing Skill (Rendrr edition)" }));
   if (req.url === "/internal/tools/create_graphic") return res.end(JSON.stringify({ text: "Graphic g1 is recording." }));
   if (req.url === "/internal/tools/check_edit") return res.end(JSON.stringify({ text: "Check of v2", data: { ignored: true } }));
+  if (req.url === "/internal/tools/render_samples") return res.end(JSON.stringify({ text: "Samples of v3", images: [], data: { open: null, webUrl: "https://app.rendrr.live", samples: { renderId: "rs1", status: "done", items: [{ kind: "frame", at: 1 }] } } }));
   res.statusCode = 404;
   res.end(JSON.stringify({ error: { message: "There is no tool called that." } }));
 });
@@ -136,5 +137,21 @@ describe("the connector", () => {
     // Bad input is refused before it reaches Rendrr.
     const bad = await client.callTool({ name: "app_add_comment", arguments: { projectId: "p1", time: -1, text: "x" } });
     assert.equal(bad.isError, true);
+  });
+
+  it("render_samples opens the app on the samples (the card's data in structuredContent); get_samples and app_get_samples are there", async () => {
+    const { tools } = await client.listTools();
+    const rs = tools.find((t) => t.name === "render_samples")!;
+    assert.equal((rs._meta as { ui: { resourceUri: string } }).ui.resourceUri.startsWith("ui://rendrr/projects-"), true);
+    const props = rs.inputSchema.properties as Record<string, { type?: string }>;
+    assert.equal(props.frames.type, "array"); assert.equal(props.clips.type, "array");
+    assert.ok(tools.some((t) => t.name === "get_samples" && !t._meta));
+    assert.deepEqual((tools.find((t) => t.name === "app_get_samples")!._meta as { ui: { visibility: string[] } }).ui.visibility, ["app"]);
+    const r = await client.callTool({ name: "render_samples", arguments: { projectId: "p1", frames: [{ at: 1, note: "the hook" }], clips: [{ start: 3 }] } });
+    assert.equal((r.structuredContent as { samples: { renderId: string } }).samples.renderId, "rs1");
+    assert.deepEqual(calls.at(-1)!.body, { projectId: "p1", frames: [{ at: 1, note: "the hook" }], clips: [{ start: 3 }] });
+    // More than 8 frames is refused before it reaches Rendrr.
+    const many = await client.callTool({ name: "render_samples", arguments: { projectId: "p1", frames: Array.from({ length: 9 }, (_, k) => ({ at: k })) } });
+    assert.equal(many.isError, true);
   });
 });

@@ -21,6 +21,16 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Samples: a few frames and short clips before the whole preview (31 October)
+
+- **What it is.** Claude (or you) renders a few key moments of an edit on their own: up to 8 frames and 3 clips of up to 6 s. Only those seconds are rendered, so it takes seconds, not minutes. Each is drawn exactly as the whole preview draws that moment.
+- **In Claude.** render_samples opens a samples card in the chat, like a generations card: the picked sample big, the strip under it, Claude's note on it, a box to ask for a change on it. "Send changes to Claude" sends them all in one message; "Looks good" asks for the full preview. Claude reads the changes with get_samples (they are comments on the samples at each moment).
+- **In the editor.** A Samples button in the top bar: add a frame or a 4 s clip at the playhead, render them, see each one big, "Go to" moves the player there. The edit's latest sets (Claude's too) are listed.
+- **Measured.** A 4.5 s sample over a slowed clip, a dissolve, b-roll, a text box and a zoom against the whole render: every frame within 0.6 out of 255 (one frame off is 6), the sound the same (correlation 0.9999). A reversed clip cut at both ends: every frame within 0.6. Stills show the same footage frame as the render.
+- **Bugs found and fixed on the way.** A sample starting mid-way through a slowed clip showed every other frame one footage frame off; a cut point half a frame off could drop a frame. Both fixed (the sample starts on a whole footage frame, cuts are on exact frames).
+- **Not versions.** Samples have no check, are not a version to watch, do not change the edit's status, and are cleaned up with old previews.
+- **Tests.** packages/shared/test/samples.test.ts, apps/worker/test/samples-render.test.ts, apps/mcp/test/app-samples.mjs (the card in Chromium), apps/mcp/test/server.test.ts, apps/api/test/samples.test.ts, apps/web/demo/samples.mjs.
+
 ## Five more shape wipes, GIFs up to ten minutes (phase 20, 31 October)
 
 - **New transitions** (Speed & motion, Transition): Iris box, Iris cross, Venetian blinds (across, or up and down with a direction), Checker wipe and Wedge wipe, as in Premiere.

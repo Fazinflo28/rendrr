@@ -197,6 +197,8 @@ export type RenderPlan = {
   textMattes?: TextMatteOp[];
   /** Phase 17: keyframed text layers with motion blur. */
   textBlurs?: TextBlurOp[];
+  /** Samples: only edit seconds [from, to) are drawn (windowPlan); the sound is the whole mix, trimmed to them. */
+  window?: { from: number; to: number };
   operations: string[];
 };
 
@@ -921,6 +923,84 @@ export function movingFrames(spec: Extract<LookFile, { kind: "moving" }>, plan: 
 }
 
 /**
+ * Samples: the plan cut down to edit seconds [from, to) (on the frame grid), drawn exactly as the whole render draws
+ * them: only the picture parts the window shows are read and drawn (clipped at its ends, their footage moved to
+ * match), and the joined picture keeps its edit times, so transitions, zooms, overlays and captions land on the same
+ * frames as in the full render (graph: plan.window). Overlays, zooms, transitions and adjustment layers outside the
+ * window are left out; the sound is the whole mix, trimmed. A part the window cuts is not stabilized (its smoothing
+ * was worked out over the whole part); the person's matte is made only for the blocks the window needs.
+ */
+export function windowPlan(plan: RenderPlan, from: number, to: number): RenderPlan {
+  if (plan.model === "A") throw new RenderPlanError("Samples need the edit's timeline in the current format: open the edit in Rendrr once, then ask again.");
+  const FPS = plan.fps || 30, onGrid = (t: number) => Math.round(t * FPS) / FPS;
+  const a = Math.max(0, onGrid(from)), b = Math.min(onGrid(plan.outputSeconds), Math.max(onGrid(to), a + 1 / FPS));
+  if (!(b - a >= 1 / FPS - 1e-9)) throw new RenderPlanError(`That moment (${fmtClock(from)}) is past the end of the edit (${fmtClock(plan.outputSeconds)}).`);
+  const hit = (x: { start: number; end: number }) => x.end > a + 1e-9 && x.start < b - 1e-9;
+  // Every video is put on the 1/FPS grid before its parts are cut (openWindows: fps first), and trim rounds its times
+  // to that grid: a part's first frame is its footage start rounded to the nearest frame (the time as written, in
+  // microseconds). The sample's cuts are written on whole frames, so they round to exactly the frame meant.
+  const frameOf = (t: number) => Math.round(Math.round(t * 1e6) * FPS / 1e6);
+  // Played backwards, a part is read in pieces from its footage end, each from the first frame at or after its seek.
+  const firstAfter = (t: number) => Math.ceil(t * FPS - 1e-3);
+  const kept: number[] = [];
+  const parts = plan.parts.flatMap((p, i) => {
+    if (!hit(p)) return [];
+    kept.push(i);
+    // A stabilized part is drawn whole (its smoothing and its transforms run over the whole part).
+    if (plan.stabilize?.[stabilizeKey(p)]) return [p];
+    const r = rateOf(p), ar = Math.abs(r);
+    // The start: output frame n of a part at another speed shows frame floor(|rate| x n) of its stretch, so the part may
+    // start only where |rate| x n is a whole frame (else every other frame of a half-speed clip is a frame off): the
+    // last such frame at or before the window. The frames before the window are trimmed off the end result.
+    let m = p.start < a - 1e-9 ? Math.floor((a - p.start) * FPS + 1e-6) : 0;
+    if (r !== 0) { while (m > 0 && Math.abs(ar * m - Math.round(ar * m)) > 1e-6) m--; }
+    const K = Math.round(ar * m), s = m ? p.start + m / FPS : p.start;
+    const endCut = p.end > b + 1e-9, e = endCut ? b : p.end, count = Math.round((e - s) * FPS);
+    if (!m && !endCut) return [p];
+    let srcIn = p.srcIn, srcOut = p.srcOut;
+    if (r > 0) {
+      const F = frameOf(p.srcIn) + K;
+      if (m) srcIn = F / FPS;
+      if (endCut) srcOut = (F + Math.ceil(ar * count - 1e-6)) / FPS;
+    } else if (r < 0) {
+      // Played backwards from its footage's end: the window's start moves the end back, its end moves the start up.
+      const top = firstAfter(p.srcOut) - 1 - K;
+      if (m) srcOut = (top + 1) / FPS;
+      if (endCut) srcIn = (top + 1 - Math.ceil(ar * count - 1e-6)) / FPS;
+    }
+    return [{ ...p, start: s, end: e, srcIn, srcOut }];
+  });
+  if (!parts.length) throw new RenderPlanError(`Nothing plays at ${fmtClock(from)}.`);
+  const stabilize = plan.stabilize ? Object.fromEntries(Object.entries(plan.stabilize).filter(([k]) => parts.some((p) => stabilizeKey(p) === k))) : undefined;
+  const person = plan.person ? { ...plan.person, parts: Object.fromEntries(kept.flatMap((old, j) => (plan.person!.parts[old] ? [[j, plan.person!.parts[old]]] : []))) } : undefined;
+  const broll = plan.broll.filter(hit), under = plan.under?.filter(hit);
+  // The matte blocks the window reads: its parts' footage (a look's subject or the person behind text) and its b-roll.
+  let mattes: RenderPlan["mattes"];
+  if (plan.mattes) {
+    const need = new Map<string, [number, number]>();
+    const add = (name: string | undefined, x: number, y: number) => { if (!name) return; const n = need.get(name); need.set(name, n ? [Math.min(n[0], x), Math.max(n[1], y)] : [x, y]); };
+    parts.forEach((p, j) => { add(plan.looks?.[p.clipIds[0]]?.subject?.matte, p.srcIn, p.srcOut); add(person?.parts[j], p.srcIn, p.srcOut); });
+    for (const o of [...broll, ...(under ?? [])]) add(plan.looks?.[o.clipId]?.subject?.matte, o.sourceStart, o.sourceStart + (o.end - o.start));
+    mattes = {};
+    for (const [name, m] of Object.entries(plan.mattes)) {
+      const n = need.get(name);
+      if (!n) continue;
+      const want = new Set(matteBlocks(n[0], n[1], plan.videos?.[m.videoId]?.seconds));
+      const blocks = m.blocks.filter((k) => want.has(k));
+      if (blocks.length) mattes[name] = { ...m, blocks };
+    }
+  }
+  return {
+    ...plan, window: { from: a, to: b }, parts, kept: parts.map((p) => ({ start: p.srcIn, end: p.srcOut })),
+    ...(stabilize ? { stabilize } : {}), ...(person ? { person } : {}), ...(mattes ? { mattes } : {}),
+    zooms: plan.zooms.filter(hit), broll, graphics: plan.graphics.filter(hit), ...(under ? { under } : {}),
+    ...(plan.transitions ? { transitions: plan.transitions.filter(hit) } : {}), ...(plan.adjust ? { adjust: plan.adjust.filter(hit) } : {}),
+    ...(plan.textMattes ? { textMattes: plan.textMattes.filter(hit) } : {}), ...(plan.textBlurs ? { textBlurs: plan.textBlurs.filter(hit) } : {}),
+    operations: [...plan.operations, `Sample: edit ${fmtClock(a)}-${fmtClock(b)} only, drawn as the whole render draws it`],
+  };
+}
+
+/**
  * Transitions on the cuts (Phase 5). Each is centred on its cut and whole frames long on each side. It gets shorter
  * when a clip next to it is short (a clip with transitions at both ends gives each half of itself) or, for those that
  * show both sides at once, when a side has less footage past the cut than half the transition.
@@ -1071,6 +1151,8 @@ export type FfmpegOpts = {
    * a video's windows read further through its gaps instead (the smallest gap that fits, else one input as before).
    */
   windowBudget?: Record<string, number>;
+  /** Samples: one frame, picture only, written as a JPEG (no sound is read or made). With plan.window. */
+  still?: boolean;
   /**
    * Threads of the filter graph, which each scaler also starts: a graded graph has ~70 scalers, so leaving it to the
    * CPU count on a many-core host starts thousands of threads and FFmpeg fails with EAGAIN at the container's limit.
@@ -1598,10 +1680,10 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       g.push(`[vcat]${turnOf(p0.rotate)}${toneOf(p0.videoId, dom)}${fitFor(p0.framing)}${blurBg ? ",split[vfit][vbs]" : "[vfit]"}`);
       v = "vfit";
       // Phase 6: one look for the whole edit, drawn once (keyed or masked parts show what is behind V1).
-      const all = Math.max(1, Math.round(plan.outputSeconds * FPS));
+      const all = Math.max(1, Math.round((plan.window ? plan.parts[plan.parts.length - 1].end - plan.parts[0].start : plan.outputSeconds) * FPS));
       const c = colorChain(v, lk, dom, all, "u");
       v = c.out;
-      const back = () => (bg ? backOf(0, all, "U", blurBg ? "vbs" : undefined, dom) : null);
+      const back = () => (bg ? backOf(plan.window ? plan.parts[0].start : 0, all, "U", blurBg ? "vbs" : undefined, dom) : null);
       if (c.alpha && !frm) {
         const b = back();
         if (!b) g.push(`color=c=black:s=${W}x${H}:r=${R}:d=${n6(all / FPS + 1)},format=${PF},trim=end_frame=${all}[ubk]`);
@@ -1610,6 +1692,14 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       if (frm) { const b = back(); frame(v, frm, "vframed", "", b ? { base: b } : "black", card, all); v = "vframed"; }
     }
 
+    // Samples: the joined picture (only the window's parts) moved to its edit time, so everything laid on it below
+    // (transitions, zooms, overlays, captions) keeps its own times. It may start a little before the window (a part at
+    // another speed starts on a whole frame of its footage); the end result is trimmed to the window.
+    if (plan.window) {
+      const k = Math.round(plan.parts[0].start * FPS);
+      g.push(`[${v}]settb=${TB},setpts=PTS+${k}[vwin]`); v = "vwin";
+      if (personMatte) { g.push(`[${personMatte}]settb=${TB},setpts=PTS+${k}[pmwin]`); personMatte = "pmwin"; }
+    }
     // Transitions (Phase 5), laid over the joined picture: dips are a colour fading in to the cut and out after it;
     // dissolve, slide and whip are drawn from both sides' footage over the whole window.
     (plan.transitions ?? []).forEach((t, i) => {
@@ -1672,67 +1762,70 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     openWindows("v");
   }
 
-  // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts and parts silent at their speed,
-  // joined in edit order. A clip off normal speed plays its stretch through atempo (pitch kept), its speed changing at
-  // each step's footage moment. Every unit fades in and out over the declick time (20 ms by default), so no cut clicks.
-  const live = (x: SoundPart) => !x.muted && !x.silent && info(x.videoId).hasAudio && srcPath[x.videoId] != null;
-  const units: SoundPart[][] = [];
-  for (const x of plan.sound) {
-    const u = units[units.length - 1], prev = u?.[u.length - 1];
-    // A ramp's steps are footage that goes on (each step's ends were put on frames, so they meet within a frame).
-    const goesOn = !!prev && live(prev) && live(x) && prev.clipId === x.clipId && prev.videoId === x.videoId && (rateOf(prev) !== 1 || rateOf(x) !== 1) && rateOf(prev) > 0 && rateOf(x) > 0 && Math.abs(prev.srcOut - x.srcIn) <= 1 / FPS + 1e-6;
-    if (goesOn) u.push(x); else units.push([x]);
-  }
-  const editSamples = (u: SoundPart[]) => Math.max(1, Math.round(u.reduce((acc, x) => acc + (rateOf(x) === 1 ? x.srcOut - x.srcIn : rateOf(x) === 0 ? Math.round((x.end - x.start) * FPS) / FPS : Math.round(((x.srcOut - x.srcIn) / Math.abs(rateOf(x))) * FPS) / FPS), 0) * 48000));
-  const declick = (len: number, inSide = true, outSide = true) => {
-    if (!mix || !(mix.declick > 0) || (!inSide && !outSide)) return "";
-    const d = Math.min(mix.declick, len / 4);
-    return `${inSide ? `,afade=t=in:d=${n6(d)}` : ""}${outSide ? `,afade=t=out:st=${n6(len - d)}:d=${n6(d)}` : ""}`;
-  };
-  // Phase 6: an equal-power crossfade at a dialogue cut overlaps the two sides by `xf`, each reading half of it from the
-  // footage past its own cut (so nothing moves); there the declick fade is left out. Only where both sides are footage
-  // at normal speed, long enough, with footage to spare.
-  const xf = mix?.crossfade && mix.crossfade > 0 ? mix.crossfade : 0, hx = xf / 2;
-  const plainUnit = (u: SoundPart[]) => u.length === 1 && rateOf(u[0]) === 1 && live(u[0]);
-  const joined = units.map((u, i) => xf > 0 && i + 1 < units.length && plainUnit(u) && plainUnit(units[i + 1]) && u[0].srcOut + hx <= (info(u[0].videoId).seconds ?? 0) - 0.005 && units[i + 1][0].srcIn - hx >= 0 && u[0].srcOut - u[0].srcIn > xf && units[i + 1][0].srcOut - units[i + 1][0].srcIn > xf);
-  const pre = (i: number) => (i > 0 && joined[i - 1] ? hx : 0), post = (i: number) => (joined[i] ? hx : 0);
-  const at = (k: SoundPart, a = 0, b = 0) => `atrim=start=${n6(k.srcIn - a)}:end=${n6(k.srcOut + b)},asetpts=PTS-STARTPTS${declick(k.srcOut - k.srcIn + a + b, !a, !b)}`;
-  const tempo = (u: SoundPart[]) => {
-    const a = u[0].srcIn, n = editSamples(u);
-    const cmds = u.slice(1).map((x) => `${n6(x.srcIn - a)} atempo@at${u[0].start.toFixed(3).replace(".", "_")} tempo ${rateOf(x)}`).join(";");
-    const name = `atempo@at${u[0].start.toFixed(3).replace(".", "_")}`;
-    return `atrim=start=${n6(a)}:end=${n6(u[u.length - 1].srcOut)},asetpts=PTS-STARTPTS,asetnsamples=n=480${cmds ? `,asendcmd=c='${cmds}'` : ""},${name}=tempo=${rateOf(u[0])},apad,atrim=end_sample=${n},asetpts=PTS-STARTPTS${declick(n / 48000)}`;
-  };
-  // The user's own file in place of every clip's sound (set_voice): no footage sound is read at all.
-  const voice = plan.audio.find((a) => a.kind === "voice" && files.audio?.[a.clipId]);
-  if (voice) units.length = 0;
-  // Each sound unit from the window that reads its footage, in edit order.
-  units.forEach((u, i) => {
-    if (!live(u[0])) return;
-    take("a", u[0].videoId, Math.min(...u.map((x) => x.srcIn)) - pre(i), Math.max(...u.map((x) => x.srcOut)) + post(i), `sa${i}`);
-    // Phase 6: the clip's own pan, EQ and reverb on its sound, before the joins.
-    const fx = mix?.clipFx?.[u[0].clipId];
-    g.push(`[sa${i}]${u.length === 1 && rateOf(u[0]) === 1 ? at(u[0], pre(i), post(i)) : tempo(u)}[${fx ? `au${i}` : `a${i}`}]`);
-    if (fx) g.push(`[${soundFx(g, inputs, () => idx++, files, `au${i}`, fx, `d${i}`)}]anull[a${i}]`);
-  });
-  openWindows("a");
-  units.forEach((u, i) => { if (!live(u[0])) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${editSamples(u)},asetpts=PTS-STARTPTS[a${i}]`); });
-  // The sound ends where the edit does, to the millisecond; the picture on its last frame: the sound is padded or
-  // cut to the picture's length (under half a frame).
-  if (voice) {
-    inputs.push("-i", files.audio!.voice);
-    const vi = idx++;
-    const d = Math.max(0.001, voice.end - voice.start);
-    g.push(`[${vi}:a]atrim=0:${n6(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${voice.gainDb}dB,adelay=delays=${Math.round(voice.start * 1000)}:all=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
-  } else {
-    // Units joined by a crossfade become one stream first (each acrossfade overlaps the two by xf), then all are joined.
-    const parts: string[] = [];
-    for (let i = 0; i < units.length; i++) {
-      let cur = `a${i}`;
-      while (joined[i]) { g.push(`[${cur}][a${i + 1}]acrossfade=d=${n6(xf)}:c1=qsin:c2=qsin[ax${i + 1}]`); cur = `ax${i + 1}`; i++; }
-      parts.push(`[${cur}]`);
+  // Samples: a still is picture only (no sound is read or made).
+  if (!opts.still) {
+    // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts and parts silent at their speed,
+    // joined in edit order. A clip off normal speed plays its stretch through atempo (pitch kept), its speed changing at
+    // each step's footage moment. Every unit fades in and out over the declick time (20 ms by default), so no cut clicks.
+    const live = (x: SoundPart) => !x.muted && !x.silent && info(x.videoId).hasAudio && srcPath[x.videoId] != null;
+    const units: SoundPart[][] = [];
+    for (const x of plan.sound) {
+      const u = units[units.length - 1], prev = u?.[u.length - 1];
+      // A ramp's steps are footage that goes on (each step's ends were put on frames, so they meet within a frame).
+      const goesOn = !!prev && live(prev) && live(x) && prev.clipId === x.clipId && prev.videoId === x.videoId && (rateOf(prev) !== 1 || rateOf(x) !== 1) && rateOf(prev) > 0 && rateOf(x) > 0 && Math.abs(prev.srcOut - x.srcIn) <= 1 / FPS + 1e-6;
+      if (goesOn) u.push(x); else units.push([x]);
     }
-    g.push(`${parts.join("")}concat=n=${parts.length}:v=0:a=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
+    const editSamples = (u: SoundPart[]) => Math.max(1, Math.round(u.reduce((acc, x) => acc + (rateOf(x) === 1 ? x.srcOut - x.srcIn : rateOf(x) === 0 ? Math.round((x.end - x.start) * FPS) / FPS : Math.round(((x.srcOut - x.srcIn) / Math.abs(rateOf(x))) * FPS) / FPS), 0) * 48000));
+    const declick = (len: number, inSide = true, outSide = true) => {
+      if (!mix || !(mix.declick > 0) || (!inSide && !outSide)) return "";
+      const d = Math.min(mix.declick, len / 4);
+      return `${inSide ? `,afade=t=in:d=${n6(d)}` : ""}${outSide ? `,afade=t=out:st=${n6(len - d)}:d=${n6(d)}` : ""}`;
+    };
+    // Phase 6: an equal-power crossfade at a dialogue cut overlaps the two sides by `xf`, each reading half of it from the
+    // footage past its own cut (so nothing moves); there the declick fade is left out. Only where both sides are footage
+    // at normal speed, long enough, with footage to spare.
+    const xf = mix?.crossfade && mix.crossfade > 0 ? mix.crossfade : 0, hx = xf / 2;
+    const plainUnit = (u: SoundPart[]) => u.length === 1 && rateOf(u[0]) === 1 && live(u[0]);
+    const joined = units.map((u, i) => xf > 0 && i + 1 < units.length && plainUnit(u) && plainUnit(units[i + 1]) && u[0].srcOut + hx <= (info(u[0].videoId).seconds ?? 0) - 0.005 && units[i + 1][0].srcIn - hx >= 0 && u[0].srcOut - u[0].srcIn > xf && units[i + 1][0].srcOut - units[i + 1][0].srcIn > xf);
+    const pre = (i: number) => (i > 0 && joined[i - 1] ? hx : 0), post = (i: number) => (joined[i] ? hx : 0);
+    const at = (k: SoundPart, a = 0, b = 0) => `atrim=start=${n6(k.srcIn - a)}:end=${n6(k.srcOut + b)},asetpts=PTS-STARTPTS${declick(k.srcOut - k.srcIn + a + b, !a, !b)}`;
+    const tempo = (u: SoundPart[]) => {
+      const a = u[0].srcIn, n = editSamples(u);
+      const cmds = u.slice(1).map((x) => `${n6(x.srcIn - a)} atempo@at${u[0].start.toFixed(3).replace(".", "_")} tempo ${rateOf(x)}`).join(";");
+      const name = `atempo@at${u[0].start.toFixed(3).replace(".", "_")}`;
+      return `atrim=start=${n6(a)}:end=${n6(u[u.length - 1].srcOut)},asetpts=PTS-STARTPTS,asetnsamples=n=480${cmds ? `,asendcmd=c='${cmds}'` : ""},${name}=tempo=${rateOf(u[0])},apad,atrim=end_sample=${n},asetpts=PTS-STARTPTS${declick(n / 48000)}`;
+    };
+    // The user's own file in place of every clip's sound (set_voice): no footage sound is read at all.
+    const voice = plan.audio.find((a) => a.kind === "voice" && files.audio?.[a.clipId]);
+    if (voice) units.length = 0;
+    // Each sound unit from the window that reads its footage, in edit order.
+    units.forEach((u, i) => {
+      if (!live(u[0])) return;
+      take("a", u[0].videoId, Math.min(...u.map((x) => x.srcIn)) - pre(i), Math.max(...u.map((x) => x.srcOut)) + post(i), `sa${i}`);
+      // Phase 6: the clip's own pan, EQ and reverb on its sound, before the joins.
+      const fx = mix?.clipFx?.[u[0].clipId];
+      g.push(`[sa${i}]${u.length === 1 && rateOf(u[0]) === 1 ? at(u[0], pre(i), post(i)) : tempo(u)}[${fx ? `au${i}` : `a${i}`}]`);
+      if (fx) g.push(`[${soundFx(g, inputs, () => idx++, files, `au${i}`, fx, `d${i}`)}]anull[a${i}]`);
+    });
+    openWindows("a");
+    units.forEach((u, i) => { if (!live(u[0])) g.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${editSamples(u)},asetpts=PTS-STARTPTS[a${i}]`); });
+    // The sound ends where the edit does, to the millisecond; the picture on its last frame: the sound is padded or
+    // cut to the picture's length (under half a frame).
+    if (voice) {
+      inputs.push("-i", files.audio!.voice);
+      const vi = idx++;
+      const d = Math.max(0.001, voice.end - voice.start);
+      g.push(`[${vi}:a]atrim=0:${n6(d)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${voice.gainDb}dB,adelay=delays=${Math.round(voice.start * 1000)}:all=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
+    } else {
+      // Units joined by a crossfade become one stream first (each acrossfade overlaps the two by xf), then all are joined.
+      const parts: string[] = [];
+      for (let i = 0; i < units.length; i++) {
+        let cur = `a${i}`;
+        while (joined[i]) { g.push(`[${cur}][a${i + 1}]acrossfade=d=${n6(xf)}:c1=qsin:c2=qsin[ax${i + 1}]`); cur = `ax${i + 1}`; i++; }
+        parts.push(`[${cur}]`);
+      }
+      g.push(`${parts.join("")}concat=n=${parts.length}:v=0:a=1,apad=whole_dur=${n6(plan.outputSeconds)},atrim=end=${n6(plan.outputSeconds)}[acat]`);
+    }
   }
 
   if (opts.pictureAs && !opts.measure) {
@@ -1740,10 +1833,10 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     g.push(`[vdrop]nullsink`);
     v = "vplain";
   }
-  if (!opts.measure) v = overlays(opts.pictureAs ? { ...plan, broll: [], under: [], zooms: [], adjust: undefined, person: undefined } : plan, files, g, inputs, () => idx++, v, { colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null, person: opts.pictureAs ? null : personMatte,
+  if (!opts.measure) v = overlays(opts.pictureAs ? { ...plan, broll: [], under: [], zooms: [], adjust: undefined, person: undefined } : plan, files, g, inputs, () => idx++, v, { still: !!opts.still, colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null, person: opts.pictureAs ? null : personMatte,
     // Phase 18: a b-roll clip's matte, put through its own steps, for its look's subject (by its colour chain's tag).
     subjectMatte: (name: string, from: number, to: number, steps: string, tag: string) => { const mt = matteIn(name, from, to); g.push(`[${mt}]${steps},format=gray[smf${tag}]`); mattesFor[tag] = `smf${tag}`; } });
-  mixAudio(plan, files, g, inputs, () => idx++, opts);
+  if (!opts.still) mixAudio(plan, files, g, inputs, () => idx++, opts);
   // Windows that read from the start left empty placeholders where a seek would go (they never move an input's place).
   const windows: Record<string, number> = {};
   for (const w of wins) if (w.made === "v") windows[w.vid] = (windows[w.vid] || 0) + 1;
@@ -1814,7 +1907,7 @@ function dropShadow(g: string[], base: string, layer: string, sh: { color: strin
   return { base: `sdv${tag}`, layer: `sdl${tag}` };
 }
 
-type ColorCtx = { colorChain: (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string) => { out: string; alpha: boolean }; PF: string; PFA: string; hdrLut: string | null; person?: string | null; subjectMatte?: (name: string, from: number, to: number, steps: string, tag: string) => void };
+type ColorCtx = { /** Samples: the picture ends as a JPEG still. */ still?: boolean; colorChain: (inp: string, look: LookOp | undefined, dom: "sdr" | "hdr", frames: number, tag: string) => { out: string; alpha: boolean }; PF: string; PFA: string; hdrLut: string | null; person?: string | null; subjectMatte?: (name: string, from: number, to: number, steps: string, tag: string) => void };
 /** Zooms, b-roll, graphics, captions on [v]; returns the label of the finished picture ([vout]). */
 function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: string[], next: () => number, v0: string, cc0: ColorCtx): string {
   let cc = cc0;
@@ -1856,7 +1949,7 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     const bf = blendFilter(op.blend as Exclude<BlendMode, "normal">, deep ? 65535 : 255), o = op.opacity ?? 1;
     const S = n6(op.start), E = n6(op.start + n / FPS), rgb = (f: string) => `scale=in_color_matrix=${mat}:in_range=tv:flags=accurate_rnd,format=${f}`;
     g.push(`[${base}]split[bo${tag}][bw${tag}]`);
-    g.push(`[bw${tag}]trim=start=${S}:end=${E},setpts=PTS-STARTPTS,${rgb(RGB)},split[bp${tag}][bq${tag}]`);
+    g.push(`[bw${tag}]trim=start=${S}:end=${E},setpts=PTS-${S}/TB,${rgb(RGB)},split[bp${tag}][bq${tag}]`);
     g.push(`[${layer}]${rgb(RGBA)},split[lc${tag}][la${tag}]`);
     g.push(`[lc${tag}]format=${RGB}[lr${tag}]`);
     g.push(`[la${tag}]alphaextract,format=${GR}${o < 1 ? `,lut=c0='val*${n3(o)}'` : ""},split=3[l0${tag}][l1${tag}][l2${tag}]`);
@@ -1990,7 +2083,7 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     if (!look) return;
     const n = Math.max(1, Math.round((a.end - a.start) * FPS)), S = n6(a.start), E = n6(a.start + n / FPS);
     g.push(`[${v}]split[ajo${k}][ajw${k}]`);
-    g.push(`[ajw${k}]trim=start=${S}:end=${E},setpts=PTS-STARTPTS[aji${k}]`);
+    g.push(`[ajw${k}]trim=start=${S}:end=${E},setpts=PTS-${S}/TB[aji${k}]`);
     const c = cc.colorChain(`aji${k}`, look, plan.hdr ? "hdr" : "sdr", n, `aj${k}`);
     // Phase 16: outside its masks the layer is transparent (the chain's alpha); its strength scales the alpha, and its
     // fades ramp it in straight lines (adjustStrengthAt is the same numbers in the player).
@@ -2009,7 +2102,9 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     g.push(`[${v}]${tagHdr}ass=filename=${q(files.assPath)}${files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : ""}[vcap]`);
     v = "vcap";
   }
-  g.push(`[${v}]format=${cc.PF}[vout]`);
+  // Samples: a still is a JPEG (JFIF: BT.601 full range), converted from the picture's BT.709 here, not left to guess.
+  const jpeg = cc.still ? ",scale=in_color_matrix=bt709:in_range=tv:out_color_matrix=bt601:out_range=pc:flags=accurate_rnd,format=yuvj444p" : "";
+  g.push(`[${v}]format=${cc.PF}${plan.window ? `,trim=start=${n6(plan.window.from)}:end=${n6(plan.window.to)},setpts=PTS-STARTPTS` : ""}${jpeg}[vout]`);
   return "vout";
 }
 
@@ -2093,17 +2188,20 @@ function mixAudio(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
   const mixFades = mix ? `${mix.fadeIn > 0 ? `,afade=t=in:d=${n3(mix.fadeIn)}` : ""}${mix.fadeOut > 0 ? `,afade=t=out:st=${n3(Math.max(0, T - mix.fadeOut))}:d=${n3(mix.fadeOut)}` : ""}` : "";
   const sum = mixIn.length > 1 ? `${mixIn.join("")}amix=inputs=${mixIn.length}:normalize=0:duration=first${mixFades}` : `${mixIn[0]}${mixFades ? "anull" + mixFades : "anull"}`;
   if (opts.measure) { g.push(`${sum},ebur128=peak=true:framelog=quiet[aout]`); return; }
+  const win = plan.window ? `,atrim=start=${n6(plan.window.from)}:end=${n6(plan.window.to)},asetpts=PTS-STARTPTS` : "";
   if (mix && mix.loudness != null) {
     // The measured gain, then a limiter at 4x the sample rate so the peaks between samples stay under the ceiling.
-    g.push(`${sum},volume=${(opts.loudnessGainDb ?? 0).toFixed(2)}dB,aresample=192000,alimiter=limit=${lin(mix.peak - PEAK_MARGIN).toFixed(4)}:attack=5:release=50:level=disabled,aresample=48000[aout]`);
+    g.push(`${sum},volume=${(opts.loudnessGainDb ?? 0).toFixed(2)}dB,aresample=192000,alimiter=limit=${lin(mix.peak - PEAK_MARGIN).toFixed(4)}:attack=5:release=50:level=disabled,aresample=48000${win}[aout]`);
   } else {
     // Loudness off: a safety limiter only. (The old one had FFmpeg's auto-level on: it raised everything to the limit
     // and then rode loud sound wave by wave, which distorts it; model A plans keep it, unchanged.)
-    g.push(`${sum},alimiter=limit=0.95:level=disabled[aout]`);
+    g.push(`${sum},alimiter=limit=0.95:level=disabled${win}[aout]`);
   }
 }
 
 function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: FfmpegOpts): string[] {
+  // Samples: the window's length (the loudness pass above still measures the whole mix).
+  const outLen = plan.window ? plan.window.to - plan.window.from : plan.outputSeconds;
   if (opts.measure) {
     return ["-hide_banner", "-nostdin", "-y", "-nostats", ...capInputThreads(inputs, opts.inputThreads), "-filter_complex_script", "__FILTER_SCRIPT__", "-map", "[aout]", "-t", n3(plan.outputSeconds), "-progress", "pipe:1", "-f", "null", "-"];
   }
@@ -2124,9 +2222,11 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
   const head = ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", ...capInputThreads(inputs, opts.inputThreads), ...(opts.filterThreads ? ["-filter_complex_threads", String(opts.filterThreads)] : []), "-filter_complex_script", "__FILTER_SCRIPT__"];
   const tail = [...(opts.threads ? ["-threads", String(opts.threads)] : []), "-progress", "pipe:1", "-nostats"];
   // Phase 12: the overlay export's two passes (over black, over white), lossless for the worker to take the alpha from.
-  if (opts.pictureAs) return [...head, "-map", "[vout]", "-map", "[aout]", "-c:v", "ffv1", "-level", "3", "-g", "1", "-pix_fmt", "yuv444p", "-r", R, "-c:a", "pcm_s16le", "-ar", "48000", "-t", n3(plan.outputSeconds), ...tail, files.output];
+  // Samples: one frame as a JPEG.
+  if (opts.still) return [...head, "-map", "[vout]", "-frames:v", "1", "-update", "1", "-q:v", "2", ...tail, files.output];
+  if (opts.pictureAs) return [...head, "-map", "[vout]", "-map", "[aout]", "-c:v", "ffv1", "-level", "3", "-g", "1", "-pix_fmt", "yuv444p", "-r", R, "-c:a", "pcm_s16le", "-ar", "48000", "-t", n3(outLen), ...tail, files.output];
   // Phase 12: sound only: the mix as the file, the picture made and dropped (its graph is the same).
-  if (plan.format === "audio" || plan.format === "wav") return [...head, "-map", "[aout]", ...(plan.format === "wav" ? ["-c:a", "pcm_s16le"] : ["-c:a", "aac", "-b:a", "256k"]), "-ar", "48000", "-t", n3(plan.outputSeconds), ...tail, files.output, "-map", "[vout]", "-f", "null", "-"];
+  if (plan.format === "audio" || plan.format === "wav") return [...head, "-map", "[aout]", ...(plan.format === "wav" ? ["-c:a", "pcm_s16le"] : ["-c:a", "aac", "-b:a", "256k"]), "-ar", "48000", "-t", n3(outLen), ...tail, files.output, "-map", "[vout]", "-f", "null", "-"];
   return [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
     ...capInputThreads(inputs, opts.inputThreads),
@@ -2135,7 +2235,7 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
     "-map", "[vout]", "-map", "[aout]",
     ...video,
     "-c:a", "aac", "-b:a", preview ? "96k" : "192k", "-ar", "48000",
-    "-t", n3(plan.outputSeconds),
+    "-t", n3(outLen),
     "-movflags", "+faststart",
     ...(opts.threads ? ["-threads", String(opts.threads)] : []),
     "-progress", "pipe:1", "-nostats",

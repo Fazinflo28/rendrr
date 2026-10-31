@@ -22,6 +22,7 @@ import { OpColor, OpSlider } from "./controls";
 import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./color";
 import { MulticamTab } from "./multicam";
 import { ExportModal, timeLeft } from "./export";
+import { SamplesWindow } from "./samples";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
@@ -909,7 +910,7 @@ function EditorInner({ project, reload, ai, keep }) {
   useEffect(() => { let live = true; api.getProjectMarks(project.id).then((m) => live && setMarks(Array.isArray(m) ? m : [])).catch(() => {}); return () => { live = false; }; }, [project.id, project.version]);
   const [tool, setTool] = useState("select"); const [snapOn, setSnapOn] = useState(true); const [addOpen, setAddOpen] = useState(false);
   const [render, setRender] = useState(null);
-  const [share, setShare] = useState(false); const [help, setHelp] = useState(false); const [exportOpen, setExportOpen] = useState(false);
+  const [share, setShare] = useState(false); const [help, setHelp] = useState(false); const [exportOpen, setExportOpen] = useState(false); const [samplesOpen, setSamplesOpen] = useState(false);
   const [viewVer, setViewVer] = useState(null);
   const [comments, setComments] = useState(project.comments);
   const [saved, setSaved] = useState("Saved");
@@ -1262,6 +1263,7 @@ function EditorInner({ project, reload, ai, keep }) {
       <span class="t-small muted" id="saved" title=${saved} style="display:inline-flex;align-items:center;gap:4px;opacity:.7">${saved === "Saved" ? "" : saved}</span>
       <div class="grow" />
       <span class="t-small muted" id="auto-preview" title=${fresh ? "The player plays the rendered preview file of this version." : "The player plays the edit as it will render: every clip and video in order, J/L cuts, captions, zooms, b-roll, graphics, music and sound effects at their levels. Dialogue cleanup and loudness are heard in the rendered preview."}>${fresh ? `Playing the rendered preview (V${project.version})` : "Live edit"}</span>
+      <${Btn} kind="ghost" size="sm" id="samples-btn" icon="image" title="Render a few frames and short clips, drawn as the export draws them" disabled=${saved !== "Saved" || !plan} onClick=${() => { pb.setPlaying(false); setSamplesOpen(true); }}>Samples<//>
       ${!fresh && html`<${Btn} kind="ghost" size="sm" id="render-preview" icon="play" disabled=${saved !== "Saved" || !plan} onClick=${() => startRender("preview")}>Export preview<//>`}
       <${Btn} kind="secondary" size="sm" id="render-final" icon="film" onClick=${() => setExportOpen(true)}>Export final<//>
       <${Btn} size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share for review<//>
@@ -1407,6 +1409,7 @@ function EditorInner({ project, reload, ai, keep }) {
         <input type="file" accept="video/*" class="hide" id="original-file" onChange=${(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) sendOriginal(f); }} />
         <div class="row">${render.hasFile ? html`<${Btn} id="upload-original" icon="upload" onClick=${() => sendOriginal(null)}>Upload original and export<//>` : html`<${Btn} id="pick-original" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the original file<//>`}<${Btn} kind="ghost" onClick=${() => setRender(null)}>Not now<//></div></div>`}
     <//>`}
+    ${samplesOpen && html`<${SamplesWindow} projectId=${project.id} time=${pb.time} duration=${dur} aspect=${S.aspect} toast=${toast} onSeek=${(t) => pb.seek(t)} onClose=${() => setSamplesOpen(false)} />`}
     ${exportOpen && html`<${ExportModal} snap=${{ timeline, aspect: S.aspect }} plan=${plan} name=${(S.name || "edit").replace(/[^\w\- ]+/g, "").trim() || "edit"} video=${project.video} doOp=${doOp} onReframe=${() => reframeFace(true)} reframing=${reframing} onRender=${() => { setExportOpen(false); startRender("final"); }} onClose=${() => setExportOpen(false)} />`}
     ${share && html`<${CreateLinkModal} projectId=${project.id} onClose=${() => setShare(false)} onCreated=${() => setStatus("In review")} />`}
     ${addOpen && html`<${AddClipModal} main=${{ id: main, name: project.video?.name || "Footage", seconds: footDur }} at=${pb.time} onAdd=${addClip} onClose=${() => setAddOpen(false)} />`}

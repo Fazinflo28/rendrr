@@ -29,3 +29,4 @@ export * from "./libraryHtml";
 export * from "./styleFile";
 export * from "./waveform";
 export * from "./blend";
+export * from "./samples";

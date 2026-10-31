@@ -42,7 +42,7 @@ async function reviewMedia(r: Review, projects: Project[]) {
     orderBy: { createdAt: "desc" },
     select: { projectId: true, version: true, kind: true, quality: true, outputKey: true, framesKeys: true, seconds: true },
   });
-  const pending = new Set((await prisma.render.findMany({ where: { projectId: { in: projects.map((p) => p.id) }, status: { in: ["queued", "running"] } }, select: { projectId: true } })).map((x) => x.projectId));
+  const pending = new Set((await prisma.render.findMany({ where: { projectId: { in: projects.map((p) => p.id) }, status: { in: ["queued", "running"] }, kind: { not: "sample" } }, select: { projectId: true } })).map((x) => x.projectId));
   for (const p of projects) {
     const top = r.projectId ? r.version : p.currentVersion;
     const best = new Map<number, (typeof renders)[number]>();

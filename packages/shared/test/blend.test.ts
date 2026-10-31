@@ -100,7 +100,7 @@ describe("the render", () => {
     const { p, g } = plan(s);
     expect(p.broll[0]).toMatchObject({ blend: "screen", opacity: 0.6 });
     // The b-roll: picture on top, layer below, alpha times 0.6 as the mask, back in place from 2 s.
-    expect(g).toMatch(/\[bwb0\]trim=start=2\.000000:end=5\.000000,setpts=PTS-STARTPTS,scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrp/);
+    expect(g).toMatch(/\[bwb0\]trim=start=2\.000000:end=5\.000000,setpts=PTS-2\.000000\/TB,scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrp/);
     expect(g).toMatch(/\[bpb0\]\[lrb0\]blend=all_mode=screen\[lfb0\]/);
     expect(g).toMatch(/alphaextract,format=gray,lut=c0='val\*0\.600'/);
     expect(g).toMatch(/\[bqb0\]\[lfb0\]\[lmb0\]maskedmerge,scale=out_color_matrix=bt709/);

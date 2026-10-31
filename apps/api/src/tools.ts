@@ -10,6 +10,8 @@ import {
 } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
+import { samplesOut, samplesView, startSamples } from "./services/samples";
+import type { AppOpen } from "@rendrr/shared";
 import { createCanvas } from "./services/canvas";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
@@ -313,6 +315,7 @@ async function driveTargetOrText(userId: string, folder: string | undefined, cre
 
 async function renderOut(renderId: string): Promise<ToolOut> {
   const r = await prisma.render.findUniqueOrThrow({ where: { id: renderId } });
+  if (r.kind === "sample") return samplesAnswer(r.userId, r.id, false);
   if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Render final; the app will ask for the original file." : ""}${driveLine(r) ? `\n${driveLine(r)}` : ""}` };
   if (r.status !== "done") {
     // Phase 7: where it is and the time left (the worker's estimate), so the AI can say when to look again.
@@ -332,6 +335,15 @@ async function renderOut(renderId: string): Promise<ToolOut> {
   // Phase 6: what the render itself said about HDR and missing LUTs goes into the check.
   const notes = (plan?.operations ?? []).filter((l) => l.startsWith("HDR:") || /^Color: LUT .* left out/.test(l) || /^Graphic \S+ left out/.test(l));
   return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null, plan?.outputSeconds ?? null, notes, plan?.heard ?? null)}`, data: { renderId: r.id } };
+}
+
+/** Samples as Claude reads them, with their pictures (a frame's, a clip's first) once done; the app's data with them. */
+async function samplesAnswer(userId: string, renderId: string, images: boolean, lead = ""): Promise<ToolOut> {
+  const v = await samplesView(userId, renderId);
+  const urls = images && v.status === "done" ? v.items.map((x) => x.still).filter((u): u is string => !!u) : [];
+  const said = urls.length ? `\nImages, in order: ${v.items.map((x, k) => `${k + 1}. ${x.kind === "frame" ? "the frame" : "the clip's first frame"}`).join("; ")}` : "";
+  const data: AppOpen = { open: null, webUrl: WEB(), samples: v };
+  return { text: `${lead}${samplesOut(v)}${said}`, images: urls, data };
 }
 
 /** The footage facts the Export line needs (Phase 7). */
@@ -709,12 +721,13 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const cs = await prisma.reviewComment.findMany({ where: { review: { OR: [{ projectId: p.id }, { folderId: p.folderId }] }, OR: [{ projectId: null }, { projectId: p.id }] }, orderBy: { createdAt: "asc" }, take: 200 });
     const notes = await prisma.projectComment.findMany({ where: { projectId: p.id }, orderBy: { createdAt: "asc" }, take: 200 });
     const renders = await prisma.render.findMany({ where: { projectId: p.id, kind: "preview" }, select: { id: true, version: true, status: true, outputKey: true, createdAt: true }, orderBy: { createdAt: "desc" } });
+    const sampleSets = await prisma.render.findMany({ where: { projectId: p.id, kind: "sample", id: { in: notes.map((n) => n.renderId).filter((x): x is string => !!x) } }, select: { id: true, version: true } });
     const short = (t: string) => (t.length > 600 ? t.slice(0, 600) + "…" : t).replace(/\s+/g, " ");
     const row = (x: { id: string; time: number; text: string; resolved: boolean }, extra = "") => `${x.id} | ${fmtMs(x.time)} | ${short(x.text) || "(no words)"}${extra} | ${x.resolved ? "resolved" : "open"}`;
     // The app in the chat: what a note carries besides words, said in words; the pictures themselves with images true.
     const noteExtra = (n: (typeof notes)[number]) => {
-      const d = storedDrawing(n), ims = storedImages(n), on = renders.find((r) => r.id === n.renderId);
-      return [on ? `on preview v${on.version}` : "", d ? drawingText(d) : "", ims.length ? `${ims.length} ${ims.length === 1 ? "picture" : "pictures"}` : "", n.editedAt ? "edited" : ""].filter(Boolean).map((x) => " | " + x).join("");
+      const d = storedDrawing(n), ims = storedImages(n), on = renders.find((r) => r.id === n.renderId), sam = sampleSets.find((r) => r.id === n.renderId);
+      return [on ? `on preview v${on.version}` : sam ? `on samples ${sam.id} of v${sam.version} (get_samples)` : "", d ? drawingText(d) : "", ims.length ? `${ims.length} ${ims.length === 1 ? "picture" : "pictures"}` : "", n.editedAt ? "edited" : ""].filter(Boolean).map((x) => " | " + x).join("");
     };
     const parts = [
       cs.length ? "Client comments (id | output time of the version they watched | text | state):\n" + cs.map((x) => row(x)).join("\n") : "No client comments.",
@@ -1056,6 +1069,22 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     const out = await renderOut(r.id);
     return had ? { ...out, text: `${changed.map((g) => `"${g.name}" (${g.id})`).join(", ")} changed since preview v${had.version}: rendering it again.\n${out.text}` } : out;
+  },
+  async render_samples(c, i) {
+    let r;
+    try { r = await startSamples(c.userId, i.projectId, { frames: i.frames, clips: i.clips }); } catch (e) {
+      const err = e as AppError;
+      if (err.code === "samples" || err.code === "expired") return { text: `${err.message} Nothing was rendered.` };
+      throw e;
+    }
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
+    return samplesAnswer(c.userId, r.id, i.images !== false);
+  },
+  async get_samples(c, i) {
+    const r = await prisma.render.findUnique({ where: { id: i.renderId } });
+    if (!r || r.userId !== c.userId || r.kind !== "sample") throw notFound("Those samples do not exist.");
+    if (i.wait_seconds) await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id }, select: { status: true } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, Math.min(120, i.wait_seconds) * 1000, 1000);
+    return samplesAnswer(c.userId, r.id, i.images !== false);
   },
   async render_final(c, i) {
     // Saving into Drive: the folder is found and checked first, so a wrong name or a refused folder is said now, not
