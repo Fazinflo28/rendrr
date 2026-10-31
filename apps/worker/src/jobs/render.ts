@@ -1,4 +1,4 @@
-import { deleteObject, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
+import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import { formatFile, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
@@ -316,6 +316,7 @@ export async function renderJob(ctx: Ctx) {
       const done: SampleDone[] = [], keys: string[] = [];
       let spent = 0, bytes = 0;
       est.encStart = Date.now();
+      try {
       for (const [k, it] of items.entries()) {
         const w = sampleWindow(it, fps), sub = windowPlan(plan, w.from, w.to), still = it.kind === "frame";
         const out = join(ctx.dir, still ? `sample-${k}.jpg` : `sample-${k}.mp4`);
@@ -342,13 +343,21 @@ export async function renderJob(ctx: Ctx) {
         spent += weightOf(it);
         await send(i, spent / total);
       }
+      } catch (e) {
+        // A sample failed (or the job was stopped): the ones already stored go, so nothing is left behind.
+        await deleteObjects(keys).catch(() => {});
+        throw e;
+      }
       est.encEnd = Date.now();
+      // The user's notes may have changed while this rendered (asking for the same samples with new words): the latest.
+      const now = ((await prisma.render.findUnique({ where: { id: r.id }, select: { plan: true } }))?.plan as { samples?: { items?: { note?: string }[] } } | null)?.samples?.items;
+      const noted = <T extends { note?: string }>(xs: T[]) => xs.map((x, k) => { if (!now?.[k]) return x; const { note: _n, ...rest } = x; return (now[k].note != null ? { ...rest, note: now[k].note } : rest) as T; });
       i = steps.length - 1;
       await send(i, 0.5);
       const seconds = Math.round(items.reduce((acc, it) => acc + (it.kind === "clip" ? it.end! - it.at : 0), 0) * 1000) / 1000;
       await prisma.render.update({ where: { id: r.id }, data: {
         status: "done", outputKey: null, sizeBytes: BigInt(bytes), seconds, framesKeys: keys, finishedAt: new Date(), quality: "540p",
-        plan: { samples: { items, done, width: plan.width, height: plan.height }, operations: plan.operations, outputSeconds: plan.outputSeconds, mix: mixLoudness } as unknown as Prisma.InputJsonValue,
+        plan: { samples: { items: noted(items), done: noted(done), width: plan.width, height: plan.height }, operations: plan.operations, outputSeconds: plan.outputSeconds, mix: mixLoudness } as unknown as Prisma.InputJsonValue,
       } });
       await usage(video.userId, "render_preview", Math.round((Math.max(seconds, items.length / fps) / 60) * 100) / 100, { projectId: project.id, renderId: r.id });
       await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100 });

@@ -44,4 +44,13 @@ describe("stabilize", () => {
     expect(g).toMatch(/trim=start=1\.000000:end=5\.000000,setpts=PTS-STARTPTS,vidstabtransform=input='\/tmp\/a\.trf':smoothing=15:optzoom=1:interpol=bicubic/);
     expect(g.match(/vidstabtransform/g)).toHaveLength(1);
   });
+  it("a stabilized clip with its background removed: the cut-out is smoothed with the picture (it stays on the person)", () => {
+    const s = edit(edit(base(), { op: "stabilize", clipId: "a" } as Op).snap, { op: "remove_background", clipIds: ["a"] } as Op).snap;
+    const p = planRender({ kind: "preview", snapshot: s, transcript: tr, source, videoId: "v" });
+    const k = Object.keys(p.stabilize!)[0];
+    const files = { source: "/in.mp4", output: "/o.mp4", stabilize: { [k]: "/tmp/a.trf" }, looks: Object.fromEntries(Object.keys(p.lookFiles ?? {}).map((n) => [n, `/x/${n}`])), mattes: Object.fromEntries(Object.keys(p.mattes ?? {}).map((n) => [n, `/x/${n}.txt`])) } as PlanFiles;
+    const g = ffmpegArgs(p, files, source, { loudnessGainDb: 0 }).filterGraph;
+    expect(g.match(/vidstabtransform=input='\/tmp\/a\.trf'/g)).toHaveLength(2);
+    expect(g).toMatch(/\[mt\w*\][^;]*vidstabtransform[^;]*format=gray\[mf/);
+  });
 });

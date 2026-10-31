@@ -30,6 +30,13 @@ describe("stabilize at other speeds and on b-roll", () => {
     expect(filterGraph).toMatch(/trim=start=1\.000000:end=5\.033333,settb=1\/30,setpts=ceil\(N\/0\.5/);
     expect(filterGraph.match(/vidstabtransform/g)).toHaveLength(1);
   });
+  it("a transition at a fast clip's cut reads further past it: the copy reaches that far", () => {
+    const r = run(base(), { op: "set_speed", clipId: "b", speed: 4 } as Op, { op: "stabilize", clipIds: ["b"], smooth: 60 } as Op, { op: "set_transition", clipId: "b", type: "dissolve", duration: 1 } as Op);
+    const c = plan(r.snap).stabilized!.b;
+    // b shows footage from 8 s: a 1 s dissolve at 4x reads up to 4 s past each cut (a second was all before).
+    expect(c.srcIn).toBeLessThanOrEqual(8 - 4);
+    expect(c.srcIn).toBeGreaterThan(3);
+  });
   it("a ramp is one copy for the whole clip; reversed and frozen clips too", () => {
     const ramp = plan(run(base(), { op: "set_speed", clipId: "b", ramp: [{ at: 8, speed: 1 }, { at: 9, speed: 0.4 }, { at: 12, speed: 0.4 }] } as Op, { op: "stabilize", clipId: "b" } as Op).snap);
     expect(ramp.parts.filter((x) => x.clipIds[0] === "b").length).toBeGreaterThan(1);

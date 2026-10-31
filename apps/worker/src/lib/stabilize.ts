@@ -17,7 +17,8 @@ export async function detectShake(src: string, op: StabilizeOp, rate: string, ou
  * Phase 21: the stabilized copy of a clip's footage (b-roll, or a V1 clip at another speed): the same frames as the
  * shake was measured on (the plan's grid, srcIn to srcOut), smoothed and zoomed in just enough to hide the edges, as
  * the render does for clips at normal speed. Its frame k is footage frame srcIn x fps + k. Nearly lossless (it is cut
- * and encoded again by the render); 10-bit footage (HDR) is kept losslessly.
+ * and encoded again by the render). vid.stab transforms 8-bit pictures only: 10-bit footage (HDR) is smoothed at 8 bits
+ * (FFmpeg dithers it down) and the copy is kept lossless from there (FFV1), so nothing more is lost; the plan says so.
  */
 export async function makeStableCopy(src: string, op: StabilizeOp, rate: string, trf: string, out: string, opts: { deep?: boolean; signal?: AbortSignal } = {}): Promise<void> {
   const ss = Math.max(0, op.srcIn - 1);

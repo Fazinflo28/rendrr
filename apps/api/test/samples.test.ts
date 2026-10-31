@@ -77,10 +77,14 @@ describe("samples in Rendrr", { skip: !ready && "needs DATABASE_URL, REDIS_URL a
     const bad = await tool("render_samples", { projectId, clips: [{ start: 1, end: 9 }] });
     assert.match(bad.text, /at most 6 s/);
     assert.equal(await prisma.render.count({ where: { projectId, kind: "sample" } }), 1);
+    // Two asks for new samples at the same moment: one render.
+    const [x, y] = await Promise.all([1, 2].map(() => tool("render_samples", { projectId, frames: [{ at: 11 }] })));
+    assert.equal((x.data as { samples: { renderId: string } }).samples.renderId, (y.data as { samples: { renderId: string } }).samples.renderId);
+    assert.equal(await prisma.render.count({ where: { projectId, kind: "sample" } }), 2);
   });
 
   it("the app's view and get_samples read it; a change on a sample is listed for Claude; samples are not previews", async () => {
-    const r = await prisma.render.findFirstOrThrow({ where: { projectId, kind: "sample" } });
+    const r = await prisma.render.findFirstOrThrow({ where: { projectId, kind: "sample" }, orderBy: { createdAt: "asc" } });
     await prisma.render.update({ where: { id: r.id }, data: { status: "done", framesKeys: [`previews/${run}-s0.jpg`], plan: { samples: { items: (r.plan as { samples: { items: unknown[] } }).samples.items, done: [{ kind: "frame", at: 2, still: `previews/${run}-s0.jpg` }, { kind: "clip", at: 5, end: 9, still: `previews/${run}-s1.jpg`, clip: `previews/${run}-c1.mp4` }], width: 960, height: 540 } } as never } });
     await app("app_add_comment", { projectId, time: 2, text: "Yellow title", renderId: r.id });
     const v = (await app("app_get_samples", { renderId: r.id })).data as AppSamples;

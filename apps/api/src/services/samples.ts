@@ -26,11 +26,15 @@ export async function startSamples(userId: string, projectId: string, req: Sampl
   try { items = sampleItems(req, p.outputSeconds || 24 * 3600); } catch (e) { if (e instanceof SampleError) throw new AppError(e.message, 400, "samples"); throw e; }
   // Samples are not versions: they do not close the version (the AI's change to it goes on in the same version), so
   // ones of an earlier state of it are not reused.
-  const latest = await prisma.projectVersion.findFirst({ where: { projectId }, orderBy: { v: "desc" }, select: { v: true, updatedAt: true } });
+  // One at a time per edit (the check for the same samples and the new render are one step): two asks at once for the
+  // same samples make one render.
+  const made = await prisma.$transaction(async (tx) => {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"samples:" + projectId}))`;
+  const latest = await tx.projectVersion.findFirst({ where: { projectId }, orderBy: { v: "desc" }, select: { v: true, updatedAt: true } });
   const version = latest?.v ?? p.currentVersion;
   const since = latest?.updatedAt ?? new Date(0);
-  const recent = await prisma.render.findMany({ where: { projectId, kind: "sample", version, status: { in: ["queued", "running", "done"] }, createdAt: { gt: new Date(Math.max(since.getTime(), Date.now() - renderTimeoutMs("preview", video.seconds) - 60_000)) } }, orderBy: { createdAt: "desc" }, take: 10 });
-  const done = await prisma.render.findMany({ where: { projectId, kind: "sample", version, status: "done", createdAt: { gt: since } }, orderBy: { createdAt: "desc" }, take: 10 });
+  const recent = await tx.render.findMany({ where: { projectId, kind: "sample", version, status: { in: ["queued", "running", "done"] }, createdAt: { gt: new Date(Math.max(since.getTime(), Date.now() - renderTimeoutMs("preview", video.seconds) - 60_000)) } }, orderBy: { createdAt: "desc" }, take: 10 });
+  const done = await tx.render.findMany({ where: { projectId, kind: "sample", version, status: "done", createdAt: { gt: since } }, orderBy: { createdAt: "desc" }, take: 10 });
   for (const r of [...recent, ...done]) {
     const sp = (r.plan as { samples?: SamplePlan } | null)?.samples;
     if (!sp || !same(sp.items, items)) continue;
@@ -38,12 +42,15 @@ export async function startSamples(userId: string, projectId: string, req: Sampl
     // The notes may be new: keep the latest words.
     if (items.some((x, k) => (x.note ?? null) !== (sp.items[k]?.note ?? null))) {
       const notes = (xs: SamplePlan["items"]) => xs.map((x, k) => ({ ...x, note: items[k].note }));
-      await prisma.render.update({ where: { id: r.id }, data: { plan: { ...(r.plan as object), samples: { ...sp, items: notes(sp.items), ...(sp.done ? { done: notes(sp.done) as SampleDone[] } : {}) } } as never } });
+      await tx.render.update({ where: { id: r.id }, data: { plan: { ...(r.plan as object), samples: { ...sp, items: notes(sp.items), ...(sp.done ? { done: notes(sp.done) as SampleDone[] } : {}) } } as never } });
     }
-    return prisma.render.findUniqueOrThrow({ where: { id: r.id } });
+    return { joined: await tx.render.findUniqueOrThrow({ where: { id: r.id } }) };
   }
   const steps = [...SAMPLE_STEPS];
-  const r = await prisma.render.create({ data: { projectId, userId, kind: "sample", version, status: "queued", steps, quality: "540p", plan: { samples: { items } } as never } });
+  return { made: await tx.render.create({ data: { projectId, userId, kind: "sample", version, status: "queued", steps, quality: "540p", plan: { samples: { items } } as never } }), steps };
+  }, { timeout: 15_000, maxWait: 10_000 });
+  if ("joined" in made && made.joined) return made.joined;
+  const { made: r, steps } = made as { made: Render; steps: string[] };
   await publishRender(r.id, { status: "queued", step: 0, steps, percent: 0 });
   await enqueue<RenderJob>("render", { renderId: r.id }, { jobId: r.id });
   return r;

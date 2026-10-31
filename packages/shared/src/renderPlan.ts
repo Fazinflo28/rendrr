@@ -681,9 +681,10 @@ export function planRender(input: PlanInput): RenderPlan {
   // ramp, reversed, a freeze) and stabilized b-roll read a stabilized copy of their footage instead, smoothed as one.
   const stabilize: Record<string, StabilizeOp> = {}, unstabilized = new Set<string>(), stabilized: Record<string, StableCopyOp> = {};
   const smoothingOf = (smooth: number) => Math.max(1, Math.round(smooth * 0.3));
-  /** The copy's footage: a second either side of what the clip shows, on the frame grid, inside the video. */
-  const copyOf = (clipId: string, videoId: string, lo: number, hi: number, smooth: number, seconds: number | undefined, broll?: boolean) => {
-    const a = Math.max(0, Math.floor((lo - 1) * out.fps + 1e-6) / out.fps), b = Math.min(seconds ?? hi + 1, Math.ceil((hi + 1) * out.fps - 1e-6) / out.fps);
+  /** The copy's footage: a second either side of what the clip shows (more where a transition at its speed reads
+   *  further past the cut), on the frame grid, inside the video. */
+  const copyOf = (clipId: string, videoId: string, lo: number, hi: number, smooth: number, seconds: number | undefined, broll?: boolean, margin = 1) => {
+    const a = Math.max(0, Math.floor((lo - margin) * out.fps + 1e-6) / out.fps), b = Math.min(seconds ?? hi + margin, Math.ceil((hi + margin) * out.fps - 1e-6) / out.fps);
     if (b - a < 0.2) { unstabilized.add(clipId); return; }
     const op = { clipId, videoId, srcIn: r3(a), srcOut: r3(b), smoothing: smoothingOf(smooth) };
     const h = hashOf(op);
@@ -703,7 +704,13 @@ export function planRender(input: PlanInput): RenderPlan {
         const op = { videoId: p.videoId, srcIn: r3(p.srcIn), srcOut: r3(p.srcOut), smoothing: smoothingOf(smooth) };
         stabilize[stabilizeKey(p)] = { ...op, file: `stab_${hashOf(op)}.trf` };
       }
-    } else copyOf(clipId, ps[0].videoId, Math.min(...ps.map((p) => p.srcIn)), Math.max(...ps.map((p) => (rateOf(p) === 0 ? p.srcIn + 1 / out.fps : p.srcOut))), smooth, infoOf(ps[0].videoId)?.seconds);
+    } else {
+      // A transition on either cut reads footage past it at the clip's speed: up to its length times that speed.
+      const v1 = tl.tracks.v1 as SeqClip[], k = v1.findIndex((c) => c.id === clipId);
+      const trLen = Math.max(v1[k]?.transition?.duration ?? 0, v1[k + 1]?.transition?.duration ?? 0);
+      const margin = Math.max(1, trLen * Math.max(1, ...ps.map((p) => Math.abs(rateOf(p)))) + 0.1);
+      copyOf(clipId, ps[0].videoId, Math.min(...ps.map((p) => p.srcIn)), Math.max(...ps.map((p) => (rateOf(p) === 0 ? p.srcIn + 1 / out.fps : p.srcOut))), smooth, infoOf(ps[0].videoId)?.seconds, false, margin);
+    }
   }
   for (const o of [...broll, ...under]) {
     const c = (tl.tracks.v2 as (V2Clip & { stabilize?: { smooth: number } })[]).find((x) => x.id === o.clipId);
@@ -853,7 +860,7 @@ export function planRender(input: PlanInput): RenderPlan {
     texts.length ? `Text layers: ${texts.length}` : "Text layers: none",
     ...(textMattes.length || insideMissing.length ? [`Inside the letters: ${[...textMattes.map((m) => `${m.clipId} ${m.inside ? `video ${m.inside.videoId} from ${r3(m.inside.from)}s${m.inside.seconds - m.inside.from < m.end - m.start - 0.05 ? " (looped)" : ""}` : `cut out of its card ${m.cut} (the picture shows through)`}`), ...insideMissing.map((id) => `${id}: its video is not in the library or not ready: plain letters instead`)].join("; ")}`] : []),
     ...(adjust.length ? [`Adjustment layers: ${adjust.slice(0, 4).map((a) => `${fmtClock(a.start)}-${fmtClock(a.end)} ${[a.grade ? `grade ${gradeText(a.grade)}` : "", a.effects?.length ? effectsText(a.effects) : "", adjustText(a)].filter(Boolean).join(", ")}`).join("; ")} (over the picture, b-roll and graphics; text and captions on top as they are)${hdr && adjust.some((a) => a.grade) ? "; this output keeps HDR: their grades are left out there (their effects apply)" : ""}`] : []),
-    ...(Object.keys(stabilize).length || Object.keys(stabilized).length || unstabilized.size ? [`Stabilized (Warp Stabilizer, zoomed in to hide the edges): ${[...new Set(Object.keys(stabilize).map((k) => k.split("@")[0])), ...Object.keys(stabilized).map((id) => `${id} (${stabilized[id].broll ? "b-roll" : "at its speeds"}, from a stabilized copy)`)].slice(0, 8).join(", ") || "none"}${unstabilized.size ? `; as filmed, too short to stabilize: ${Array.from(unstabilized).slice(0, 4).join(", ")}` : ""}`] : []),
+    ...(Object.keys(stabilize).length || Object.keys(stabilized).length || unstabilized.size ? [`Stabilized (Warp Stabilizer, zoomed in to hide the edges): ${[...new Set(Object.keys(stabilize).map((k) => k.split("@")[0])), ...Object.keys(stabilized).map((id) => `${id} (${stabilized[id].broll ? "b-roll" : "at its speeds"}, from a stabilized copy)`)].slice(0, 8).join(", ") || "none"}${unstabilized.size ? `; as filmed, too short to stabilize: ${Array.from(unstabilized).slice(0, 4).join(", ")}` : ""}${hdr && (Object.keys(stabilize).length || Object.keys(stabilized).length) ? "; HDR footage is smoothed at 8 bits, dithered (the stabilizer works in 8 bits)" : ""}`] : []),
     ...([...broll, ...graphics].some((x) => x.blend || x.opacity != null) ? [`Blend: ${[...broll, ...graphics].filter((x) => x.blend || x.opacity != null).slice(0, 6).map((x) => `${x.videoId ? "b-roll" : "graphic"} ${x.clipId} ${blendText(x.blend, x.opacity)}`).join(", ")}`] : []),
     ...(person ? [`Behind the person: ${[graphics.filter((x) => x.behind).length ? `${graphics.filter((x) => x.behind).length} graphics` : "", texts.filter((x) => x.behind).length ? `${texts.filter((x) => x.behind).length} text layers` : ""].filter(Boolean).join(", ")} (the person laid back over them from an AI matte${person.windows.length ? `, ${person.windows.map((w) => `${fmtClock(w.start)}-${fmtClock(w.end)}`).slice(0, 6).join(", ")}` : ", nowhere: b-roll or transitions cover them"})${person.left.length ? `; in front instead on ${person.left.slice(0, 4).map((x) => `${x.clipId} (${x.why})`).join(", ")}` : ""}`] : []),
     ...speedLines(v1, view, transitions, clipMotion, broll, graphics, texts),
@@ -1050,6 +1057,8 @@ export function windowPlan(plan: RenderPlan, from: number, to: number): RenderPl
     const add = (name: string | undefined, x: number, y: number) => { if (!name) return; const n = need.get(name); need.set(name, n ? [Math.min(n[0], x), Math.max(n[1], y)] : [x, y]); };
     parts.forEach((p, j) => { add(plan.looks?.[p.clipIds[0]]?.subject?.matte, p.srcIn, p.srcOut); add(person?.parts[j], p.srcIn, p.srcOut); });
     for (const o of [...broll, ...(under ?? [])]) add(plan.looks?.[o.clipId]?.subject?.matte, o.sourceStart, o.sourceStart + (o.end - o.start));
+    // A transition's sides: the clip on the far side of the cut is drawn from its own footage there, matte and all.
+    for (const t of (plan.transitions ?? []).filter(hit)) for (const x of [...t.a, ...t.b]) add(plan.looks?.[x.clipId]?.subject?.matte, Math.min(x.srcIn, x.srcOut), Math.max(x.srcIn, x.srcOut));
     mattes = {};
     for (const [name, m] of Object.entries(plan.mattes)) {
       const n = need.get(name);
@@ -1277,7 +1286,8 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
 
 function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: FfmpegOpts): { args: string[]; filterGraph: string; windows: Record<string, number> } {
   const mix = plan.audioMix;
-  if (mix && mix.loudness != null && !opts.measure && opts.loudnessGainDb == null) throw new RenderPlanError("This render sets the loudness: measure the mix first (ffmpegArgs with measure: true), then pass loudnessGainDb.");
+  // (A still has no sound: nothing to measure.)
+  if (mix && mix.loudness != null && !opts.measure && !opts.still && opts.loudnessGainDb == null) throw new RenderPlanError("This render sets the loudness: measure the mix first (ffmpegArgs with measure: true), then pass loudnessGainDb.");
   const inputs: string[] = [];
   const g: string[] = [];
   let idx = 0;
@@ -1696,7 +1706,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       const personM = /^\d+$/.test(tag) ? plan.person?.parts[Number(tag)] : undefined;
       // A stream in footage time made to follow this segment as its picture does (its trim, speed, freeze).
       const steps = r < 0 ? undefined : r === 0 ? `trim=start=${n6(x0.srcIn)}:end=${n6(x0.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N}`
-        : r !== 1 ? `trim=start=${n6(x0.srcIn)}:end=${n6(x0.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(x0)}${exact ? pad : ""}`;
+        : r !== 1 ? `trim=start=${n6(x0.srcIn)}:end=${n6(x0.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(x0)}${cp ? "" : stab(x0)}${exact ? pad : ""}`;
       if ((lk?.subject || personM) && r >= 0) {
         const mt = matteIn(lk?.subject?.matte ?? personM!, x0.srcIn, r === 0 ? x0.srcIn + 1 / FPS : x0.srcOut + 1 / FPS);
         const both = !!lk?.subject && !!personM;

@@ -37,6 +37,22 @@ describe("windowPlan: a few seconds of the edit", () => {
     // The sound plan is the whole edit's (trimmed in the graph).
     expect(w.sound).toBe(p.sound);
   });
+  it("a still needs no loudness measurement (it has no sound); a clip does", () => {
+    const p = plan(edit({ op: "set_audio", loudness: -14 } as Op));
+    expect(p.audioMix?.loudness).toBe(-14);
+    const w = windowPlan(p, 5, 5);
+    const files = { source: "/in.mp4", output: "/o.jpg", assPath: "/c.ass" } as PlanFiles;
+    expect(() => ffmpegArgs(w, files, source, { still: true })).not.toThrow();
+    expect(() => ffmpegArgs(windowPlan(p, 5, 7), files, source)).toThrow(/measure the mix first/);
+  });
+  it("a window inside a transition keeps the matte of the clip on the far side of the cut", () => {
+    const p = plan(edit({ op: "remove_background", clipIds: ["c"] } as Op, { op: "set_transition", clipId: "c", type: "dissolve", duration: 0.5 } as Op));
+    expect(Object.keys(p.mattes ?? {}).length).toBe(1);
+    const t = p.transitions!.find((x) => x.clipId === "c")!;
+    const w = windowPlan(p, t.start + 0.05, t.at - 0.05);
+    expect(w.parts.every((x) => !x.clipIds.includes("c"))).toBe(true);
+    expect(Object.values(w.mattes ?? {})[0]?.blocks.length).toBeGreaterThan(0);
+  });
   it("puts its ends on frames, keeps at least one frame, and stops at the end of the edit", () => {
     const p = plan(edit());
     const w = windowPlan(p, 5.01, 5.01);
