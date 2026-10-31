@@ -1,3 +1,4 @@
+import { AudioKeySchema, EqSchema, ReverbSchema } from "./audio";
 import { BlendModeSchema } from "./blend";
 import { z } from "zod";
 import { catalogMusic, catalogSfx } from "./catalog";
@@ -75,18 +76,24 @@ export const V3ClipSchema = ClipSchema.extend({
   opacity: z.number().min(0).max(1).optional(),
 });
 
+/** Phase 6: a music or sound-effect clip's own sound: pan, EQ, reverb, volume keys (t: seconds from the clip's start).
+ *  V1 clips keep the same as audioPan, audioEq, audioReverb, audioKeys. */
+const clipSound = { pan: z.number().min(-1).max(1).optional(), eq: EqSchema.optional(), reverb: ReverbSchema.optional(), gainKeys: z.array(AudioKeySchema).max(200).optional() };
+
 export const A2ClipSchema = ClipSchema.extend({
   assetKey: z.string().max(400).optional(),
   trackId: z.string().max(80).optional(),
   /** The user's own audio file (add_audio) instead of a library track. */
   soundId: z.string().max(80).optional(),
   gainDb: z.number().min(-60).max(12).optional(),
+  ...clipSound,
 });
 
 export const A3ClipSchema = ClipSchema.extend({
   assetKey: z.string().max(400).optional(),
   sfxId: z.string().max(80).optional(),
   gainDb: z.number().min(-60).max(12).optional(),
+  ...clipSound,
 });
 
 export const TracksSchema = z.object({
@@ -142,6 +149,8 @@ export const AudioSettingsSchema = z.object({
   fadeOut: z.number().min(0).max(10).optional(),
   /** Fade at every dialogue cut in seconds, so cuts don't click (default 0.02; 0 = off). */
   declick: z.number().min(0).max(0.03).optional(),
+  /** Phase 6: an equal-power crossfade at every dialogue cut, in seconds (0 = off: the declick fade instead). */
+  crossfade: z.number().min(0).max(0.5).optional(),
   /** Hand-set cleanup values on top of the preset: high-pass Hz (0 = off), noise reduction dB, presence lift dB at
    *  3.5 kHz, de-esser 0-1, compression ratio (1 = off). */
   highpass: z.number().min(0).max(300).optional(),
@@ -152,7 +161,7 @@ export const AudioSettingsSchema = z.object({
 });
 export type AudioSettings = z.infer<typeof AudioSettingsSchema>;
 export const AUDIO_DEFAULTS = {
-  cleanup: "none" as Cleanup, loudness: -14 as number | null, peak: -1, duck: 12, fadeIn: 0, fadeOut: 0, declick: 0.02,
+  cleanup: "none" as Cleanup, loudness: -14 as number | null, peak: -1, duck: 12, fadeIn: 0, fadeOut: 0, declick: 0.02, crossfade: 0,
   highpass: undefined as number | undefined, denoise: undefined as number | undefined, presence: undefined as number | undefined, deess: undefined as number | undefined, compress: undefined as number | undefined,
 };
 export type AudioMixSettings = typeof AUDIO_DEFAULTS;

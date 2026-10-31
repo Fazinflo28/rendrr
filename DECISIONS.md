@@ -357,6 +357,17 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | A chat with the old tool list | It sends fields it does not know as text (edits as JSON text, replace as "true"). The new fields take that too (edits and data as JSON text, the yes/no fields as "true"/"false", wait_seconds as a number in text); a new chat still sees a list, a yes/no and a number. |
 | Render after replace | create_graphic replace changes a graphic, not the edit, so render_preview said "Nothing changed" and kept the old preview. A graphic now keeps changedAt (its code replaced, or a recording dropped to be made again: replace, rerecord, retry_graphic); a preview made before a graphic in the edit changed is rendered again, and the answer names the graphic. |
 
+## Premiere parity, phase 6: audio (31 October)
+
+| Question | Decision |
+|---|---|
+| Where a clip's sound effects go | On that clip's own sound before the joins (dialogue: each sound unit of the clip; music and sound effects: their own input, before they are placed in time). Volume keys ride the existing dialogue volume curve, so the live player hears them too. |
+| Pan | A balance (the far side goes down, the near side stays), not equal-power: the middle is exactly as it was. |
+| EQ | Three bands, as a quick voice EQ: a 120 Hz shelf, a 1 kHz bell 1.5 octaves wide, a 6 kHz shelf (FFmpeg bass, equalizer, treble). |
+| Reverb | FFmpeg has no reverb filter worth hearing; convolution (afir) with a room's impulse response is the real thing. The response is made in shared code: 10 ms of nothing, then noise dying by 60 dB over 0.3-2.5 s, each side its own seeded noise, scaled to unit energy, written by the worker as a float WAV. afir's dry is its input gain (dry=0 silences it: found by the render test); the room is mixed back at 0.6 x amount. The tail stops at the clip's end. |
+| Crossfade | Equal-power (quarter sine) over 0-0.5 s at dialogue cuts. Each side reads half of it from the footage past its own cut and the two overlap (acrossfade), so the edit's length and every cut's place stay. Only where both sides are normal-speed footage with footage to spare; elsewhere the declick fade. Off (the default): the graph is as before. |
+| The live player | Plays volume keys; pan, EQ, reverb and crossfades are heard in the rendered preview, as cleanup and loudness are (the player plays the footage's own elements, not a WebAudio graph). |
+
 ## Premiere parity, phase 5: deeper colour (31 October)
 
 | Question | Decision |

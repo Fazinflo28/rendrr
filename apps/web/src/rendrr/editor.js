@@ -25,7 +25,7 @@ import { ExportModal, timeLeft } from "./export";
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
-import { ASPECT_RATIO, BLEND_MODES, blendCss, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { ASPECT_RATIO, BLEND_MODES, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
@@ -641,8 +641,31 @@ const FINE = [["highpass", "Rumble cut (high-pass)", 0, 300, 10, " Hz"], ["denoi
 const CLEANUP_NAME = Object.fromEntries(VOICE_PRESETS.map((v) => [v.id, v.name]));
 const LOUDNESS = [[-14, "-14 LUFS (online)"], [-16, "-16 LUFS (podcast)"], [-23, "-23 LUFS (broadcast)"]];
 const dB = (x) => (x > 0 ? "+" : "") + (Math.round(x * 10) / 10) + " dB";
+// Phase 6: a clip's own sound: pan, a three-band EQ, reverb and volume keys (set_clip_audio). V1 clips keep them as
+// audioPan, audioEq, audioReverb, audioKeys; music and sound effects as pan, eq, reverb, gainKeys.
+function ClipSound({ clip, v1, len, here, gain, clipOp, doOp, sl }) {
+  const pan = (v1 ? clip.audioPan : clip.pan) || 0, eq = (v1 ? clip.audioEq : clip.eq) || {}, rv = v1 ? clip.audioReverb : clip.reverb, keys = (v1 ? clip.audioKeys : clip.gainKeys) || [];
+  const db = (x) => (x > 0 ? "+" : "") + x + " dB";
+  const setKeys = (ks) => clipOp("keys")(ks.length ? ks : null);
+  const t = Math.round(here * 100) / 100, near = keys.findIndex((k) => Math.abs(k.t - t) < 0.05);
+  return html`<div class="col" style="gap:10px" id="clip-sound">
+    <${OpSlider} id="clip-pan" label="Pan" value=${pan} min=${-1} max=${1} step=${0.05} show=${(x) => (!x ? "centre" : (x < 0 ? "L " : "R ") + Math.round(Math.abs(x) * 100) + "%")} opFor=${(x) => clipOp("pan")(x || null)} ...${sl} />
+    <div class="col" style="gap:4px" id="clip-eq"><span class="t-small muted">EQ</span>
+      <div class="row" style="gap:8px">${[["low", "Low"], ["mid", "Mid"], ["high", "High"]].map(([k, l]) => html`<div key=${k} class="grow"><${OpSlider} id=${"clip-eq-" + k} label=${l} value=${eq[k] || 0} min=${-12} max=${12} step=${0.5} show=${db} opFor=${(x) => clipOp("eq")({ [k]: x })} ...${sl} /></div>`)}</div></div>
+    <div class="row" style="gap:8px" id="clip-reverb">
+      <div class="grow"><${OpSlider} id="clip-reverb-amount" label="Reverb" value=${rv?.amount || 0} min=${0} max=${100} step=${1} show=${(x) => (x ? String(x) : "off")} opFor=${(x) => clipOp("reverb")(x ? { amount: x, size: rv?.size ?? 40 } : null)} ...${sl} /></div>
+      <div class="grow"><${OpSlider} id="clip-reverb-size" label="Room" value=${rv?.size ?? 40} min=${0} max=${100} step=${1} disabled=${!rv?.amount} show=${(x) => reverbSeconds(x).toFixed(1) + " s"} opFor=${(x) => clipOp("reverb")({ amount: rv?.amount || 30, size: x })} ...${sl} /></div></div>
+    <div class="col" style="gap:6px" id="clip-keys"><div class="row between"><span class="t-small muted">Volume keys</span>
+      <${Btn} kind="ghost" size="xs" id="clip-key-add" disabled=${near >= 0 || len <= 0} onClick=${() => doOp(setKeys([...keys, { t, gainDb: 0 }].sort((x, y) => x.t - y.t)))}>+ Key at ${t.toFixed(2)}s<//></div>
+      ${keys.length ? keys.map((k, i) => html`<div key=${i} class="row" style="gap:6px;align-items:flex-end" data-key=${i}>
+          <div class="grow"><${OpSlider} id=${"clip-key-" + i} label=${k.t.toFixed(2) + " s"} value=${k.gainDb} min=${-40} max=${12} step=${0.5} show=${db} opFor=${(x) => setKeys(keys.map((q, j) => (j === i ? { ...q, gainDb: x } : q)))} ...${sl} /></div>
+          <button class="btn icon sm quiet" aria-label="Remove this key" id=${"clip-key-del-" + i} onClick=${() => doOp(setKeys(keys.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></div>`)
+        : html`<p class="t-small muted">Keys change the level over the clip (on top of its level), in a straight line between them.</p>`}</div>
+  </div>`;
+}
+
 // The Audio tab: the whole edit's sound (set_audio) and the selected clip's level and fades (set_clip_audio).
-function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp, voice }) {
+function AudioTab({ a, clip, track, len, here = 0, planned, doOp, H, liveOp, voice }) {
   const loud = a.loudness == null ? "off" : String(a.loudness);
   const loudOpts = LOUDNESS.some(([v]) => v === a.loudness) || a.loudness == null ? LOUDNESS : [...LOUDNESS, [a.loudness, a.loudness + " LUFS"]];
   const v1 = track === "v1" || track === "a1";
@@ -668,6 +691,7 @@ function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp, voice }) {
         <div class="col" style="gap:8px;padding-top:8px">
           ${FINE.map(([k, l, lo, hi, st, unit]) => html`<${OpSlider} key=${k} id=${"audio-" + k} label=${l} value=${cleanupParams(a)[k]} min=${lo} max=${hi} step=${st} show=${(x) => (x === lo && k !== "deess" ? "off" : x + unit) + (a[k] == null ? " (preset)" : "")} opFor=${(x) => ({ op: "set_audio", [k]: x })} ...${sl} />`)}
           <${OpSlider} id="audio-declick" label="Fade at every cut" value=${Math.round(a.declick * 1000)} min=${0} max=${30} step=${1} show=${(x) => (x ? x + " ms" : "off")} opFor=${(x) => ({ op: "set_audio", declick: x / 1000 })} ...${sl} />
+          <${OpSlider} id="audio-crossfade" label="Crossfade at every cut" value=${Math.round((a.crossfade || 0) * 1000)} min=${0} max=${200} step=${5} show=${(x) => (x ? x + " ms (in the render)" : "off")} opFor=${(x) => ({ op: "set_audio", crossfade: x / 1000 })} ...${sl} />
           ${CLEANUP_KNOBS.some((k) => a[k] != null) && html`<${Btn} kind="ghost" size="xs" id="audio-fine-reset" onClick=${() => doOp({ op: "set_audio", ...Object.fromEntries(CLEANUP_KNOBS.map((k) => [k, null])) })}>Back to the preset's values<//>`}
         </div></details>
       <${OpSlider} id="audio-duck" label="Music under speech" value=${a.duck} min=${0} max=${24} step=${1} show=${(x) => (x ? x + " dB down" : "not ducked")} opFor=${(x) => ({ op: "set_audio", duck: x })} ...${sl} />
@@ -678,10 +702,11 @@ function AudioTab({ a, clip, track, len, planned, doOp, H, liveOp, voice }) {
       <b class="t-label">${clip ? (v1 ? "Dialogue of " + (clip.label || "this clip") : clip.label || "This clip") : "Selected clip"}</b>
       ${clip ? html`<${OpSlider} id="clip-gain" label="Level" value=${gain} min=${v1 ? -24 : -40} max=${12} step=${0.5} show=${dB} opFor=${clipOp("gainDb")} ...${sl} />
         <div class="row" style="gap:12px"><div class="grow"><${OpSlider} id="clip-fade-in" label="Fade in" value=${fi} min=${0} max=${fadeMax} step=${0.1} show=${(x) => x + " s" + (autoIn && x === fi ? " auto" : "")} opFor=${clipOp("fadeIn")} ...${sl} /></div>
-          <div class="grow"><${OpSlider} id="clip-fade-out" label="Fade out" value=${fo} min=${0} max=${fadeMax} step=${0.1} show=${(x) => x + " s" + (autoOut && x === fo ? " auto" : "")} opFor=${clipOp("fadeOut")} ...${sl} /></div></div>`
+          <div class="grow"><${OpSlider} id="clip-fade-out" label="Fade out" value=${fo} min=${0} max=${fadeMax} step=${0.1} show=${(x) => x + " s" + (autoOut && x === fo ? " auto" : "")} opFor=${clipOp("fadeOut")} ...${sl} /></div></div>
+        <${ClipSound} clip=${clip} v1=${v1} len=${len} here=${here} gain=${gain} clipOp=${clipOp} doOp=${doOp} sl=${sl} />`
         : html`<p class="t-small muted">Select a clip on V1, A1, A2 or A3 to set its level and fades.</p>`}
     </div>
-    <p class="t-small muted" id="audio-note">The live player plays the balance: clip levels, fades, ducking, music and sound effects. Cleanup and loudness are heard in the rendered preview.</p>
+    <p class="t-small muted" id="audio-note">The live player plays the balance: clip levels, fades, volume keys, ducking, music and sound effects. Cleanup, loudness, pan, EQ, reverb and crossfades are heard in the rendered preview.</p>
   </div></div>`;
 }
 
@@ -1088,6 +1113,8 @@ function EditorInner({ project, reload, ai, keep }) {
   };
   const soundSel = sel && ["v1", "a1", "a2", "a3"].includes(sel.track) ? (isV1(sel.track) ? selV1 : selClip) : null;
   const soundLen = !soundSel ? 0 : isV1(sel.track) ? (() => { const a = lay.tracks.a1.find((x) => x.id === soundSel.id); return a ? a.end - a.start : 0; })() : soundSel.end - soundSel.start;
+  // Phase 6: where the playhead is in the selected clip's sound (for a volume key there).
+  const soundStart = !soundSel ? 0 : isV1(sel.track) ? lay.tracks.a1.find((x) => x.id === soundSel.id)?.start ?? 0 : soundSel.start;
 
   const { chat, setChat } = ai;
   useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, rtab]);
@@ -1241,7 +1268,7 @@ function EditorInner({ project, reload, ai, keep }) {
         </div>`}
         ${rtab === "clip" && html`<${ClipTab} clip=${sel && isV1(sel.track) ? selV1 : selClip} track=${sel?.track} plan=${plan} first=${!!selV1 && lay.tracks.v1.find((c) => c.end - c.start > 0.01)?.id === selV1.id} at=${pb.time} srcAt=${(id, t) => view.editToSource(id, t)} onSeek=${(t) => pb.seek(t)} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
         ${rtab === "color" && html`<${ColorTab} clip=${colorClip} track=${sel?.track} projectId=${project.id} mainVideo=${main} aspect=${S.aspect} clips=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")]} lutList=${lutQ.data || []} reloadLuts=${() => lutQ.reload()} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mode=${colorMode} setMode=${setColorMode} draft=${pathDraft} setDraft=${setPathDraft} toast=${toast} mattes=${mattes} />`}
-        ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} voice=${S.voice ? { ...S.voice, name: (project.sounds || {})[S.voice.soundId]?.name } : null} />`}
+        ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} here=${Math.max(0, Math.min(soundLen, pb.time - soundStart))} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} voice=${S.voice ? { ...S.voice, name: (project.sounds || {})[S.voice.soundId]?.name } : null} />`}
         ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} videos=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} />`}
         ${rtab === "style" && html`<div class="pb" style="padding-top:16px"><div class="col" style="gap:16px">
           <div class="col" style="gap:8px"><b class="t-label">Reference</b><p class="t-small muted">Attached for your AI to read. Nothing from it is applied to the edit.</p>

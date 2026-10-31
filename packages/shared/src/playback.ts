@@ -5,7 +5,7 @@
 import type { BlendMode } from "./blend";
 import { editOf, rateOf, srcAt, type PicturePart, type Range, type SoundPart } from "./sequence";
 import type { RenderPlan, Seg, TransitionOp, ZoomOp } from "./renderPlan";
-import { dbToLin, dialogueGain, duckFactor, fadeFactor } from "./audio";
+import { dbToLin, dialogueGain, duckFactor, fadeFactor, keyGainDb } from "./audio";
 import { activeWord, textAnimAt, textLookAt, type TextLayer } from "./captions";
 import { keyTracks, motionAt, transitionAt, type Key, type KeyTracks, type Motion, type TransitionLook } from "./motion";
 
@@ -196,7 +196,7 @@ export function audioAt(plan: RenderPlan, t: number): { dialogue: number; music:
     if (t < a.start || t >= a.end) continue;
     const fades = fadeFactor(t, a.start, a.end, a.fadeIn ?? 0, a.fadeOut ?? 0);
     const duck = a.kind === "music" && mix && mix.duck > 0 ? duckFactor(mix.speech, t) * mix.duck : 0;
-    const x = { clipId: a.clipId, assetKey: a.assetKey, src: t - a.start, gain: dbToLin(a.gainDb - duck) * fades * mixFade };
+    const x = { clipId: a.clipId, assetKey: a.assetKey, src: t - a.start, gain: dbToLin(a.gainDb - duck + (a.keys?.length ? keyGainDb(a.keys, t - a.start) : 0)) * fades * mixFade };
     (a.kind === "music" ? music : sfx).push(x);
   }
   return { dialogue, music, sfx };

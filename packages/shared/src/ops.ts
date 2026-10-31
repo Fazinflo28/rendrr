@@ -16,6 +16,7 @@ import { DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDL
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { libraryItem, libraryParams } from "./library";
 import { BlendModeSchema, blendText, type BlendMode } from "./blend";
+import { AudioKeySchema, clipFxText, EqSchema, ReverbSchema, type AudioKey, type Eq, type Reverb } from "./audio";
 import { BackgroundSchema, backgroundText, CardLookSchema, cardLookText, hasCard, type CardLook } from "./cardLook";
 import { AreaSchema, ChromaKeySchema, CurveSchema, EffectSchema, HslSchema, WheelSchema, FaceTracksSchema, followFace, type Effect, type FaceTrack, type Mask, gradeFn, gradeText, KEY_DEFAULTS, LutInputSchema, MaskSchema, masksText, effectsText, chromaKeyText, matchGrade, SKIN_DEFAULTS, skinActive, skinText, SUBJECT_DEFAULTS, subjectText, type Area, type ChromaKey, type ClipLook, type Grade, type Lut, type Skin, type Subject } from "./look";
 import {
@@ -137,9 +138,12 @@ const EDIT_OPS = [
   // The edit's sound: dialogue cleanup preset, loudness target (LUFS, null = off), true-peak ceiling (dBTP), how many
   // dB music goes down under speech (0 = off), fades of the whole mix. Fields left out keep their value.
   z.object({ op: z.literal("set_audio"), cleanup: z.enum(CLEANUPS).optional(), loudness: z.number().min(-30).max(-6).nullable().optional(), peak: z.number().min(-6).max(0).optional(), duck: z.number().min(0).max(30).optional(), fadeIn: z.number().min(0).max(10).optional(), fadeOut: z.number().min(0).max(10).optional(),
-    highpass: z.number().min(0).max(300).nullable().optional(), denoise: z.number().min(0).max(40).nullable().optional(), presence: z.number().min(-8).max(8).nullable().optional(), deess: z.number().min(0).max(1).nullable().optional(), compress: z.number().min(1).max(10).nullable().optional(), declick: z.number().min(0).max(0.03).optional() }),
+    highpass: z.number().min(0).max(300).nullable().optional(), denoise: z.number().min(0).max(40).nullable().optional(), presence: z.number().min(-8).max(8).nullable().optional(), deess: z.number().min(0).max(1).nullable().optional(), compress: z.number().min(1).max(10).nullable().optional(), declick: z.number().min(0).max(0.03).optional(), crossfade: z.number().min(0).max(0.5).optional() }),
   // One clip's sound: a V1 clip's dialogue (track v1 or a1, the default), a music clip (a2) or a sound effect (a3).
-  z.object({ op: z.literal("set_clip_audio"), track: z.enum(["v1", "a1", "a2", "a3"]).optional(), clipId, gainDb: z.number().min(-40).max(20).optional(), fadeIn: z.number().min(0).max(30).optional(), fadeOut: z.number().min(0).max(30).optional() }),
+  // Phase 6: pan -1..1, eq{low, mid, high} dB (merged), reverb{amount, size}, keys [{t: s from the clip's start, gainDb}]
+  // (the list replaces them); null removes each.
+  z.object({ op: z.literal("set_clip_audio"), track: z.enum(["v1", "a1", "a2", "a3"]).optional(), clipId, gainDb: z.number().min(-40).max(20).optional(), fadeIn: z.number().min(0).max(30).optional(), fadeOut: z.number().min(0).max(30).optional(),
+    pan: z.number().min(-1).max(1).nullable().optional(), eq: EqSchema.nullable().optional(), reverb: ReverbSchema.nullable().optional(), keys: z.array(AudioKeySchema).max(200).nullable().optional() }),
   // ---- speed, transitions, keyframes (Phase 5) ----
   // A V1 clip's speed: speed (0.1-10, 1 = normal), reverse, ramp: speed points at the clip's footage seconds (linear
   // between them; null removes it). Sound keeps its pitch from 0.5x to 4x and is silent outside that or reversed.
@@ -991,24 +995,38 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "set_clip_audio": {
       const track = op.track ?? "v1";
-      if (op.gainDb == null && op.fadeIn == null && op.fadeOut == null) throw new EditError("Send gainDb, fadeIn or fadeOut.");
+      if (op.gainDb == null && op.fadeIn == null && op.fadeOut == null && op.pan === undefined && op.eq === undefined && op.reverb === undefined && op.keys === undefined) throw new EditError("Send gainDb, fadeIn, fadeOut, pan, eq, reverb or keys.");
+      // Phase 6: pan, EQ (merged band by band), reverb and volume keys, under the track's field names.
+      const sound = <C extends object>(x: C, names: { pan: string; eq: string; reverb: string; keys: string }): C => {
+        const y = { ...x } as Record<string, unknown>;
+        const put = (k: string, v: unknown) => { if (v === null || v === undefined) delete y[k]; else y[k] = v; };
+        if (op.pan !== undefined) put(names.pan, op.pan ? Math.round(op.pan * 100) / 100 : null);
+        if (op.eq !== undefined) { const e = op.eq === null ? null : Object.fromEntries(Object.entries({ ...((y[names.eq] as Eq) ?? {}), ...op.eq }).filter(([, v]) => v)); put(names.eq, e && Object.keys(e).length ? e : null); }
+        if (op.reverb !== undefined) put(names.reverb, op.reverb && op.reverb.amount > 0 ? op.reverb : null);
+        if (op.keys !== undefined) put(names.keys, op.keys?.length ? [...op.keys].sort((a, b) => a.t - b.t) : null);
+        return y as unknown as C;
+      };
+      const fxOf = (x: object, names: { pan: string; eq: string; reverb: string; keys: string }) => { const r = x as Record<string, unknown>; return clipFxText({ pan: r[names.pan] as number, eq: r[names.eq] as Eq, reverb: r[names.reverb] as Reverb, keys: r[names.keys] as AudioKey[] }); };
+      const V1N = { pan: "audioPan", eq: "audioEq", reverb: "audioReverb", keys: "audioKeys" }, AN = { pan: "pan", eq: "eq", reverb: "reverb", keys: "gainKeys" };
       if (track === "v1" || track === "a1") {
         const c = findClip(tl, "v1", op.clipId) as SeqClip;
         const p = view().clip(c.id)!;
         const len = p.soundEnd - p.soundStart;
         const fi = op.fadeIn ?? c.audioFadeIn ?? 0, fo = op.fadeOut ?? c.audioFadeOut ?? 0;
         if (fi + fo > len + 0.01) throw new EditError(`${name(c)}'s sound is ${len.toFixed(2)}s long: the fades (${fi}s in, ${fo}s out) do not fit.`);
-        const next = mapClip(tl, c.id, (x) => ({ ...x, ...(op.gainDb != null ? { audioGain: r2(op.gainDb) } : {}), ...(op.fadeIn != null ? { audioFadeIn: r2(op.fadeIn) } : {}), ...(op.fadeOut != null ? { audioFadeOut: r2(op.fadeOut) } : {}) }));
-        return { snap: { ...snap, timeline: next }, summary: `${name(c)}'s dialogue: ${clipAudioText(op.gainDb ?? c.audioGain ?? 0, fi, fo)}` };
+        const next = mapClip(tl, c.id, (x) => sound({ ...x, ...(op.gainDb != null ? { audioGain: r2(op.gainDb) } : {}), ...(op.fadeIn != null ? { audioFadeIn: r2(op.fadeIn) } : {}), ...(op.fadeOut != null ? { audioFadeOut: r2(op.fadeOut) } : {}) }, V1N));
+        const fx = fxOf(findClip(next, "v1", c.id), V1N);
+        return { snap: { ...snap, timeline: next }, summary: `${name(c)}'s dialogue: ${clipAudioText(op.gainDb ?? c.audioGain ?? 0, fi, fo)}${fx ? ", " + fx : ""}` };
       }
       const c = findClip(tl, track, op.clipId) as Attached & { gainDb?: number; fadeIn?: number; fadeOut?: number };
       const len = placeOf(view(), c).e - placeOf(view(), c).s;
       const fi = op.fadeIn ?? c.fadeIn ?? 0, fo = op.fadeOut ?? c.fadeOut ?? 0;
       if (fi + fo > len + 0.01) throw new EditError(`${name(c)} is ${len.toFixed(2)}s long: the fades (${fi}s in, ${fo}s out) do not fit.`);
       if (op.gainDb != null && (op.gainDb < -60 || op.gainDb > 12)) throw new EditError("Music and sound effects take a gain from -60 to 12 dB.");
-      const next = withTracks(tl, track, (tl.tracks[track] as Clip[]).map((x) => (x.id === c.id ? { ...x, ...(op.gainDb != null ? { gainDb: r2(op.gainDb) } : {}), ...(op.fadeIn != null ? { fadeIn: r2(op.fadeIn) } : {}), ...(op.fadeOut != null ? { fadeOut: r2(op.fadeOut) } : {}) } : x)));
+      const next = withTracks(tl, track, (tl.tracks[track] as Clip[]).map((x) => (x.id === c.id ? sound({ ...x, ...(op.gainDb != null ? { gainDb: r2(op.gainDb) } : {}), ...(op.fadeIn != null ? { fadeIn: r2(op.fadeIn) } : {}), ...(op.fadeOut != null ? { fadeOut: r2(op.fadeOut) } : {}) }, AN) : x)));
       const g = op.gainDb ?? c.gainDb ?? (track === "a2" ? -18 : -6);
-      return { snap: { ...snap, timeline: next }, summary: `${name(c)}: ${clipAudioText(g, fi, fo)}` };
+      const fx = fxOf(findClip(next, track, c.id), AN);
+      return { snap: { ...snap, timeline: next }, summary: `${name(c)}: ${clipAudioText(g, fi, fo)}${fx ? ", " + fx : ""}` };
     }
 
     // ---- speed, transitions, keyframes (Phase 5) ----
@@ -1556,6 +1574,8 @@ export function lookText(tl: Timeline): string {
 /** v1Offset / v1Limit: a page of the V1 sequence (default the first maxPerTrack clips). clipNote: more to say about a
  *  V1 clip (get_project: its sound at the edges and the pauses inside). */
 export type SummaryOpts = { v1Offset?: number; v1Limit?: number; clipNote?: (c: SeqClip) => string };
+/** Phase 6: a music or sound-effect clip's own pan, EQ, reverb and volume keys. */
+const soundNote = (c: Record<string, unknown>) => { const t = clipFxText({ pan: c.pan as number, eq: c.eq as Eq, reverb: c.reverb as Reverb, keys: c.gainKeys as AudioKey[] }); return t ? `, ${t}` : ""; };
 /** Phase 4: " blend screen 60%" for a layer that is not plain. */
 const blendNote = (c: Record<string, unknown>) => { const t = blendText(c.blend as BlendMode | undefined, c.opacity as number | undefined); return t ? ` blend ${t}` : ""; };
 
@@ -1582,6 +1602,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
     if (c.audioMuted) extra.push("muted");
     if (c.audioGain) extra.push(`dialogue ${c.audioGain > 0 ? "+" : ""}${c.audioGain} dB`);
     if (c.audioFadeIn || c.audioFadeOut) extra.push(`fades ${c.audioFadeIn ?? 0}/${c.audioFadeOut ?? 0}s`);
+    { const r = c as unknown as Record<string, unknown>, fx = clipFxText({ pan: r.audioPan as number, eq: r.audioEq as Eq, reverb: r.audioReverb as Reverb, keys: r.audioKeys as AudioKey[] }); if (fx) extra.push(`dialogue ${fx}`); }
     if (c.rotate && !look.includes("turned") ) extra.push(`turned ${c.rotate}°`);
     if (!normalSpeed(c)) extra.push(speedText(c));
     if (c.transition) extra.push(`${c.transition.type}${c.transition.dir ? " " + c.transition.dir : ""} ${c.transition.duration}s in`);
@@ -1605,7 +1626,7 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
       const auto = k === "a2" ? autoMusicFades(c.end - c.start) : { fadeIn: 0, fadeOut: 0 };
       const fd = (own: unknown, a: number) => (own != null ? String(own) : `${+a.toFixed(2)} auto`);
       const fades = c.fadeIn != null || c.fadeOut != null ? ` fades ${fd(c.fadeIn, auto.fadeIn)}/${fd(c.fadeOut, auto.fadeOut)}s` : "";
-      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}${blendNote(c)}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}${blendNote(c)}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.inside ? ` video ${(c.inside as TextInside).videoId}@${(c.inside as TextInside).from} inside the letters` : ""}${c.cutout ? " cut out of the card" : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}` : "";
+      const extra = c.kind === "zoom" ? ` x${c.zoom}` : c.kind === "broll" ? ` video=${c.videoId}@${c.sourceStart}${blendNote(c)}` : c.graphicId ? ` graphic=${c.graphicId}${c.sourceStart ? ` from ${c.sourceStart}s` : ""}${c.params && Object.keys(c.params).length ? ` params=${JSON.stringify(c.params).slice(0, 200)}` : ""}${c.behind ? " behind the person" : ""}${blendNote(c)}` : c.kind === "text" ? ` text=${JSON.stringify(c.text)}${c.style ? ` (${styleText(c.style as TextStyle)})` : ""}${c.anim && c.anim !== "none" ? ` ${c.anim}` : ""}${c.card ? ` card ${(c.card as Card).color}` : ""}${c.inside ? ` video ${(c.inside as TextInside).videoId}@${(c.inside as TextInside).from} inside the letters` : ""}${c.cutout ? " cut out of the card" : ""}${c.behind ? " behind the person" : ""}` : c.trackId ? ` track=${c.trackId} ${c.gainDb ?? -18}dB${fades}${soundNote(c)}` : c.sfxId ? ` sfx=${c.sfxId} ${c.gainDb ?? -6}dB${fades}${soundNote(c)}` : "";
       const lk = k === "v2" ? lookTags(c as Clip & ClipLook) : "";
       const on = (c.fill ? " (whole edit)" : c.anchorId ? ` on ${c.anchorId} at ${Number(c.anchorAt).toFixed(2)}` : "") + (Array.isArray(c.keys) && c.keys.length ? ` keys ${(c.keys as Key[]).map((k) => k.t).join(",")}s` : "") + (c.under ? " under V1" : "") + (lk ? " " + lk : "");
       return `  ${c.id} @${c.start.toFixed(2)}-${c.end.toFixed(2)}${on} "${c.label}"${extra}`;

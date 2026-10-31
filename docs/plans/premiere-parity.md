@@ -27,7 +27,8 @@ plugin hosting, hardware I/O, localization) are out of scope.
    textures and brand overlays.
 5. **Deeper colour (done, 31 October).** Highlights / shadows / whites / blacks, vibrance, colour wheels, HSL
    secondaries, hue vs sat, vignette; scopes in the editor. Left for later: hue vs hue, luma vs sat, RGB parade.
-6. **Audio.** Crossfades at cuts, volume keyframes, pan, per-clip EQ, reverb.
+6. **Audio (done, 31 October).** Crossfades at cuts, volume keyframes, pan, per-clip EQ, reverb. Left for later:
+   hearing pan, EQ and reverb live in the editor (a WebAudio graph), a parametric EQ.
 7. **Warp Stabilizer** for handheld footage (shake is already measured).
 8. **Morph Cut** for jump cuts in talking heads.
 9. **Adjustment layers** over a time range (affect b-roll and graphics too).

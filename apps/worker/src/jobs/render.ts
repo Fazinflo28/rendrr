@@ -1,6 +1,6 @@
 import { deleteObject, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { allWords, asSequence, boxCover, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, planRender, RenderPlanError, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
@@ -197,6 +197,12 @@ export async function renderJob(ctx: Ctx) {
       if (spec.kind === "moving") await writeMoving(spec, plan, p, signal);
       else await writeFile(p, lookFileData(spec, plan, luts));
       files.looks![name] = p;
+    }
+    // Phase 6: each reverb room's impulse response (seeded: the same room as the editor's player hears).
+    for (const [name, size] of Object.entries(plan.audioMix?.irs ?? {})) {
+      const p = join(ctx.dir, name), [l, r] = reverbIr(size);
+      await writeFile(p, wavStereo(l, r));
+      (files.irs ??= {})[name] = p;
     }
     // remove_background: the person's matte, made once per block of footage and kept (the first render waits for it).
     // The preview's clock stops meanwhile (the job's own limit allows for it: matteAllowanceMs).
