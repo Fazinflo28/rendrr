@@ -186,7 +186,50 @@ describe("pin_layer", () => {
     expect(layerOf(r.snap, id).keys!.length).toBeGreaterThan(2);
     s = run(s, { op: "pin_layer", clipId: id, off: true } as Op).snap;
     expect(layerOf(s, id).pin).toBeUndefined();
-    expect(layerOf(s, id).keys).toBeUndefined();
+    expect(layerOf(s, id).keys).toBeUndefined(); // only the pin's keys were there
+  });
+  it("the layer's own keys (a fade, a turn) stay through every update and through unpinning; its position cannot be keyed by hand", () => {
+    let s = withText();
+    const id = textId(s);
+    s = run(s, { op: "pin_layer", clipId: id, to: { clipId: "a", object: "o1" } } as Op).snap;
+    s = run(s, { op: "set_keyframes", track: "v3", clipId: id, keys: [{ t: 0, opacity: 0 }, { t: 0.5, opacity: 1 }] } as Op).snap;
+    const l = layerOf(s, id);
+    expect(l.keys!.filter((k) => k.opacity != null)).toHaveLength(2);
+    expect(Math.abs(offsetAt(s, id, 2.6).x - (cxAt(3.6) - cxAt(1.5)))).toBeLessThan(0.006);
+    s = run(s, { op: "set_text", clipId: id, start: 0.6, end: 3.5, edit: true } as Op).snap;
+    expect(layerOf(s, id).keys!.filter((k) => k.opacity != null)).toHaveLength(2);
+    expect(() => run(s, { op: "set_keyframes", track: "v3", clipId: id, keys: [{ t: 0, x: 0.1 }, { t: 1, x: 0.2 }] } as Op)).toThrow(/pinned to object o1 on a/);
+    s = run(s, { op: "pin_layer", clipId: id, off: true } as Op).snap;
+    expect(layerOf(s, id).keys!.map((k) => [k.t, k.opacity, k.x])).toEqual([[0, 0, undefined], [0.5, 1, undefined]]);
+  });
+  it("a clip split after tracking: the layer follows the object across both halves", () => {
+    let s = run(withText(), { op: "split_clip", track: "v1", clipId: "a", at: 2.5 } as Op).snap;
+    const id = textId(s);
+    s = run(s, { op: "pin_layer", clipId: id, to: { clipId: "a", object: "o1" } } as Op).snap;
+    // Edit 3.4 s is on the second half: footage 4.4 s.
+    expect(Math.abs(offsetAt(s, id, 3.4).x - (cxAt(4.4) - cxAt(1.5)))).toBeLessThan(0.006);
+  });
+  it("a flipped clip: the object moves the other way on screen", () => {
+    let s = withText();
+    const id = textId(s);
+    s = run(s, { op: "set_flip", clipId: "a", flip: "h" } as Op, { op: "pin_layer", clipId: id, to: { clipId: "a", object: "o1" } } as Op).snap;
+    expect(Math.abs(offsetAt(s, id, 2.6).x + (cxAt(3.6) - cxAt(1.5)))).toBeLessThan(0.006);
+  });
+  it("a look copied to a clip with another object of the same id: its shapes keep the path, not the link", () => {
+    let s = run(tracked().snap, { op: "set_effects", clipId: "a", effects: [{ type: "blur", amount: 60, area: { shape: "rect", follow: "object", object: "o1" } }] } as Op).snap;
+    s = run(s, { op: "track_object", clipId: "b", at: 7, box: { x: 0.6, y: 0.2, w: 0.1, h: 0.1 }, rows: rows.map((x) => [r4(x[0] + 6), ...x.slice(1)] as typeof x) } as Op).snap;
+    expect(clipOf(s, "b").objects![0].id).toBe("o1");
+    s = run(s, { op: "copy_grade", from: "a", to: ["b"], with: ["effects"] } as Op).snap;
+    expect(clipOf(s, "b").effects![0].area!.follow).toBeUndefined();
+  });
+  it("a long layer over a jumpy track: 60 keys at most, and it says the follow is rough", () => {
+    const jumpy: typeof rows = Array.from({ length: 111 }, (_, i) => { const t = r4(0.5 + i * 0.1), c = 0.3 + (i % 2) * 0.2; return [t, r4(c - 0.05), 0.45, r4(c + 0.05), 0.55, 0.9]; });
+    let s = run(base(), { op: "set_clips", track: "v1", clips: [{ id: "a", start: 0.5, end: 11.5, label: "" }] } as Op).snap;
+    s = run(s, { op: "track_object", clipId: "a", at: 1, box: { x: 0.25, y: 0.45, w: 0.1, h: 0.1 }, rows: jumpy } as Op).snap;
+    s = run(s, { op: "add_text", text: "J", start: 0, end: 11, edit: true, x: 0.5, y: 0.3, anim: "none" } as Op).snap;
+    const r = run(s, { op: "pin_layer", clipId: textId(s), to: { clipId: "a", object: "o1" } } as Op);
+    expect(layerOf(r.snap, textId(s)).keys!.length).toBeLessThanOrEqual(60);
+    expect(r.summary).toMatch(/follows its object only roughly/);
   });
   it("refuses captions and adjustment layers, and an object that is not there", () => {
     let s = withText();

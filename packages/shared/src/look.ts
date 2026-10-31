@@ -199,9 +199,12 @@ export const moving = (a: Area | undefined): boolean => (!!a?.keys && a.keys.len
 export function normalizePath<A extends Area>(a: A): A {
   if (a.shape !== "path" || !a.pathKeys?.length) return a;
   const ks = [...a.pathKeys].sort((p, q) => p.at - q.at).filter((k, i, arr) => i === arr.length - 1 || arr[i + 1].at - k.at > 1e-6);
-  return { ...a, points: a.points ?? ks[0].points, pathKeys: ks };
+  // One key (a shape redrawn at one moment): that key's shape is the path's, whatever it was before.
+  return { ...a, points: ks.length === 1 ? ks[0].points : a.points ?? ks[0].points, pathKeys: ks };
 }
 /** When a moving area's keys start (its first key's moment). */
+/** A path's points as drawn when it does not move: its points, else its first key's (never undefined). */
+export const pathPoints = (a: Area): [number, number][] => (a.points ?? a.pathKeys?.[0]?.points ?? []) as [number, number][];
 export const firstKeyAt = (a: Area): number => (a.pathKeys?.length ? a.pathKeys[0].at : a.keys?.[0]?.at ?? 0);
 type Pt = [number, number];
 /**
@@ -651,8 +654,9 @@ export function hashOf(x: unknown): string {
 /** Signed distance (pixels, negative inside) from pixel centre (px, py) to the area's edge, at W x H. */
 function distanceFn(a: Area, W: number, H: number): (px: number, py: number) => number {
   if (a.shape === "path") {
-    const pts = a.points!.map(([x, y]) => [x * W, y * H] as [number, number]);
+    const pts = pathPoints(a).map(([x, y]) => [x * W, y * H] as [number, number]);
     const n = pts.length;
+    if (n < 3) return () => 1e9;
     return (px, py) => {
       let best = Infinity, inside = false;
       for (let i = 0, j = n - 1; i < n; j = i++) {
@@ -859,7 +863,7 @@ export function gradeText(g: Grade, lutName?: (id: string) => string | undefined
   return out.join(", ") || "none";
 }
 const pct = (n: number) => `${Math.round(n * 100)}%`;
-export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${a.points!.length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}${a.follow === "face" ? ` following the face (${a.keys?.length ?? 0} keys)` : a.follow === "object" ? ` following object ${a.object} (${a.keys?.length ?? 0} keys)` : a.pathKeys?.length && moving(a) ? ` changing shape (${a.pathKeys.length} keys, ${+a.pathKeys[0].at.toFixed(2)}-${+a.pathKeys[a.pathKeys.length - 1].at.toFixed(2)}s)` : moving(a) ? ` moving (${a.keys!.length} keys, ${+a.keys![0].at.toFixed(2)}-${+a.keys![a.keys!.length - 1].at.toFixed(2)}s)` : ""}`;
+export const areaText = (a: Area) => `${a.invert ? "outside " : ""}${a.shape === "path" ? `path of ${pathPoints(a).length} points` : `${a.shape} ${pct(a.w!)}x${pct(a.h!)} at ${pct(a.x!)},${pct(a.y!)}`}${a.radius ? ` corners ${pct(a.radius)}` : ""}${a.feather ? ` feather ${pct(a.feather)}` : ""}${a.follow === "face" ? ` following the face (${a.keys?.length ?? 0} keys)` : a.follow === "object" ? ` following object ${a.object} (${a.keys?.length ?? 0} keys)` : a.pathKeys?.length && moving(a) ? ` changing shape (${a.pathKeys.length} keys, ${+a.pathKeys[0].at.toFixed(2)}-${+a.pathKeys[a.pathKeys.length - 1].at.toFixed(2)}s)` : moving(a) ? ` moving (${a.keys!.length} keys, ${+a.keys![0].at.toFixed(2)}-${+a.keys![a.keys!.length - 1].at.toFixed(2)}s)` : ""}`;
 export const chromaKeyText = (k: ChromaKey) => `${k.color} similarity ${k.similarity} blend ${k.blend}${k.spill ? ` spill ${k.spill}` : ""}`;
 export const masksText = (ms: Mask[]) => ms.map((m, i) => `${i && m.mode && m.mode !== "add" ? m.mode + " " : ""}${areaText(m)}`).join(", ");
 export const effectsText = (es: Effect[]) => es.map((e) => e.type === "pin" ? `corner pin${e.corners ? ` to ${e.corners.map((c) => `${Math.round(c[0] * 100)}%,${Math.round(c[1] * 100)}%`).join(" ")}` : ""}` : `${e.type === "rgbsplit" ? "RGB split" : e.type} ${e.amount}${e.area ? ` in ${areaText(e.area)}` : ""}`).join(", ");

@@ -13,7 +13,7 @@ import { allWords, type Line, type Silence, type Transcript, type Word } from ".
 import { EXPORT_FORMATS, MARK_KINDS, type Angle, type Mark, type MarkEdit, type Multicam } from "./timeline";
 import { multicamText, planText, type AnglePlanPart } from "./multicam";
 import { editToFootage, RENDRR_MARK } from "./marks";
-import { AnchorSchema, DIRS, KeySchema, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
+import { AnchorSchema, DIRS, KEY_PROPS, KeySchema, keyTracks, motionAt, RampPointSchema, SOUND_SPEEDS, TRANSITIONS, USES_HANDLES, type Key, type RampPoint, type Transition } from "./motion";
 import { exportText, planTransitions, type FootageInfo } from "./renderPlan";
 import { libraryItem, libraryParams } from "./library";
 import { BlendModeSchema, blendText, type BlendMode } from "./blend";
@@ -1192,8 +1192,10 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         const m = more(findClip(next, "v1", c.id) as SeqClip);
         return { snap: { ...snap, timeline: next }, summary: (keys.length ? `${name(c)}: ${keyText(keys)}` : `${name(c)}: keyframes removed`) + (m ? `; ${m}` : "") };
       }
-      const c = findClip(tl, track, op.clipId) as Attached & { kind?: string };
+      const c = findClip(tl, track, op.clipId) as Attached & { kind?: string; pin?: Pin };
       if (isCaptionMarker(track, c)) throw new EditError("Caption clips follow their transcript line; style captions with set_caption_style.");
+      // A pinned layer's position (and size, when it scales with the object) comes from the object's track.
+      if (c.pin && keys.some((k) => k.x != null || k.y != null || (c.pin!.scale && k.scale != null))) throw new EditError(`${name(c)} is pinned to object ${c.pin.object} on ${c.pin.clipId}: its position${c.pin.scale ? " and size come" : " comes"} from the object. Key rotation, opacity${c.pin.scale ? "" : " or scale"} only, or unpin it first (pin_layer off: true).`);
       if (track === "v2" && c.kind !== "broll") throw new EditError(`Clip "${op.clipId}" on V2 is a zoom: keyframes go on b-roll, text, graphics or V1 clips.`);
       const len = placeOf(view(), c).e - placeOf(view(), c).s;
       for (const k of keys) if (k.t > len + 0.05) throw new EditError(`Keyframe at ${k.t}s is past the end of ${name(c)} (${len.toFixed(2)}s). Key times are seconds from the clip's start.`);
@@ -1218,7 +1220,9 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       const ids = lookIds(tl, { clipIds: op.to, all: op.all, video: op.video }).filter((id) => id !== op.from);
       if (!ids.length) throw new EditError("Send the clips to copy onto: to (clip ids), all: true, or video.");
       // A shape that follows an object the other clip does not have keeps its path as plain keyframes there.
-      const unfollow = (c: Clip & ClipLook) => <A extends Area>(a: A): A => { if (a.follow !== "object" || c.objects?.some((o) => o.id === a.object)) return a; const { follow: _f, object: _o, ...rest } = a; return rest as A; };
+      // (Another clip's object with the same id is not this one: only a copy of it, from a split, keeps the follow.)
+      const srcObj = (id?: string) => src.objects?.find((o) => o.id === id);
+      const unfollow = (c: Clip & ClipLook) => <A extends Area>(a: A): A => { const o = srcObj(a.object); if (a.follow !== "object" || (o && c.objects?.some((x) => sameObject(x, o)))) return a; const { follow: _f, object: _o, ...rest } = a; return rest as A; };
       const next = mapLook(tl, ids, (c) => {
         const x = { ...c };
         for (const k of what) { if (src[k]) (x as Record<string, unknown>)[k] = JSON.parse(JSON.stringify(src[k])); else delete x[k]; }
@@ -1334,8 +1338,14 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (l.kind !== "text" && l.kind !== "graphic") throw new EditError(`${name(l)} is ${l.kind === "adjust" ? "an adjustment layer" : "a caption"}: text layers and graphics can be pinned to an object.`);
       if (op.off) {
         if (!l.pin) return { snap, summary: `${name(l)} is not pinned` };
-        const next = withTracks(tl, "v3", (tl.tracks.v3 as (V3Clip & { pin?: Pin })[]).map((x) => { if (x.id !== l.id) return x; const { pin: _p, keys: _k, ...rest } = x; return rest as V3Clip; }));
-        return { snap: { ...snap, timeline: next }, summary: `${name(l)}: unpinned (its keyframes removed)` };
+        // The keys the pin made go (position, and size when it scaled); the layer's own (turn, fade) stay.
+        const next = withTracks(tl, "v3", (tl.tracks.v3 as (V3Clip & { pin?: Pin; keys?: Key[] })[]).map((x) => {
+          if (x.id !== l.id) return x;
+          const { pin: _p, keys, ...rest } = x;
+          const own = (keys ?? []).map((k) => { const { x: _x, y: _y, scale: sc, ...r } = k; return l.pin!.scale || sc == null ? r : { ...r, scale: sc }; }).filter((k) => KEY_PROPS.some((p) => (k as Key)[p] != null));
+          return (own.length ? { ...rest, keys: own } : rest) as V3Clip;
+        }));
+        return { snap: { ...snap, timeline: next }, summary: `${name(l)}: unpinned (the keyframes that moved it with the object removed)` };
       }
       const to = op.to ?? (l.pin ? { clipId: l.pin.clipId, object: l.pin.object } : undefined);
       if (!to) throw new EditError("Send to {clipId, object}: the clip and the tracked object's id to pin it to (track_object first).");
@@ -1369,7 +1379,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         const want = op.area ?? (c.skin ? (c.skin.area ? "keep" : "frame") : "face");
         if (want === "keep") return { area: c.skin!.area, face: c.skin!.face };
         if (want === "frame") return {};
-        if (want !== "face") return { area: want };
+        if (want !== "face") return { area: normalizePath(want) };
         if (!op.faceAreas) throw new EditError("retouch_skin with area \"face\" needs the faces measured: send it through apply_edits, which measures them (or send area \"frame\" or a shape).");
         const a = op.faceAreas[c.id];
         if (!a) faceless.push(c.id);
@@ -1523,7 +1533,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     case "adjustment_layer": {
       if (op.grade?.lut && ctx.getLut && !ctx.getLut(op.grade.lut.id)) throw new EditError(`There is no LUT "${op.grade.lut.id}" in your LUTs.`);
       if (op.masks?.some((m) => m.follow)) throw new EditError(`An adjustment layer has no footage of its own to find a face or an object in: move its mask with keys (at: seconds from the layer's start), or mask the clip itself (set_masks follow "face" or "object").`);
-      const fx = { ...(op.grade && gradeIsActive(op.grade) ? { grade: op.grade } : {}), ...(op.effects?.length ? { effects: op.effects } : {}) };
+      const fx = { ...(op.grade && gradeIsActive(op.grade) ? { grade: op.grade } : {}), ...(op.effects?.length ? { effects: op.effects.map((e) => (e.area ? { ...e, area: normalizePath(e.area) } : e)) } : {}) };
       type LayerFx = { grade?: Grade; effects?: Effect[]; masks?: Mask[]; opacity?: number; fadeIn?: number; fadeOut?: number };
       // Phase 16: where (masks), how strong (opacity) and its fades; left out keeps them, null removes them.
       const r3 = (v: number) => Math.round(v * 1000) / 1000;
@@ -1870,7 +1880,7 @@ export function applyOp(snap: Snapshot, op: Op, ctx: EditContext): { snap: Snaps
   const problems = timelineProblems(timeline);
   if (problems.length) throw new EditError(problems.slice(0, 3).join(" "));
   const laid = layoutTimeline(timeline, words);
-  const pinned = repin(laid, words);
+  const pinned = repin(laid, words, r.snap.aspect);
   return { snap: { ...r.snap, timeline: pinned.timeline }, summary: r.summary + pinned.note };
 }
 
@@ -1881,73 +1891,106 @@ export function applyOp(snap: Snapshot, op: Op, ctx: EditContext): { snap: Snaps
  * within 0.2% of the frame (at most 60). Before and after the host clip plays, the layer holds. A pin whose clip or
  * object is gone is taken off (the layer keeps its keys).
  */
-export function repin(tl: Timeline, words: Word[]): { timeline: Timeline; note: string } {
-  const layers = (tl.tracks.v3 as (V3Clip & { pin?: Pin })[]).filter((l) => l.pin);
+export function repin(tl: Timeline, words: Word[], aspect?: string): { timeline: Timeline; note: string } {
+  const layers = (tl.tracks.v3 as (V3Clip & { pin?: Pin; keys?: Key[] })[]).filter((l) => l.pin);
   if (!layers.length) return { timeline: tl, note: "" };
   const v = sequenceView(tl, words);
-  const dropped: string[] = [];
+  const ar = aspect ? (() => { const [a, b] = aspect.split(":").map(Number); return a > 0 && b > 0 ? a / b : 16 / 9; })() : 16 / 9;
+  const dropped: string[] = [], rough: string[] = [];
   const keysOf = new Map<string, Key[] | null>();
+  type Host = (SeqClip | V2Clip) & ClipLook & { keys?: Key[]; anchor?: { x: number; y: number }; flip?: "h" | "v" | "both"; angle?: string };
   for (const l of layers) {
     const pin = l.pin!;
     const v1 = (tl.tracks.v1 as (SeqClip & ClipLook)[]).find((c) => c.id === pin.clipId);
     const b = v1 ? null : (tl.tracks.v2 as (V2Clip & ClipLook)[]).find((c) => c.id === pin.clipId && c.kind === "broll");
-    const host = v1 ?? b;
-    const obj = host?.objects?.find((o) => o.id === pin.object);
-    if (!host || !obj?.track.length) { dropped.push(name(l)); keysOf.set(l.id, null); continue; }
-    // Where the host plays in the edit, and its footage second at an edit second.
-    const place = v1 ? v.clip(v1.id) : { start: b!.start, end: b!.end };
-    if (!place || place.end - place.start < 0.01) { keysOf.set(l.id, []); continue; }
-    const src = (e: number) => (v1 ? (v1.freeze ? v1.sourceIn : v.editToSource(v1.id, e)) : (b!.sourceStart ?? 0) + (e - b!.start));
-    // On screen: a V1 clip's framing scales its picture about the middle and moves it.
-    const f = v1?.framing && (v1.framing.scale !== 1 || v1.framing.x || v1.framing.y) ? v1.framing : null;
-    const screen = (e: number) => {
-      const bx = objectBoxAt(obj, src(Math.min(place.end, Math.max(place.start, e))))!;
-      const cx = (bx[0] + bx[2]) / 2, cy = (bx[1] + bx[3]) / 2, sz = Math.sqrt(Math.max(1e-6, (bx[2] - bx[0]) * (bx[3] - bx[1])));
-      return f ? { x: 0.5 + (cx - 0.5) * f.scale + f.x, y: 0.5 + (cy - 0.5) * f.scale + f.y, s: sz * f.scale } : { x: cx, y: cy, s: sz };
+    const host0 = (v1 ?? b) as Host | null;
+    const obj = host0?.objects?.find((o) => o.id === pin.object);
+    if (!host0 || !obj?.track.length) { dropped.push(name(l)); keysOf.set(l.id, null); continue; }
+    // A V1 clip split after tracking: each half carries the same object, and the layer follows it across them.
+    const hosts: { c: Host; place: { start: number; end: number } }[] = [];
+    if (v1) {
+      for (const c of tl.tracks.v1 as (SeqClip & ClipLook)[]) {
+        if (c.id !== v1.id && !c.objects?.some((o) => sameObject(o, obj))) continue;
+        const pl = v.clip(c.id);
+        if (pl && pl.end - pl.start >= 0.01) hosts.push({ c: c as Host, place: { start: pl.start, end: pl.end } });
+      }
+    } else if (b!.end - b!.start >= 0.01) hosts.push({ c: b as Host, place: { start: b!.start, end: b!.end } });
+    if (!hosts.length) { keysOf.set(l.id, []); continue; }
+    hosts.sort((p, q) => p.place.start - q.place.start);
+    const at = (e: number) => hosts.find((h) => e >= h.place.start - 1e-6 && e <= h.place.end + 1e-6) ?? (e < hosts[0].place.start ? hosts[0] : hosts.reduce((p, q) => (q.place.end <= e ? q : p), hosts[0]));
+    /** The object's centre and size on screen at edit second e: its box as tracked (the picture fitted), mirrored by the
+     *  clip's flip, through the framing (an angle's own, on a multicam angle), then the clip's keyframes. */
+    const screen = (e0: number) => {
+      const h = at(e0), c = h.c, e = Math.min(h.place.end, Math.max(h.place.start, e0));
+      const isV1 = v1 != null;
+      const src = isV1 ? ((c as SeqClip).freeze ? (c as SeqClip).sourceIn : v.editToSource(c.id, e)) : ((c as V2Clip).sourceStart ?? 0) + (e - (c as V2Clip).start);
+      const bx = objectBoxAt(obj, src)!;
+      let cx = (bx[0] + bx[2]) / 2, cy = (bx[1] + bx[3]) / 2, sz = Math.sqrt(Math.max(1e-6, (bx[2] - bx[0]) * (bx[3] - bx[1])));
+      if (c.flip === "h" || c.flip === "both") cx = 1 - cx;
+      if (c.flip === "v" || c.flip === "both") cy = 1 - cy;
+      const ang = isV1 && c.angle ? tl.multicam?.angles.find((a) => a.videoId === c.angle) : undefined;
+      const fr = isV1 ? (ang?.framing ?? (c as SeqClip).framing) : null;
+      if (fr && (fr.scale !== 1 || fr.x || fr.y)) { cx = 0.5 + (cx - 0.5) * fr.scale + fr.x; cy = 0.5 + (cy - 0.5) * fr.scale + fr.y; sz *= fr.scale; }
+      // The clip's own keyframes move, scale and turn its whole picture (V1 keys at footage seconds; b-roll's from its start).
+      const tr = c.keys?.length ? keyTracks(c.keys) : null;
+      if (tr) {
+        const m = motionAt(tr, isV1 ? src : e - (c as V2Clip).start), an = c.anchor ?? { x: 0.5, y: 0.5 };
+        let dx = (cx - an.x) * m.scale * ar, dy = (cy - an.y) * m.scale;
+        if (m.rotation) { const r = (m.rotation * Math.PI) / 180, co = Math.cos(r), si = Math.sin(r); [dx, dy] = [dx * co - dy * si, dx * si + dy * co]; }
+        cx = an.x + dx / ar + m.x; cy = an.y + dy + m.y; sz *= m.scale;
+      }
+      return { x: cx, y: cy, s: sz };
     };
-    const from = Math.max(l.start, place.start), len = l.end - l.start;
+    const len = l.end - l.start;
     if (len <= 0) { keysOf.set(l.id, []); continue; }
-    const ref = screen(from);
+    // Sampled where the layer and its clips overlap (every 0.1 s, coarser on a long layer); it holds outside.
+    const lo = Math.max(l.start, hosts[0].place.start), hi = Math.min(l.end, hosts[hosts.length - 1].place.end);
+    const ref = screen(lo);
     const r4 = (n: number) => Math.round(n * 10000) / 10000;
+    const own = (l.keys ?? []).map((k) => { const { x: _x, y: _y, scale: sc, ...rest } = k; return pin.scale || sc == null ? rest : { ...rest, scale: sc }; }).filter((k) => KEY_PROPS.some((p) => (k as Key)[p] != null)) as Key[];
     const samples: Key[] = [];
-    const steps = Math.max(1, Math.ceil(len / 0.1));
-    for (let i = 0; i <= steps; i++) {
-      const tt = Math.min(len, (i * len) / steps), p = screen(l.start + tt);
-      samples.push({ t: rT(tt), x: r4(p.x - ref.x), y: r4(p.y - ref.y), ...(pin.scale ? { scale: Math.min(4, Math.max(0.05, r4(p.s / ref.s))) } : {}) });
-    }
-    keysOf.set(l.id, fewestKeys(samples, 60));
+    const add = (tt: number) => { const p = screen(l.start + tt); samples.push({ t: rT(tt), x: r4(p.x - ref.x), y: r4(p.y - ref.y), ...(pin.scale ? { scale: Math.min(4, Math.max(0.05, r4(p.s / ref.s))) } : {}) }); };
+    if (hi > lo) {
+      const span = hi - lo, step = Math.max(0.1, span / 600), n = Math.max(1, Math.ceil(span / step));
+      if (lo > l.start + 1e-6) add(0);
+      for (let i = 0; i <= n; i++) add(lo - l.start + (i * span) / n);
+      if (hi < l.end - 1e-6) add(len);
+    } else { add(0); add(len); }
+    const fit = fewestKeys(samples, Math.max(2, 60 - own.length));
+    if (fit.err > 0.01) rough.push(`${name(l)} (within ${Math.round(fit.err * 100)}% of the frame)`);
+    keysOf.set(l.id, fit.keys.length ? [...fit.keys, ...own].sort((p, q) => p.t - q.t) : own);
   }
   const next = withTracks(tl, "v3", (tl.tracks.v3 as (V3Clip & { pin?: Pin })[]).map((l) => {
     if (!keysOf.has(l.id)) return l;
     const ks = keysOf.get(l.id);
     if (ks === null) { const { pin: _p, ...rest } = l; return rest as V3Clip; }
     const { keys: _k, ...rest } = l;
-    return (ks!.length > 1 ? { ...rest, keys: ks } : rest) as V3Clip;
+    return (ks!.length ? { ...rest, keys: ks } : rest) as V3Clip;
   }));
-  return { timeline: next, note: dropped.length ? `; ${dropped.slice(0, 4).join(", ")} no longer pinned (the object or its clip is gone)` : "" };
+  return { timeline: next, note: (dropped.length ? `; ${dropped.slice(0, 4).join(", ")} no longer pinned (the object or its clip is gone)` : "") + (rough.length ? `; ${rough.slice(0, 3).join(", ")} follows its object only roughly with 60 keyframes: shorten the layer or split it for a closer follow` : "") };
 }
-/** The fewest keys (at most `max`) that keep x, y and scale within a tolerance of the samples (Douglas-Peucker; the
- *  tolerance grows until they fit). */
-function fewestKeys(samples: Key[], max: number): Key[] {
-  if (samples.length <= 2) return samples;
+/** The same tracked object (a clip split after tracking carries a copy on each half). */
+export const sameObject = (a: TrackedObject, b: TrackedObject) => a.id === b.id && a.at === b.at && a.box.x === b.box.x && a.box.y === b.box.y && a.box.w === b.box.w && a.box.h === b.box.h && a.track.length === b.track.length && a.track[0]?.[0] === b.track[0]?.[0];
+/** The fewest keys (at most `max`) that keep x, y and scale within 0.2% of the frame: the samples that matter most
+ *  taken one at a time (the worst-placed first), and how far off the result still is. */
+function fewestKeys(samples: Key[], max: number): { keys: Key[]; err: number } {
+  if (samples.length <= 2) return { keys: still(samples) ? [] : samples, err: 0 };
   const props = ["x", "y", "scale"] as const;
   const off = (a: Key, b: Key, m: Key) => { const u = b.t > a.t ? (m.t - a.t) / (b.t - a.t) : 0; return Math.max(...props.map((p) => (a[p] == null ? 0 : Math.abs(a[p]! + (b[p]! - a[p]!) * u - m[p]!) * (p === "scale" ? 0.25 : 1)))); };
-  for (let tol = 0.002; ; tol *= 1.5) {
-    const keep = new Uint8Array(samples.length); keep[0] = keep[samples.length - 1] = 1;
-    const stack: [number, number][] = [[0, samples.length - 1]];
-    while (stack.length) {
-      const [i, j] = stack.pop()!;
-      let worst = -1, at = -1;
-      for (let k = i + 1; k < j; k++) { const d = off(samples[i], samples[j], samples[k]); if (d > worst) { worst = d; at = k; } }
-      if (worst > tol) { keep[at] = 1; stack.push([i, at], [at, j]); }
-    }
-    const out = samples.filter((_, k) => keep[k]);
-    if (out.length <= max) {
-      // A layer that does not move gets no keys.
-      return out.every((k) => Math.abs(k.x!) < 1e-4 && Math.abs(k.y!) < 1e-4 && (k.scale == null || Math.abs(k.scale - 1) < 1e-4)) ? [] : out;
-    }
+  const keep = [0, samples.length - 1];
+  let err = 0;
+  for (;;) {
+    let worst = -1, at = -1;
+    for (let s = 0; s + 1 < keep.length; s++) for (let k = keep[s] + 1; k < keep[s + 1]; k++) { const d = off(samples[keep[s]], samples[keep[s + 1]], samples[k]); if (d > worst) { worst = d; at = k; } }
+    err = Math.max(0, worst);
+    if (worst <= 0.002 || keep.length >= max) break;
+    keep.push(at); keep.sort((p, q) => p - q);
   }
+  const out = keep.map((k) => samples[k]);
+  return { keys: still(out) ? [] : out, err: err <= 0.002 ? 0 : err };
 }
+/** Keys that do not move the layer. */
+const still = (ks: Key[]) => ks.every((k) => Math.abs(k.x ?? 0) < 1e-4 && Math.abs(k.y ?? 0) < 1e-4 && (k.scale == null || Math.abs(k.scale - 1) < 1e-4));
 
 // ---------------------------------------------------------------------------------------------
 // Small text summary of a project for the AI (get_project). Kept well under 8k tokens.

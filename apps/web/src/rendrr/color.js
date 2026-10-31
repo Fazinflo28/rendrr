@@ -503,7 +503,8 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
       ${mode === "path" && html`<div class="row" style="gap:6px" id="path-draft"><span class="t-small muted grow">${draft.length} points</span>
         <${Btn} size="xs" id="path-done" disabled=${draft.length < 3} onClick=${() => {
           // The first redraw of a path keeps the shape it had as a key at the clip's start, so it morphs from it.
-          if (redrawing) { const m = masks[redrawing.i], start = clip.sourceIn ?? clip.sourceStart ?? 0; const base = m.pathKeys?.length || redrawing.at <= start + 0.05 ? m : keyPath(m, start, m.points); doOp(mop(masks.map((x, j) => (j === redrawing.i ? keyPath(base, redrawing.at, draft) : x)))); }
+          // Redrawn at the clip's start with no keys yet: the path simply takes the new shape.
+          if (redrawing) { const m = masks[redrawing.i], start = clip.sourceIn ?? clip.sourceStart ?? 0, atStart = redrawing.at <= start + 0.05; const base = m.pathKeys?.length || atStart ? m : keyPath(m, start, m.points); doOp(mop(masks.map((x, j) => (j !== redrawing.i ? x : !m.pathKeys?.length && atStart ? { ...m, points: draft } : keyPath(base, redrawing.at, draft))))); }
           else doOp(mop([...masks, { shape: "path", points: draft }]));
           setMode(null); setDraft([]); setRedrawing(null); }}>${redrawing ? `Key at ${redrawing.at.toFixed(1)}s` : "Done"}<//>
         <${Btn} kind="ghost" size="xs" onClick=${() => { setMode(null); setDraft([]); setRedrawing(null); }}>Cancel<//></div>`}

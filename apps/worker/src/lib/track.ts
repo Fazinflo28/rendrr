@@ -15,13 +15,15 @@ const PYTHON = process.env.PYTHON_BIN || "python3";
 export type TrackRow = [number, number, number, number, number, number];
 export type TrackOpts = { from: number; to: number; at: number; box: { x: number; y: number; w: number; h: number }; w: number; h: number; rotate: number; fitY: number; focus?: { x: number; y: number }; fps?: number; dir: string; signal?: AbortSignal };
 
-export async function trackObject(input: string, o: TrackOpts): Promise<TrackRow[]> {
+export async function trackObject(input: string, o0: TrackOpts): Promise<TrackRow[]> {
+  // Nothing before the file's start (a multicam angle that starts later): its frames are read from 0.
+  const o = o0.from < 0 ? { ...o0, from: 0, at: Math.max(0, o0.at) } : o0;
   const fps = o.fps ?? 10;
   const turn = o.rotate === 90 ? "transpose=1," : o.rotate === 270 ? "transpose=2," : o.rotate === 180 ? "hflip,vflip," : "";
   const cut = o.focus ? `x='clip(${o.focus.x}*iw-ow/2,0,iw-ow)':y='clip(${o.focus.y}*ih-oh*0.4,0,ih-oh)'` : `(iw-ow)/2:(ih-oh)*${o.fitY}`;
   const raw = join(o.dir, `track-${Math.random().toString(36).slice(2)}.gray`);
   const len = Math.max(0.1, o.to - o.from);
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", Math.max(0, o.from).toFixed(3), "-t", len.toFixed(3), "-i", input,
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", o.from.toFixed(3), "-t", len.toFixed(3), "-i", input,
     "-vf", `fps=${fps},${turn}scale=${o.w}:${o.h}:force_original_aspect_ratio=increase,crop=${o.w}:${o.h}:${cut},format=gray`, "-an", "-f", "rawvideo", raw], { signal: o.signal });
   try { return await follow(raw, o, fps); } finally { await rm(raw, { force: true }); }
 }

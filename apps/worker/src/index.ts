@@ -25,6 +25,9 @@ import { renderFailed, renderJob } from "./jobs/render";
 import { cpuBudget, filterThreads } from "./lib/ffmpeg";
 import { BROWSER_SLOTS, closeIdleBrowsers, GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
 import { guarded } from "./lib/job";
+// Object tracking runs in the frames queue but takes longer than frames (up to a minute of footage, the tracker's own
+// 120 s limit inside it); the API waits 150 s for it.
+const TRACK_TIMEOUT_MS = 140_000;
 
 env(); // fail fast on missing settings
 // Python's maths libraries (OpenBLAS) start a thread per CPU of the host (48 on Railway), not of the container (6),
@@ -64,7 +67,7 @@ const workers = [
   new Worker(QUEUES.analyze.name, guarded("analyze", videoLimit, "Processing", analyzeJob, videoFailed, videoUser), { connection: newRedis(), concurrency: conc("analyze", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.render.name, guarded("render", renderLimit, "The render", renderJob, (job, msg, code) => renderFailed((job.data as { renderId: string }).renderId, msg, code), renderUser), { connection: newRedis(), concurrency: conc("render", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.graphic.name, guarded("graphic", graphicLimit, "The graphic", graphicJob, (job, msg) => graphicFailed(job.data as GraphicJob, msg)), { connection: newRedis(), concurrency: conc("graphic", 1), lockDuration: 60_000 }),
-  new Worker(QUEUES.frames.name, guarded("frames", QUEUES.frames.timeoutMs, "Taking frames", framesJob, async () => {}), { connection: newRedis(), concurrency: conc("frames", 2), lockDuration: 60_000 }),
+  new Worker(QUEUES.frames.name, guarded("frames", async (job) => ((job.data as { track?: unknown }).track ? TRACK_TIMEOUT_MS : QUEUES.frames.timeoutMs), "Taking frames", framesJob, async () => {}), { connection: newRedis(), concurrency: conc("frames", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.breakdown.name, guarded("breakdown", videoLimit, "Reading the frames", breakdownJob, async () => {}), { connection: newRedis(), concurrency: conc("breakdown", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.deep.name, guarded("deep", deepLimit, "Measuring the footage", deepJob, (job, msg) => deepFailed((job.data as { videoId: string }).videoId, msg), videoUser), { connection: newRedis(), concurrency: conc("deep", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.heard.name, guarded("heard", QUEUES.heard.timeoutMs, "Transcribing the preview", heardJob, (job, msg) => heardFailed((job.data as { renderId: string }).renderId, msg), renderUser), { connection: newRedis(), concurrency: conc("heard", 2), lockDuration: 60_000 }),

@@ -43,4 +43,20 @@ describe("a path's shape over time", () => {
     const p = planRender({ kind: "preview", snapshot: r.snap, transcript: [], source: { width: 1280, height: 720, fps: 30, seconds: 10, hasAudio: true }, videoId: "v" });
     expect(Object.values(p.lookFiles ?? {}).some((f) => f.kind === "moving")).toBe(true);
   });
+  it("one key (a path redrawn at one moment) is the path's shape; a path with keys but no points is read and drawn", async () => {
+    const { areaText, areaPicture } = await import("../src/look");
+    const ctx: EditContext = { videoId: "v", transcript: [], silences: [], sceneCuts: [], duration: 10, getStyle: () => undefined };
+    const s0: Snapshot = applyOp({ timeline: buildInitialTimeline([], 10, "clean", [], "v"), name: "t", aspect: "16:9", styleId: "s2" }, { op: "set_clips", track: "v1", clips: [{ id: "c", start: 0, end: 8, label: "" }] } as Op, ctx).snap;
+    const r = applyOp(s0, { op: "set_masks", clipId: "c", masks: [{ shape: "path", points: tri, pathKeys: [{ at: 0, points: sq }] }] } as Op, ctx);
+    expect((r.snap.timeline.tracks.v1 as { masks?: Area[] }[])[0].masks![0].points).toEqual(sq);
+    // Keys alone, where nothing normalises them (an effect's area on an adjustment layer, a skin area): no crash.
+    const bare: Area = { shape: "path", pathKeys: [{ at: 1, points: sq }] };
+    expect(areaText(bare)).toMatch(/path of 4 points/);
+    expect(areaPicture(bare, 64, 36)!.some((v) => v > 0)).toBe(true);
+    const adj = applyOp(s0, { op: "adjustment_layer", start: 1, end: 3, effects: [{ type: "blur", amount: 40, area: bare }] } as Op, ctx);
+    const layer = (adj.snap.timeline.tracks.v3 as { kind?: string; effects?: { area?: Area }[] }[]).find((x) => x.kind === "adjust")!;
+    expect(layer.effects![0].area!.points).toEqual(sq);
+    const skin = applyOp(s0, { op: "retouch_skin", clipIds: ["c"], smooth: 40, area: bare } as Op, ctx);
+    expect(((skin.snap.timeline.tracks.v1 as { skin?: { area?: Area } }[])[0].skin!.area!).points).toEqual(sq);
+  });
 });
