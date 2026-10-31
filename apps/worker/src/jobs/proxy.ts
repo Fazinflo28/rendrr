@@ -43,7 +43,7 @@ export async function proxyJob(ctx: Ctx) {
   });
   if (!info.hasVideo || info.seconds <= 0) throw new JobError("The file looks damaged. Try exporting it again, then add it.", "damaged", false);
   if (info.seconds > 4 * 3600) throw new JobError("That video is longer than 4 hours. Trim it first, then add it.", "too-long", false);
-  await prisma.video.update({ where: { id: v.id }, data: { status: local ? "previewing" : "preview", seconds: info.seconds, width: info.width, height: info.height, fps: info.fps, orientation: orientationOf(info.width, info.height), hasAudio: info.hasAudio, hdr: info.transfer ?? null } });
+  await prisma.video.update({ where: { id: v.id }, data: { status: local ? "previewing" : "preview", seconds: info.seconds, width: info.width, height: info.height, fps: info.fps, orientation: orientationOf(info.width, info.height), hasAudio: info.hasAudio, hdr: info.transfer ?? null, timecode: info.timecode } });
 
   const proxy = join(ctx.dir, "proxy.mp4"), audio = join(ctx.dir, "audio.m4a");
   const landscape = info.width >= info.height;

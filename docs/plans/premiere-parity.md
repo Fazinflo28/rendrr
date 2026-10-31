@@ -86,7 +86,10 @@ plugin hosting, hardware I/O, localization) are out of scope.
     over the whole clip (a second either side), written smoothed once, so a ramp is smoothed through its speed changes.
     Normal-speed V1 clips keep the in-render path. Measured: the shake drops from 22-30 to under 0.7 (half speed, a ramp,
     reversed, b-roll), no jump where a ramp changes speed.
-22. **Multicam sync by timecode.**
+22. **Multicam sync by timecode (done, 31 October).** Each file's start timecode is read when it is probed (MOV/MP4
+    timecode tracks, drop-frame too; older videos are read on first sync). An angle is lined up by timecode when both
+    files carry one; the sound checks it and wins only when it clearly disagrees (a camera not jammed) or timecode is
+    missing. The angle keeps how it was synced; the editor and Claude say "by timecode, sound check N%".
 
 Hardest, last: mask path keyframes (bezier masks that change shape), tracking an object other than a face, a
 face-aware Morph Cut.

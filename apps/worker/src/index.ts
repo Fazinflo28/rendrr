@@ -9,6 +9,7 @@ import { analyzeJob } from "./jobs/analyze";
 import { breakdownJob, queueMissingBreakdowns } from "./jobs/breakdown";
 import { canvasJob } from "./jobs/canvas";
 import { soundJob } from "./jobs/sound";
+import { timecodeJob } from "./jobs/timecode";
 import { deepFailed, deepJob, queueMissingDeep } from "./jobs/deep";
 import { driveSaveFailed, driveSaveJob } from "./jobs/driveSave";
 import { graphicFailed, graphicJob } from "./jobs/graphic";
@@ -69,7 +70,7 @@ const workers = [
   new Worker(QUEUES.heard.name, guarded("heard", QUEUES.heard.timeoutMs, "Transcribing the preview", heardJob, (job, msg) => heardFailed((job.data as { renderId: string }).renderId, msg), renderUser), { connection: newRedis(), concurrency: conc("heard", 2), lockDuration: 60_000 }),
   // test_graphic (and the library's preview frames and icon sheets): its own queue so a render or a long recording
   // does not hold it up.
-  new Worker(QUEUES.test.name, guarded("test", async (job) => ((job.data as { kind?: string }).kind === "sound" ? 15 * 60_000 : QUEUES.test.timeoutMs), "Testing the graphic", (ctx): Promise<unknown> => { const k = (ctx.job.data as { kind?: string }).kind; return k === "snapshot" ? snapshotJob(ctx) : k === "canvas" ? canvasJob(ctx) : k === "sound" ? soundJob(ctx) : testGraphicJob(ctx); }, async () => {}), { connection: newRedis(), concurrency: conc("test", 2), lockDuration: 60_000 }),
+  new Worker(QUEUES.test.name, guarded("test", async (job) => ((job.data as { kind?: string }).kind === "sound" ? 15 * 60_000 : QUEUES.test.timeoutMs), "Testing the graphic", (ctx): Promise<unknown> => { const k = (ctx.job.data as { kind?: string }).kind; return k === "snapshot" ? snapshotJob(ctx) : k === "canvas" ? canvasJob(ctx) : k === "sound" ? soundJob(ctx) : k === "timecode" ? timecodeJob(ctx) : testGraphicJob(ctx); }, async () => {}), { connection: newRedis(), concurrency: conc("test", 2), lockDuration: 60_000 }),
   // analyze_reference: a reference video measured into a style file.
   new Worker(QUEUES.style.name, guarded("style", styleLimit, "Measuring the reference", styleJob, (job, msg) => styleFailed((job.data as { styleFileId: string }).styleFileId, msg), styleUser), { connection: newRedis(), concurrency: conc("style", 1), lockDuration: 60_000 }),
   // A finished final copied into the user's Google Drive (save_to_drive, render_final driveFolder).

@@ -74,13 +74,15 @@ export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<{ 
   });
 }
 
-export type Probe = { seconds: number; width: number; height: number; fps: number; hasVideo: boolean; hasAudio: boolean; rotation: number; hdr: boolean; transfer?: "pq" | "hlg"; sizeBytes: number; bits: number };
+export type Probe = { seconds: number; width: number; height: number; fps: number; hasVideo: boolean; hasAudio: boolean; rotation: number; hdr: boolean; transfer?: "pq" | "hlg"; sizeBytes: number; bits: number;
+  /** Phase 22: the file's start timecode (HH:MM:SS:FF), from its timecode track or tags; "" when it has none. */
+  timecode: string };
 
 /** ffprobe with optional HTTP headers (Drive). Width and height are as displayed (rotation applied). */
 export async function probe(input: string, opts: { headers?: string; signal?: AbortSignal } = {}): Promise<Probe> {
   const args = ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", ...(opts.headers ? ["-headers", opts.headers] : []), input];
   const { stdout } = await run("ffprobe", args, { signal: opts.signal });
-  const j = JSON.parse(stdout) as { format?: { duration?: string; size?: string }; streams?: Record<string, any>[] };
+  const j = JSON.parse(stdout) as { format?: { duration?: string; size?: string; tags?: Record<string, string> }; streams?: Record<string, any>[] };
   const v = (j.streams || []).find((s) => s.codec_type === "video" && s.disposition?.attached_pic !== 1);
   const a = (j.streams || []).find((s) => s.codec_type === "audio");
   let rotation = 0;
@@ -99,6 +101,8 @@ export async function probe(input: string, opts: { headers?: string; signal?: Ab
     hdr: !!v && ["smpte2084", "arib-std-b67"].includes(String(v.color_transfer || "")),
     ...(v && ["smpte2084", "arib-std-b67"].includes(String(v.color_transfer || "")) ? { transfer: v.color_transfer === "smpte2084" ? "pq" as const : "hlg" as const } : {}),
     sizeBytes: Number(j.format?.size || 0),
+    // A camera's timecode: the container's (MOV/MP4 tmcd, MXF), else a stream's (the video's, the tmcd data track's).
+    timecode: [j.format?.tags?.timecode, v?.tags?.timecode, ...(j.streams || []).map((x) => x.tags?.timecode)].find((t) => typeof t === "string" && /^\d{1,2}[:.]\d{2}[:.]\d{2}[:;.,]\d{2,3}$/.test(t.trim()))?.trim() ?? "",
     // Bits a sample of its picture (10 or 12 for most HDR and log footage), from the decoder's pixel format.
     bits: Number(v?.bits_per_raw_sample) || (/p1[02]|p16/.test(String(v?.pix_fmt || "")) ? (/p12/.test(String(v?.pix_fmt)) ? 12 : 10) : 8),
   };

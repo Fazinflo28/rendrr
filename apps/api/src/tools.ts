@@ -198,7 +198,7 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   // The activity log keeps the edits, but long lists (clips, word ids) only as counts.
   const logged = { ...(input as object), edits: edits.map((e) => (e.op === "set_clips" ? { ...e, clips: e.clips.length } : "wordIds" in e && (e.wordIds?.length ?? 0) > 50 ? { ...e, wordIds: e.wordIds!.length } : e.op === "set_grade" && e.lut?.cube ? { ...e, lut: { ...e.lut, cube: `${e.lut.cube.length} characters` } } : e)) };
   // Phase 6: match_color gets the clips' measured frames (the worker reads them; a failure stops here, loudly).
-  // Phase 10: multicam angles sent without an offset are synced by their sound.
+  // Phase 10: multicam angles sent without an offset are synced (phase 22: by timecode, else by their sound).
   const mainVid = (p0.timeline as unknown as Timeline).mainVideoId || p0.videoId;
   const synced = await resolveMulticam(c.userId, mainVid, await resolveSoundRefs(c.userId, await resolveLutRefs(c.userId, await rerecordFirst(c.userId, edits)), c.ai ?? undefined));
   const ready = await withMeasurements(projectId, withIcons(await resolveMulticamAuto(c.userId, mainVid, p0.timeline as unknown as Timeline, synced)));

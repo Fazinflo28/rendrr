@@ -260,7 +260,8 @@ Object.assign(api, {
     for (let t = from, i = 0; t < to - 0.01; t += shot, i++) plan.push({ start: Math.round(t * 1000) / 1000, end: Math.round(Math.min(to, t + shot) * 1000) / 1000, angle: o.wide && i % 3 === 2 ? o.wide : cams[i % cams.length] });
     return { plan };
   },
-  multicamSync: async (_id, videoId) => { await wait(200); const v = await getVideo(videoId).catch(() => null); return { videoId, name: v?.name || videoId, offset: 1.234, score: 0.87, margin: 3.1, overlap: 120, sure: true }; },
+  // Phase 22: the demo's cameras carry timecode (the sound agrees), as jammed cameras do.
+  multicamSync: async (_id, videoId) => { await wait(200); const v = await getVideo(videoId).catch(() => null); return { videoId, name: v?.name || videoId, offset: 1.2, score: 0.87, margin: 3.1, overlap: 120, sure: true, by: "timecode", checked: true, note: "by timecode; the sound agrees (within 34 ms)" }; },
   faceTracks: async (_id, clips) => { await wait(150); return { tracks: Object.fromEntries(clips.map((c) => [c.id, Array.from({ length: Math.max(2, Math.round((c.srcOut - c.srcIn) * 10) + 1) }, (_, i) => { const t = c.srcIn + i / 10, x = 0.38 + Math.min(0.2, i * 0.004); return [Math.round(t * 1000) / 1000, x, 0.12, x + 0.24, 0.6]; })])) }; },
   speakerCentres: async (_id, clips) => { await wait(150); return { centers: Object.fromEntries(clips.map((c) => [c.id, { x: 0.38, y: 0.42 }])) }; },
 });

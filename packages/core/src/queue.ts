@@ -57,6 +57,8 @@ export type StyleJob = { styleFileId: string };
 export type CanvasJob = { kind: "canvas"; videoId: string; width: number; height: number; seconds: number; color: string };
 /** The user's own audio file (add_audio): the file as sent (srcKey) made into AAC 48 kHz stereo, its length measured. */
 export type SoundJob = { kind: "sound"; soundId: string; srcKey: string };
+/** Phase 22: read the start timecode of videos whose timecode was never read (made before it was read on probe). */
+export type TimecodeJob = { kind: "timecode"; videoIds: string[] };
 export type SnapshotJob = { kind: "snapshot"; userId: string; key: string; html: string; width: number; height: number; at: number };
 export type SnapshotResult = { image: string; width: number; height: number; errors: string[]; ms: number };
 /** fresh: a custom graphic drawn from its code for this test (rerecord), not from a kept recording. */

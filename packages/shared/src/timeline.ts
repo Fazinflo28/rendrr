@@ -159,7 +159,7 @@ export function fitCrop(focus: Focus | null | undefined, pw: number, ph: number,
 }
 
 /**
- * Phase 10: multicam. The other cameras of the same take, each synced to the main video by its sound: offset = the
+ * Phase 10: multicam. The other cameras of the same take, each synced to the main video (phase 22: by timecode, else by its sound): offset = the
  * angle's second at the main video's second 0 (angle time = main time + offset). score: how sure the sync is (0-1).
  * rotate and framing: the angle's own (a camera filmed sideways; where its fit cuts). audio: "main" (default) keeps
  * the main video's sound under every angle; "follow" plays each angle's own sound with its picture.
@@ -169,6 +169,8 @@ export const AngleSchema = z.object({
   offset: z.number().min(-86400).max(86400),
   name: z.string().max(40).optional(),
   score: z.number().min(0).max(1).optional(),
+  /** Phase 22: how it was lined up (timecode, else the sound); left out: by hand or by the sound before phase 22. */
+  sync: z.enum(["timecode", "sound"]).optional(),
   rotate: RotationSchema.optional(),
   framing: FramingSchema.optional(),
 });

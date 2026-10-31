@@ -115,8 +115,57 @@ export function angleOf(tl: Pick<Timeline, "multicam">, angle: string | undefine
 const signed = (x: number) => `${x >= 0 ? "+" : "-"}${Math.abs(x).toFixed(3)}s`;
 /** "2 angles: Cam B (+1.370s, sync 0.82), Cam C (-0.215s, set by hand); sound: the main video's". */
 export function multicamText(m: Multicam, nameOf?: (videoId: string) => string | undefined): string {
-  const list = m.angles.map((a) => `${a.name || nameOf?.(a.videoId) || a.videoId} (${signed(a.offset)}${a.score != null ? `, sync ${a.score.toFixed(2)}` : ", set by hand"}${a.rotate ? `, turned ${a.rotate}°` : ""})`);
+  const list = m.angles.map((a) => `${a.name || nameOf?.(a.videoId) || a.videoId} (${signed(a.offset)}${a.sync === "timecode" ? ", by timecode" : ""}${a.score != null ? `, ${a.sync === "timecode" ? "sound check" : "sync"} ${a.score.toFixed(2)}` : a.sync === "timecode" ? "" : ", set by hand"}${a.rotate ? `, turned ${a.rotate}°` : ""})`);
   return `${m.angles.length} ${m.angles.length === 1 ? "angle" : "angles"}: ${list.join(", ")}; sound: ${m.audio === "follow" ? "each angle's own" : "the main video's"}`;
+}
+
+// ---------------- Phase 22: sync by timecode ----------------
+/**
+ * A file's start timecode ("HH:MM:SS:FF", ";" before the frames for drop-frame) as seconds of the day. Frames count at
+ * the timecode's nominal rate (30 for 29.97, 24 for 23.976), drop-frame leaves out the frame numbers it skips (2 a
+ * minute at 29.97, 4 at 59.94, but not every tenth minute), and the count is turned into seconds at the file's real
+ * frame rate. null: not a timecode.
+ */
+export function timecodeSeconds(tc: string | null | undefined, fps: number): number | null {
+  const m = /^\s*(\d{1,2})[:.](\d{2})[:.](\d{2})([:;.,])(\d{2,3})\s*$/.exec(tc ?? "");
+  if (!m || !(fps > 0)) return null;
+  const [hh, mm, ss, ff] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[5])];
+  if (mm > 59 || ss > 59) return null;
+  const nominal = Math.round(fps), drop = m[4] === ";" || m[4] === ",";
+  if (ff >= nominal) return null;
+  let frames = (hh * 3600 + mm * 60 + ss) * nominal + ff;
+  if (drop && (nominal === 30 || nominal === 60)) {
+    const per = nominal === 30 ? 2 : 4, minutes = hh * 60 + mm;
+    frames -= per * (minutes - Math.floor(minutes / 10));
+  }
+  // Frames turned into seconds at the frames real rate (non-drop timecode on 29.97 footage runs 0.1% slow of the clock).
+  return frames / (Math.abs(fps - nominal) < 0.01 ? nominal : drop ? nominal * 1000 / 1001 : fps);
+}
+
+/** The angle's second at the main video's second 0, from both files' start timecodes (angle time = main time + offset):
+ *  two recordings that started at 10:00:00 and 10:00:05 are 5 s apart. A take over midnight wraps. null without both. */
+export function timecodeOffset(main: { timecode?: string | null; fps: number }, angle: { timecode?: string | null; fps: number }): number | null {
+  const a = timecodeSeconds(main.timecode, main.fps), b = timecodeSeconds(angle.timecode, angle.fps);
+  if (a == null || b == null) return null;
+  let d = a - b;
+  if (d > 43200) d -= 86400; else if (d < -43200) d += 86400;
+  return Math.round(d * 10000) / 10000;
+}
+
+/** How an angle was lined up: timecode first; the sound checks it, and is used when timecode is missing or disagrees. */
+export type PickedSync = { offset: number; by: "timecode" | "sound"; score?: number; note: string };
+/** Sound sure enough to overrule timecode that disagrees: a clear best lag. */
+export const soundIsSure = (s: SyncResult) => s.score >= 0.5 && s.margin >= 1.3;
+export function pickSync(tc: number | null, sound: SyncResult | null, agree = 0.1): PickedSync | null {
+  if (tc != null) {
+    if (!sound) return { offset: tc, by: "timecode", note: "by timecode (no sound to check it)" };
+    const diff = Math.abs(sound.offset - tc);
+    if (diff <= agree) return { offset: tc, by: "timecode", score: sound.score, note: `by timecode; the sound agrees (within ${Math.round(diff * 1000)} ms)` };
+    if (soundIsSure(sound)) return { offset: sound.offset, by: "sound", score: sound.score, note: `by the sound: the timecode is ${diff.toFixed(2)} s off it (a camera's clock not jammed?)` };
+    return { offset: tc, by: "timecode", score: sound.score, note: `by timecode; the sound does not match clearly enough to check it` };
+  }
+  if (!sound) return null;
+  return { offset: sound.offset, by: "sound", score: sound.score, note: "by the sound (no timecode in both files)" };
 }
 
 // ---------------- Phase 13: cut to whoever speaks ----------------

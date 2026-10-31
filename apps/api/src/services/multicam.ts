@@ -1,12 +1,15 @@
-// Phase 10: multicam sync on the server. An angle added without an offset is synced to the main video by their sound:
+// Phase 10: multicam sync on the server. An angle added without an offset is synced to the main video (phase 22: by
+// timecode when both files carry one, the sound checking it) by their sound:
 // both videos' loudness every 10 ms (the deep measurements, made once per video and kept) through shared/multicam.ts.
 // The editor asks for one angle's sync (its route); apply_edits fills the offsets the AI left out.
-import { AppError } from "@rendrr/core";
+import { AppError, enqueue, type TimecodeJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { speakerPlan, syncEnvelope, syncOffset, type AnglePlanPart, type SpeakerSource, type SyncResult, type Timeline } from "@rendrr/shared";
+import { pickSync, speakerPlan, syncEnvelope, syncOffset, timecodeOffset, type AnglePlanPart, type SpeakerSource, type SyncResult, type Timeline } from "@rendrr/shared";
 import { audioFramesOf, deepOf } from "./deep";
 
-export type AngleSync = SyncResult & { videoId: string; name: string; rotate?: 0 | 90 | 180 | 270 };
+export type AngleSync = SyncResult & { videoId: string; name: string; rotate?: 0 | 90 | 180 | 270; by: "timecode" | "sound"; note: string; sure: boolean;
+  /** Whether the sound was there to sync by (or to check the timecode with): score is its correlation then. */
+  checked: boolean };
 
 const envelopeCache = new Map<string, Float32Array>();
 async function envelopeOf(userId: string, videoId: string): Promise<{ env: Float32Array; name: string }> {
@@ -24,14 +27,44 @@ async function envelopeOf(userId: string, videoId: string): Promise<{ env: Float
   return { env, name: d.name };
 }
 
-/** One angle synced to the main video: its offset (angle time = main time + offset), how sure, its name and turn. */
+/**
+ * Phase 22: the videos' start timecodes. One never read (added before timecode was read on probe) is read by the worker
+ * now (its file probed where it is); the wait is a few seconds at most, then the sound decides alone.
+ */
+async function timecodesOf(userId: string, ids: string[]) {
+  const read = () => prisma.video.findMany({ where: { id: { in: ids }, userId }, select: { id: true, timecode: true, fps: true, name: true } });
+  let vs = await read();
+  const unread = vs.filter((v) => v.timecode === null).map((v) => v.id);
+  if (unread.length) {
+    await enqueue<TimecodeJob>("test", { kind: "timecode", videoIds: unread }, { attempts: 1, jobId: `tc-${unread.join("-").slice(0, 80)}-${Date.now()}` }).catch(() => {});
+    const end = Date.now() + 8000;
+    while (Date.now() < end && vs.some((v) => v.timecode === null)) { await new Promise((r) => setTimeout(r, 700)); vs = await read(); }
+  }
+  return new Map(vs.map((v) => [v.id, { timecode: v.timecode, fps: v.fps ?? 30, name: v.name }]));
+}
+
+/**
+ * One angle synced to the main video: its offset (angle time = main time + offset), how it was found, how sure, its
+ * name and turn. Phase 22: by timecode when both files carry one; the sound checks it and is used when timecode is
+ * missing or disagrees (a camera whose clock was not jammed).
+ */
 export async function syncAngle(userId: string, mainVideoId: string, videoId: string): Promise<AngleSync> {
   if (videoId === mainVideoId) throw new AppError("That is the main video: pick another camera.", 400, "same-video");
-  const [a, b] = await Promise.all([envelopeOf(userId, mainVideoId), envelopeOf(userId, videoId)]);
-  const r = syncOffset(a.env, b.env);
+  const tcs = await timecodesOf(userId, [mainVideoId, videoId]);
+  const m = tcs.get(mainVideoId), v = tcs.get(videoId);
+  const tc = m && v ? timecodeOffset(m, v) : null;
+  let sound: SyncResult | null = null, name = v?.name ?? "", soundError: AppError | null = null;
+  try {
+    const [a, b] = await Promise.all([envelopeOf(userId, mainVideoId), envelopeOf(userId, videoId)]);
+    sound = syncOffset(a.env, b.env);
+    name = b.name;
+  } catch (e) { if (!(e instanceof AppError) || tc == null) throw e; soundError = e; }
+  const pick = pickSync(tc, sound)!;
   const vision = await prisma.footageAnalysis.findUnique({ where: { videoId }, select: { vision: true } });
   const turned = (vision?.vision as { turned?: number } | null)?.turned;
-  return { ...r, videoId, name: b.name.slice(0, 40), ...(turned === 90 || turned === 180 || turned === 270 ? { rotate: turned } : {}) };
+  const base: SyncResult = sound ?? { offset: pick.offset, score: 0, margin: 1, overlap: 0, sure: true };
+  return { ...base, offset: pick.offset, checked: !!sound, videoId, name: name.slice(0, 40), by: pick.by, note: soundError ? `${pick.note} (${soundError.message})` : pick.note,
+    sure: pick.by === "timecode" ? true : !!(sound as { sure?: boolean } | null)?.sure, ...(turned === 90 || turned === 180 || turned === 270 ? { rotate: turned } : {}) };
 }
 
 /** multicam ops whose angles have no offset get one from the sound (and the angle's name and turn when not sent). */
@@ -44,7 +77,7 @@ export async function resolveMulticam<T extends { op: string }>(userId: string, 
     for (const a of angles) {
       if (a.offset != null) { filled.push(a); continue; }
       const s = await syncAngle(userId, mainVideoId, a.videoId);
-      filled.push({ ...a, offset: s.offset, score: s.score, ...(a.name ? {} : { name: s.name }), ...(a.rotate == null && s.rotate ? { rotate: s.rotate } : {}) });
+      filled.push({ ...a, offset: s.offset, ...(s.checked ? { score: s.score } : {}), sync: s.by, ...(a.name ? {} : { name: s.name }), ...(a.rotate == null && s.rotate ? { rotate: s.rotate } : {}) });
     }
     out.push({ ...e, angles: filled });
   }

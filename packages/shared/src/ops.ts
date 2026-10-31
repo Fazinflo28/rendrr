@@ -208,10 +208,10 @@ const EDIT_OPS = [
     // Phase 16: where (masks; keys at seconds from the layer's start), how strong (opacity 0-1) and fades; null removes.
     masks: z.array(MaskSchema).max(8).nullable().optional(), opacity: z.number().min(0).max(1).nullable().optional(), fadeIn: z.number().min(0).max(10).nullable().optional(), fadeOut: z.number().min(0).max(10).nullable().optional() }),
   // Phase 10: multicam. angles: other cameras of the same take (library videos), added or changed by videoId; offset:
-  // the angle's second at the main video's second 0 (left out: Rendrr's server syncs it by the sound); rotate and
+  // the angle's second at the main video's second 0 (left out: Rendrr's server syncs it by timecode, else by the sound); rotate and
   // framing: the angle's own. audio: "main" keeps the main video's sound under every angle, "follow" plays each
   // angle's own. remove: angles to take out; off: no multicam (every clip back on the main camera).
-  z.object({ op: z.literal("multicam"), angles: z.array(z.object({ videoId: z.string().min(1).max(80), offset: z.number().min(-86400).max(86400).optional(), name: z.string().max(40).optional(), rotate: RotationSchema.optional(), framing: FramingSchema.nullable().optional(), score: z.number().min(0).max(1).optional() })).max(8).optional(),
+  z.object({ op: z.literal("multicam"), angles: z.array(z.object({ videoId: z.string().min(1).max(80), offset: z.number().min(-86400).max(86400).optional(), name: z.string().max(40).optional(), rotate: RotationSchema.optional(), framing: FramingSchema.nullable().optional(), score: z.number().min(0).max(1).optional(), sync: z.enum(["timecode", "sound"]).optional() })).max(8).optional(),
     audio: z.enum(["main", "follow"]).optional(), remove: z.array(z.string().max(80)).max(8).optional(), off: z.boolean().optional() }),
   // Which camera V1 shows: angle = an angle's videoId or name, or "main". Over clipId / clipIds, a range start..end, or
   // from `at` to the next change of angle (as cutting live in Premiere's multicam monitor). Times: main-footage
@@ -1327,11 +1327,13 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
         if (ctx.getVideo && !ctx.getVideo(a.videoId)) throw new EditError(`There is no video "${a.videoId}" in your library. Use list_footage for the ids.`);
         const had = angles.find((x) => x.videoId === a.videoId);
         const offset = a.offset ?? had?.offset;
-        if (offset == null) throw new EditError(`Angle ${nameOf(a.videoId) ?? a.videoId} has no sync offset yet: send this edit through Rendrr's server (apply_edits), which syncs it by its sound, or give offset (the angle's second at the main video's second 0).`);
+        if (offset == null) throw new EditError(`Angle ${nameOf(a.videoId) ?? a.videoId} has no sync offset yet: send this edit through Rendrr's server (apply_edits), which syncs it by timecode or by its sound, or give offset (the angle's second at the main video's second 0).`);
         const score = a.offset != null ? a.score : had?.score;
+        // Phase 22: how it was lined up (an offset sent by hand has none).
+        const sync = a.offset != null ? a.sync : had?.sync;
         const framing = a.framing === null ? undefined : a.framing ?? had?.framing;
-        const next: Angle = { videoId: a.videoId, offset: Math.round(offset * 10000) / 10000, ...(a.name ?? had?.name ? { name: a.name ?? had?.name } : {}), ...(score != null ? { score } : {}), ...(a.rotate ?? had?.rotate ? { rotate: a.rotate ?? had?.rotate } : {}), ...(framing ? { framing } : {}) };
-        if (score != null && score < 0.3) unsure.push(next.name ?? nameOf(a.videoId) ?? a.videoId);
+        const next: Angle = { videoId: a.videoId, offset: Math.round(offset * 10000) / 10000, ...(a.name ?? had?.name ? { name: a.name ?? had?.name } : {}), ...(score != null ? { score } : {}), ...(sync ? { sync } : {}), ...(a.rotate ?? had?.rotate ? { rotate: a.rotate ?? had?.rotate } : {}), ...(framing ? { framing } : {}) };
+        if (score != null && score < 0.3 && sync !== "timecode") unsure.push(next.name ?? nameOf(a.videoId) ?? a.videoId);
         angles = had ? angles.map((x) => (x === had ? next : x)) : [...angles, next];
       }
       if (angles.length > 8) throw new EditError("A multicam has at most 8 angles besides the main camera.");

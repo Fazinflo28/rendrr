@@ -38,7 +38,8 @@ await page.locator("#multicam-add-select").selectOption(camId);
 await page.locator("#multicam-add").click();
 await page.locator(`[data-angle-row="${camId}"]`).waitFor({ timeout: 5000 }).catch(() => {});
 const sync = await page.locator(`[data-sync="${camId}"]`).textContent().catch(() => "");
-check(sync === "+1.234 s · sync 87%", `added and synced: ${camName} ${sync}`);
+// Phase 22: the demo cameras carry timecode; the sound checks it.
+check(sync === "+1.200 s · by timecode, sound check 87%", `added and synced by timecode: ${camName} ${sync}`);
 check(await page.locator(".mc-mon").count() === 2, "a monitor per camera (main and the new one)");
 check(await page.locator('.mc-mon[data-angle="main"].on').count() === 1, "the main camera is on at the playhead");
 // Cut to the new camera at the playhead: the V1 clip there now shows it.

@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Multicam sync by timecode (phase 22, 31 October)
+
+- **What changed.** Cameras are lined up by their timecode when both files carry one. The sound still checks it: if the two clearly disagree (a camera whose clock was not jammed), the sound wins. With no timecode, the sound syncs as before.
+- **Reading timecode.** Rendrr reads each file's start timecode when it makes the preview copy (MOV and MP4 timecode tracks, drop-frame too). Videos added before today are read the first time they are synced.
+- **Editor.** Multicam shows "by timecode, sound check 87%" next to each camera synced that way.
+- **Claude.** multicam without an offset syncs by timecode first; the result says how each camera was lined up.
+- **Note.** Footage the browser turned into a preview copy (local files) usually has no timecode left in it, so those sync by sound.
+- **Tests.** packages/shared/test/phase22.test.ts (timecode maths incl. drop-frame and midnight, the timecode-or-sound choice), apps/worker/test/timecode.test.ts (real MOV/MP4 files), apps/web/demo/multicam.mjs.
+
 ## Stabilize b-roll and clips at other speeds (phase 21, 31 October)
 
 - **What changed.** Warp Stabilizer now works on b-roll and on V1 clips played at another speed: slowed, sped up, reversed, frozen or with a speed ramp. Before, those played as filmed.

@@ -37,8 +37,10 @@ export function MulticamTab({ projectId, timeline, lay, view, main, mainName, li
     try {
       await addVideo(videoId);
       const s = await api.multicamSync(projectId, videoId);
-      doOp({ op: "multicam", angles: [{ videoId, offset: s.offset, score: s.score, name: (name || s.name || "").slice(0, 40) || undefined, ...(s.rotate ? { rotate: s.rotate } : {}) }] });
+      // Phase 22: by timecode when both files carry one (the sound checks it), else by the sound.
+      doOp({ op: "multicam", angles: [{ videoId, offset: s.offset, ...(s.checked !== false ? { score: s.score } : {}), ...(s.by ? { sync: s.by } : {}), name: (name || s.name || "").slice(0, 40) || undefined, ...(s.rotate ? { rotate: s.rotate } : {}) }] });
       if (!s.sure) toast(`The sync of ${s.name} is unsure (their sound barely matches): check it, or set its offset by hand.`);
+      else if (s.note && s.by) toast(`${s.name}: synced ${s.note}.`);
     } catch (e) { toast(e.message); } finally { setBusy(""); }
   };
   const cut = (angle) => { if (mainT == null) { toast("The playhead is on a clip of another video: angles replace the main video's picture."); return; } doOp({ op: "switch_angle", angle, at: Math.round(at * 1000) / 1000, edit: true }); };
@@ -67,7 +69,7 @@ export function MulticamTab({ projectId, timeline, lay, view, main, mainName, li
     } catch (e) { toast(e.message); } finally { setBusy(""); }
   };
   return html`<div class="pb" id="multicam-panel" style="padding-top:16px"><div class="col" style="gap:16px">
-    <p class="t-small muted" style="margin:0">Other cameras of the same take, synced to the main video by their sound. Click a camera to cut to it from the playhead to the next change, as you would live in Premiere's multicam monitor. The words, cuts and timing stay the main video's.</p>
+    <p class="t-small muted" style="margin:0">Other cameras of the same take, synced to the main video by their timecode when both files carry one (the sound checks it), else by their sound. Click a camera to cut to it from the playhead to the next change, as you would live in Premiere's multicam monitor. The words, cuts and timing stay the main video's.</p>
     ${mc.angles.length > 0 && html`<div class="mc-grid" id="multicam-monitors">
       <${Monitor} id="main" keyNo=${1} url=${urls[main]} name=${"Main · " + (mainName || "camera 1")} t=${mainT} playing=${playing} on=${showing === "main"} onPick=${() => cut("main")} />
       ${mc.angles.map((a, i) => html`<${Monitor} key=${a.videoId} id=${a.videoId} keyNo=${i + 2 <= 9 ? i + 2 : null} url=${urls[a.videoId]} name=${nameOf(a)} t=${mainT == null ? null : mainT + a.offset} playing=${playing} on=${showing === a.videoId} rotate=${a.rotate} onPick=${() => cut(a.videoId)} />`)}
@@ -84,13 +86,13 @@ export function MulticamTab({ projectId, timeline, lay, view, main, mainName, li
     </div>`}
     <div class="col" style="gap:8px" id="multicam-angles">
       <b class="t-label">Cameras</b>
-      ${mc.angles.length === 0 && html`<span class="t-small muted">No other cameras yet. Add the other recordings of this take: Rendrr syncs them by their sound.</span>`}
+      ${mc.angles.length === 0 && html`<span class="t-small muted">No other cameras yet. Add the other recordings of this take: Rendrr syncs them by timecode, or by their sound.</span>`}
       ${mc.angles.map((a) => html`<div key=${a.videoId} class="mc-row" data-angle-row=${a.videoId}>
         <div class="row between" style="gap:8px;min-width:0"><b class="t-small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${nameOf(a)}>${nameOf(a)}</b>
           <${Btn} kind="ghost" size="xs" icon="trash" aria-label=${"Remove " + nameOf(a)} onClick=${() => doOp({ op: "multicam", remove: [a.videoId] })} /></div>
         <div class="row" style="gap:8px;align-items:flex-end">
           <label class="t-small" style="display:grid;gap:2px;width:96px">Offset (s)<input class="input sm mono" type="number" step="0.001" value=${a.offset} id=${"mc-offset-" + a.videoId} onChange=${(e) => { const v = Number(e.target.value); if (Number.isFinite(v)) doOp({ op: "multicam", angles: [{ videoId: a.videoId, offset: v }] }); }} /></label>
-          <span class="t-small muted grow" style="padding-bottom:6px" data-sync=${a.videoId}>${signed(a.offset)}${a.score != null ? ` · sync ${Math.round(a.score * 100)}%` : " · set by hand"}${a.score != null && a.score < 0.3 ? " · unsure" : ""}</span>
+          <span class="t-small muted grow" style="padding-bottom:6px" data-sync=${a.videoId}>${signed(a.offset)}${a.sync === "timecode" ? " · by timecode" + (a.score != null ? `, sound check ${Math.round(a.score * 100)}%` : "") : a.score != null ? ` · sync ${Math.round(a.score * 100)}%` : " · set by hand"}${a.sync !== "timecode" && a.score != null && a.score < 0.3 ? " · unsure" : ""}</span>
           <${Btn} kind="ghost" size="xs" disabled=${!!busy} onClick=${() => sync(a.videoId, a.name)}>${busy === a.videoId ? "Syncing…" : "Sync again"}<//></div>
       </div>`)}
       <div class="row" style="gap:8px;align-items:flex-end">
