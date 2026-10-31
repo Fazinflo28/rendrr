@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Glow, grain, RGB split, shake and mirror live in the player (phase 19, 31 October)
+
+- **Live.** These five effects now show in the editor's player while you edit, drawn with the render's own formulas (before, only after a render). Only the corner pin is still render-only.
+- **Measured against the render** (mean difference per pixel, out of 255; the plain clip's baseline is 2.2): glow 2.8 (the effect itself changes 9.9), RGB split 2.7 (4.8), shake 3.6 (17.6), mirror 1.7 (110). Grain: noise 16.6 in the player against 15.8 from FFmpeg's own filter.
+- **Two render bugs fixed on the way.**
+  - Glow washed every colour out at strengths under about 70 (FFmpeg's screen blend is wrong on 16-bit RGB; it now runs in float).
+  - Camera shake or mirror on one clip of several made the render fail ("parameters do not match"): the shake left non-square pixels. Both now keep square pixels.
+- **Tests.** apps/web/demo/effects-match.mjs (player against render, all five), apps/worker/test/effects12-render.test.ts (glow keeps dark colours; shake and mirror on one of two clips render).
+
 ## Remove background on b-roll and reversed clips (phase 18, 31 October)
 
 - **B-roll.** Pick a b-roll clip, Color, Remove background: the person in the b-roll is cut out and the picture under it shows round them. Edge, softness and invert work as on V1. B-roll laid behind V1 is refused (nothing would show it).

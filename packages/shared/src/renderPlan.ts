@@ -1271,20 +1271,22 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       if (e.type === "glow") {
         // The parts above mid-grey, blurred, laid back on by screen: the bright parts bloom.
         g.push(`[${rgb}]split[gw${t2}][gx${t2}]`);
-        g.push(`[gx${t2}]lutrgb=r='clip((val-32768)*2,0,65535)':g='clip((val-32768)*2,0,65535)':b='clip((val-32768)*2,0,65535)',gblur=sigma=${e.px}:steps=3[gy${t2}]`);
-        g.push(`[gw${t2}][gy${t2}]blend=all_mode=screen:all_opacity=${n3(Math.min(1, e.amount / 70))},format=${rgbF}[le${t2}]`);
+        // Phase 19: the screen in float RGB (FFmpeg's blend gets screen with an opacity wrong on 16-bit RGB: the colours wash out).
+        g.push(`[gx${t2}]lutrgb=r='clip((val-32768)*2,0,65535)':g='clip((val-32768)*2,0,65535)':b='clip((val-32768)*2,0,65535)',gblur=sigma=${e.px}:steps=3,format=gbrpf32le[gy${t2}]`);
+        g.push(`[gw${t2}]format=gbrpf32le[gv${t2}]`);
+        g.push(`[gv${t2}][gy${t2}]blend=all_mode=screen:all_opacity=${n3(Math.min(1, e.amount / 70))},format=${rgbF}[le${t2}]`);
         rgb = `le${t2}`; return;
       }
       if (e.type === "mirror") {
         g.push(`[${rgb}]crop=iw/2:ih:0:0,split[ml${t2}][mr${t2}]`);
         g.push(`[mr${t2}]hflip[mf${t2}]`);
-        g.push(`[ml${t2}][mf${t2}]hstack,scale=${W}:${H},format=${rgbF}[le${t2}]`);
+        g.push(`[ml${t2}][mf${t2}]hstack,scale=${W}:${H},setsar=1,format=${rgbF}[le${t2}]`);
         rgb = `le${t2}`; return;
       }
       if (e.type === "shake") {
         // Zoomed in just enough, and moved by two waves each way at frequencies that never line up (seconds of the clip).
         const z = 1 + (2.4 * e.px) / Math.min(W, H), A = e.px;
-        g.push(`[${rgb}]scale=${even(W * z)}:${even(H * z)},crop=${W}:${H}:x='(iw-ow)/2+${A}*(0.6*sin(2*PI*t*5.3)+0.4*sin(2*PI*t*11.7+1.3))':y='(ih-oh)/2+${A}*(0.6*sin(2*PI*t*4.1+0.7)+0.4*sin(2*PI*t*9.9+2.1))',format=${rgbF}[le${t2}]`);
+        g.push(`[${rgb}]scale=${even(W * z)}:${even(H * z)},crop=${W}:${H}:x='(iw-ow)/2+${A}*(0.6*sin(2*PI*t*5.3)+0.4*sin(2*PI*t*11.7+1.3))':y='(ih-oh)/2+${A}*(0.6*sin(2*PI*t*4.1+0.7)+0.4*sin(2*PI*t*9.9+2.1))',setsar=1,format=${rgbF}[le${t2}]`);
         rgb = `le${t2}`; return;
       }
       if (e.type === "pin") {

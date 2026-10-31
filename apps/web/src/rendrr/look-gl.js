@@ -1,6 +1,7 @@
 // The player's look (Phase 6): a clip's picture drawn through WebGL2 with the render's own numbers, in the render's
 // order: the fit (cover, `fitY` down, turned), the key's alpha (FFmpeg's colorkey) and despill, the grade (the shared
-// 3D LUT, trilinear like lut3d), blur, pixelate and sharpen mixed in by their areas, the masks into the alpha. The canvas is the
+// 3D LUT, trilinear like lut3d), blur, pixelate and sharpen mixed in by their areas (Phase 19: glow, grain, RGB split,
+// shake and mirror too), the masks into the alpha. The canvas is the
 // plan's size, so block sizes, blur sigmas and mask pictures are the render's pixels.
 
 import { SKIN_TONE } from "@rendrr/shared";
@@ -154,6 +155,30 @@ void main() {
   vec2 q = img(); vec2 bi = floor(q / B);
   o = vec4(texelFetch(small, ivec2(int(bi.x), int(blocks.y - 1.0 - bi.y)), 0).rgb, texture(pic, fboUV(q)).a);
 }`,
+  // Phase 19, glow: the parts above mid-grey, stretched (the render's lutrgb), to be blurred and laid back by screen.
+  bright: `uniform sampler2D pic;
+void main() { vec4 c = texture(pic, fboUV(img())); o = vec4(clamp((c.rgb - 0.5) * 2.0, 0.0, 1.0), c.a); }`,
+  // Screen at an opacity, as FFmpeg's blend: top + (screen(top, bottom) - top) x opacity.
+  screen: `uniform sampler2D base; uniform sampler2D fx; uniform float op;
+void main() { vec2 q = img(); vec4 a = texture(base, fboUV(q)); vec3 b = texture(fx, fboUV(q)).rgb; o = vec4(mix(a.rgb, 1.0 - (1.0 - a.rgb) * (1.0 - b), op), a.a); }`,
+  // Grain: Gaussian noise on each channel (sigma in 0-1), new every frame (seed), as FFmpeg's noise alls, allf t.
+  grain: `uniform sampler2D pic; uniform float sig; uniform float seed;
+float h(vec2 p, float k) { return fract(sin(dot(p, vec2(12.9898, 78.233)) + seed * 0.618 + k * 37.719) * 43758.5453); }
+float gauss(vec2 p, float k) { float u = max(h(p, k), 1e-6), v = h(p, k + 11.0); return sqrt(-2.0 * log(u)) * cos(6.2831853 * v); }
+void main() { vec2 q = img(); vec4 c = texture(pic, fboUV(q)); o = vec4(clamp(c.rgb + sig * vec3(gauss(q, 1.0), gauss(q, 2.0), gauss(q, 3.0)), 0.0, 1.0), c.a); }`,
+  // RGB split: red from px to the right (it moves left), blue from px to the left (it moves right), edges smeared.
+  rgbsplit: `uniform sampler2D pic; uniform float px;
+void main() {
+  vec2 q = img(); vec4 c = texture(pic, fboUV(q));
+  float r = texture(pic, fboUV(clamp(q + vec2(px, 0.0), vec2(0.5), size - 0.5))).r, b = texture(pic, fboUV(clamp(q - vec2(px, 0.0), vec2(0.5), size - 0.5))).b;
+  o = vec4(r, c.g, b, c.a);
+}`,
+  // Shake: the picture scaled to sw x sh and cropped back at off (the render's scale and crop at this moment).
+  shake: `uniform sampler2D pic; uniform vec2 scl; uniform vec2 off;
+void main() { vec2 q = img(); o = texture(pic, fboUV(clamp((q + off) / scl, vec2(0.5), size - 0.5))); }`,
+  // Mirror: the left half, and on the right the left half reflected.
+  mirror: `uniform sampler2D pic;
+void main() { vec2 q = img(); vec2 s = q.x < size.x * 0.5 ? q : vec2(size.x - q.x, q.y); o = texture(pic, fboUV(s)); }`,
   // An effect mixed in by its area (maskedmerge).
   mix: `uniform sampler2D base; uniform sampler2D fx; uniform sampler2D area;
 void main() { vec2 q = img(); vec4 b = texture(base, fboUV(q)); o = vec4(mix(b.rgb, texture(fx, fboUV(q)).rgb, texture(area, picUV(q)).r), b.a); }`,
@@ -287,7 +312,31 @@ export function createLookRenderer(canvas) {
           if (!small || smallB !== B) { small = target(blocks[0], blocks[1]); smallB = B; }
           use("pxavg", { B, blocks }, [["pic", buf[cur].t]]); run(small);
           use("pxshow", { B, blocks }, [["pic", buf[cur].t], ["small", small.t]]); run(buf[b]);
-        } else continue; // Phase 12: glow, grain, RGB split, shake, mirror and corner pin are drawn in the render only.
+        } else if (e.type === "glow") {
+          // Phase 19: as the render: no area (the whole picture blooms).
+          const radius = Math.min(200, Math.ceil(e.px * 3));
+          use("bright", {}, [["pic", buf[cur].t]]); run(buf[a]);
+          use("blur", { dir: [1, 0], sigma: e.px, radius }, [["pic", buf[a].t]]); run(buf[b]);
+          use("blur", { dir: [0, 1], sigma: e.px, radius }, [["pic", buf[b].t]]); run(buf[a]);
+          use("screen", { op: Math.min(1, e.amount / 70) }, [["base", buf[cur].t], ["fx", buf[a].t]]); run(buf[b]);
+          cur = b; continue;
+        } else if (e.type === "grain") {
+          use("grain", { sig: Math.round(e.amount * 0.8) / Math.sqrt(3) / 255, seed: Math.floor((spec.t ?? 0) * 30) % 997 }, [["pic", buf[cur].t]]); run(buf[b]);
+        } else if (e.type === "rgbsplit") {
+          use("rgbsplit", { px: e.px }, [["pic", buf[cur].t]]); run(buf[b]);
+        } else if (e.type === "shake") {
+          // The render's numbers: zoomed in by 2.4 px a side over the short side, moved by two waves each way (seconds
+          // of the clip); its crop is on whole pixels.
+          const z = 1 + (2.4 * e.px) / Math.min(W, H), A = e.px, t = spec.t ?? 0, ev = (n) => Math.max(2, Math.round(n / 2) * 2);
+          const sw = ev(W * z), sh = ev(H * z);
+          const ox = Math.trunc((sw - W) / 2 + A * (0.6 * Math.sin(2 * Math.PI * t * 5.3) + 0.4 * Math.sin(2 * Math.PI * t * 11.7 + 1.3)));
+          const oy = Math.trunc((sh - H) / 2 + A * (0.6 * Math.sin(2 * Math.PI * t * 4.1 + 0.7) + 0.4 * Math.sin(2 * Math.PI * t * 9.9 + 2.1)));
+          use("shake", { scl: [sw / W, sh / H], off: [ox, oy] }, [["pic", buf[cur].t]]); run(buf[b]);
+          cur = b; continue;
+        } else if (e.type === "mirror") {
+          use("mirror", {}, [["pic", buf[cur].t]]); run(buf[b]);
+          cur = b; continue;
+        } else continue; // the corner pin is drawn in the render only.
         if (e.area) {
           use("mix", {}, [["base", buf[cur].t], ["fx", buf[b].t], ["area", grey(e.area.key, e.area.px, e.area.w ?? W, e.area.h ?? H)]]); run(buf[a]);
           cur = a;

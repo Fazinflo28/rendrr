@@ -106,6 +106,21 @@ describe("Phase 12b transitions and effects, rendered", () => {
     assert.ok(px(mir, 0.8, 0.5)[0] > 180, "the right half shows the left (red)");
     assert.ok(still < 0.5 && moved > 3, "shake moves a still picture");
     assert.ok(outside(glow) > outside(plainSq) + 15, "glow spreads past the edge");
+    // Phase 19: and leaves a picture with nothing bright as it was (the screen in float: on 16-bit RGB FFmpeg's blend
+    // washed every colour out).
+    // At part strength (opacity under 1): the red half's dark green and blue (30) stay dark, only its red blooms.
+    const halfGlow = px(await frame((await fx([{ type: "glow", amount: 40 }], "halves", "glow-halves")).out, 1), 0.25, 0.5);
+    const halfPlain = px(await frame((await render(edit([], one), "halves", "plain-halves")).out, 1), 0.25, 0.5);
+    assert.ok(Math.abs(halfGlow[1] - halfPlain[1]) < 6 && Math.abs(halfGlow[2] - halfPlain[2]) < 6 && halfGlow[0] >= halfPlain[0], `glow keeps the dark channels dark (${halfPlain} -> ${halfGlow})`);
     assert.ok(px(pin, 0.1, 0.1).every((v) => v < 20) && Math.abs(px(pin, 0.5, 0.5)[1] - 128) < 10, "pinned into the middle, black round it");
+  });
+
+  it("shake or mirror on one clip of several: the clips still join (square pixels)", async () => {
+    // Phase 19: the shake's scale left a non-square pixel shape, and FFmpeg refused to join that clip to the next.
+    const two = [{ id: "c", start: 1, end: 2, label: "" }, { id: "d", start: 2, end: 3, label: "" }];
+    for (const type of ["shake", "mirror"]) {
+      const r = await render(edit([{ op: "set_effects", clipIds: ["c"], effects: [{ type, amount: 80 }] } as Op], two), "halves", `join-${type}`);
+      assert.ok(r.out, `${type}: rendered`);
+    }
   });
 });

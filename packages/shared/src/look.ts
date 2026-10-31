@@ -142,8 +142,9 @@ export type Area = z.infer<typeof AreaSchema>;
 export const MaskSchema = AreaSchema.and(z.object({ mode: z.enum(MASK_MODES).optional() }));
 export type Mask = Area & { mode?: (typeof MASK_MODES)[number] };
 export const EFFECTS = ["blur", "pixelate", "sharpen", "darken", "vignette", "glow", "grain", "rgbsplit", "shake", "mirror", "pin"] as const;
-/** Phase 12: the effects drawn in the render only (the player shows the clip without them). */
-export const RENDER_ONLY_EFFECTS = ["glow", "grain", "rgbsplit", "shake", "mirror", "pin"] as const;
+/** Phase 12: the effects drawn in the render only (the player shows the clip without them). Phase 19: glow, grain, RGB
+ *  split, shake and mirror are drawn in the player too; only the corner pin is left. */
+export const RENDER_ONLY_EFFECTS = ["pin"] as const;
 /** Phase 5: a vignette is darken outside a soft ellipse a little larger than the frame (its own area if it has one). */
 export const VIGNETTE_AREA = { shape: "ellipse" as const, x: -0.1, y: -0.1, w: 1.2, h: 1.2, invert: true, feather: 0.3 };
 /** Blur (amount 1-100: 100 = a Gaussian of 5% of the short side), pixelate (amount 1-100: blocks of amount/10 % of the

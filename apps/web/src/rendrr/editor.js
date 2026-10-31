@@ -26,7 +26,7 @@ import { ExportModal, timeLeft } from "./export";
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
-import { ASPECT_RATIO, BLEND_MODES, adjustCss, areaAt, hashOf, maskPicture, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { ASPECT_RATIO, BLEND_MODES, adjustCss, areaAt, hashOf, maskPicture, rateOf, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 import { applyLiveFx, resumeLiveAudio } from "./liveAudio";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
@@ -117,7 +117,7 @@ function BackLayer({ plan, time, playing, broll, part, partUrl, aspect, k }) {
 }
 // Phase 18: remove_background on a clip's look: its matte's block links (useMattes) with its edge, softness and invert.
 const matteFrom = (lk, mattes) => (lk?.subject && mattes?.[lk.subject.matte] ? { ...mattes[lk.subject.matte], edge: lk.subject.edge, soft: lk.subject.soft, invert: !!lk.subject.invert } : null);
-function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = null, luts, style = null, matte = null }) {
+function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = null, luts, style = null, matte = null, t0 = 0 }) {
   const ref = useRef(null); const [noGl, setNoGl] = useState(false);
   useEffect(() => {
     const el = ref.current; if (!el) return;
@@ -126,7 +126,7 @@ function SyncedVideo({ src, time, playing, fit = "cover", look = null, plan = nu
   }, [time, playing]);
   const gl = !!look && !!plan && !noGl;
   return html`<video ref=${ref} src=${src} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: fit, pointerEvents: "none", ...(style || {}), ...(gl ? { opacity: 0 } : {}) }} />
-    ${gl && html`<${LookCanvas} videoRef=${ref} look=${look} W=${plan.width} H=${plan.height} fitY=${0.5} luts=${luts} onFail=${() => setNoGl(true)} matte=${matte} />`}`;
+    ${gl && html`<${LookCanvas} videoRef=${ref} look=${look} W=${plan.width} H=${plan.height} fitY=${0.5} luts=${luts} onFail=${() => setNoGl(true)} matte=${matte} t0=${t0} fps=${plan.fps || 30} />`}`;
 }
 
 // Engine Part 6: the sound's 10 ms peaks for the waveform: each video's measured peaks (4 bytes per 10 ms), a music or
@@ -255,7 +255,7 @@ function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts, person
   const backText = frame.texts.some((x) => x.layer.behind);
   // Phase 17: a b-roll card's border over its picture, moving with it.
   const bordered = (br, child) => (br.border && plan?.lookFiles?.[br.border.file] ? html`${child}<div data-border=${br.clipId} style="position:absolute;inset:0;pointer-events:none"><${CardLayer} spec=${plan.lookFiles[br.border.file]} color=${br.border.color} W=${plan.width} H=${plan.height} /></div>` : child);
-  return html`<i ref=${box} style="display:none" />${b && blended(frame.broll, shadowed(frame.broll, moved(frame.broll.motion, bordered(frame.broll, flipped(frame.broll.flip, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} matte=${matteFrom(plan?.looks?.[frame.broll.clipId], mattes)} />`)), frame.broll.anchor)))}
+  return html`<i ref=${box} style="display:none" />${b && blended(frame.broll, shadowed(frame.broll, moved(frame.broll.motion, bordered(frame.broll, flipped(frame.broll.flip, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} matte=${matteFrom(plan?.looks?.[frame.broll.clipId], mattes)} t0=${frame.broll.t0} />`)), frame.broll.anchor)))}
     ${frame.graphics.filter((g) => g.behind).map(gfx)}
     ${plan && backText && html`<${TextLayers} key="behind" plan=${plan} frame=${frame} only="behind" media=${media} playing=${playing} />`}
     ${person}
@@ -496,7 +496,7 @@ const repaint = (el) => { if (el.paused) { try { el.currentTime = el.currentTime
 // One footage stretch as the render fits it: turned, fitted (cover, 40% down), framed, moved by its keyframes.
 // Phase 6: with `gl` (the clip, or another part of this video, has a look) the picture is drawn through the look canvas
 // with the render's numbers; the <video> stays as the clock, hidden. `look` null there draws it plain.
-function Footage({ id, url, rotate, framing, motion, aspect, refFn, on = true, gl = false, look = null, plan = null, luts, card = null, matte = null, flip = null, anchor = null }) {
+function Footage({ id, url, rotate, framing, motion, aspect, refFn, on = true, gl = false, look = null, plan = null, luts, card = null, matte = null, flip = null, anchor = null, t0 = 0, rate = 1 }) {
   const vEl = useRef(null); const [noGl, setNoGl] = useState(false);
   // Reframed (the framing's focus): the fit cuts around that point, which needs the video's own size.
   const [nat, setNat] = useState(null);
@@ -510,7 +510,7 @@ function Footage({ id, url, rotate, framing, motion, aspect, refFn, on = true, g
   const fx = (moved ? `translate(${framing.x * 100}%, ${framing.y * 100}%) scale(${framing.scale})` : "") + flipCss(flip);
   return html`<div style=${{ position: "absolute", inset: 0, ...motionCss(motion, anchor) }}>${layer(card?.shadow)}<div data-flip=${flip || null} style=${{ position: "absolute", inset: 0, transform: fx.trim() || "none" }}>
     <video ref=${(el) => { vEl.current = el; refFn?.(el); if (focus) sized(el); }} onLoadedMetadata=${(e) => focus && sized(e.currentTarget)} data-on=${on ? "1" : "0"} data-video=${id} src=${url} crossOrigin="anonymous" muted playsInline preload="auto" style=${{ objectFit: "cover", background: drawn ? "transparent" : "#000", ...fitVideoStyle(rotate || 0, aspect, crop), ...(drawn ? { opacity: 0 } : {}) }} />
-    ${drawn && html`<${LookCanvas} videoRef=${vEl} look=${look} W=${plan.width} H=${plan.height} rotate=${rotate || 0} fitY=${0.4} focus=${focus} luts=${luts} onFail=${() => setNoGl(true)} matte=${matte} />`}
+    ${drawn && html`<${LookCanvas} videoRef=${vEl} look=${look} W=${plan.width} H=${plan.height} rotate=${rotate || 0} fitY=${0.4} focus=${focus} luts=${luts} onFail=${() => setNoGl(true)} matte=${matte} t0=${t0} rate=${rate} fps=${plan.fps || 30} />`}
   </div>${layer(card?.border)}</div>`;
 }
 /**
@@ -611,7 +611,7 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
     ${plan.sources.map((id) => {
     const on = part?.videoId === id; const p = on ? part : plan.parts.find((x) => x.videoId === id);
     return html`<div key=${id} style=${{ position: "absolute", inset: 0, visibility: on ? "visible" : "hidden" }}>
-      ${urls[id] ? html`<${Footage} id=${id} url=${urls[id]} rotate=${p?.rotate} framing=${p?.framing} flip=${p?.flip} anchor=${on ? fr.motionAnchor : null} motion=${on ? fr.motion : null} aspect=${aspect} on=${on} gl=${glVideo.has(id)} look=${on && fr.lookId ? looks[fr.lookId] : null} matte=${on && fr.lookId ? matteOf(looks[fr.lookId]) : null} plan=${plan} luts=${luts} card=${p ? cards[p.clipIds[0]] : null} refFn=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} />`
+      ${urls[id] ? html`<${Footage} id=${id} url=${urls[id]} rotate=${p?.rotate} framing=${p?.framing} flip=${p?.flip} anchor=${on ? fr.motionAnchor : null} motion=${on ? fr.motion : null} aspect=${aspect} on=${on} gl=${glVideo.has(id)} look=${on && fr.lookId ? looks[fr.lookId] : null} matte=${on && fr.lookId ? matteOf(looks[fr.lookId]) : null} plan=${plan} luts=${luts} card=${p ? cards[p.clipIds[0]] : null} t0=${on && p ? p.srcIn : 0} rate=${on && p ? Math.abs(rateOf(p)) || 1 : 1} refFn=${(el) => { if (el) vref.current[id] = el; else delete vref.current[id]; }} />`
         : on && html`<div style="position:absolute;inset:0;display:grid;place-items:center;background:#000;color:#999"><span class="t-small">No preview copy of this video</span></div>`}
       ${urls[id] && html`<audio ref=${(el) => { if (el) aref.current[id] = el; else delete aref.current[id]; }} data-sound=${id} src=${urls[id]} crossOrigin="anonymous" preload=${jl ? "auto" : "none"} />`}
     </div>`;

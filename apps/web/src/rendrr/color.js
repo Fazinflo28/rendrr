@@ -79,11 +79,11 @@ export function lookSpecAt(spec, t) {
  * matte (remove_background): { urls (each block's link by number; null while it is made), block (seconds), edge, soft,
  * invert }: a hidden video of the person's matte follows the footage's time, block by block.
  */
-export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, focus = null, luts, onFail, matte = null }) {
+export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, focus = null, luts, onFail, matte = null, t0 = 0, rate = 1, fps = 30 }) {
   const cv = useRef(null);
   const spec = lookSpec(look, W, H, luts);
   const cur = useRef(null);
-  cur.current = { ...spec, rotate, fitY, focus, matte };
+  cur.current = { ...spec, rotate, fitY, focus, matte, t0, rate, fps };
   useEffect(() => {
     let r = null;
     try { r = createLookRenderer(cv.current); } catch (e) { console.warn(e); }
@@ -117,7 +117,10 @@ export function LookCanvas({ videoRef, look, W, H, rotate = 0, fitY = 0.4, focus
         const mt = matteAt(s);
         const k = `${el.currentTime.toFixed(4)}|${s.id}|${s.rotate}|${s.fitY}|${s.focus ? s.focus.x + "," + s.focus.y : ""}|${mt ? `${mv.currentTime.toFixed(4)},${mt.edge},${mt.soft},${mt.invert}` : ""}`;
         if (dirty || k !== last || !el.paused) {
-          try { r.draw(el, lookSpecAt(s, el.currentTime), mt); cv.current.dataset.drawn = String((+cv.current.dataset.drawn || 0) + 1); if (mt) cv.current.dataset.matte = mv.dataset.k; } catch (e) { console.warn(e); }
+          // Phase 19: t = seconds into the clip (its shake and grain), as the render counts them.
+          // On the frame grid: the frame shown is the one at or before currentTime, as the render's frame k is k / fps.
+          const ct = Math.max(0, Math.floor(((el.currentTime - (s.t0 || 0)) / (s.rate || 1)) * (s.fps || 30) + 1e-3) / (s.fps || 30));
+          try { r.draw(el, { ...lookSpecAt(s, el.currentTime), t: ct }, mt); cv.current.dataset.drawn = String((+cv.current.dataset.drawn || 0) + 1); if (mt) cv.current.dataset.matte = mv.dataset.k; } catch (e) { console.warn(e); }
           last = k; dirty = false;
         }
       }
@@ -470,10 +473,10 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
         <${Btn} kind="ghost" size="xs" id="fx-add-sharpen" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "sharpen", amount: 25 }]))}>+ Sharpen<//>
         <${Btn} kind="ghost" size="xs" id="fx-add-darken" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "darken", amount: 40 }]))}>+ Darken<//>
         <${Btn} kind="ghost" size="xs" id="fx-add-vignette" disabled=${effects.length >= 4} onClick=${() => doOp(eop([...effects, { type: "vignette", amount: 35 }]))}>+ Vignette<//>
-        ${[["glow", "Glow", 40], ["grain", "Grain", 30], ["rgbsplit", "RGB split", 40], ["shake", "Camera shake", 30], ["mirror", "Mirror", 100], ["pin", "Corner pin", 100]].map(([t, l, a]) => html`<${Btn} key=${t} kind="ghost" size="xs" id=${"fx-add-" + t} disabled=${effects.length >= 4} title="Drawn in the render" onClick=${() => doOp(eop([...effects, { type: t, amount: a, ...(t === "pin" ? { corners: [[0.1, 0.1], [0.9, 0.05], [0.1, 0.9], [0.9, 0.95]] } : {}) }]))}>+ ${l}<//>`)}
+        ${[["glow", "Glow", 40], ["grain", "Grain", 30], ["rgbsplit", "RGB split", 40], ["shake", "Camera shake", 30], ["mirror", "Mirror", 100], ["pin", "Corner pin", 100]].map(([t, l, a]) => html`<${Btn} key=${t} kind="ghost" size="xs" id=${"fx-add-" + t} disabled=${effects.length >= 4} title=${t === "pin" ? "Drawn in the render" : "Shown live and in the render"} onClick=${() => doOp(eop([...effects, { type: t, amount: a, ...(t === "pin" ? { corners: [[0.1, 0.1], [0.9, 0.05], [0.1, 0.9], [0.9, 0.95]] } : {}) }]))}>+ ${l}<//>`)}
         ${canFollow && html`<${Btn} kind="ghost" size="xs" id="fx-add-spotlight" disabled=${effects.length >= 4 || measuring} title="Darkens everything but the face, following it" onClick=${() => withFaces(eop([...effects, { type: "darken", amount: 55, area: { shape: "ellipse", invert: true, feather: 0.08, follow: "face" } }]))}>+ Spotlight<//>`}</span></div>
       ${effects.map((e, i) => html`<div key=${i} class="col card flat" style="gap:6px;padding:10px" data-effect=${i}>
-        <div class="row between"><span class="t-small">${{ blur: "Blur", pixelate: "Pixelate", sharpen: "Sharpen", darken: "Darken", vignette: "Vignette", glow: "Glow", grain: "Grain", rgbsplit: "RGB split", shake: "Camera shake", mirror: "Mirror", pin: "Corner pin" }[e.type]}${["glow", "grain", "rgbsplit", "shake", "mirror", "pin"].includes(e.type) ? html` <span class="muted">(in the render)</span>` : ""}</span>
+        <div class="row between"><span class="t-small">${{ blur: "Blur", pixelate: "Pixelate", sharpen: "Sharpen", darken: "Darken", vignette: "Vignette", glow: "Glow", grain: "Grain", rgbsplit: "RGB split", shake: "Camera shake", mirror: "Mirror", pin: "Corner pin" }[e.type]}${e.type === "pin" ? html` <span class="muted">(in the render)</span>` : ""}</span>
           <span class="row" style="gap:6px"><select class="input sm" id=${"fx-area-" + i} value=${e.area?.shape || "all"} onChange=${(ev) => setEffect(i)({ ...e, area: ev.target.value === "all" ? undefined : { ...BOX(ev.target.value), w: 0.3, h: 0.3, x: 0.35, y: 0.25 } }, true)}><option value="all">Whole picture</option><option value="rect">Rectangle</option><option value="ellipse">Ellipse</option></select>
           <button class="btn icon sm quiet" aria-label="Remove" id=${"fx-del-" + i} onClick=${() => doOp(eop(effects.filter((_, j) => j !== i)), false)}><${Icon} name="x" size="12" /></button></span></div>
         ${e.type === "pin" ? html`<${PinCorners} i=${i} e=${e} set=${(c, now) => setEffect(i)({ ...e, corners: c }, now)} sl=${sl} />`
@@ -484,7 +487,7 @@ export function ColorTab({ clip, track, projectId, mainVideo, aspect, clips, lut
 
     ${track === "v2" && html`<label class="t-small row" style="gap:6px" id="under-row"><input type="checkbox" id="under-v1" checked=${!!clip.under} onChange=${(e) => doOp({ op: "set_under", clipId: clip.id, under: e.target.checked })} />Behind the main picture (shows where V1 is keyed, masked or framed smaller)</label>`}
     ${hdrRow(timeline, doOp)}
-    <p class="t-small muted" id="color-note">The picture here is drawn with the render's own numbers: the same LUT, key, masks (moving ones too), blur, sharpen and darken.</p>
+    <p class="t-small muted" id="color-note">The picture here is drawn with the render's own numbers: the same LUT, key, masks (moving ones too), blur, sharpen, darken, glow, grain, RGB split, shake and mirror.</p>
   </div></div>`;
 }
 

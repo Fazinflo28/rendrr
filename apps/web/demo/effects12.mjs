@@ -44,7 +44,8 @@ await page.locator("#tool-back").click(); await sleep(200);
 await page.locator("#tab-color").click(); await page.locator("#fx-add-glow").waitFor();
 for (const t of ["glow", "grain", "rgbsplit", "pin"]) { await page.locator("#fx-add-" + t).click(); await sleep(200); }
 const names = await page.locator("[data-effect] .t-small").evaluateAll((es) => es.map((e) => e.textContent));
-check(["Glow", "Grain", "RGB split", "Corner pin"].every((n) => names.some((x) => x.startsWith(n) && x.includes("(in the render)"))), `added, each marked as drawn in the render (${names.filter((x) => x.includes("render")).length})`);
+// Phase 19: glow, grain and RGB split are shown live too; only the corner pin is marked as drawn in the render.
+check(["Glow", "Grain", "RGB split"].every((n) => names.some((x) => x.startsWith(n) && !x.includes("(in the render)"))) && names.some((x) => x.startsWith("Corner pin") && x.includes("(in the render)")), `added; only the corner pin is marked as drawn in the render (${names.filter((x) => x.includes("render")).length})`);
 check(await page.locator("#fx-add-shake").isDisabled(), "four effects at most");
 check(await page.locator('[id^="fx-pin-"][id$="-0-x"]').count() === 1, "the corner pin's corners have sliders");
 const pinId = await page.locator('[id^="fx-pin-"][id$="-0-x"]').getAttribute("id");
