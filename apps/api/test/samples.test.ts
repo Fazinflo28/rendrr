@@ -62,7 +62,7 @@ describe("samples in Rendrr", { skip: !ready && "needs DATABASE_URL, REDIS_URL a
     await prisma.render.deleteMany({ where: { userId } }).catch(() => {});
     await prisma.user.deleteMany({ where: { id: userId } }).catch(() => {});
     await queue("render").obliterate({ force: true }).catch(() => {});
-    redis.disconnect();
+    await redis().quit().catch(() => {});
   });
 
   it("render_samples makes a sample render holding what was asked; the same ask joins it; a bad ask renders nothing", async () => {

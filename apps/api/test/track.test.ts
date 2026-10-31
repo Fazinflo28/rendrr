@@ -59,7 +59,7 @@ describe("track_object through apply_edits", { skip: (!ready || !cv) && "needs a
       { op: "set_effects", clipId: "a", effects: [{ type: "blur", amount: 70, area: { shape: "rect", follow: "object", object: "o1" } }] },
       { op: "add_text", text: "SQUARE", start: 1, end: 6, edit: true, x: 0.3, y: 0.3, anim: "none" },
     ] });
-    assert.match(r.text, /object o1 "square" tracked over 1-9s/);
+    assert.match(r.text, /object o1 "square" tracked over 1-8\.9s \(80 boxes/);
     const tl = (await prisma.project.findUniqueOrThrow({ where: { id: p.id } })).timeline as { tracks: { v1: { id: string; objects?: { track: number[][] }[]; effects?: { area?: { keys?: { at: number; x: number; w: number }[] } }[] }[]; v3: { id: string; kind?: string; keys?: { t: number; x?: number }[]; pin?: unknown }[] } };
     const a = tl.tracks.v1.find((x) => x.id === "a")!;
     const tr = a.objects![0].track;
@@ -72,7 +72,9 @@ describe("track_object through apply_edits", { skip: (!ready || !cv) && "needs a
     const v3 = ((await prisma.project.findUniqueOrThrow({ where: { id: p.id } })).timeline as typeof tl).tracks.v3.find((x) => x.id === text.id)!;
     assert.deepEqual(v3.pin, { clipId: "a", object: "o1" });
     // From edit 1 s (footage 2 s) to edit 5 s (footage 6 s) the square moves 360 px: 0.28 of the width.
-    const last = v3.keys!.find((k) => Math.abs(k.t - 4) < 0.15)!;
-    assert.ok(Math.abs(last.x! - 360 / 1280) < 0.02, JSON.stringify(v3.keys));
+    // Straight keys: the offset at 4 s from the layer's start, between the keys either side.
+    const ks = v3.keys!, j = ks.findIndex((k) => k.t >= 4), k0 = ks[Math.max(0, j - 1)], k1 = ks[j < 0 ? ks.length - 1 : j];
+    const x4 = k1.t > k0.t ? k0.x! + ((k1.x! - k0.x!) * (4 - k0.t)) / (k1.t - k0.t) : k1.x!;
+    assert.ok(Math.abs(x4 - 360 / 1280) < 0.02, JSON.stringify(v3.keys));
   });
 });

@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## One version and one render per request (1 November)
+
+- **Why.** Claude was making 4 or 5 versions for one request: each fix-up apply_edits was a new version, and the editing guide let it render "once more, up to 3 rounds" after its own checks. Every render is a version you have to watch, and costs tokens.
+- **One version per request.** Claude's edits before a render now join the version it is making, so a request goes from v1 to v2 however many calls it takes. The version closes when it is rendered, shared, or when you change the edit yourself. Undo goes back to before the whole request. Samples no longer close a version.
+- **One preview per request.** Rendrr refuses Claude's second preview of the same edit for the same request (within 45 minutes) unless you have left a comment or changed the edit since, or Claude says you sent a new request (newRequest). Claude's own fixes after a preview are saved and go into the next one. Previews you start yourself (the editor, the card in Claude) are never limited.
+- **The guide.** "Render once more, up to 3 rounds" is gone. It now says: fix what the preview's check shows, do not render again, tell the user; one render per request.
+- **Safety.** The editor's autosave cannot overwrite a change Claude added to the same version after the editor loaded it (it reloads instead).
+- **Tests.** apps/api/test/one-render.test.ts (against a real database), packages/shared/test/editing-skill.test.ts.
+
 ## Comments like Higgsfield, and a UI sweep (31 October)
 
 - **Comments.** The editor's Comments panel: an empty edit shows "No comments yet" in the middle. The box to write in has a clock chip with the moment, Draw (draw on the picture in five pen colours, with Undo and Clear), emoji, pictures (pick, paste or drop, up to 4) and a round send button that lights up once there is something to post. A drawing or a picture alone can be posted. On a phone, Draw brings the video into view.

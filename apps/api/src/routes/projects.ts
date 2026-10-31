@@ -116,7 +116,7 @@ export default async function projects(app: FastifyInstance) {
     const p = await getOwnedProject(userId, id);
     const actor = { kind: "user" as const, userId };
     if (patch.timeline) {
-      await applyTimelineChange(id, { op: "replace", timeline: patch.timeline, name: patch.name, aspect: patch.aspect, styleId: patch.styleId }, actor, { baseVersion: patch.baseVersion });
+      await applyTimelineChange(id, { op: "replace", timeline: patch.timeline, name: patch.name, aspect: patch.aspect, styleId: patch.styleId }, actor, { baseVersion: patch.baseVersion, baseAt: patch.baseAt });
     } else {
       if (patch.name && patch.name !== p.name) await applyTimelineChange(id, { op: "rename", name: patch.name }, actor);
       if (patch.aspect && patch.aspect !== p.aspect) await applyTimelineChange(id, { op: "set_aspect", aspect: patch.aspect }, actor);

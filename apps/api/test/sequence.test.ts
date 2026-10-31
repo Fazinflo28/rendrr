@@ -89,7 +89,7 @@ describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL 
       { op: "add_music", trackId: "m_lofi" },
       { op: "set_clip_audio", clipId: v1[0].id, gainDb: 3, fadeIn: 0.2 },
     ] });
-    assert.match(r.text, /Done \(v3/);
+    assert.match(r.text, /Done \(v2/); // Claude's calls before a render are one version
     const read = await TOOL_HANDLERS.get_project(c(), { projectId });
     assert.match(read.text, /Sound: cleanup voice, -14 LUFS \/ -1 dBTP, music 10 dB down under speech, mix fades in 0s, out 1s/);
     assert.match(read.text, /dialogue \+3 dB/);
@@ -104,7 +104,7 @@ describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL 
     assert.match(saved.text, /Captions: Montserrat 900, [\d.]+% size, #0A0A0C, box #FCFDFF 100%, upper case, active word #FFD400/);
     const styleId = (saved.data as { styleId: string }).styleId;
     const r = await TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "apply_style", styleId }, { op: "add_text", text: "Hello", start: 1, end: 3, preset: "callout" }] });
-    assert.match(r.text, /Done \(v4/);
+    assert.match(r.text, /Done \(v2/);
     const read = await TOOL_HANDLERS.get_project(c(), { projectId });
     assert.match(read.text, /Captions on \(own style: Montserrat 900/);
     assert.match(read.text, /text="Hello" \(Inter 800, 5% size, #0A0A0C, box #FFD400 100%/);
@@ -122,7 +122,7 @@ describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL 
       { op: "set_keyframes", clipId: ids[1], keys: [{ t: 0, scale: 1 }, { t: 0.5, scale: 1.2, ease: "out" }] },
       { op: "freeze_frame", clipId: ids[1], at: Number(rows[1][2]), length: 0.5 },
     ] });
-    assert.match(r.text, /Done \(v5/);
+    assert.match(r.text, /Done \(v2/);
     assert.match(r.text, /2x \(sound pitch kept\)/);
     const read = await TOOL_HANDLERS.get_project(c(), { projectId });
     assert.match(read.text, new RegExp(`${ids[0]} main .* 2x \\(sound pitch kept\\)`));
@@ -131,7 +131,7 @@ describe("the sequence model in the API", { skip: !ready && "needs DATABASE_URL 
     assert.match(read.text, /keys 0\.00,0\.50s/);
     // A bad op is refused with the reason, and nothing is saved.
     await assert.rejects(async () => TOOL_HANDLERS.apply_edits(c(), { projectId, edits: [{ op: "set_speed", clipId: ids[0], speed: 50 }] }), /speed number must be less than or equal to 10/);
-    assert.match((await TOOL_HANDLERS.get_project(c(), { projectId })).text, /v5/);
+    assert.match((await TOOL_HANDLERS.get_project(c(), { projectId })).text, /Draft, v2,/);
   });
 
   it("Phase 6: a grade with an imported LUT, a key, masks, blur and match_color measured by the worker; get_project and the check read them back", async (t) => {

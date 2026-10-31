@@ -415,6 +415,29 @@ async function checkOf(projectId: string, version: number, loudness: FileLoudnes
   return editCheck(snap, (p.video.analysis?.transcript as unknown as Transcript) || [], { loudness, measured, planned, renderNotes, videoId: p.videoId, lutName: (id) => luts.find((l) => l.id === id)?.name, footage: footageOf(p.video), transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript])), aligned, heard });
 }
 
+/** Within this long of the AI's last preview of an edit, another one needs the user to have asked for more. */
+export const PREVIEW_GAP_MS = 45 * 60_000;
+/**
+ * One preview per change: when the AI already rendered a preview of this edit for the current request (in the last
+ * PREVIEW_GAP_MS, and the user has left no feedback since: no comment, no change of theirs in the editor), the answer
+ * why it is not rendered again; null when it may render.
+ */
+export async function previewGate(projectId: string): Promise<string | null> {
+  const prev = await prisma.render.findFirst({ where: { projectId, kind: "preview", by: { not: "user" }, status: { in: ["queued", "running", "done"] }, createdAt: { gt: new Date(Date.now() - PREVIEW_GAP_MS) } }, orderBy: { createdAt: "desc" } });
+  if (!prev) return null;
+  const since = prev.createdAt;
+  const [notes, client, mine] = await Promise.all([
+    prisma.projectComment.count({ where: { projectId, createdAt: { gt: since } } }),
+    prisma.reviewComment.count({ where: { projectId, createdAt: { gt: since } } }),
+    prisma.projectVersion.count({ where: { projectId, createdBy: "user", createdAt: { gt: since } } }),
+  ]);
+  if (notes || client || mine) return null;
+  if (prev.status !== "done") return `Not rendered: preview v${prev.version} of this edit is still rendering for this request (render ${prev.id}). get_render {renderId: "${prev.id}", wait_seconds: 60} returns its check when it is done. Rendrr renders ONE preview per request; your later changes go into the next preview, after the user asks for more (then render_preview with newRequest: true).`;
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { currentVersion: true } });
+  const mins = Math.max(1, Math.round((Date.now() - since.getTime()) / 60_000));
+  return `Not rendered: preview v${prev.version} of this edit was made ${mins} min ago for this request, and the user has not asked for anything since. Rendrr renders ONE preview per request: every render is a new version the user has to look at, and costs them tokens. Your changes are saved${p && p.currentVersion !== prev.version ? ` (v${p.currentVersion})` : ""} and go into the next preview. Now tell the user what you changed and what is left, and stop. Call render_preview again only after the user sends a new request or feedback, with newRequest: true.`;
+}
+
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
   // ---------------- read ----------------
   async get_editing_skill() {
@@ -1065,7 +1088,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       const out = await renderOut(had.id);
       return { ...out, text: `Nothing changed since preview v${had.version}, so nothing was rendered. Its check again:\n${out.text}\nMake every change in one apply_edits (check_edit checks it without rendering), then render once.` };
     }
-    const r = await startRender(c.userId, i.projectId, "preview");
+    // One preview per change: the AI's second preview in a row is not rendered unless the user asked for more since
+    // (newRequest) or left feedback (a comment, a change in the editor). Each render is a version the user sees and
+    // costs them tokens; the AI's own fixes after a preview wait for the next request.
+    const gate = i.newRequest || i.again ? null : await previewGate(p.id);
+    if (gate) return { text: gate };
+    const r = await startRender(c.userId, i.projectId, "preview", { by: c.ai ?? "claude" });
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     const out = await renderOut(r.id);
     return had ? { ...out, text: `${changed.map((g) => `"${g.name}" (${g.id})`).join(", ")} changed since preview v${had.version}: rendering it again.\n${out.text}` } : out;
@@ -1092,7 +1120,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const target = i.driveFolder != null || i.saveToDrive ? await driveTargetOrText(c.userId, i.driveFolder, i.createFolders) : null;
     if (typeof target === "string") return { text: target };
     let r;
-    try { r = await startRender(c.userId, i.projectId, "final"); } catch (e) {
+    try { r = await startRender(c.userId, i.projectId, "final", { by: c.ai ?? "claude" }); } catch (e) {
       const code = (e as AppError).code;
       if (code === "need-original") return { text: "This footage is on the user's computer. Full quality needs the original file once: ask the user to open this edit in Rendrr and press Render final. The app will ask for the file and delete it within 24 hours." };
       if (code === "drive") return { text: "The original file is no longer reachable in Google Drive. Ask the user to reconnect it in the Rendrr Library." };

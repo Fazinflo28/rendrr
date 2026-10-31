@@ -37,6 +37,9 @@ export const UpdateProjectInput = z.object({
   status: z.enum(PROJECT_STATUSES).optional(),
   timeline: TimelineSchema.optional(),
   baseVersion: z.number().int().min(0).optional(),
+  /** When the editor last had the edit (its `updated`, ms): an AI change folded into the same version since is not
+   *  overwritten by an autosave. */
+  baseAt: z.number().int().min(0).optional(),
 });
 
 const kind = z.enum(["footage", "reference"]).optional(); // reference: a video whose style to copy

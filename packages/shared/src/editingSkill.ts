@@ -7,7 +7,7 @@ export const MCP_INSTRUCTIONS = [
   "Rendrr edits video: you decide, Rendrr measures and marks (never cuts on its own), applies exactly what you send and renders. Times are seconds in the ORIGINAL footage.",
   "Before your first edit in a chat, call get_editing_skill once and follow it (the Fazinflo Editing Skill: rules, the mistakes reviewers flag most, workflow, QA gate).",
   "Core rules: read the whole video first; keep the best take (usually the last complete one); remove fillers, stutters, false starts and look-downs; tight, but never cut a word; no grading, audio processing, text animation, b-roll or graphics unless asked; one caption system, big and centred.",
-  "Render once per revision: put every change in one apply_edits, run check_edit (no render) and fix what it shows in one more apply_edits, then render_preview ONCE. Every render is a version the user sees: never render after each small fix or to compare options.",
+  "ONE render per user request: make every change, check_edit (no render), fix, then render_preview ONCE and reply. Never render again for your own fixes: Rendrr refuses a second preview until the user asks again (then newRequest: true).",
   "Comments: get_comments, fix each spot and the same kind of mistake everywhere, one render, then resolve_comment.",
   "Shorts from a long video: create_shorts (one edit per short, cut, 9:16, reframed on the speaker, captioned). Another shape of an edit: create_project fromProjectId with aspect and reframe. New client or series: create_folder.",
   "No footage (a SaaS promo, an explainer, animated type): create_project blank {seconds, color} is a blank canvas; build the video with create_graphic scenes, add_graphic, add_text, music and sound effects.",
@@ -22,15 +22,15 @@ It is built from 146 real review comments. The same mistakes kept coming back, a
 
 ## The loop
 
-Read the whole video > plan > ONE apply_edits > check_edit > fix in one apply_edits > render_preview ONCE > read its check > QA gate > tell the user > comments > fix each one and the same kind of mistake everywhere > one apply_edits > check_edit > one render.
+Read the whole video > plan > apply_edits > check_edit > fix > render_preview ONCE > read its check > tell the user (and stop) > their next request or comments > fix each one and the same kind of mistake everywhere > apply_edits > check_edit > one render.
 
-## Render once per revision
+## One render per request
 
-Every render_preview makes a version the user sees. Six previews for one request look like six different edits.
+Every render_preview makes a version the user has to watch, and every render costs them tokens. Five previews for one request look like five different edits. The user's request goes from version 1 to version 2, never to version 5.
 
-- A revision is everything for one request from the user, or one round of comments. It goes in ONE apply_edits call, not one call per fix.
+- A revision is everything for one request from the user, or one round of comments. Put it in as few apply_edits calls as you can; every apply_edits before the render joins the same version.
 - Check before you render, with tools that render nothing: check_edit (pauses, words a cut goes through, fillers left, clips under 0.5 s, captions, text placement), get_frames and get_vision (look-downs, dark shots), get_audio and get_waveform_image (word edges), test_graphic (any graphic, in a few seconds), map_time (times).
-- Render once. Read its check. Render again only for what the file shows and the edit check cannot (gaps or clicks in the file's sound, loudness, a graphic not on screen, extra words heard), with all of those fixes in one apply_edits.
+- Render once. Read its check. If the file shows something the edit check could not (a gap or click in the sound, loudness, a graphic not on screen, an extra word heard), fix it with apply_edits and check_edit, but do NOT render again: tell the user what you fixed and that it is in the next preview. Rendrr refuses a second preview of the same edit until the user asks for something new or comments (then render_preview with newRequest: true).
 - Never render two previews to compare options. Describe the options and ask.
 - render_preview with nothing changed returns the preview that version already has.
 
@@ -93,7 +93,7 @@ Every render_preview makes a version the user sees. Six previews for one request
 5. **Check without rendering.** check_edit. Fix everything it shows in one apply_edits and check again. Look at doubtful moments with get_frames; test any graphic with test_graphic.
    **Samples before the first preview** of a new look (graphics, titles, a grade, a motion piece): render_samples a few key moments (the hook, a title, a graphic, a transition: up to 8 frames and 3 clips of up to 6 s, with a note on what each shows). They are drawn exactly as the preview will draw them and the user sees them as a storyboard in the chat, asking for changes on each. get_samples reads those changes: make them in one apply_edits, render_samples again until the look is agreed, then render the whole preview once. A plain talking head cut needs none.
 6. **Render once.** render_preview, and read its check: clipped words, gaps at joins, clicks, fillers left, words heard against the edit (extra words mean a hidden retake or a leftover), loudness, graphics over the face. get_preview_frames to look at the picture and read what a viewer hears.
-7. **QA gate** (below). Any fail: fix all of them in one apply_edits, check_edit, render once more. Up to 3 rounds, then list what is left.
+7. **QA gate** (below), on the check before you render (check_edit, frames, the sound) and on the preview's check after. A fail after the render: fix it with apply_edits and check_edit, no second render; say what you fixed and that the next preview has it.
 8. **Tell the user** in 2 or 3 lines: length before and after, fillers and takes removed, look-downs removed, editor notes followed, anything uncertain (a line never said cleanly, a mixed-up take). Ask before render_final.
 
 ## Shorts, other shapes and new edits
@@ -117,7 +117,7 @@ For a video with no camera footage (a SaaS launch, a product explainer, kinetic 
 1. get_comments: read every open comment (time and text). Look at the frame at each time (get_preview_frames for the preview's times) before deciding what a note means. Notes the user gives in chat count the same.
 2. Map each time to the footage with map_time.
 3. Fix the spot, THEN search the whole video for the same kind of mistake. "Word got cut" at 17 s means check every join.
-4. All fixes in one apply_edits, check_edit, one render_preview, the QA gate.
+4. All fixes in apply_edits, check_edit, ONE render_preview (newRequest: true, as these are the user's new notes), the QA gate.
 5. resolve_comment each comment once the new preview is ready. Leave a comment open if it could not be done, and say why.
 6. Remember what the reviewer taught you for the rest of the edit and for this client's next videos (add_marks keeps notes with the edit).
 

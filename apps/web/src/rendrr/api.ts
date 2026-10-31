@@ -23,6 +23,9 @@ const CATEGORIES = [
 
 // ---------------- caches the UI needs synchronously ----------------
 const versions: Record<string, number> = {};
+/** When the editor last had each edit (its `updated`, ms): sent with autosaves (an AI change folded into the same
+ *  version since is not overwritten). */
+const stamps: Record<string, number> = {};
 const videoMeta: Record<string, any> = {};
 let resetSignIn: any = null;
 const reviewKey = (t: string) => { try { return sessionStorage.getItem("rendrr-review-" + t) || ""; } catch { return ""; } };
@@ -267,7 +270,7 @@ export const api: any = {
 
   // ---- projects (assets inside folders) ----
   listProjects: async () => emptyIf(await get("/projects")),
-  getProject: async (id: string) => { const p = await get(`/projects/${enc(id)}`); versions[id] = p.version; return p; },
+  getProject: async (id: string) => { const p = await get(`/projects/${enc(id)}`); versions[id] = p.version; if (typeof p.updated === "number") stamps[id] = p.updated; return p; },
   // Engine Part 6: the marks on the edit's footage where they play (thin lines on the timeline).
   getProjectMarks: async (id: string) => emptyIf(await get(`/projects/${enc(id)}/marks`)),
   // A new edit is the raw footage. `reference` ({ kind: style | recipe | video, id }) is attached for the AI, never applied.
@@ -280,9 +283,10 @@ export const api: any = {
     return p;
   },
   updateProject: async (id: string, p: any) => {
-    const body = p.timeline ? { ...p, baseVersion: versions[id] } : p;
+    const body = p.timeline ? { ...p, baseVersion: versions[id], ...(stamps[id] ? { baseAt: stamps[id] } : {}) } : p;
     const r = await patch(`/projects/${enc(id)}`, body);
     if (r && typeof r.version === "number") versions[id] = r.version;
+    if (r && typeof r.updated === "number") stamps[id] = r.updated;
     return r;
   },
   restoreVersion: (projectId: string, v: number) => post(`/projects/${enc(projectId)}/versions/${v}/restore`),

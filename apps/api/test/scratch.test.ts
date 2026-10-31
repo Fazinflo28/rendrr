@@ -66,7 +66,8 @@ describe("edits from scratch", { skip: (!ready || !ff) && "needs a database, Red
     assert.ok(j.streams.some((s) => s.codec_type === "audio"));
     assert.ok(Math.abs(Number(j.format.duration) - 72) < 0.1, j.format.duration);
     const px = execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", file, "-frames:v", "1", "-vf", "scale=1:1:in_color_matrix=bt709:in_range=tv,format=rgb24", "-f", "rawvideo", "pipe:1"]);
-    assert.ok(Math.abs(px[0] - 0x11) <= 3 && Math.abs(px[1] - 0x22) <= 3 && Math.abs(px[2] - 0x33) <= 3, `colour ${[...px].join(",")}`);
+    // (8-bit 4:2:0 video rounds a dark colour by a few levels.)
+    assert.ok(Math.abs(px[0] - 0x11) <= 5 && Math.abs(px[1] - 0x22) <= 5 && Math.abs(px[2] - 0x33) <= 5, `colour ${[...px].join(",")}`);
   });
 
   it("graphics and text go on it, the length changes with trim_clip, and the canvas is not footage in any list", async () => {

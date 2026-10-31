@@ -11,7 +11,7 @@ export function stepsFor(kind: "preview" | "final", source: string, sample: bool
 }
 
 /** Starts a render. Local footage needs its original once for a final (code "need-original", as the UI expects). */
-export async function startRender(userId: string, projectId: string, kind: "preview" | "final", opts: { version?: number } = {}) {
+export async function startRender(userId: string, projectId: string, kind: "preview" | "final", opts: { version?: number; by?: string } = {}) {
   const p = await getOwnedProject(userId, projectId);
   const video = await prisma.video.findUniqueOrThrow({ where: { id: p.videoId } });
   if (kind === "preview" && (!video.proxyKey || video.status === "expired")) {
@@ -36,7 +36,7 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   // worker from the original and added then.
   const ex = (exists.timeline as unknown as { timeline?: { export?: { resolution?: string; codec?: string } } })?.timeline?.export;
   const quality = kind === "final" ? qualityLabel({ resolution: ex?.resolution, codec: ex?.codec, hdr: !!video.hdr && ((ex as { hdr?: string })?.hdr ?? "keep") === "keep" }) : "540p";
-  const r = await prisma.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality } });
+  const r = await prisma.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality, by: opts.by ?? "user" } });
   // Review states (In review, Changes requested, Approved) stay put while rendering; the render has its own progress.
   // A finished final still moves the edit to "Final ready", as in the UI.
   const reviewState = ["In review", "Changes requested", "Approved"].includes(p.status);

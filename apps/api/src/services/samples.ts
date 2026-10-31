@@ -1,7 +1,7 @@
 // Samples (render_samples): a few frames and short clips of an edit, rendered on their own (the worker's sample kind)
 // and shown in the chat's Rendrr app as a storyboard. The user asks for changes on each one: those are comments on the
 // sample render at the sample's edit time, so get_comments and get_samples read them.
-import { AppError, enqueue, publishRender, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
+import { AppError, enqueue, publishRender, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { SAMPLE_STEPS, SampleError, sampleClock, sampleItems, samplesText, type AppComment, type AppSamples, type SampleDone, type SamplePlan, type SampleRequest } from "@rendrr/shared";
 import { renderTimeoutMs } from "@rendrr/shared";
@@ -24,9 +24,13 @@ export async function startSamples(userId: string, projectId: string, req: Sampl
   let items;
   // (An edit whose length was never measured is checked by the worker against its plan.)
   try { items = sampleItems(req, p.outputSeconds || 24 * 3600); } catch (e) { if (e instanceof SampleError) throw new AppError(e.message, 400, "samples"); throw e; }
-  const version = await sealLatestVersion(projectId);
-  const recent = await prisma.render.findMany({ where: { projectId, kind: "sample", version, status: { in: ["queued", "running", "done"] }, createdAt: { gt: new Date(Date.now() - renderTimeoutMs("preview", video.seconds) - 60_000) } }, orderBy: { createdAt: "desc" }, take: 10 });
-  const done = await prisma.render.findMany({ where: { projectId, kind: "sample", version, status: "done" }, orderBy: { createdAt: "desc" }, take: 10 });
+  // Samples are not versions: they do not close the version (the AI's change to it goes on in the same version), so
+  // ones of an earlier state of it are not reused.
+  const latest = await prisma.projectVersion.findFirst({ where: { projectId }, orderBy: { v: "desc" }, select: { v: true, updatedAt: true } });
+  const version = latest?.v ?? p.currentVersion;
+  const since = latest?.updatedAt ?? new Date(0);
+  const recent = await prisma.render.findMany({ where: { projectId, kind: "sample", version, status: { in: ["queued", "running", "done"] }, createdAt: { gt: new Date(Math.max(since.getTime(), Date.now() - renderTimeoutMs("preview", video.seconds) - 60_000)) } }, orderBy: { createdAt: "desc" }, take: 10 });
+  const done = await prisma.render.findMany({ where: { projectId, kind: "sample", version, status: "done", createdAt: { gt: since } }, orderBy: { createdAt: "desc" }, take: 10 });
   for (const r of [...recent, ...done]) {
     const sp = (r.plan as { samples?: SamplePlan } | null)?.samples;
     if (!sp || !same(sp.items, items)) continue;

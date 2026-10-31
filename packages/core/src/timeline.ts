@@ -21,9 +21,14 @@ export type ChangeActor = {
   toolName?: string;         // MCP tool or UI action name
   input?: unknown;           // tool input, stored on ai_actions
 };
-export type ChangeResult = { projectId: string; version: number; summary: string; snapshot: Snapshot; createdVersion: boolean; unchanged?: boolean };
+export type ChangeResult = { projectId: string; version: number; summary: string; snapshot: Snapshot; createdVersion: boolean; unchanged?: boolean; folded?: boolean };
 
 const COALESCE_MS = 10 * 60_000;
+/**
+ * One version per change from an AI: its edits before the next render (or share, or a change by the user) join the
+ * version it is making, so a revision goes v1 to v2 however many apply_edits it takes, not v1 to v5. Within an hour.
+ */
+const AI_FOLD_MS = 60 * 60_000;
 const isAi = (k: Actor) => k === "claude" || k === "chatgpt";
 
 export function displayAi(kind: Actor, fallback?: string) {
@@ -89,7 +94,7 @@ function stable(v: unknown): string {
 // The derived clip fields (place in the edit, source, link) follow from the rest, so they never make a version.
 const sameSnapshot = (a: Snapshot, b: Snapshot) => stable({ ...a, timeline: stripLayout(a.timeline) }) === stable({ ...b, timeline: stripLayout(b.timeline) });
 
-export async function applyTimelineChange(projectId: string, change: Op, actor: ChangeActor, opts: { baseVersion?: number; luts?: Record<string, Lut> } = {}): Promise<ChangeResult> {
+export async function applyTimelineChange(projectId: string, change: Op, actor: ChangeActor, opts: { baseVersion?: number; baseAt?: number; luts?: Record<string, Lut> } = {}): Promise<ChangeResult> {
   let words: ReturnType<typeof allWords> = [];
   const result = await prisma.$transaction(async (tx) => {
     // Lock the project row so two writers (the editor and an AI) never interleave.
@@ -103,6 +108,11 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
     if (change.op === "replace" && opts.baseVersion != null && opts.baseVersion < p.currentVersion) {
       const newer = await tx.projectVersion.findFirst({ where: { projectId, v: { gt: opts.baseVersion }, createdBy: { not: "user" } } });
       if (newer) throw new AppError(`${displayAi(newer.createdBy as Actor)} just changed this edit. Loading the new version.`, 409, "stale", { version: p.currentVersion });
+    }
+    // The same version number, but an AI folded more changes into it after the editor last had the edit.
+    if (change.op === "replace" && opts.baseAt != null && opts.baseVersion === p.currentVersion) {
+      const cur = await tx.projectVersion.findUnique({ where: { projectId_v: { projectId, v: p.currentVersion } } });
+      if (cur && isAi(cur.createdBy as Actor) && cur.updatedAt.getTime() > opts.baseAt + 1000) throw new AppError(`${displayAi(cur.createdBy as Actor)} just changed this edit. Loading the new version.`, 409, "stale", { version: p.currentVersion });
     }
 
     const ctx = await editContext(tx, p.userId, p.videoId, p.timeline, videosIn(change), opts.luts);
@@ -121,15 +131,27 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
     const latest = await tx.projectVersion.findFirst({ where: { projectId }, orderBy: { v: "desc" } });
     const prevV = p.currentVersion;
     const coalesce = actor.kind === "user" && change.op === "replace" && latest && latest.createdBy === "user" && !latest.sealed && Date.now() - latest.updatedAt.getTime() < COALESCE_MS;
+    // An AI's next change before its version is rendered, shared or changed by the user: the same version (an undo or
+    // a restore is always a version of its own).
+    const fold = isAi(actor.kind) && change.op !== "restore_snapshot" && !!latest && latest.v > 1 && latest.v === p.currentVersion && latest.createdBy === actor.kind && !latest.sealed && Date.now() - latest.updatedAt.getTime() < AI_FOLD_MS;
     let v: number;
+    let foldedFrom: number | null = null;
     if (coalesce && latest) {
       await tx.projectVersion.update({ where: { id: latest.id }, data: { timeline: out.snap as unknown as Prisma.InputJsonValue } });
       v = latest.v;
+    } else if (fold && latest) {
+      const more = / \(and more changes\)$/.test(latest.note) ? latest.note : `${latest.note.slice(0, 280)} (and more changes)`;
+      await tx.projectVersion.update({ where: { id: latest.id }, data: { timeline: out.snap as unknown as Prisma.InputJsonValue, note: more } });
+      v = latest.v;
+      // Undoing any change of the revision goes back to before the revision (its version was made in place).
+      const first = await tx.aiAction.findFirst({ where: { projectId, afterVersion: v }, orderBy: { createdAt: "asc" }, select: { beforeVersion: true } });
+      foldedFrom = first?.beforeVersion ?? v - 1;
     } else {
       if (latest && !latest.sealed) await tx.projectVersion.update({ where: { id: latest.id }, data: { sealed: true } });
       v = (latest?.v ?? 0) + 1;
       const note = actor.kind === "user" ? (change.op === "replace" ? "Your edits" : out.summary.charAt(0).toUpperCase() + out.summary.slice(1)) : `${displayAi(actor.kind)}: ${out.summary}`;
-      await tx.projectVersion.create({ data: { projectId, v, note: note.slice(0, 300), timeline: out.snap as unknown as Prisma.InputJsonValue, createdBy: actor.kind, sealed: isAi(actor.kind) } });
+      // An AI's version stays open for the rest of its change (sealed by a render, a share or the user's next change).
+      await tx.projectVersion.create({ data: { projectId, v, note: note.slice(0, 300), timeline: out.snap as unknown as Prisma.InputJsonValue, createdBy: actor.kind, sealed: false } });
     }
     await tx.project.update({
       where: { id: projectId },
@@ -138,10 +160,10 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
     });
     if (actor.kind !== "user") {
       await tx.aiAction.create({
-        data: { projectId, userId: p.userId, ai: displayAi(actor.kind, actor.ai), text: out.summary.slice(0, 500), toolName: actor.toolName || change.op, input: ((actor.input ?? { op: change.op }) as Prisma.InputJsonValue), via: actor.via ?? null, beforeVersion: prevV, afterVersion: v },
+        data: { projectId, userId: p.userId, ai: displayAi(actor.kind, actor.ai), text: out.summary.slice(0, 500), toolName: actor.toolName || change.op, input: ((actor.input ?? { op: change.op }) as Prisma.InputJsonValue), via: actor.via ?? null, beforeVersion: foldedFrom ?? prevV, afterVersion: v },
       });
     }
-    return { projectId, version: v, summary: out.summary, snapshot: out.snap, createdVersion: !coalesce };
+    return { projectId, version: v, summary: out.summary, snapshot: out.snap, createdVersion: !coalesce && !fold, ...(fold ? { folded: true } : {}) };
   }, { timeout: 20_000, maxWait: 10_000 });
 
   if (!result.unchanged && (actor.kind !== "user" || result.createdVersion)) {

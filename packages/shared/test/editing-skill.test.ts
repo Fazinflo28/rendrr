@@ -33,7 +33,9 @@ describe("editing skill", () => {
     expect(HOW_TO_EDIT).toMatch(/Check, then render once/);
     expect(HOW_TO_EDIT).toContain("check_edit");
     const doc = (n: string) => MCP_TOOLS.find((t) => t.name === n)!.description;
-    expect(doc("render_preview")).toMatch(/render ONCE per revision/);
+    expect(doc("render_preview")).toMatch(/ONE preview per user request/);
+    expect(doc("render_preview")).toMatch(/newRequest/);
+    expect(EDITING_SKILL).not.toMatch(/Up to 3 rounds/);
     expect(doc("apply_edits")).toMatch(/every change of a revision in one call/);
     expect(doc("check_edit")).toMatch(/without rendering/);
     expect(toolNames.has("get_editing_skill")).toBe(true);
