@@ -158,7 +158,12 @@ Object.assign(api, {
     const a2 = (p.timeline?.tracks?.a2 || []).map((c) => (c.trackId || c.assetKey ? c : { ...c, trackId: "m_lofi" }));
     // Its caption clips (cap0, cap1, ...) name no transcript line: give each its line, as the real timeline does.
     const v3 = (p.timeline?.tracks?.v3 || []).map((c) => (c.kind === "caption" && !c.lineId && /^cap\d+$/.test(c.id) ? { ...c, lineId: p.transcript?.[Number(c.id.slice(3))]?.id } : c));
-    const q = p.timeline ? { ...p, timeline: { ...p.timeline, tracks: { ...p.timeline.tracks, a2, v3 } } } : p;
+    // Its b-roll clip names no video: one of the demo videos (the real API sends kind and videoId), playable when a test
+    // gives the demo a file (globalThis.__rendrrDemoMedia).
+    const v2 = (p.timeline?.tracks?.v2 || []).map((c) => (!c.kind && !c.zoom && /b-roll/i.test(c.label || "") ? { ...c, kind: "broll", videoId: "v5", sourceStart: 0 } : c));
+    const brollMedia = src && v2.some((c) => c.videoId === "v5") ? { v5: { url: src, seconds: 330 } } : undefined;
+    const q0 = p.timeline ? { ...p, timeline: { ...p.timeline, tracks: { ...p.timeline.tracks, a2, v2, v3 } } } : p;
+    const q = brollMedia ? { ...q0, brollMedia: { ...(q0.brollMedia || {}), ...brollMedia } } : q0;
     // A check can mark the footage as measured sideways (the real API sends what the deeper measurements found).
     const side = globalThis.__rendrrDemoSideways ? { sideways: { [p.videoId]: globalThis.__rendrrDemoSideways } } : {};
     return { ...(src ? { ...q, video: { ...q.video, proxyUrl: src } } : q), audioMedia: { ...sounds }, ...side, peaks: { [p.videoId]: demoPeaks(p) } };

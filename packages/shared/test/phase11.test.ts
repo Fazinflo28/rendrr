@@ -94,7 +94,7 @@ describe("anchor point and motion blur", () => {
 });
 
 describe("b-roll as a card: crop, corners, drop shadow", () => {
-  it("set_card on b-roll crops and rounds it (its mask) and lays a shadow under it; a border is for V1", () => {
+  it("set_card on b-roll crops and rounds it (its mask) and lays a shadow under it; a border too (phase 17)", () => {
     const { s: s0, id } = withBroll();
     const r = edit(s0, { op: "set_card", clipIds: [id], crop: { left: 0.2, top: 0.2, right: 0.2, bottom: 0.2 }, radius: 0.1, shadow: {} } as Op);
     expect(r.summary).toMatch(new RegExp(`^${id}: drawn as a card over the picture: `));
@@ -106,7 +106,7 @@ describe("b-roll as a card: crop, corners, drop shadow", () => {
     expect(p.operations.join("\n")).toMatch(/B-roll cards: /);
     const fr = liveFrame(p, 3);
     expect(fr.broll!.shadow).toEqual(p.broll[0].shadow);
-    expect(() => edit(s0, { op: "set_card", clipIds: [id], border: { color: "#ffffff", width: 0.01 } } as Op)).toThrow(/border is drawn on V1 cards only/);
+    expect(edit(s0, { op: "set_card", clipIds: [id], border: { color: "#ffffff", width: 0.01 } } as Op).summary).toMatch(/border #ffffff 1%/i);
     // V1 cards as before.
     expect(edit(base(), { op: "set_card", clipIds: ["a"], radius: 0.05 } as Op).summary).toMatch(/^1 clip drawn as a card/);
   });

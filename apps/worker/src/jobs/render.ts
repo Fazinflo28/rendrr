@@ -255,6 +255,12 @@ export async function renderJob(ctx: Ctx) {
       const bv = m.inside && brollVideos.find((x) => x.id === m.inside!.videoId);
       if (bv && bv.proxyKey) { const p = join(ctx.dir, `inside-${bv.id}.mp4`); await cachedCopy(bv.proxyKey, p); (files.insides ??= {})[m.clipId] = p; }
     }
+    // Phase 17: keyframed text layers with motion blur, each drawn from its own ASS file.
+    for (const b of plan.textBlurs ?? []) {
+      const bp = join(ctx.dir, `text-${b.clipId}-blur.ass`);
+      await writeFile(bp, b.ass);
+      (files.textBlurs ??= {})[b.clipId] = bp;
+    }
     await send(i, 1);
     i++;
 

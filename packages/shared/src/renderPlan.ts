@@ -54,7 +54,9 @@ export type ZoomOp = { start: number; end: number; scale: number; mode: "punch" 
 /** blend, opacity (Phase 4): how the layer lies over the picture (normal at full opacity when left out). */
 export type OverlayOp = { clipId: string; start: number; end: number; sourceStart: number; videoId?: string; graphicId?: string; keys?: Key[]; behind?: boolean; blend?: BlendMode; opacity?: number;
   /** Phase 11: mirrored (b-roll); the anchor its keys turn about; motion blur (0-100); a drop shadow (b-roll cards). */
-  flip?: "h" | "v" | "both"; anchor?: { x: number; y: number }; motionBlur?: number; shadow?: { color: string; opacity: number; blur: number; x: number; y: number } };
+  flip?: "h" | "v" | "both"; anchor?: { x: number; y: number }; motionBlur?: number; shadow?: { color: string; opacity: number; blur: number; x: number; y: number };
+  /** Phase 17: a b-roll card's border: its colour where the picture (a ring just inside the card's edge) says. */
+  border?: { file: string; color: string } };
 /**
  * Phase 2b: a text layer drawn from a mask, on its side of the person (behind: before the person is laid back), after
  * that side's graphics and before its other text layers. mask: an ASS file drawn white on black from the layer's start
@@ -63,6 +65,9 @@ export type OverlayOp = { clipId: string; start: number; end: number; sourceStar
  * cut: the card's colour (the picture under it shows through the letters).
  */
 export type TextMatteOp = { clipId: string; start: number; end: number; behind: boolean; mask: string; decor: string | null; inside?: { videoId: string; from: number; seconds: number }; cut?: string };
+/** Phase 17: a keyframed text layer with motion blur, drawn on its own: its ASS (timed from the layer's start) on a
+ *  clear frame at four times the frame rate, the last frames of each frame's shutter averaged (as motionChain). */
+export type TextBlurOp = { clipId: string; start: number; end: number; behind: boolean; blur: number; ass: string };
 /**
  * Phase 2: graphics and text layers behind the person. windows: when the person is laid back over them (output
  * seconds; not where b-roll or a transition plays). parts: the matte each picture part reads (by its index in
@@ -190,6 +195,8 @@ export type RenderPlan = {
   person?: PersonOp;
   /** Phase 2b: text layers with a video inside their letters or cut out of their card, each drawn from its mask. */
   textMattes?: TextMatteOp[];
+  /** Phase 17: keyframed text layers with motion blur. */
+  textBlurs?: TextBlurOp[];
   operations: string[];
 };
 
@@ -431,14 +438,14 @@ const moveExtras = (c: { keys?: unknown[]; anchor?: { x: number; y: number }; mo
 export const flipFilter = (f?: "h" | "v" | "both") => (f === "h" ? "hflip," : f === "v" ? "vflip," : f === "both" ? "hflip,vflip," : "");
 
 /** Phase 11: mirrored clips, slow motion's in-between frames, anchors and motion blur, b-roll cards. */
-function extrasLines(parts: PicturePart[], clipMotion: Record<string, { anchor?: unknown; motionBlur?: number }>, broll: OverlayOp[], graphics: OverlayOp[], v2: (V2Clip & { cardLook?: CardLook })[]): string[] {
+function extrasLines(parts: PicturePart[], clipMotion: Record<string, { anchor?: unknown; motionBlur?: number }>, broll: OverlayOp[], graphics: OverlayOp[], v2: (V2Clip & { cardLook?: CardLook })[], texts: TextLayer[] = []): string[] {
   const out: string[] = [];
   const ids = (xs: string[]) => Array.from(new Set(xs)).slice(0, 6).join(", ");
   const flipped = [...parts.filter((p) => p.flip).flatMap((p) => p.clipIds), ...broll.filter((b) => b.flip).map((b) => b.clipId)];
   if (flipped.length) out.push(`Mirrored: ${ids(flipped)}`);
   const smooth = parts.filter((p) => p.interp);
   if (smooth.length) out.push(`Slow motion: ${smooth.map((p) => `${p.clipIds[0]} ${p.interp === "flow" ? "optical flow" : "frame blending"} at ${Math.round(rateOf(p) * 100)}%`).slice(0, 4).join(", ")} (the in-between frames are made in the render; the player holds frames)`);
-  const moved = [...Object.entries(clipMotion).map(([id, m]) => ({ id, ...m })), ...[...broll, ...graphics].map((x) => ({ id: x.clipId, anchor: x.anchor, motionBlur: x.motionBlur }))];
+  const moved = [...Object.entries(clipMotion).map(([id, m]) => ({ id, ...m })), ...[...broll, ...graphics, ...texts].map((x) => ({ id: x.clipId, anchor: x.anchor, motionBlur: x.motionBlur }))];
   const blur = moved.filter((m) => m.motionBlur), anch = moved.filter((m) => m.anchor);
   if (blur.length) out.push(`Motion blur: ${blur.slice(0, 6).map((m) => `${m.id} ${m.motionBlur}`).join(", ")} (in the render)`);
   if (anch.length) out.push(`Anchor points: ${ids(anch.map((m) => m.id))}`);
@@ -607,11 +614,17 @@ export function planRender(input: PlanInput): RenderPlan {
     const insideLen = c.inside ? input.brollSeconds?.[c.inside.videoId] : undefined;
     if (c.inside && !insideLen) insideMissing.push(c.id);
     texts.push({ clipId: c.id, start: Math.round(sp.start * 100) / 100, end: Math.round(sp.end * 100) / 100, lines: c.text.split("\n"), style: c.style ?? def.style, card: c.card ?? null, anim: c.anim ?? def.anim, ...(c.keys?.length ? { keys: c.keys } : {}), ...(c.behind ? { behind: true } : {}),
-      ...(c.inside && insideLen ? { inside: { videoId: c.inside.videoId, from: c.inside.from ?? 0, seconds: insideLen } } : {}), ...(c.cutout && c.card ? { cutout: true } : {}) });
+      ...(c.inside && insideLen ? { inside: { videoId: c.inside.videoId, from: c.inside.from ?? 0, seconds: insideLen } } : {}), ...(c.cutout && c.card ? { cutout: true } : {}),
+      // Phase 17: the anchor its keys turn and scale about, and motion blur on its keyed movement.
+      ...(c.keys?.length && c.anchor ? { anchor: c.anchor } : {}), ...(c.keys?.length && c.motionBlur ? { motionBlur: c.motionBlur } : {}) });
   }
   // Phase 2: text layers behind the person are drawn in a pass of their own, before the person is laid back over them.
   // Phase 2b: layers drawn from a mask are drawn one by one, before the other text layers of their side.
-  const plain = texts.filter((t) => !isMatted(t));
+  // Phase 17: keyframed layers with motion blur are drawn on their own too (blurred over their movement).
+  const blurs = (t: TextLayer) => !isMatted(t) && !!t.keys?.length && !!t.motionBlur;
+  const plain = texts.filter((t) => !isMatted(t) && !blurs(t));
+  const textBlurs: TextBlurOp[] = texts.filter(blurs).map((t) => ({ clipId: t.clipId, start: t.start, end: t.end, behind: !!t.behind, blur: t.motionBlur!,
+    ass: buildStyledAss({ captions: [], captionStyle: null, texts: [{ ...t, start: 0, end: Math.round((t.end - t.start) * 100) / 100 }], width, height })! }));
   const ass = buildStyledAss({ captions: styledCaptions, captionStyle, texts: plain.filter((t) => !t.behind), width, height });
   const assBehind = plain.some((t) => t.behind) ? buildStyledAss({ captions: [], captionStyle, texts: plain.filter((t) => t.behind), width, height }) : null;
   const textMattes: TextMatteOp[] = texts.filter(isMatted).map((t) => ({ clipId: t.clipId, start: t.start, end: t.end, behind: !!t.behind, ...textMatteAss(t, width, height),
@@ -717,7 +730,12 @@ export function planRender(input: PlanInput): RenderPlan {
     : bgIn.pattern ? { file: file({ kind: "pattern", pattern: bgIn.pattern }), text: backgroundText(bgIn) }
     : bgIn.videoId ? (input.brollSeconds?.[bgIn.videoId] ? { videoId: bgIn.videoId, seconds: input.brollSeconds[bgIn.videoId], text: backgroundText(bgIn) } : null)
     : (() => { const sg = backgroundSigma(bgIn.blur!, width, height); return { blur: sg, scale: backgroundScale(sg, width, height), text: backgroundText(bgIn) }; })();
-  for (const b of [...broll, ...under]) lookFor((tl.tracks.v2 as (V2Clip & ClipLook)[]).find((x) => x.id === b.clipId)!, { from: b.sourceStart, to: b.sourceStart + (b.end - b.start) });
+  for (const b of [...broll, ...under]) {
+    const c = (tl.tracks.v2 as (V2Clip & ClipLook & { cardLook?: CardLook })[]).find((x) => x.id === b.clipId)!;
+    lookFor(c, { from: b.sourceStart, to: b.sourceStart + (b.end - b.start) });
+    // Phase 17: a b-roll card's border, a ring just inside its edge on its own frame (drawn before its keys move it).
+    if (c.cardLook?.border) b.border = { file: file({ kind: "border", card: c.cardLook, framing: null }), color: c.cardLook.border.color };
+  }
   // Phase 9: adjustment layers on V3, placed as graphics are; their grade and effects as a look of their own.
   const adjust: AdjustOp[] = [];
   for (const c of tl.tracks.v3 as (V3Clip & Attached)[]) {
@@ -756,7 +774,7 @@ export function planRender(input: PlanInput): RenderPlan {
     broll.length ? `B-roll overlays: ${broll.length}` : "B-roll overlays: none",
     graphics.length ? `Graphics overlays: ${graphics.length}` : "Graphics overlays: none",
     ...(tl.multicam?.angles.length ? [multicamLine(tl.multicam, view, main, total)] : []),
-    ...extrasLines(parts, clipMotion, broll, graphics, (tl.tracks.v2 as (V2Clip & { cardLook?: CardLook })[])),
+    ...extrasLines(parts, clipMotion, broll, graphics, (tl.tracks.v2 as (V2Clip & { cardLook?: CardLook })[]), texts),
     ...(chapters.length ? [`Chapters: ${chapters.length} (${chapters.slice(0, 5).map((c) => `${fmtClock(c.at)} ${c.title}`).join(", ")})${chapterProblems(chapters, view.total).length ? `; YouTube shows none until there are: ${chapterProblems(chapters, view.total).join("; ")}` : ""}`] : []),
     ...(kind === "final" && tl.export && (tl.export.format && tl.export.format !== "mp4" || tl.export.bitrate || tl.export.fps) ? [deliverableLine(tl.export, width, height, !!hdr)] : []),
     captions.length ? `Captions: ${captions.length} word-timed events, ${tl.captionStyle ? "own style" : `look ${look}`}: ${styleText(captionStyle)}` : "Captions: off",
@@ -786,6 +804,7 @@ export function planRender(input: PlanInput): RenderPlan {
     looks, lookFiles, under, hdr, ...(hdr && ass ? { ass: hdrAss(ass, hdr.transfer) } : {}),
     ...(assBehind ? { assBehind: hdr ? hdrAss(assBehind, hdr.transfer) : assBehind } : {}), ...(person ? { person } : {}),
     ...(textMattes.length ? { textMattes: hdr ? textMattes.map((m) => (m.decor ? { ...m, decor: hdrAss(m.decor, hdr.transfer) } : m)) : textMattes } : {}),
+    ...(textBlurs.length ? { textBlurs } : {}),
     ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}),
     ...(Object.keys(stabilize).length ? { stabilize } : {}), ...(adjust.length ? { adjust } : {}),
     ...(kind === "final" && tl.export?.format && tl.export.format !== "mp4" ? { format: tl.export.format } : {}),
@@ -981,6 +1000,8 @@ export type PlanFiles = {
   assBehindPath?: string;
   /** Phase 2b: each plan.textMattes entry's mask and decor written out, and the library video in its letters (by clip id). */
   textMasks?: Record<string, string>;
+  /** Phase 17: each plan.textBlurs entry's ASS file, by clip id. */
+  textBlurs?: Record<string, string>;
   textDecor?: Record<string, string>;
   insides?: Record<string, string>;
   fontsDir?: string;
@@ -1356,6 +1377,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       g.push(`[${idx++}:v]fps=${R},${flipFilter(u.flip)}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[ua${t}]`);
       const c = colorChain(`ua${t}`, looks[u.clipId], "sdr", n, t, `trim=start=${n6(u.sourceStart + (s - u.start))},setpts=PTS-STARTPTS`);
       let ov = c.out;
+      // Phase 17: a card's border, before its keys move it.
+      if (u.border) { g.push(`[${ov}]settb=${TB},setpts=N[ubb${t}]`); fillOver(`ubb${t}`, u.border, n, `ubd${t}`, PFA); ov = `ubd${t}`; }
       if (u.keys?.length) { motionChain(g, ov, `um${t}`, u.keys, s - u.start, n, W, H, false, t, { hdr: !!hdr, fr, anchor: u.anchor, blur: u.motionBlur }); ov = `um${t}`; }
       g.push(`[${ov}]settb=${TB},setpts=PTS-STARTPTS+${Math.round((s - start) * FPS)}[ub${t}]`);
       g.push(`[${cur}][ub${t}]overlay=eof_action=pass:format=auto,format=${PF}[bu${t}]`);
@@ -1826,11 +1849,23 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     const bi = next();
     const n = Math.max(1, Math.round((b.end - b.start) * FPS));
     const look = plan.looks?.[b.clipId];
-    if (b.keys?.length || look || plan.hdr) {
+    if (b.keys?.length || look || plan.hdr || b.border) {
       // Keyframed b-roll: moved, scaled, turned and faded over the picture (picture-in-picture). Phase 6: its look
       // (grade, key, masks, blur) first; in an HDR output it goes in as SDR.
       g.push(`[${bi}:v]fps=${R},${flipFilter(b.flip)}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,tpad=stop_mode=clone:stop=2,trim=end_frame=${n}[bk${i}]`);
       let cur = cc.colorChain(`bk${i}`, look, "sdr", n, `b${i}`).out;
+      // Phase 17: a card's border, on its own frame before its keys move it (a ring inside the card: its alpha kept).
+      const bp = b.border && files.looks?.[b.border.file];
+      if (bp) {
+        inputs.push("-i", bp);
+        const ri = next();
+        g.push(`[${ri}:v]format=gray,loop=loop=-1:size=1:start=0,settb=${TB},setpts=N,trim=end_frame=${n}[bda${i}]`);
+        g.push(`color=c=0x${b.border!.color.slice(1).toUpperCase()}:s=${W}x${H}:r=${R},format=gbrp,scale=out_color_matrix=bt709:out_range=tv:flags=accurate_rnd,format=yuv420p,trim=end_frame=${n},settb=${TB},setpts=N[bdc${i}]`);
+        g.push(`[bdc${i}][bda${i}]alphamerge[bdf${i}]`);
+        g.push(`[${cur}]settb=${TB},setpts=N[bdb${i}]`);
+        g.push(`[bdb${i}][bdf${i}]overlay=format=auto,format=yuva420p[bdo${i}]`);
+        cur = `bdo${i}`;
+      }
       if (b.keys?.length) { motionChain(g, cur, `bm${i}`, b.keys, 0, n, W, H, false, `b${i}`, { hdr: !!plan.hdr, fr, anchor: b.anchor, blur: b.motionBlur }); cur = `bm${i}`; }
       // Phase 11: a b-roll card's drop shadow, from its own alpha (crop, corners, masks, its movement), laid on the
       // picture under it first.
@@ -1897,9 +1932,20 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     g.push(`[${v}][tl${k}]overlay=enable='between(t,${n6(m.start)},${n6(m.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vtm${k}]`);
     v = `vtm${k}`;
   };
+  // Phase 17: a keyframed text layer with motion blur: drawn on a clear frame at four times the rate (libass keeps the
+  // alpha), the last frames of each frame's shutter averaged premultiplied (edges do not darken), back to the rate.
+  const drawTextBlur = (b: TextBlurOp, k: number) => {
+    const path = files.textBlurs?.[b.clipId];
+    if (!path) return;
+    const n = Math.max(1, Math.round((b.end - b.start) * FPS)), SUB = 4, K = Math.max(2, Math.round((SUB * b.blur) / 100));
+    g.push(`color=c=black@0:s=${W}x${H}:r=${FPS * SUB}:d=${n6(n / FPS + 1)},format=yuva420p,ass=filename=${q(path)}${fontsDir}:alpha=1,format=yuva444p,premultiply=inplace=1,tmix=frames=${K},unpremultiply=inplace=1,fps=${R},trim=end_frame=${n},format=yuva420p${toHdr},setpts=PTS-STARTPTS+${n3(b.start)}/TB[tbl${k}]`);
+    g.push(`[${v}][tbl${k}]overlay=enable='between(t,${n6(b.start)},${n6(b.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : ""}[vtbl${k}]`);
+    v = `vtbl${k}`;
+  };
   // Phase 2: behind the person: their graphics, their text layers, then the person laid back over them.
   plan.graphics.forEach((gr, i) => { if (gr.behind) drawGraphic(gr, i); });
   plan.textMattes?.forEach((m, k) => { if (m.behind) drawTextMatte(m, k); });
+  plan.textBlurs?.forEach((b, k) => { if (b.behind) drawTextBlur(b, k); });
   if (plan.assBehind && files.assBehindPath) {
     g.push(`[${v}]${tagHdr}ass=filename=${q(files.assBehindPath)}${files.fontsDir ? `:fontsdir=${q(files.fontsDir)}` : ""}[vtb]`);
     v = "vtb";
@@ -1929,6 +1975,7 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     v = `ajv${k}`;
   });
   plan.textMattes?.forEach((m, k) => { if (!m.behind) drawTextMatte(m, k); });
+  plan.textBlurs?.forEach((b, k) => { if (!b.behind) drawTextBlur(b, k); });
   // 6. Captions on top of everything.
   if (plan.ass && files.assPath) {
     // HDR: the frame is tagged BT.2020 so libass turns the (already PQ/HLG) caption colours into YUV with that matrix.

@@ -853,12 +853,11 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       return { snap: { ...snap, timeline: next }, summary: (!f || !plainFraming(f) ? `${what} back to filling the frame` : `framed ${what}: ${framingText(f)}`) + noFace };
     }
     case "set_card": {
-      // Phase 11: b-roll too (crop, rounded corners and a drop shadow over the picture; a border is for V1 cards).
+      // Phase 11: b-roll too (crop, rounded corners and a drop shadow over the picture; Phase 17: a border too).
       const brollIds = new Set((op.clipIds ?? []).filter((id) => (tl.tracks.v2 as V2Clip[]).some((c) => c.id === id && c.kind === "broll")));
       const ids = targets(tl, op.clipIds?.filter((id) => !brollIds.has(id)) ?? undefined);
       if (op.clipIds && !op.clipIds.some((id) => !brollIds.has(id))) ids.clear();
       if (!op.reset && op.crop === undefined && op.radius === undefined && op.shadow === undefined && op.border === undefined) throw new EditError("set_card needs crop, radius, shadow, border or reset.");
-      if (brollIds.size && op.border) throw new EditError("A border is drawn on V1 cards only: send crop, radius and shadow for b-roll.");
       let shown: CardLook | null = null;
       const cardOf = <T extends { cardLook?: CardLook }>(c: T): T => {
         const cur: Record<string, unknown> = op.reset ? {} : { ...(c.cardLook ?? {}) };

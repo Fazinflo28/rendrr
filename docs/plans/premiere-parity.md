@@ -70,7 +70,9 @@ plugin hosting, hardware I/O, localization) are out of scope.
     invert, modes) whose rect or ellipse moves with keys from the layer's start, a strength (0-1) and fades in and out.
     Render: the layer's alpha from its masks, scaled by strength and ramped by the fades; the player masks its preview
     with the same picture and sets its strength as opacity. Left for later: strength keys over time, follow face.
-17. **Anchor and motion blur on text layers; a border on b-roll cards.**
+17. **Anchor and motion blur on text layers; a border on b-roll cards (done, 31 October).** A text layer turns and scales
+    about a point of its text (the anchor grid in Speed & motion), drawn in the render and the player alike; motion blur
+    on its keyed movement in the render; b-roll cards take a border that moves with them.
 18. **Subject mask on b-roll and reversed clips.**
 19. **The newer effects live in the player** (glow, grain, RGB split, shake, mirror).
 20. **More shape wipes; GIFs longer than a minute.**

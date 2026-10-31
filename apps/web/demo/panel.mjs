@@ -19,7 +19,7 @@ const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromi
 const fails = [];
 const check = (ok, what) => { console.log(`${ok ? "ok  " : "FAIL"} ${what}`); if (!ok) fails.push(what); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const TOOLS = { transcript: "Transcript", clip: "Speed & motion", text: "Text & captions", audio: "Audio", color: "Color", style: "Reference", ai: "What your AI did" };
+const TOOLS = { transcript: "Transcript", clip: "Speed & motion", text: "Text & captions", audio: "Audio", color: "Color", multicam: "Multicam", style: "Reference", ai: "What your AI did" };
 
 async function open(width, height) {
   const page = await browser.newPage({ viewport: { width, height } });

@@ -251,7 +251,9 @@ function LiveOverlays({ frame, clips, media, aspect, playing, plan, luts, person
   const gfx = (g) => { const m = media.graphicClips[g.clipId]; const c = clips.find((x) => x.id === g.clipId);
     return blended(g, moved(g.motion, m ? html`<${SyncedVideo} key=${g.clipId} src=${m.url} time=${g.t} playing=${playing} fit="contain" />` : html`<${TemplateFrame} key=${g.clipId} graphicId=${g.graphicId} params=${c?.params} start=${g.start} end=${g.end} t=${g.t} aspect=${aspect} />`, g.anchor)); };
   const backText = frame.texts.some((x) => x.layer.behind);
-  return html`<i ref=${box} style="display:none" />${b && blended(frame.broll, shadowed(frame.broll, moved(frame.broll.motion, flipped(frame.broll.flip, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} />`), frame.broll.anchor)))}
+  // Phase 17: a b-roll card's border over its picture, moving with it.
+  const bordered = (br, child) => (br.border && plan?.lookFiles?.[br.border.file] ? html`${child}<div data-border=${br.clipId} style="position:absolute;inset:0;pointer-events:none"><${CardLayer} spec=${plan.lookFiles[br.border.file]} color=${br.border.color} W=${plan.width} H=${plan.height} /></div>` : child);
+  return html`<i ref=${box} style="display:none" />${b && blended(frame.broll, shadowed(frame.broll, moved(frame.broll.motion, bordered(frame.broll, flipped(frame.broll.flip, html`<${SyncedVideo} key=${frame.broll.clipId} src=${b.url} time=${frame.broll.src} playing=${playing} look=${plan?.looks?.[frame.broll.clipId]} plan=${plan} luts=${luts} />`)), frame.broll.anchor)))}
     ${frame.graphics.filter((g) => g.behind).map(gfx)}
     ${plan && backText && html`<${TextLayers} key="behind" plan=${plan} frame=${frame} only="behind" media=${media} playing=${playing} />`}
     ${person}
@@ -603,7 +605,7 @@ function SeqMedia({ plan, clock, time, playing, urls, sounds = {}, aspect, pb, b
   const cards = plan.cards || {};
   // remove_background: the clip's matte (its blocks' links) with its edge, softness and invert, for the look canvas.
   const matteOf = (lk) => (lk?.subject && mattes[lk.subject.matte] ? { ...mattes[lk.subject.matte], edge: lk.subject.edge, soft: lk.subject.soft, invert: !!lk.subject.invert } : null);
-  return html`<div ref=${box} style="position:absolute;inset:0"><${BackLayer} plan=${plan} time=${time} playing=${playing} broll=${broll} part=${part} partUrl=${part ? urls[part.videoId] : null} aspect=${aspect} k=${k} />${under.map((u) => html`<div key=${"u" + u.clipId} data-under=${u.clipId} style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(u.motion, u.anchor) }}><div style=${{ position: "absolute", inset: 0, transform: flipCss(u.flip).trim() || "none" }}><${SyncedVideo} src=${broll[u.videoId].url} time=${u.src} playing=${playing} look=${looks[u.clipId]} plan=${plan} luts=${luts} /></div></div>`)}
+  return html`<div ref=${box} style="position:absolute;inset:0"><${BackLayer} plan=${plan} time=${time} playing=${playing} broll=${broll} part=${part} partUrl=${part ? urls[part.videoId] : null} aspect=${aspect} k=${k} />${under.map((u) => html`<div key=${"u" + u.clipId} data-under=${u.clipId} style=${{ position: "absolute", inset: 0, pointerEvents: "none", ...motionCss(u.motion, u.anchor) }}><div style=${{ position: "absolute", inset: 0, transform: flipCss(u.flip).trim() || "none" }}><${SyncedVideo} src=${broll[u.videoId].url} time=${u.src} playing=${playing} look=${looks[u.clipId]} plan=${plan} luts=${luts} /></div>${u.border && plan?.lookFiles?.[u.border.file] && html`<${CardLayer} spec=${plan.lookFiles[u.border.file]} color=${u.border.color} W=${plan.width} H=${plan.height} />`}</div>`)}
     ${plan.sources.map((id) => {
     const on = part?.videoId === id; const p = on ? part : plan.parts.find((x) => x.videoId === id);
     return html`<div key=${id} style=${{ position: "absolute", inset: 0, visibility: on ? "visible" : "hidden" }}>
@@ -632,7 +634,7 @@ const KEY_UI = [["x", "Across", -1, 1, 0.01, (v) => Math.round(v * 100) + "%"], 
 const EASE_NAME = { linear: "Linear", in: "Ease in", out: "Ease out", "in-out": "Ease in and out" };
 // Phase 12: the new transitions by their names in Premiere.
 const TR_NAME = { push: "Push", wipe: "Wipe", iris: "Iris round", "cross-zoom": "Cross zoom", "film-dissolve": "Film dissolve", clock: "Clock wipe", "barn-door": "Barn doors", diamond: "Iris diamond" };
-// Phase 11: a clip's mirror, crop, rounded corners and drop shadow (V1 clips and b-roll; set_flip and set_card).
+// Phase 11: a clip's mirror, crop, rounded corners and drop shadow (V1 clips and b-roll; set_flip and set_card); Phase 17: a border.
 function FrameLook({ clip, doOp, H, liveOp }) {
   const f = clip.flip || "", has = (a) => f === a || f === "both";
   const toggle = (a) => { const h = a === "h" ? !has("h") : has("h"), v = a === "v" ? !has("v") : has("v"); doOp({ op: "set_flip", clipIds: [clip.id], flip: h && v ? "both" : h ? "h" : v ? "v" : "none" }); };
@@ -648,6 +650,9 @@ function FrameLook({ clip, doOp, H, liveOp }) {
     <${OpSlider} id="card-radius" label="Rounded corners" value=${card.radius || 0} min=${0} max=${0.5} step=${0.01} show=${(v) => (v ? Math.round(v * 100) + "%" : "square")} opFor=${(v) => cop({ radius: v })} ...${sl} />
     <label class="t-small row" style="gap:6px"><input type="checkbox" id="card-shadow" checked=${!!card.shadow} onChange=${(e) => doOp(cop({ shadow: e.target.checked ? {} : null }))} />Drop shadow</label>
     ${card.shadow && html`<${OpSlider} id="card-shadow-opacity" label="Shadow strength" value=${card.shadow.opacity ?? 0.35} min=${0.05} max=${1} step=${0.05} show=${(v) => Math.round(v * 100) + "%"} opFor=${(v) => cop({ shadow: { ...card.shadow, opacity: v } })} ...${sl} />`}
+    <label class="t-small row" style="gap:6px"><input type="checkbox" id="card-border" checked=${!!card.border} onChange=${(e) => doOp(cop({ border: e.target.checked ? { color: "#FFFFFF", width: 0.008 } : null }))} />Border</label>
+    ${card.border && html`<div class="row" style="gap:8px;align-items:flex-end"><${OpColor} id="card-border-color" value=${card.border.color.toLowerCase()} opFor=${(c) => cop({ border: { ...card.border, color: c.toUpperCase() } })} ...${sl} />
+      <div class="grow"><${OpSlider} id="card-border-width" label="Border width" value=${card.border.width} min=${0.001} max=${0.05} step=${0.001} show=${(v) => (v * 100).toFixed(1) + "%"} opFor=${(v) => cop({ border: { ...card.border, width: v } })} ...${sl} /></div></div>`}
     ${(card.crop || card.radius || card.shadow) && html`<span class="t-small muted">Cropped edges show what is under the clip${clip.kind === "broll" ? " (the picture)" : " (the background)"}; scale it down with keyframes or framing for picture-in-picture.</span>`}
   </div>`;
 }
@@ -715,8 +720,12 @@ function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek 
     ${keyable && html`<div class="col" style="gap:10px" id="keys-panel">
       <div class="row between"><b class="t-label">Keyframes</b><span class="t-small muted mono">${here ? "key at " : "at "}${local.toFixed(2)}s</span></div>
       ${KEY_UI.map(([p, label, min, max, step, show]) => html`<${OpSlider} key=${p} id=${"key-" + p} label=${label} value=${Math.round(now[p] / step) * step} min=${min} max=${max} step=${step} show=${show} opFor=${(x) => kop(withKey({ [p]: x }))} ...${sl} />`)}
-      ${clip.kind !== "text" && html`<div class="row" style="gap:12px;align-items:flex-end;flex-wrap:wrap" id="anchor-row">
-        <div class="col" style="gap:4px"><span class="t-small">Anchor point</span><div class="anchor-grid" role="radiogroup" aria-label="Anchor point">${[0, 0.5, 1].flatMap((y) => [0, 0.5, 1].map((x) => { const a = clip.anchor || { x: 0.5, y: 0.5 }, on = Math.abs(a.x - x) < 0.01 && Math.abs(a.y - y) < 0.01; return html`<button key=${x + "," + y} role="radio" aria-checked=${on} class=${on ? "on" : ""} data-anchor=${x + "," + y} title=${`Turn and scale about ${y === 0 ? "the top" : y === 1 ? "the bottom" : "the middle"}${x === 0.5 ? "" : x === 0 ? " left" : " right"}`} onClick=${() => doOp({ op: "set_keyframes", track: v1 ? "v1" : track, clipId: clip.id, anchor: x === 0.5 && y === 0.5 ? null : { x, y } }, false)} />`; }))}</div></div>
+      ${html`<div class="row" style="gap:12px;align-items:flex-end;flex-wrap:wrap" id="anchor-row">
+        <div class="col" style="gap:4px"><span class="t-small">Anchor point${clip.kind === "text" ? " (of the text)" : ""}</span><div class="anchor-grid" role="radiogroup" aria-label="Anchor point">${[0, 0.5, 1].flatMap((y) => [0, 0.5, 1].map((x) => {
+          // Phase 17: a text layer's anchor is a point of its text; without one it turns about its alignment point.
+          const home = clip.kind === "text" ? { x: clip.style?.align === "left" ? 0 : clip.style?.align === "right" ? 1 : 0.5, y: 0.5 } : { x: 0.5, y: 0.5 };
+          const a = clip.anchor || home, on = Math.abs(a.x - x) < 0.01 && Math.abs(a.y - y) < 0.01;
+          return html`<button key=${x + "," + y} role="radio" aria-checked=${on} class=${on ? "on" : ""} data-anchor=${x + "," + y} title=${`Turn and scale about ${y === 0 ? "the top" : y === 1 ? "the bottom" : "the middle"}${x === 0.5 ? "" : x === 0 ? " left" : " right"}`} onClick=${() => doOp({ op: "set_keyframes", track: v1 ? "v1" : track, clipId: clip.id, anchor: x === home.x && y === home.y ? null : { x, y } }, false)} />`; }))}</div></div>
         <div class="grow" style="min-width:140px"><${OpSlider} id="motion-blur" label="Motion blur" value=${clip.motionBlur || 0} min=${0} max=${100} step=${5} show=${(v) => (v ? v + (v === 50 ? " (180° shutter)" : "") : "off")} opFor=${(x) => ({ op: "set_keyframes", track: v1 ? "v1" : track, clipId: clip.id, motionBlur: x })} ...${sl} /></div></div>
         ${(clip.motionBlur || 0) > 0 && html`<span class="t-small muted">Motion blur is drawn in the render, on the keyframed movement.</span>`}`}
       ${here && html`<label class="t-small" style="display:grid;gap:4px">Easing to the next key<select class="input sm" id="key-ease" value=${Array.isArray(here.ease) ? "linear" : here.ease || "linear"} onChange=${(e) => doOp(kop(withKey({ ease: e.target.value })), false)}>${EASES.map((x) => html`<option key=${x} value=${x}>${EASE_NAME[x]}</option>`)}</select></label>`}

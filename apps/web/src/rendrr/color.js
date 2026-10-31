@@ -504,7 +504,7 @@ function PinCorners({ i, e, set, sl }) {
  */
 const BACKS = [["none", "Black"], ["color", "A colour"], ["blur", "The room, blurred"], ["gradient", "A gradient"], ["pattern", "A pattern"]];
 function BackgroundSection({ targets, timeline, doOp, H, liveOp, mattes }) {
-  const v1 = targets.filter((c) => c.sourceIn != null);
+  const v1 = targets.filter((c) => c.sourceIn != null && c.kind !== "broll");
   const done = v1.filter((c) => c.subject), first = done[0]?.subject;
   const vals = first ?? SUBJECT_DEFAULTS, ids = (cs) => cs.map((c) => c.id);
   const bg = timeline.background || null;
@@ -535,7 +535,7 @@ function BackgroundSection({ targets, timeline, doOp, H, liveOp, mattes }) {
  */
 function SkinSection({ targets, projectId, mainVideo, aspect, doOp, H, liveOp, toast }) {
   const [busy, setBusy] = useState(false);
-  const v1 = targets.filter((c) => c.sourceIn != null);
+  const v1 = targets.filter((c) => c.sourceIn != null && c.kind !== "broll");
   const done = v1.filter((c) => c.skin), first = done[0]?.skin;
   const vals = first ?? SKIN_DEFAULTS, face = first ? !!first.face : true;
   const ids = (cs) => cs.map((c) => c.id);
@@ -645,7 +645,7 @@ function AdjustWhere({ c, doOp, sl }) {
 
 function WholeEditColor({ clips, projectId, mainVideo, aspect, lutList, reloadLuts, timeline, doOp, H, liveOp, toast, mattes, adjust }) {
   const fileRef = useRef(null); const [busy, setBusy] = useState(false);
-  const v1 = clips.filter((c) => c.sourceIn != null);
+  const v1 = clips.filter((c) => c.sourceIn != null && c.kind !== "broll");
   const g = v1[0]?.grade || {};
   const same = (f) => v1.every((c) => JSON.stringify((c.grade || {})[f] ?? null) === JSON.stringify(g[f] ?? null));
   const mixed = ["exposure", "contrast", "temperature", "tint", "saturation", "lut", "highlights", "shadows", "whites", "blacks", "vibrance", "wheels", "hsl", "hueSat", "hueHue", "lumaSat"].filter((f) => !same(f));

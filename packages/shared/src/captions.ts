@@ -234,7 +234,10 @@ export function activeWord(c: StyledCaption, t: number): [number, number] | null
 /** keys (Phase 5): keyframes in seconds from the layer's start; they move, scale, turn and fade the text (not its card).
  *  inside (Phase 2b): a library video plays inside the letters (seconds: its length); cutout: the letters are cut out of
  *  the card, so the picture under it shows through them. */
-export type TextLayer = { clipId: string; start: number; end: number; lines: string[]; style: TextStyle; card: Card | null; anim: TextAnim; keys?: Key[]; behind?: boolean; inside?: { videoId: string; from: number; seconds: number }; cutout?: boolean };
+/** Phase 17: anchor: the point of the text's box (0,0 top left, 1,1 bottom right) its keys turn and scale about, which
+ *  the position keys move (without one: its alignment point, the middle of centred text, the left edge's middle of
+ *  left-aligned text); motionBlur 0-100 on its keyed movement (in the render). */
+export type TextLayer = { clipId: string; start: number; end: number; lines: string[]; style: TextStyle; card: Card | null; anim: TextAnim; keys?: Key[]; behind?: boolean; inside?: { videoId: string; from: number; seconds: number }; cutout?: boolean; anchor?: { x: number; y: number }; motionBlur?: number };
 /** Phase 2b: drawn on its own from a mask (a video inside the letters, or the letters cut out of the card). */
 export const isMatted = (t: Pick<TextLayer, "inside" | "cutout" | "card">) => !!t.inside || (!!t.cutout && !!t.card);
 /** Seconds an animation takes in and out. */
@@ -255,18 +258,27 @@ export function textAnimAt(anim: TextAnim, u: number, len: number, H: number): {
 }
 /** A keyframed text layer's look at u seconds in: its anchor point (px), scale, turn (degrees clockwise) and opacity,
  *  its animation and its keyframes together. The editor draws this; the ASS file draws it piece by piece. */
-export function textLookAt(t: Pick<TextLayer, "start" | "end" | "anim" | "style" | "keys">, u: number, W: number, H: number): { x: number; y: number; scale: number; rotation: number; opacity: number } {
+export function textLookAt(t: Pick<TextLayer, "start" | "end" | "anim" | "style" | "keys" | "lines" | "anchor">, u: number, W: number, H: number): { x: number; y: number; scale: number; rotation: number; opacity: number } {
   const a = textAnimAt(t.anim, u, t.end - t.start, H);
   const m: Motion = motionAt(keyTracks(t.keys), u);
-  return { x: t.style.x * W + m.x * W, y: t.style.y * H + a.dy + m.y * H, scale: a.scale * m.scale, rotation: m.rotation, opacity: a.opacity * m.opacity };
+  const s = a.scale * m.scale, px = t.style.x * W, py = t.style.y * H;
+  if (!t.anchor || !t.lines) return { x: px + m.x * W, y: py + a.dy + m.y * H, scale: s, rotation: m.rotation, opacity: a.opacity * m.opacity };
+  // Phase 17: turned and scaled about the anchor A (a point of its box at rest), which the keys move: the alignment
+  // point (where the ASS file and the player place the text, turning and scaling it about that point) lands at
+  // A + move + R·S·(P - A). Clockwise on screen (y down).
+  const r = textRect(t, W, H), ax = r.x + t.anchor.x * r.w, ay = r.y + t.anchor.y * r.h;
+  const th = (m.rotation * Math.PI) / 180, c = Math.cos(th), sn = Math.sin(th), dx = px - ax, dy = py - ay;
+  return { x: ax + m.x * W + s * (dx * c - dy * sn), y: ay + a.dy + m.y * H + s * (dx * sn + dy * c), scale: s, rotation: m.rotation, opacity: a.opacity * m.opacity };
 }
 /** Where a keyframed text layer's curves bend (seconds in, to 1/100 s): the ASS pieces start and end there. */
-export function textPieces(t: Pick<TextLayer, "start" | "end" | "anim" | "keys">): number[] {
+export function textPieces(t: Pick<TextLayer, "start" | "end" | "anim" | "keys" | "anchor">): number[] {
   const len = t.end - t.start;
   const fin = t.anim === "pop" ? 0.1 : ANIM_IN[t.anim];
   const at = new Set<number>([0, len, fin, len - ANIM_OUT[t.anim], ...(t.anim === "pop" ? [0.15] : []), ...(t.anim === "slide" ? [0.25] : [])]);
   const tr = keyTracks(t.keys);
   for (const p of Object.values(tr ?? {})) for (const x of p!) at.add(x.t);
+  // Phase 17: turning or scaling about an anchor moves the text on an arc: pieces every 0.05 s (at most 600) follow it.
+  if (t.anchor && (tr?.rotation || tr?.scale || t.anim === "pop")) { const step = Math.max(0.05, len / 600); for (let u = step; u < len; u += step) at.add(u); }
   const cs = Array.from(at).map((x) => Math.round(x * 100) / 100).filter((x) => x >= 0 && x <= len + 1e-9).sort((a, b) => a - b);
   return cs.filter((x, i) => i === 0 || x - cs[i - 1] >= 0.01);
 }

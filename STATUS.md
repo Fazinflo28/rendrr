@@ -21,6 +21,16 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Text anchor and motion blur, b-roll borders (phase 17, 31 October)
+
+- **Text anchor.** Speed & motion for a text layer now has the 3x3 anchor grid: the point of the text it turns and scales about (its alignment point is lit until you pick another). Turning about a corner swings the text on an arc, as Premiere does.
+- **Text motion blur.** The motion blur slider works on text layers too. The render draws a blurred text layer on its own, averaged over four sub-frames per frame (the player shows it sharp, as for other layers).
+- **B-roll borders.** Speed & motion, Border (colour, width) on b-roll cards too, not only V1. It moves with the card's keyframes.
+- **Measured.** A text box turned a quarter about its left edge landed within 1 px of the player's position. A fast sweep with blur 100 had 37 part-covered columns against 2 without. A white border showed white just inside the card's edge, orange further in, and stayed on the card when it was scaled to half.
+- **Bug fixed on the way.** With b-roll in an edit, the whole-edit Remove background and Skin sent the b-roll too and failed ("b1 is b-roll"). They now take V1 clips only.
+- **Claude.** set_keyframes `anchor` and `motionBlur` on text (track v3); set_card `border` on b-roll ids.
+- **Tests.** packages/shared/test/phase17.test.ts, apps/worker/test/phase17-render.test.ts, apps/web/demo/phase17.mjs.
+
 ## Masked and keyframed adjustment layers (phase 16, 31 October)
 
 - **Masks.** An adjustment layer can work on part of the frame only: Color tab, the layer's page, + Rectangle / + Ellipse (box, feather, invert, add, subtract, intersect). Grade a sky, blur a corner, darken round a face.
