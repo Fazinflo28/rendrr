@@ -110,6 +110,23 @@ describe("the user's own audio", { skip: (!ready || !ff) && "needs a database, R
     await tool("apply_edits", { projectId, edits: [{ op: "set_voice", soundId: null }] });
   });
 
+  it("music in a chat whose tool list is older than add_audio: add_music upload gives a link, then the file goes under the edit", async () => {
+    let link = "";
+    await assert.rejects(tool("apply_edits", { projectId, edits: [{ op: "add_music", upload: true }] }), (e: Error) => {
+      assert.match(e.message, /^Nothing changed yet\. Upload link for the audio file/);
+      link = linkOf(e.message);
+      return true;
+    });
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=f=220:d=12:sample_rate=44100", "-c:a", "libmp3lame", "-b:a", "128k", join(dir, "song.mp3")]);
+    const j = JSON.parse((await send(link, readFileSync(join(dir, "song.mp3")), "?name=Client song")).body) as { id: string; status: string };
+    assert.equal(j.status, "ready");
+    const r = await tool("apply_edits", { projectId, edits: [{ op: "add_music", soundId: j.id, gainDb: -16 }] });
+    assert.match(r.text, /Client song/, r.text);
+    const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+    const a2 = (p.timeline as { tracks: { a2: { soundId?: string; gainDb?: number }[] } }).tracks.a2;
+    assert.ok(a2.some((m) => m.soundId === j.id && m.gainDb === -16), "under the edit as music");
+  });
+
   it("a file that is not audio says why, and nothing is left half made", async () => {
     const out = await tool("add_audio", { upload: true });
     const r = await send(linkOf(out.text), Buffer.from("this is not audio at all, just text".repeat(50)), "?name=notes.txt");

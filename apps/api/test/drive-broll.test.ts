@@ -21,17 +21,26 @@ const ready = !!process.env.DATABASE_URL && !!process.env.REDIS_URL && !!process
 const ff = (() => { try { execFileSync("ffmpeg", ["-version"], { stdio: "ignore" }); return true; } catch { return false; } })();
 const run = Math.random().toString(36).slice(2, 8);
 const DRIVE_ID = `1AbCdEfGhIjKlMnOpQrStUv${run}`;
+const SONG_ID = `1SongSongSongSongSongSon${run}`;
 
 describe("a Drive clip placed as b-roll from apply_edits", { skip: (!ready || !ff) && "needs a database, Redis, storage and FFmpeg" }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "drive-broll-"));
   const clip = join(dir, "swing.mp4");
   execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=4", "-f", "lavfi", "-i", "sine=f=330:d=4", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", "-movflags", "+faststart", clip]);
   const bytes = readFileSync(clip);
+  const song = join(dir, "song.mp3");
+  execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=f=196:d=8:sample_rate=44100", "-c:a", "libmp3lame", "-b:a", "128k", song]);
+  const songBytes = readFileSync(song);
   // Google's API, as far as Rendrr uses it: a token, a file's details, its bytes (with ranges, as FFmpeg asks).
   const google: Server = createServer((req, res) => {
     const u = new URL(req.url || "/", "http://x");
     if (u.pathname === "/token") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ access_token: "tok", expires_in: 3600 })); return; }
     const m = /^\/drive\/v3\/files\/([^/]+)$/.exec(u.pathname);
+    if (m && decodeURIComponent(m[1]) === SONG_ID) {
+      if (u.searchParams.get("alt") === "media") { res.setHeader("content-type", "audio/mpeg"); res.end(songBytes); return; }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ id: SONG_ID, name: "Client song.mp3", mimeType: "audio/mpeg", parents: ["root"], size: String(songBytes.length), modifiedTime: "2026-10-01T10:00:00.000Z" })); return;
+    }
     if (!m || decodeURIComponent(m[1]) !== DRIVE_ID) { res.statusCode = 404; res.end("{}"); return; }
     if (u.searchParams.get("alt") === "media") {
       const r = /bytes=(\d+)-(\d*)/.exec(String(req.headers.range || ""));
@@ -58,6 +67,7 @@ describe("a Drive clip placed as b-roll from apply_edits", { skip: (!ready || !f
   const { Worker } = await import("bullmq");
   const { proxyJob } = await import("../../worker/src/jobs/proxy");
   const { analyzeJob } = await import("../../worker/src/jobs/analyze");
+  const { soundJob } = await import("../../worker/src/jobs/sound");
 
   let userId = "", projectId = "";
   const workers: InstanceType<typeof Worker>[] = [];
@@ -76,6 +86,7 @@ describe("a Drive clip placed as b-roll from apply_edits", { skip: (!ready || !f
     const ctx = (job: unknown) => ({ job, dir, signal: new AbortController().signal, isLastAttempt: true }) as never;
     workers.push(new Worker(QUEUES.proxy.name, async (job) => proxyJob(ctx(job)), { connection: newRedis() as never }));
     workers.push(new Worker(QUEUES.analyze.name, async (job) => analyzeJob(ctx(job)), { connection: newRedis() as never }));
+    workers.push(new Worker(QUEUES.test.name, async (job) => soundJob(ctx(job)), { connection: newRedis() as never }));
   });
   after(async () => {
     for (const w of workers) await w.close();
@@ -106,6 +117,19 @@ describe("a Drive clip placed as b-roll from apply_edits", { skip: (!ready || !f
     assert.match(out.text, /^Done \(v2/, out.text);
     assert.equal(await prisma.video.count({ where: { userId, driveFileId: DRIVE_ID } }), 1);
     assert.equal((await timeline()).tracks.v2.filter((x) => x.kind === "broll").length, 2);
+  });
+
+  it("music in Drive: its file id as add_music's soundId brings it in and puts it under the edit; as b-roll it says it is music", async () => {
+    const out = await tool("apply_edits", { projectId, edits: [{ op: "add_music", soundId: SONG_ID, gainDb: -18 }] });
+    assert.match(out.text, /^Done/, out.text);
+    const snd = await prisma.sound.findFirstOrThrow({ where: { userId } });
+    assert.deepEqual([snd.name, snd.status], ["Client song", "ready"]);
+    const a2 = ((await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).timeline as { tracks: { a2: { soundId?: string }[] } }).tracks.a2;
+    assert.ok(a2.some((m) => m.soundId === snd.id));
+    // Its share link as soundId works too (the same Drive file).
+    assert.match((await tool("apply_edits", { projectId, edits: [{ op: "add_music", soundId: `https://drive.google.com/file/d/${SONG_ID}/view`, start: 5, end: 9, edit: true }] })).text, /^Done/);
+    await assert.rejects(tool("apply_edits", { projectId, edits: [{ op: "add_broll", videoId: SONG_ID, start: 2, end: 3, edit: true }] }), /That is a sound file \(music or a voice\), not a video or a picture: add_audio brings it in, then apply_edits add_music/);
+    await prisma.sound.deleteMany({ where: { userId } });
   });
 
   it("a file Rendrr cannot reach says what to send; nothing changes", async () => {

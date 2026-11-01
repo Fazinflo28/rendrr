@@ -7,7 +7,9 @@ import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import { AppError } from "@rendrr/core";
 import { FOOTAGE_UPLOAD_MAX_BYTES } from "@rendrr/shared";
-import { footageText, footageUploadFor, keepFootage, usedFootageUpload, waitForFootage } from "../services/footage";
+import { footageText, footageUploadFor, isAudioHead, keepFootage, usedFootageUpload, waitForFootage } from "../services/footage";
+import { keepSound, soundOut } from "../services/sounds";
+import { open } from "node:fs/promises";
 
 // The one-time links add_footage upload gives: the AI's code workspace sends a video or a picture here (no login: the
 // link is the key), as curl -T sends it. The body goes to disk as it comes (up to 2 GB), then it is kept as the user's
@@ -30,6 +32,14 @@ export default async function footageUpload(app: FastifyInstance) {
       body.on("data", (c: Buffer) => { n += c.length; });
       await pipeline(body, createWriteStream(path));
       if (!n) throw new AppError("Nothing came with the upload. Send the file as the body: curl -T file.mp4 '<link>'.", 400, "bad-footage");
+      // Music or a voice sent here: kept as the user's audio instead (add_music{soundId} puts it under the edit).
+      const fh = await open(path, "r"); const head = Buffer.alloc(16);
+      try { await fh.read(head, 0, 16, 0); } finally { await fh.close(); }
+      if (isAudioHead(head)) {
+        const snd = await keepSound(u.userId, path, asked || file);
+        await usedFootageUpload(token);
+        return { soundId: snd.id, name: snd.name, status: snd.status, seconds: snd.seconds, text: soundOut(snd) };
+      }
       const v = await keepFootage(u.userId, path, file, { ...u, name: asked || null });
       await usedFootageUpload(token);
       const now = await waitForFootage(v.id, 45_000);

@@ -28,6 +28,7 @@ describe("add_footage: a video or a picture from the chat", { skip: (!ready || !
   const { Worker } = await import("bullmq");
   const { proxyJob } = await import("../../worker/src/jobs/proxy");
   const { analyzeJob } = await import("../../worker/src/jobs/analyze");
+  const { soundJob } = await import("../../worker/src/jobs/sound");
 
   let userId = "", projectId = "";
   const workers: InstanceType<typeof Worker>[] = [];
@@ -49,6 +50,7 @@ describe("add_footage: a video or a picture from the chat", { skip: (!ready || !
     const ctx = (job: unknown) => ({ job, dir, signal: new AbortController().signal, isLastAttempt: true }) as never;
     workers.push(new Worker(QUEUES.proxy.name, async (job) => proxyJob(ctx(job)), { connection: newRedis() as never }));
     workers.push(new Worker(QUEUES.analyze.name, async (job) => analyzeJob(ctx(job)), { connection: newRedis() as never }));
+    workers.push(new Worker(QUEUES.test.name, async (job) => soundJob(ctx(job)), { connection: newRedis() as never }));
     // A product shot (a PNG, 1000x700) and a 3 s phone clip (with sound).
     execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1000x700:d=1", "-frames:v", "1", join(dir, "product.png")]);
     execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=3", "-f", "lavfi", "-i", "sine=f=330:d=3", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", join(dir, "clip.mp4")]);
@@ -111,6 +113,20 @@ describe("add_footage: a video or a picture from the chat", { skip: (!ready || !
     const del = await app.inject({ method: "DELETE", url: `/videos/${v.id}`, headers: { "x-internal-secret": process.env.INTERNAL_API_SECRET!, "x-rendrr-clerk-id": clerkId } });
     assert.equal(del.statusCode, 200, del.body);
     assert.equal(await headObject(v.sourceKey!).catch(() => null), null);
+  });
+
+  it("music sent to the footage link is kept as the user's audio, ready for add_music", async () => {
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=f=262:d=5:sample_rate=44100", "-c:a", "libmp3lame", "-b:a", "128k", join(dir, "beat.mp3")]);
+    const out = await tool("add_footage", { upload: true });
+    const r = await send(linkOf(out.text), readFileSync(join(dir, "beat.mp3")), "?filename=beat.mp3");
+    assert.equal(r.statusCode, 200, r.body);
+    const j = JSON.parse(r.body) as { soundId: string; status: string; text: string };
+    assert.equal(j.status, "ready", j.text);
+    assert.match(j.text, /add_music\{soundId: "\w+"\} puts it under the edit as music/);
+    assert.equal(await prisma.video.count({ where: { userId, name: "beat" } }), 0, "not made into a video");
+    const placed = await tool("apply_edits", { projectId, edits: [{ op: "add_music", soundId: j.soundId }] });
+    assert.match(placed.text, /^Done/);
+    await prisma.sound.deleteMany({ where: { userId } });
   });
 
   it("says why: an empty file, a picture type not taken, a link that is not a file, nothing to bring in", async () => {

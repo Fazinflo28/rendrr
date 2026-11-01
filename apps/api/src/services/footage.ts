@@ -34,6 +34,15 @@ export function sniff(head: Buffer): { image: false } | { image: true; ext: stri
   if (s(4, 12) === "ftypavif" || s(4, 12) === "ftypheic" || s(4, 12) === "ftypmif1") throw err("HEIC and AVIF pictures are not taken yet: send it as a JPEG or PNG.");
   return { image: false };
 }
+/** A sound file (music, a voice), from its first bytes: MP3 (ID3 or a frame), AAC, WAV, FLAC, Ogg, M4A. */
+export function isAudioHead(head: Buffer): boolean {
+  const s = (a: number, b: number) => head.subarray(a, b).toString("latin1");
+  if (s(0, 3) === "ID3" || s(0, 4) === "fLaC" || s(0, 4) === "OggS") return true;
+  if (s(0, 4) === "RIFF" && s(8, 12) === "WAVE") return true;
+  if (s(4, 8) === "ftyp" && ["M4A ", "M4B ", "M4P "].includes(s(8, 12))) return true;
+  return head[0] === 0xff && (head[1] & 0xe0) === 0xe0 && head[1] !== 0xff; // an MPEG audio or ADTS frame
+}
+export const AUDIO_FILE = "That is a sound file (music or a voice), not a video or a picture: add_audio brings it in, then apply_edits add_music{soundId} puts it under the edit (or add_music takes the file itself: url, driveFileId or upload: true).";
 const videoExt = (name: string) => (/\.(mp4|mov|m4v|webm|mkv|avi|mts|m2ts|3gp|wmv|mpg|mpeg)$/i.exec(name)?.[1] ?? "mp4").toLowerCase();
 const nameOf = (raw: string | null | undefined, fallback: string) => (raw || "").replace(/\.[a-z0-9]{2,5}$/i, "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 200) || fallback;
 
@@ -60,6 +69,7 @@ export async function keepFootage(userId: string, path: string, name: string, o:
   const head = Buffer.alloc(16);
   try { await fh.read(head, 0, 16, 0); } finally { await fh.close(); }
   const kind = sniff(head);
+  if (!kind.image && isAudioHead(head)) throw err(AUDIO_FILE);
   if (kind.image && size > IMAGE_MAX_BYTES) throw err(`Pictures are ${MB(IMAGE_MAX_BYTES)} at most.`);
   if (!kind.image && size > FOOTAGE_UPLOAD_MAX_BYTES) throw err(`Videos are ${GB(FOOTAGE_UPLOAD_MAX_BYTES)} at most this way: put it in Google Drive and send its driveFileId (Drive files are linked, nothing is copied).`);
   if (o.projectId) await ownProject(userId, o.projectId);
@@ -98,6 +108,7 @@ export async function footageFromSource(userId: string, i: { url?: string; drive
     if (fileId && conn && !conn.stub) {
       const f = await drive.getFile(userId, fileId, false).catch(() => null);
       if (!f) throw err("Rendrr cannot find that file in your Google Drive (it may be in another account's Drive, or trashed).");
+      if (/^audio\//.test(f.mimeType || "")) throw err(AUDIO_FILE);
       if (!/^image\//.test(f.mimeType || "")) {
         if (i.projectId) await ownProject(userId, i.projectId);
         const have = await prisma.video.findFirst({ where: { userId, source: "drive", driveFileId: f.id, status: { not: "missing" } } });

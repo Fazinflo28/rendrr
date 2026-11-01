@@ -32,7 +32,7 @@ import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, lat
 import { resolveMulticam, resolveMulticamAuto } from "./services/multicam";
 import { ensureLibraryFolderPath, findLibraryFolder, folderFootage, listLibraryFolders, moveVideos, projectFromLibraryFolder } from "./services/libraryFolders";
 import { syncDriveFolder, syncText } from "./services/driveLibrary";
-import { footageFromSource, footageText, footageUploadLink, intoEdit, resolveFootageRefs, waitForFootage } from "./services/footage";
+import { AUDIO_FILE, footageFromSource, footageText, footageUploadLink, intoEdit, resolveFootageRefs, waitForFootage } from "./services/footage";
 import { resolveSoundRefs, soundFromSource, soundLine, soundOut, soundsText, soundUploadLink } from "./services/sounds";
 import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
 
@@ -1039,7 +1039,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       return { text: `Upload link for one video or picture, for 30 minutes: ${u.url}\nSend the file from your code workspace (a file the user attached is in your uploads folder):\n  curl -sS -T "<file>" "${u.url}?filename=<its file name>"\nThe reply is JSON with its videoId and how to place it (it waits up to 45 s for a picture or a short clip to be ready). ${c.ai === "chatgpt" ? "ChatGPT's code sandbox has no internet, so it cannot send the file: use url (a share link) or driveFileId instead." : `If the workspace cannot reach ${u.host}, the user allows that host in their AI's settings (Claude: Settings > Capabilities, code execution, allowed domains), or use url (a share link) or driveFileId instead.`}`, data: { uploadUrl: u.url } };
     }
     if (i.url || i.driveFileId) {
-      const v = await footageFromSource(c.userId, { url: i.url, driveFileId: i.driveFileId, ...o });
+      const v = await footageFromSource(c.userId, { url: i.url, driveFileId: i.driveFileId, ...o }).catch(async (e) => {
+        // Music or a voice: brought in as the user's audio (add_music{soundId} then puts it under the edit).
+        if ((e as Error).message !== AUDIO_FILE) throw e;
+        return soundFromSource(c.userId, { url: i.url, driveFileId: i.driveFileId, name: i.name ?? undefined });
+      });
+      if (!("still" in v)) return { text: soundOut(v), data: { soundId: v.id, status: v.status } };
       const now = await waitForFootage(v.id, waitMs || 30_000);
       return { text: footageText(now, { projectId: i.projectId }), data: { videoId: now.id, status: now.status } };
     }

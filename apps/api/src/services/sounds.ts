@@ -111,7 +111,19 @@ export async function closeSoundEvents() { await events?.close(); events = null;
  */
 export async function resolveSoundRefs<T extends { op: string }>(userId: string, edits: T[], ai?: string): Promise<T[]> {
   const out: T[] = [];
-  for (const e of edits) {
+  for (const e0 of edits) {
+    // The file named where its id goes (soundId, or add_music's trackId): a link, or a Google Drive file's id, is taken
+    // as the file itself.
+    let e = e0;
+    if (e0.op === "set_voice" || e0.op === "add_music") {
+      const y = e0 as T & { soundId?: string | null; trackId?: string; url?: string; driveFileId?: string };
+      const ref = typeof y.soundId === "string" ? y.soundId.trim() : "";
+      if (ref && !(await prisma.sound.findFirst({ where: { id: ref, userId }, select: { id: true } }))) {
+        if (/^https?:\/\//i.test(ref)) { const { soundId: _s, ...rest } = y; e = { ...rest, url: ref } as unknown as T; }
+        else if (/^[A-Za-z0-9_-]{20,80}$/.test(ref) && !/^c[a-z0-9]{20,}$/.test(ref)) { const { soundId: _s, ...rest } = y; e = { ...rest, driveFileId: ref } as unknown as T; }
+      }
+      if (y.trackId && /^https?:\/\//i.test(y.trackId.trim())) { const { trackId: _t, ...rest } = e as typeof y; e = { ...rest, url: y.trackId.trim() } as unknown as T; }
+    }
     const x = e as T & { url?: string; driveFileId?: string; upload?: boolean; name?: string; soundId?: string | null };
     if ((e.op !== "set_voice" && e.op !== "add_music") || !(x.url || x.driveFileId || x.upload)) { out.push(e); continue; }
     if ([x.url, x.driveFileId, x.upload].filter(Boolean).length > 1 || x.soundId) throw err(`${e.op} takes one of soundId, url, driveFileId or upload.`);
