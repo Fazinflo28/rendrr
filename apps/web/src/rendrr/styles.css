@@ -940,9 +940,12 @@ a { color: var(--accent-ink); }
   .fside { position: static; flex-direction: row; overflow-x: auto; scrollbar-width: none; padding: 6px; }
   .fside .fnav { flex: none; }
 
-  /* dialogs become bottom sheets */
-  .scrim { place-items: end center; }
-  .modal, .modal.wide { width: 100%; max-width: 100%; max-height: calc(100dvh - 16px - env(safe-area-inset-top, 0px)); border-radius: 18px 18px 0 0; padding: 22px var(--gutter-r) calc(22px + env(safe-area-inset-bottom, 0px)) var(--gutter-l); gap: 18px; animation: sheet .28s var(--ease); }
+  /* Dialogs: a small one (a name box, a question) sits in the middle of the screen, above the keyboard; a big one (the
+     Drive picker, a list) is a sheet from the bottom. Both draw over the top bar and the tab bar. */
+  .scrim:not(.login-scrim) { place-items: center; padding: max(12px, env(safe-area-inset-top, 0px)) var(--gutter-r) 12px var(--gutter-l); }
+  .modal { width: 100%; max-width: 480px; max-height: calc(var(--vvh, 100dvh) - 24px - env(safe-area-inset-top, 0px)); border-radius: 18px; padding: 22px 18px; gap: 18px; }
+  .scrim:has(> .modal.wide) { place-items: end center; padding: 0; }
+  .modal.wide { width: 100%; max-width: 100%; max-height: calc(var(--vvh, 100dvh) - 16px - env(safe-area-inset-top, 0px)); border-radius: 18px 18px 0 0; padding: 22px var(--gutter-r) calc(22px + env(safe-area-inset-bottom, 0px)) var(--gutter-l); gap: 18px; animation: sheet .28s var(--ease); }
   .hmodal.login { grid-template-columns: 1fr; width: 100%; max-width: 100%; max-height: calc(100dvh - 16px - env(safe-area-inset-top, 0px)); border-radius: 18px 18px 0 0; align-self: end; animation: sheet .28s var(--ease); }
   .hshow { display: none; }
   .hform { padding: 26px var(--gutter-r) calc(22px + env(safe-area-inset-bottom, 0px)) var(--gutter-l); justify-content: flex-start; }

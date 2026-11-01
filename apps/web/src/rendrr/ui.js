@@ -3,6 +3,7 @@
 // live here, the Player can play a real video (`src`), and Thumb shows a real frame when there is one.
 import React, { useState, useEffect, useRef, useMemo, useCallback, useContext, createContext } from "react";
 import htm from "htm";
+import { createPortal } from "react-dom";
 import { ASPECT_RATIO, aspectSize } from "@rendrr/shared";
 // htm gives us HTML-style props; turn string styles into objects and plain attribute names into React's.
 const parseStyle = (s) => Object.fromEntries(s.split(";").filter((d) => d.includes(":")).map((d) => { const i = d.indexOf(":"); return [d.slice(0, i).trim().replace(/-([a-z])/g, (_, c) => c.toUpperCase()), d.slice(i + 1).trim()]; }));
@@ -139,13 +140,28 @@ function ToastHost({ children }) {
 const useToast = () => useContext(ToastCtx);
 
 // ---------- modal ----------
+// A window over the page. It is drawn at the top of the app (a portal into #root), not inside the page: on iPhones the
+// page's scrolling area kept it underneath the top bar and the tab bar, which covered its buttons. On a phone the
+// window follows the part of the screen the keyboard leaves free, so a name box and its button stay in view.
 function Modal({ title, sub, onClose, children, wide, footer }) {
   useEffect(() => { const k = (e) => e.key === "Escape" && onClose?.(); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
-  return html`<div class="scrim" onMouseDown=${(e) => e.target === e.currentTarget && onClose?.()}><div class=${"modal" + (wide ? " wide" : "")} role="dialog" aria-modal="true" aria-label=${title}>
+  const scrim = useRef(null);
+  useEffect(() => {
+    const vv = window.visualViewport, el = scrim.current;
+    if (!vv || !el) return;
+    // Inside #root's zoom (80% on a computer), so lengths are divided by it to cover the real screen.
+    const z = parseFloat(getComputedStyle(el.parentElement || el).zoom) || 1;
+    const fit = () => { const hgt = vv.height / z; el.style.top = vv.offsetTop / z + "px"; el.style.height = hgt + "px"; el.style.bottom = "auto"; el.style.setProperty("--vvh", hgt + "px"); };
+    fit(); vv.addEventListener("resize", fit); vv.addEventListener("scroll", fit);
+    return () => { vv.removeEventListener("resize", fit); vv.removeEventListener("scroll", fit); };
+  }, []);
+  const node = html`<div class="scrim" ref=${scrim} onMouseDown=${(e) => e.target === e.currentTarget && onClose?.()}><div class=${"modal" + (wide ? " wide" : "")} role="dialog" aria-modal="true" aria-label=${title}>
     <div class="modal-head"><div><h2 class="t-title">${title}</h2>${sub && html`<p class="muted">${sub}</p>`}</div>${onClose && html`<${Btn} kind="quiet" icon="x" aria-label="Close" onClick=${onClose} />`}</div>
     ${children}
     ${footer && html`<div class="row" style="justify-content:flex-end">${footer}</div>`}
   </div></div>`;
+  const host = typeof document !== "undefined" ? document.getElementById("root") || document.body : null;
+  return host ? createPortal(node, host) : node;
 }
 
 // ---------- async states ----------
