@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // The real api. Same function names, arguments and return shapes as the fake `api` in ui/rendrr-ui.html.
 // Everything goes to the Rendrr API server; errors are plain-English Errors with `.friendly` and `.code`.
-import { filesFromDrop, folderOfFile, isVideoFile, localJobs } from "./local";
+import { filesFromDrop, folderOfFile, localJobs } from "./local";
+import { filesToAdd } from "./localPick";
 import { BASE, DEV, NETWORK_MSG, clerk, del, demo, emptyIf, enc, fail, get, patch, post, readEvents, req, wait } from "./http";
 
 const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts", "Reading the frames"];
@@ -214,15 +215,15 @@ export const api: any = {
     return r;
   },
   addFromComputer: async (files: File[] | null, onProgress?: (p: any) => void, kind?: string, libraryFolderId?: string) => {
-    const list = files && files.length ? Array.from(files) : null;
-    if (!list) throw fail("Pick a video file first.");
-    if (DEV && (demo.failNextUpload || list.some((f) => /fail/i.test(f.name)))) { demo.failNextUpload = false; throw fail("One of the files could not be read."); }
-    // From a folder: each file keeps the folders it sat in, and the Library makes the same folders.
-    const fromFolder = list.some((f) => folderOfFile(f));
-    const vids = fromFolder ? list.filter(isVideoFile) : list;
-    if (!vids.length) throw fail("There are no videos in that folder.");
-    if (vids.length > 200) throw fail(`That folder has ${vids.length} videos; add up to 200 at once (a folder inside it, for example).`);
-    list.length = 0; list.push(...vids);
+    const picked = files && files.length ? Array.from(files) : null;
+    if (!picked) throw fail("Pick a video file first.");
+    if (DEV && (demo.failNextUpload || picked.some((f) => /fail/i.test(f.name)))) { demo.failNextUpload = false; throw fail("One of the files could not be read."); }
+    // From a folder: each file keeps the folders it sat in, and the Library makes the same folders. (The list sent is a
+    // new one: emptying the picked list in place once emptied it altogether, and every upload failed.)
+    const { files: chosen, fromFolder } = filesToAdd(picked);
+    if (!chosen.length) throw fail(fromFolder ? "There are no videos in that folder." : "Pick a video file first.");
+    if (chosen.length > 200) throw fail(`That folder has ${chosen.length} videos; add up to 200 at once (a folder inside it, for example).`);
+    const list = chosen;
     const made = (await post("/videos/local", { files: list.map((f) => ({ name: f.name, size: f.size, type: f.type, ...(folderOfFile(f) ? { folder: folderOfFile(f) } : {}) })), ...(kind ? { kind } : {}), ...(libraryFolderId ? { libraryFolderId } : {}) })
       .catch((e: any) => { if (fromFolder && e?.status === 400 && /files|20/i.test(e?.message || "")) throw fail("Adding a whole folder is not on the server yet: it is still being updated. Pick up to 20 videos for now.", "server-old"); throw e; })).map(remember);
     made.forEach((v: any, i: number) => { localJobs.hold(v.id, list[i]); localJobs.start(v.id); });

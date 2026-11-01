@@ -202,17 +202,7 @@ function pickFile(): Promise<{ file: File; handle?: any }> {
 }
 
 // ---------- a whole folder from the computer ----------
-const VIDEO_EXT = /\.(mp4|mov|m4v|webm|mkv|avi|mts|m2ts|3gp|wmv|mpg|mpeg)$/i;
-/** A video file (by type, or by name when the browser gives no type). */
-export const isVideoFile = (f: File) => (f.type ? f.type.startsWith("video/") : VIDEO_EXT.test(f.name)) && !f.name.startsWith(".");
-/** The folders a file sat in inside the folder picked or dropped, the picked folder first ("Course/Module 1"); "" for a
- *  file picked on its own. */
-export const folderOfFile = (f: File) => {
-  const own = (f as any).rendrrFolder as string | undefined;
-  if (own !== undefined) return own;
-  const rel = (f as any).webkitRelativePath as string | undefined;
-  return rel && rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
-};
+export { isVideoFile, folderOfFile } from "./localPick";
 /** Files from a drop, folders included (walked all the way down). Call it inside the drop event: the browser only
  *  lets the folder be read from there; the reading itself finishes afterwards. Plain files come back as they are. */
 export function filesFromDrop(dt: DataTransfer | null | undefined): Promise<File[]> {

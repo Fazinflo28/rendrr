@@ -56,7 +56,7 @@ export const ReconnectInput = z.object({ fileId: z.string().min(1, "Pick the fil
 
 export const LocalFilesInput = z.object({
   // folder: the folders the file sat in inside a folder picked whole ("Course/Module 1"): the Library makes the same ones.
-  files: z.array(z.object({ name: z.string().min(1).max(300), size: z.number().int().min(1).max(200e9), type: z.string().max(100).optional(), folder: z.string().max(500).optional() })).min(1).max(200, "Add up to 200 videos at once."),
+  files: z.array(z.object({ name: z.string().min(1).max(300), size: z.number().int().min(1).max(200e9), type: z.string().max(100).optional(), folder: z.string().max(500).optional() })).min(1, "Pick a video file first.").max(200, "Add up to 200 videos at once."),
   kind, libraryFolderId,
 });
 export const SampleAddInput = z.object({ kind, libraryFolderId }).default({});
