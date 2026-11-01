@@ -46,12 +46,22 @@ for (const [tag, w, h, mobile] of [["phone", 390, 844, true], ["small phone", 36
     if (mobile) check(m.playerH >= h * 0.5, `${label}: the video is big (${m.playerW}x${m.playerH})`);
     check(errors.length === 0, `${label}: no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
     if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `review-${tag.replace(" ", "-")}-${versions}.png`), fullPage: true });
-    if (mobile && versions === 2) {
-      // Tapping the video opens the comment box, inside the screen.
-      await page.locator(".rv-stage .player").tap({ position: { x: 60, y: 120 } }); await sleep(300);
-      const box = await page.evaluate(() => { const b = document.querySelector(".compose")?.getBoundingClientRect(), f = document.querySelector("#rv-comment")?.getBoundingClientRect(); return b && { l: Math.round(b.left), r: Math.round(b.right), field: Math.round(f.width) }; });
-      check(!!box && box.l >= 0 && box.r <= w, `${label}: a tap on the video opens the comment box inside the screen${box ? ` (${box.l}-${box.r})` : ""}`);
-      check(!!box && box.field >= 180, `${label}: room to type in it (field ${box?.field} px)`);
+    if (versions === 2) {
+      // The comment box is there without doing anything (the client never has to find it), inside the screen.
+      check(await page.locator("#rv-comment").isVisible() || (await page.locator("#rv-comment").scrollIntoViewIfNeeded().then(() => page.locator("#rv-comment").isVisible())), `${label}: the comment box is on the page`);
+      // Tapping or clicking the video pauses it and puts the cursor in the box.
+      const vid = page.locator(".rv-stage .player");
+      if (mobile) await vid.tap({ position: { x: 60, y: 120 } }); else await vid.click({ position: { x: 60, y: 120 } });
+      await sleep(400);
+      const box = await page.evaluate(() => { const f = document.querySelector("#rv-comment")?.getBoundingClientRect(); return f && { l: Math.round(f.left), r: Math.round(f.right), w: Math.round(f.width), focused: document.activeElement?.id === "rv-comment" }; });
+      check(!!box && box.l >= 0 && box.r <= w && box.w >= 180, `${label}: the comment box fits the screen with room to type (${box?.l}-${box?.r})`);
+      check(!!box?.focused, `${label}: a ${mobile ? "tap" : "click"} on the video puts the cursor in the comment box`);
+      // Writing and sending adds the comment at that moment.
+      const before = await page.locator(".rv .panel .li").count();
+      await page.locator("#rv-comment").fill("Make the logo bigger here");
+      await page.locator("#rv-send").click(); await sleep(500);
+      check((await page.locator(".rv .panel .li").count()) === before + 1 && /Make the logo bigger here/.test(await page.locator(".rv .panel .list").innerText()), `${label}: the comment is added to the list`);
+      check((await page.locator("#rv-comment").inputValue()) === "", `${label}: the box is empty again`);
     }
     await ctx.close();
   }
