@@ -335,6 +335,22 @@ function LibraryPage() {
   const crumbs = []; for (let f = cur; f && crumbs.length < 10; f = folders.find((x) => x.id === f.parentId)) crumbs.unshift(f);
   const parentOf = (f) => folders.find((x) => x.id === f?.parentId) || null;
   useEffect(() => { if (openF && fq.data && !cur) openFolder(null); }, [fq.data]);
+  // A folder imported from Google Drive (or one inside it) stays in step with Drive: opening it takes in the videos put
+  // in the Drive folder since (at most every two minutes); "Sync now" does it at once.
+  const driveTop = [...crumbs].reverse().find((f) => f.drive?.top) || null;
+  const [syncing, setSyncing] = useState(false);
+  const syncDrive = async (quiet) => {
+    if (!driveTop || syncing) return;
+    setSyncing(true);
+    try {
+      const r = await api.syncLibraryFolder(driveTop.id);
+      if (r.added || r.folders) { toast(`${r.added} new ${r.added === 1 ? "video" : "videos"} from Google Drive${r.folders ? ` (${r.folders} new ${r.folders === 1 ? "folder" : "folders"})` : ""}.`, { icon: "drive", tone: "brand" }); reloadAll(); }
+      else if (r.error) toast(r.error, { icon: "alert" });
+      else if (!quiet) toast(r.skipped === "no-drive" ? "Connect Google Drive in Settings to sync this folder." : "Nothing new in the Google Drive folder.", { icon: "drive" });
+      if (!r.added) fq.reload();
+    } catch (e) { if (!quiet) toast(e.message); } finally { setSyncing(false); }
+  };
+  useEffect(() => { if (driveTop && (!driveTop.drive.syncedAt || Date.now() - driveTop.drive.syncedAt > 2 * 60_000)) syncDrive(true); }, [driveTop?.id]);
   const [nameModal, setNameModal] = useState(null); const [moveOf, setMoveOf] = useState(null); const [delFolder, setDelFolder] = useState(null); const [folderEdit, setFolderEdit] = useState(null); const [moveFolder, setMoveFolder] = useState(null);
   const reloadAll = () => { q.reload(); fq.reload(); };
   // A video card, or another folder's card, dropped on a folder goes in it.
@@ -376,7 +392,7 @@ function LibraryPage() {
   const act = async (e, fn, msg) => { e.stopPropagation(); try { await fn(); if (msg) toast(msg); q.reload(); } catch (er) { toast(er.message); } };
   const filt = (v) => filter === "All" || (filter === "Ready" && v.status === "ready") || (filter === "In progress" && BUSY.includes(v.status)) || (filter === "Needs attention" && ATTN.includes(v.status)) || (filter === "References" && v.kind === "reference");
   return html`<div class="page wide" ...${dropProps}>
-    <div class="page-head"><div>${cur ? html`<div class="row wrap" id="folder-crumbs" style="gap:6px"><button class="dlink t-small" id="folder-back" onClick=${() => openFolder(null)}>Library</button>${crumbs.slice(0, -1).map((f) => html`<span class="t-small muted">/</span><button class="dlink t-small" data-crumb=${f.id} onClick=${() => openFolder(f.id)}>${f.name}</button>`)}<span class="t-small muted">/</span></div><h1 class="t-title row" style="gap:10px" id="folder-title"><${Icon} name="folder" size="26" />${cur.name}</h1><p class="muted" id="folder-meta">${fcount(cur)} · ${fmtLen(cur.totalSeconds ?? cur.seconds)}. Edit the whole folder as one video, in name order.</p>` : html`<h1 class="t-title">Library</h1><p class="muted">Raw files stay in your Drive or on your computer. We keep a light preview for 30 days.</p>`}</div>
+    <div class="page-head"><div>${cur ? html`<div class="row wrap" id="folder-crumbs" style="gap:6px"><button class="dlink t-small" id="folder-back" onClick=${() => openFolder(null)}>Library</button>${crumbs.slice(0, -1).map((f) => html`<span class="t-small muted">/</span><button class="dlink t-small" data-crumb=${f.id} onClick=${() => openFolder(f.id)}>${f.name}</button>`)}<span class="t-small muted">/</span></div><h1 class="t-title row" style="gap:10px" id="folder-title"><${Icon} name="folder" size="26" />${cur.name}</h1><p class="muted" id="folder-meta">${fcount(cur)} · ${fmtLen(cur.totalSeconds ?? cur.seconds)}. Edit the whole folder as one video, in name order.</p>${driveTop && html`<p class="t-small muted row wrap" id="folder-drive" style="gap:8px;margin-top:4px"><${Icon} name="drive" size="14" /><span>${driveTop.id === cur.id ? "Linked to its Google Drive folder" : `In "${driveTop.name}", linked to Google Drive`}: new videos put there come in by themselves${driveTop.drive.syncedAt ? ` · checked ${fmtAgo(driveTop.drive.syncedAt).toLowerCase()}` : ""}.</span><button class="dlink t-small" id="folder-sync" disabled=${syncing} onClick=${() => syncDrive(false)}>${syncing ? "Syncing…" : "Sync now"}</button></p>`}` : html`<h1 class="t-title">Library</h1><p class="muted">Raw files stay in your Drive or on your computer. We keep a light preview for 30 days.</p>`}</div>
       <div class="row"><div class="search" style="width:240px"><${Icon} name="search" /><input class="input sm" placeholder="Find footage" value=${search} onInput=${(e) => setSearch(e.target.value)} aria-label="Find footage" /></div>
       <${Seg} size="sm" value=${filter} options=${["All", "Ready", "In progress", "Needs attention", "References"]} onChange=${setFilter} />
       <${Btn} kind=${picking ? "secondary" : "ghost"} size="sm" icon=${picking ? "x" : "check"} id="select-videos" title="Select videos to make one edit of them, in order" onClick=${() => (picking ? stopPicking() : setPicking(true))}>${picking ? "Cancel" : "Select"}<//></div></div>
@@ -402,7 +418,7 @@ function LibraryPage() {
               ${childFolders.length > 0 && html`<div class="lfgrid">${childFolders.map((f) => html`<button key=${f.id} class="lfcard" data-folder=${f.id} draggable="true" onClick=${() => openFolder(f.id)} aria-label=${"Open folder " + f.name}
                   onDragStart=${(e) => { e.dataTransfer.setData("text/rendrr-folder", f.id); e.dataTransfer.effectAllowed = "move"; }}
                   onDragOver=${(e) => { const k = dragKinds(e); if (k.includes("text/rendrr-video") || k.includes("text/rendrr-folder")) { e.preventDefault(); e.currentTarget.classList.add("over"); } }} onDragLeave=${(e) => e.currentTarget.classList.remove("over")} onDrop=${dropOnFolder(f)}>
-                <span class="lfico"><${Icon} name="folder" size="20" /></span><span class="col" style="gap:2px;min-width:0"><b class="t-label lfname">${f.name}</b><span class="t-small muted">${fcount(f)}${(f.totalSeconds ?? f.seconds) ? " · " + fmtLen(f.totalSeconds ?? f.seconds) : ""}</span></span></button>`)}</div>`}
+                <span class="lfico"><${Icon} name=${f.drive?.top ? "drive" : "folder"} size="20" /></span><span class="col" style="gap:2px;min-width:0"><b class="t-label lfname">${f.name}</b><span class="t-small muted">${fcount(f)}${(f.totalSeconds ?? f.seconds) ? " · " + fmtLen(f.totalSeconds ?? f.seconds) : ""}</span></span></button>`)}</div>`}
             </div>`}
           ${over && html`<div class="drop over"><div class="ico"><${Icon} name="laptop" /></div><h2 class="t-heading">Drop to add from your computer</h2><p class="muted t-small">Videos, or a whole folder${cur ? ` (it goes inside ${cur.name})` : ""}.</p></div>`}
           ${list.length === 0 && cur && filter === "All" && !search ? (childFolders.length ? html`<p class="t-small muted" id="folder-no-videos">No videos right in this folder. Open a folder above, or add videos here.</p>` : html`<${EmptyState} icon="folder" title="This folder is empty" text="Drag videos onto the folder in the Library, use the folder button on a video, or add new ones straight into it." action=${html`<${Btn} size="sm" icon="plus" id="folder-empty-add" onClick=${() => openAdd("footage", cur)}>Add videos<//>`} />`)

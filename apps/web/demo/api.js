@@ -321,7 +321,22 @@ Object.assign(api, {
     };
     const top = await put(f.id, f.name || DEMO_FOLDERS[f.id] || "Drive folder", o.libraryFolderId || null, 1);
     if (!added) throw folderErr(`"${top.name}" has no videos.`);
+    // Linked to Drive: its folders know it, and the top one says when it was last looked at.
+    const mark = (lf, isTop) => { lf.drive = { top: isTop, syncedAt: isTop ? Date.now() : null }; libFolders.filter((x) => x.parentId === lf.id).forEach((x) => mark(x, false)); };
+    mark(top, true);
     return { folder: (await api.listLibraryFolders()).find((x) => x.id === top.id), added, moved: 0, folders: made, truncated: false };
+  },
+  // A linked folder synced: a video "put in the Drive folder since" comes in (the browser test sets which one).
+  syncLibraryFolder: async (id) => {
+    await wait(300);
+    let top = libFolders.find((x) => x.id === id);
+    while (top && !top.drive?.top) top = libFolders.find((x) => x.id === top.parentId);
+    if (!top) throw folderErr("That folder is not linked to a Google Drive folder (only folders imported from Drive are).");
+    top.drive = { ...top.drive, syncedAt: Date.now() };
+    const fresh = globalThis.__rendrrDriveNew; globalThis.__rendrrDriveNew = null;
+    if (!fresh) return { folderId: top.id, added: 0, folders: 0, truncated: false };
+    const out = await addFromDrive([fresh]); out.forEach((v) => { inFolder[v.id] = top.id; });
+    return { folderId: top.id, added: out.length, folders: 0, truncated: false };
   },
 });
 

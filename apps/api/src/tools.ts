@@ -31,6 +31,7 @@ import { openProjects } from "./services/claudeApp";
 import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, latestFinal } from "./services/driveSave";
 import { resolveMulticam, resolveMulticamAuto } from "./services/multicam";
 import { ensureLibraryFolderPath, findLibraryFolder, folderFootage, listLibraryFolders, moveVideos, projectFromLibraryFolder } from "./services/libraryFolders";
+import { syncDriveFolder, syncText } from "./services/driveLibrary";
 import { resolveSoundRefs, soundFromSource, soundLine, soundOut, soundsText, soundUploadLink } from "./services/sounds";
 import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
 
@@ -439,6 +440,16 @@ export async function previewGate(projectId: string): Promise<string | null> {
   return `Not rendered: preview v${prev.version} of this edit was made ${mins} min ago for this request, and the user has not asked for anything since. Rendrr renders ONE preview per request: every render is a new version the user has to look at, and costs them tokens. Your changes are saved${p && p.currentVersion !== prev.version ? ` (v${p.currentVersion})` : ""} and go into the next preview. Now tell the user what you changed and what is left, and stop. Call render_preview again only after the user sends a new request or feedback, with newRequest: true.`;
 }
 
+/** A library folder imported from Google Drive, brought up to date before the AI reads or edits it (new videos put in
+ *  the Drive folder come in); what came in, in a few words. Not linked, Drive off or slow (20 s): nothing said. */
+async function driveSyncLine(userId: string, folderId: string): Promise<string> {
+  try {
+    const r = await Promise.race([syncDriveFolder(userId, folderId, { fresh: 60_000 }), new Promise<null>((ok) => setTimeout(() => ok(null), 20_000).unref())]);
+    const t = r ? syncText(r) : "";
+    return t ? `${t}${r && r.added ? " They are being prepared (list_footage shows when each is ready)." : ""} ` : "";
+  } catch { return ""; }
+}
+
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
   // ---------------- read ----------------
   async get_editing_skill() {
@@ -454,15 +465,17 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const row = (v: { id: string; name: string; kind: string; seconds: number; orientation: string; width: number | null; height: number | null; status: string; error: string | null; sample: boolean; source: string }, folder?: string) =>
       `${v.id} | ${v.name} | ${v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${where(v)}${folder !== undefined ? ` | ${folder || "-"}` : ""}`;
     if (lf) {
-      // A folder: its videos and its subfolders', in the order create_project libraryFolder puts them.
+      // A folder: its videos and its subfolders', in the order create_project libraryFolder puts them. A folder imported
+      // from Google Drive first takes in what was put in the Drive folder since.
+      const synced = await driveSyncLine(c.userId, lf.id);
       const ff = await folderFootage(c.userId, lf);
       const vs = ff.all.filter((v) => (i.kind ? v.kind === i.kind : true));
       const subs = folders.filter((f) => f.parentId === lf.id);
       const subLine = subs.length ? `Folders inside (id | name | videos with theirs): ${subs.map((f) => `${f.id} | ${f.name} | ${f.total}`).join("; ")}.\n` : "";
-      if (!vs.length) return { text: `${acct} ${subLine}The library folder "${ff.path}" is empty${i.kind ? ` of ${i.kind}` : ""}${subs.length ? ", its folders too" : ""}. move_footage puts videos in it.` };
+      if (!vs.length) return { text: `${acct} ${synced}${subLine}The library folder "${ff.path}" is empty${i.kind ? ` of ${i.kind}` : ""}${subs.length ? ", its folders too" : ""}. move_footage puts videos in it.` };
       const pg = pageOf(vs, i);
       const nested = subs.length > 0;
-      return { text: `${acct} ${subLine}Library folder "${ff.path}" (${lf.id})${nested ? " with its folders" : ""}, in the order create_project libraryFolder uses (its own videos in name order, then each folder inside, the same way): videos ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${vs.length} (id | name | kind | length | shape | status | raw file${nested ? " | folder inside" : ""}):\n` +
+      return { text: `${acct} ${synced}${subLine}Library folder "${ff.path}" (${lf.id})${nested ? " with its folders" : ""}, in the order create_project libraryFolder uses (its own videos in name order, then each folder inside, the same way): videos ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${vs.length} (id | name | kind | length | shape | status | raw file${nested ? " | folder inside" : ""}):\n` +
         pg.shown.map((v) => row(v, nested ? v.folderPath : undefined)).join("\n") + pg.tail };
     }
     const vs = await prisma.video.findMany({ where: { userId: c.userId, ...(i.kind ? { kind: i.kind } : { kind: { not: "canvas" } }) }, orderBy: { createdAt: "desc" }, take: 500 });
@@ -855,11 +868,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       if (i.blank || i.videoId || i.videoIds?.length || i.fromProjectId || i.clips?.length) throw new AppError("libraryFolder makes an edit of every ready video in that folder: send it without blank, videoId, videoIds, fromProjectId or clips.", 400, "invalid-input");
       const lf = await findLibraryFolder(c.userId, i.libraryFolder);
       if (!lf) throw notFound(`There is no library folder "${i.libraryFolder}". list_footage lists them.`);
+      const synced = await driveSyncLine(c.userId, lf.id);
       const r = await projectFromLibraryFolder(c.userId, lf.id, { name: i.name, folderId: i.folderId, aspect: i.aspect }, { ...actor, folder: lf });
       const p = r.project;
       const left = r.skipped.length ? ` Left out: ${r.skipped.map((s) => `"${s.name}" (${s.why})`).join(", ")}.` : "";
       const named = r.videos.map((v) => (v.folderPath ? `${v.folderPath} / ${v.name}` : v.name)).join(", ");
-      const head = `Created edit "${p.name}" (${p.id}) from the library folder "${lf.name}": ${r.videos.length} ${r.videos.length === 1 ? "video" : "videos"} back to back in name order${r.subfolders ? ", its folders' after its own" : ""} (${named}), ${p.aspect}.${left}`;
+      const head = `${synced}Created edit "${p.name}" (${p.id}) from the library folder "${lf.name}": ${r.videos.length} ${r.videos.length === 1 ? "video" : "videos"} back to back in name order${r.subfolders ? ", its folders' after its own" : ""} (${named}), ${p.aspect}.${left}`;
       if (i.reframe) {
         const st = await startEdits(p, { reframe: true });
         if (st.edits.length) { const e = await applyEdits(c, p.id, st.edits, undefined, { projectId: p.id }); return { text: `${head} ${e.text} Next: apply_edits.`, data: { projectId: p.id } }; }

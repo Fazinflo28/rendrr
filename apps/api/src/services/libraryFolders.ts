@@ -49,6 +49,8 @@ export function libraryFolderOut(f: LibraryFolder, t?: Tree, own = { count: 0, s
     id: f.id, name: f.name, parentId: (t ? t.parentOf(f)?.id : f.parentId) ?? null, path: t ? t.path(f) : f.name,
     count: own.count, seconds: Math.round(own.seconds * 100) / 100, folders: t ? t.childrenOf(f.id).length : 0,
     total: total.count, totalSeconds: Math.round(total.seconds * 100) / 100, updated: f.updatedAt.getTime(),
+    // Imported from a Google Drive folder (kept in step with it): the import's top folder says when it was last looked at.
+    drive: f.driveFolderId ? { top: !!f.driveKind, syncedAt: f.driveSyncedAt ? f.driveSyncedAt.getTime() : null } : null,
   };
 }
 export async function libraryFolderFull(userId: string, id: string) {

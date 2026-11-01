@@ -83,6 +83,7 @@ model Video {
   kind             String    @default("footage") // footage | reference (a video whose style to copy)
   source           String    // drive | local
   sample           Boolean   @default(false) // built-in sample footage: original kept in our storage
+  still            Boolean   @default(false) // an image (add_footage): kept as a still clip (STILL_SECONDS long) so it plays like any video
   driveFileId      String?
   originalName     String?
   originalSize     BigInt?
@@ -124,12 +125,20 @@ model LibraryFolder {
   parentId  String?
   parent    LibraryFolder?  @relation("LibraryFolderTree", fields: [parentId], references: [id], onDelete: SetNull)
   children  LibraryFolder[] @relation("LibraryFolderTree")
+  // Imported from a Google Drive folder: new videos put in that folder later come in too (synced on opening, by the
+  // AI's tools and every few minutes). The top folder of an import holds the kind and whether subfolders come too.
+  driveFolderId   String?
+  driveId         String?   // a shared drive's id (for listing it)
+  driveKind       String?   // footage | reference: what new videos come in as
+  driveSubfolders Boolean   @default(true)
+  driveSyncedAt   DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   videos    Video[]
 
   @@index([userId])
   @@index([parentId])
+  @@index([driveFolderId])
 }
 
 model FootageAnalysis {

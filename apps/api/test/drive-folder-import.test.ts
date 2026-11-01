@@ -8,7 +8,7 @@ import { after, before, describe, it } from "node:test";
 process.env.INTERNAL_API_SECRET ||= "test-internal-secret";
 process.env.GOOGLE_CLIENT_ID ||= "test-client";
 process.env.GOOGLE_CLIENT_SECRET ||= "test-secret";
-process.env.LOG_LEVEL = "silent";
+process.env.LOG_LEVEL = process.env.TEST_LOG || "silent";
 const ready = !!process.env.DATABASE_URL && !!process.env.REDIS_URL;
 const run = Math.random().toString(36).slice(2, 8);
 
@@ -86,6 +86,46 @@ describe("importing a Drive folder", { skip: !ready && "needs DATABASE_URL and R
     const again = await post("/videos/drive-folder", { folderId: "cCourse", name: "Course" });
     assert.deepEqual([again.body.folder.id, again.body.added, again.body.moved, again.body.folders], [course, 0, 4, 0]);
     assert.equal(await prisma.video.count({ where: { userId } }), 4);
+  });
+
+  it("videos put in the Drive folder later come in by themselves; a video the user moved stays where they put it", async () => {
+    const course = (await child(null, "Course"))!;
+    const mod = (await child(course.id, "Module 1"))!;
+    assert.equal(course.driveFolderId, "cCourse");
+    assert.equal(course.driveKind, "footage");
+    assert.equal(mod.driveFolderId, "cMod1", "a subfolder knows its Drive folder too");
+    // The user moves Intro out to the top of the library.
+    await prisma.video.updateMany({ where: { userId, driveFileId: "vIntro" }, data: { libraryFolderId: null } });
+    // Later, in Drive: Part 3 in Module 1, and a new Module 2 with a video.
+    ITEMS.push(vid("vP3", "Part 3.mp4", "cMod1", 45), { id: "cMod2", name: "Module 2", mimeType: FOLDER, parents: ["cCourse"], modifiedTime: T }, vid("vM2", "Lesson.mp4", "cMod2", 50));
+    // Opening a subfolder syncs the whole import.
+    const r = await post(`/library/folders/${mod.id}/sync`, {});
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.folderId, r.body.added, r.body.folders], [course.id, 2, 1]);
+    assert.deepEqual(await videosIn(mod.id), ["Part 1", "Part 2", "Part 3"]);
+    const mod2 = (await child(course.id, "Module 2"))!;
+    assert.deepEqual(await videosIn(mod2.id), ["Lesson"]);
+    assert.deepEqual(await videosIn(course.id), [], "Intro stays where the user put it");
+    assert.equal(await prisma.video.count({ where: { userId, driveFileId: "vIntro" } }), 1, "and is not linked again");
+    // The folder list says it is linked and when it was looked at; a sync with nothing new adds nothing.
+    const list = await app.inject({ method: "GET", url: "/library/folders", headers: headers() });
+    const top = (JSON.parse(list.body) as { id: string; drive: { top: boolean; syncedAt: number } | null }[]).find((f) => f.id === course.id)!;
+    assert.equal(top.drive!.top, true);
+    assert.ok(Date.now() - top.drive!.syncedAt < 60_000);
+    const again = await post(`/library/folders/${course.id}/sync`, {});
+    assert.deepEqual([again.body.added, again.body.folders], [0, 0]);
+    // The server's sweep: a folder not looked at for a while is synced on its own.
+    ITEMS.push(vid("vP4", "Part 4.mp4", "cMod1", 40));
+    await prisma.libraryFolder.update({ where: { id: course.id }, data: { driveSyncedAt: new Date(Date.now() - 3600_000) } });
+    const { syncStaleDriveFolders } = await import("../src/services/driveLibrary");
+    const swept = await syncStaleDriveFolders({ userId, age: 10 * 60_000 });
+    assert.deepEqual(swept.map((x) => [x.folderId, x.added]), [[course.id, 1]]);
+    assert.deepEqual(await videosIn(mod.id), ["Part 1", "Part 2", "Part 3", "Part 4"]);
+    // A folder not imported from Drive is not linked.
+    const plain = await prisma.libraryFolder.create({ data: { userId, name: `Plain ${run}` } });
+    const no = await post(`/library/folders/${plain.id}/sync`, {});
+    assert.equal(no.status, 400);
+    assert.match(no.body.error.message, /not linked to a Google Drive folder/);
   });
 
   it("into a library folder, without its folders; the name from Drive when not sent; an empty folder is refused", async () => {

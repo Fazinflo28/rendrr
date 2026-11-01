@@ -158,6 +158,15 @@ check((await page.locator("#drive-import-bar").innerText()).includes("Client foo
 await page.locator("#drive-import-folder").click();
 check(await until(async () => (await page.locator("#folder-title").count()) && (await page.locator("#folder-title").innerText()).toLowerCase().includes("client footage"), 6000), "the Library opens on the imported folder");
 check(await until(async () => (await page.locator(".lfcard", { hasText: "BFS Health" }).count()) === 1), "its Drive folder comes in as a folder inside it");
+// It stays linked to Drive: it says so, and Sync now takes in a video put in the Drive folder since.
+check(/Linked to its Google Drive folder: new videos put there come in by themselves/.test(await page.locator("#folder-drive").innerText()), "the folder says it is linked to Google Drive");
+const vBefore = await page.locator(".vcard").count();
+await page.evaluate(() => { globalThis.__rendrrDriveNew = "df7"; }); // a video put in the Drive folder after the import
+await page.locator("#folder-sync").click();
+check(await until(async () => (await page.locator(".toast", { hasText: "1 new video from Google Drive" }).count()) > 0, 4000), "Sync now: a video put in the Drive folder later comes in");
+check(await until(async () => (await page.locator(".vcard").count()) === vBefore + 1, 4000), "and shows in the folder");
+await page.locator("#folder-sync").click();
+check(await until(async () => (await page.locator(".toast", { hasText: "Nothing new in the Google Drive folder" }).count()) > 0, 4000), "nothing new: it says so");
 await page.locator(".lfcard", { hasText: "BFS Health" }).click();
 check(await until(async () => (await page.locator(".vcard").count()) > 0), "the videos from the Drive folder are in it, without picking them");
 await page.screenshot({ path: join(here, "dist", "library-drive-import.png") });

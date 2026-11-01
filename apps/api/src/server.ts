@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { ensureBucketCors, env, redis, safeEqual, toFriendly } from "@rendrr/core";
+import { DRIVE_SWEEP_AGE_MS, syncStaleDriveFolders } from "./services/driveLibrary";
 import { prisma } from "@rendrr/db";
 import Fastify from "fastify";
 import account from "./routes/account";
@@ -127,7 +128,18 @@ if (process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.
     if (err.code !== "EAFNOSUPPORT") throw err;
     await app.listen({ port, host: "0.0.0.0" });
   });
-  const stop = async () => { await app.close(); await prisma.$disconnect(); process.exit(0); };
+  // Folders imported from Google Drive: videos put in the Drive folder later come in by themselves. Every few minutes
+  // one API instance (a Redis lock) looks at the folders not synced for DRIVE_SWEEP_AGE_MS.
+  const sweep = setInterval(() => {
+    void (async () => {
+      if (!(await redis().set("drive-sweep", "1", "PX", 4 * 60_000, "NX").catch(() => null))) return;
+      const r = await syncStaleDriveFolders({ age: DRIVE_SWEEP_AGE_MS, limit: 50 });
+      const added = r.reduce((a, x) => a + x.added, 0);
+      if (added || r.some((x) => x.error)) app.log.info({ folders: r.length, added, errors: r.filter((x) => x.error).length }, "drive folders synced");
+    })().catch((e) => app.log.warn({ msg: (e as Error).message }, "drive sweep failed"));
+  }, 5 * 60_000);
+  sweep.unref();
+  const stop = async () => { clearInterval(sweep); await app.close(); await prisma.$disconnect(); process.exit(0); };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 }

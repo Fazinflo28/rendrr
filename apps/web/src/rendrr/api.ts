@@ -148,6 +148,8 @@ export const api: any = {
   updateVideo: async (id: string, body: { kind?: string; name?: string; libraryFolderId?: string | null }) => remember(await patch(`/videos/${enc(id)}`, body)),
   // Library folders: videos of one kind kept together, folders inside folders; a whole folder can become one edit.
   // An older server (still being updated) has no folder routes: the list is empty and the rest says so plainly.
+  /** A folder imported from Google Drive brought up to date: the videos put in the Drive folder since come in. */
+  syncLibraryFolder: (id: string) => post(`/library/folders/${enc(id)}/sync`, {}) as Promise<{ folderId: string; added: number; folders: number; truncated: boolean; skipped?: string; error?: string; folder: any }>,
   listLibraryFolders: async () => { try { return await get("/library/folders"); } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },
   createLibraryFolder: async (name: string, parentId?: string | null) => folderRoute(() => post("/library/folders", { name, ...(parentId ? { parentId } : {}) })),
   renameLibraryFolder: async (id: string, name: string) => folderRoute(() => patch(`/library/folders/${enc(id)}`, { name })),
