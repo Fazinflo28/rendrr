@@ -191,6 +191,51 @@ check(await until(async () => (await page.locator(".vcard").count()) === 2), "th
 await page.locator("#folder-back").click(); await page.locator("#lib-folders").waitFor();
 fsx.rmSync(tmp, { recursive: true, force: true }); void beforeVids;
 
+// 6e. Several Drive folders at once: tick them (ticking does not open the folder), Select all folders ticks every one
+// here, a folder ticked inside a ticked one is not brought in twice, and one button imports them all.
+await page.locator("#upload").click(); await page.locator("#src-drive").click();
+await page.locator("#drive-list").waitFor(); await until(async () => (await page.locator('[data-pick-folder="fd1"]').count()) === 1);
+check(await page.locator('[data-folder-id="fd1"] input[type="checkbox"]').isVisible(), "each Drive folder has a tick box");
+await page.locator('[data-pick-folder="fd1"]').check();
+check((await page.locator("#drive-crumbs").innerText()).trim() === "My Drive", "ticking a folder does not open it");
+check((await page.locator("#drive-count").innerText()) === "1 folder selected" && (await page.locator("#drive-add").innerText()).includes("Import 1 folder"), "the button says it imports the folder");
+await page.locator("#drive-select-folders").click();
+check((await page.locator("#drive-count").innerText()) === "3 folders selected" && (await page.locator("#drive-select-folders").innerText()) === "Unselect these folders", "Select all folders ticks every folder here");
+await page.locator("#drive-select-folders").click();
+check(!(await page.locator("#drive-count").count()), "and unticks them again");
+await page.locator('[data-pick-folder="fd1"]').check(); await page.locator('[data-pick-folder="fd2"]').check(); await page.locator('[data-pick-folder="fd3"]').check();
+await page.locator('[data-folder-id="fd2"] b').click(); await until(async () => (await page.locator('[data-pick-folder="fdB"]').count()) === 1);
+check((await page.locator("#drive-crumbs").innerText()).includes("Client footage"), "a click on the folder's name still opens it");
+await page.locator('[data-pick-folder="fdB"]').check();
+// A video from somewhere else in the Drive (Shared with me) ticked too: the folders stay ticked.
+await page.locator('[data-place="shared"]').click(); await until(async () => (await page.locator('[data-folder-id="fdS"]').count()) === 1);
+await page.locator('[data-folder-id="fdS"] b').click(); await until(async () => (await page.locator('input[data-file-id="df2"]').count()) === 1);
+await page.locator('input[data-file-id="df2"]').check();
+check((await page.locator("#drive-count").innerText()) === "4 folders, 1 video selected" && (await page.locator("#drive-add").innerText()).includes("Add 1 video and 4 folders"), "folders and videos ticked together: one button for all");
+check(await page.locator("#drive-picked-subs").isChecked(), "With their folders is on");
+await page.locator("#drive-add").click();
+const toasts = []; for (let i = 0; i < 120 && !toasts.length; i++) { await page.waitForTimeout(150); for (const t of await page.locator(".toast").allInnerTexts()) if (/Imported/.test(t)) toasts.push(t); } console.log("  toast:", toasts.join(" | "));
+check(toasts.some((t) => t.includes("Imported 3 folders")), "the three folders come in (BFS Health inside Client footage comes with it, not twice)");
+check(await until(async () => !(await page.locator(".modal").count())), "the window closes");
+check(await until(async () => !(await page.locator("#folder-title").count()) && (await page.locator(".lfcard", { hasText: "Podcast raw" }).count()) === 1 && (await page.locator(".lfcard", { hasText: "B-roll" }).count()) === 1), "the Library opens at its top with each folder in it");
+check((await page.locator(".lfcard", { hasText: "BFS Health" }).count()) === 0, "BFS Health is not also at the top");
+await page.screenshot({ path: join(here, "dist", "library-drive-multi.png") });
+// At phone width the ticks, the count and the button fit.
+await page.setViewportSize({ width: 390, height: 844 });
+await page.locator("#upload").click().catch(async () => { await page.locator('[data-mtab="Add"]').click(); });
+if (!(await page.locator("#src-drive").count())) await page.locator('[data-mtab="Add"]').click();
+await page.locator("#src-drive").click(); await until(async () => (await page.locator('[data-pick-folder="fd1"]').count()) === 1);
+await page.locator('[data-pick-folder="fd1"]').check(); await page.locator('[data-pick-folder="fd3"]').check();
+const tick = await page.locator('[data-folder-id="fd1"] .dcheck').boundingBox();
+const btn = await page.locator("#drive-add").boundingBox();
+check(tick && tick.width >= 30 && tick.height >= 30, `at phone width a folder's tick is big enough to tap (${tick && Math.round(tick.width)}x${tick && Math.round(tick.height)})`);
+console.log("  btn:", JSON.stringify(btn), await page.locator("#drive-add").innerText().catch(() => "-"));
+check(btn && btn.x >= 0 && btn.x + btn.width <= 391 && (await page.locator("#drive-add").innerText()).includes("Import 2 folders"), "at phone width the Import button fits the screen");
+await page.screenshot({ path: join(here, "dist", "library-drive-multi-phone.png") });
+await page.keyboard.press("Escape"); await until(async () => !(await page.locator(".modal").count()));
+if (await page.locator(".modal").count()) await page.locator(".modal [aria-label='Close']").first().click().catch(() => {});
+await page.setViewportSize({ width: 1440, height: 1000 });
+
 // 7. Phone width: the folder row fits.
 await page.setViewportSize({ width: 390, height: 844 }); await page.locator("#new-folder").click(); await page.locator("#folder-name-input").fill("Interviews"); await page.locator("#folder-save").click(); await page.waitForTimeout(400);
 await until(async () => (await page.locator(".lfcard", { hasText: "Interviews" }).count()) === 1); await page.locator('input[aria-label="Find footage"]').scrollIntoViewIfNeeded();

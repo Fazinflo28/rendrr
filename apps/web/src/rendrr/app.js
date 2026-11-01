@@ -108,17 +108,33 @@ function App() {
     ping();
   }, [go]);
   // A whole Drive folder: the Library opens on the folder it made.
-  const importDriveFolder = useCallback(async (f, kind, libraryFolderId, subfolders) => {
-    try {
-      const r = await api.importDriveFolder(f, { kind, libraryFolderId, subfolders });
-      setAddOpen(false);
-      try { sessionStorage.setItem("rendrr:libfolder", r.folder.id); } catch { /* private window */ }
-      go("/library"); window.dispatchEvent(new CustomEvent("rendrr:openfolder", { detail: r.folder.id }));
-      const parts = [r.added && `${r.added} ${r.added === 1 ? "video" : "videos"} linked`, r.moved && `${r.moved} already in your library moved in`, r.folders > 1 && `${r.folders} folders made`].filter(Boolean);
-      toast(`Imported "${r.folder.name}": ${parts.join(", ") || "nothing new"}${r.truncated ? ". Only the first 200 videos came in." : "."}`, { icon: "drive", tone: "brand", ms: 4500 });
-      ping();
-    } catch (e) { toast(e.message, { icon: "alert" }); }
+  // Several Drive folders picked at once (and any videos picked with them): each folder is imported in turn; one that
+  // fails (no videos in it) does not stop the others. One folder alone: the Library opens on it; several: on the
+  // folder they went into (or the Library's top).
+  const importDriveFolders = useCallback(async (list, kind, libraryFolderId, subfolders, fileIds = []) => {
+    const done = [], failed = [];
+    // The videos first: one of them in a folder picked too is then moved into that folder, not linked twice.
+    let files = 0;
+    if (fileIds.length) { try { files = (await api.addFromDrive(fileIds, kind, libraryFolderId)).length; } catch (e) { failed.push(e); } }
+    for (const f of list) {
+      try { done.push(await api.importDriveFolder(f, { kind, libraryFolderId, subfolders })); }
+      catch (e) { failed.push(e); if (e?.code === "server-old") break; }
+    }
+    if (!done.length && !files) { toast(failed[0]?.message || "Nothing came in.", { icon: "alert" }); return; }
+    setAddOpen(false);
+    const openId = done.length === 1 && !files ? done[0].folder.id : libraryFolderId || "";
+    try { if (openId) sessionStorage.setItem("rendrr:libfolder", openId); else sessionStorage.removeItem("rendrr:libfolder"); } catch { /* private window */ }
+    go("/library"); window.dispatchEvent(new CustomEvent("rendrr:openfolder", { detail: openId }));
+    const vids = (n) => `${n} ${n === 1 ? "video" : "videos"}`;
+    const added = done.reduce((s, r) => s + r.added, 0), moved = done.reduce((s, r) => s + r.moved, 0), made = done.reduce((s, r) => s + r.folders, 0);
+    const parts = [added && `${vids(added)} linked`, moved && `${moved} already in your library moved in`, made > done.length && `${made} folders made`, files && `${vids(files)} added`].filter(Boolean);
+    const what = done.length === 1 ? `"${done[0].folder.name}"` : done.length ? `${done.length} folders` : vids(files);
+    const cut = done.some((r) => r.truncated) ? " Only the first 200 videos of a folder came in." : "";
+    const why = failed.length ? ` ${failed.length === 1 ? "One" : failed.length} did not: ${failed.map((e) => e.message).join(" ")}` : "";
+    toast(`Imported ${what}: ${parts.join(", ") || "nothing new"}.${cut}${why}`, { icon: failed.length ? "alert" : "drive", tone: failed.length ? undefined : "brand", ms: failed.length ? 7000 : 4500 });
+    ping();
   }, [go]);
+  const importDriveFolder = useCallback((f, kind, libraryFolderId, subfolders) => importDriveFolders([f], kind, libraryFolderId, subfolders), [importDriveFolders]);
   const addFromDrive = useCallback(async (ids, kind, libraryFolderId) => { try { const out = await api.addFromDrive(ids, kind, libraryFolderId); setAddOpen(false); go("/library"); toast(out.length + (out.length === 1 ? " video" : " videos") + " linked from Drive" + (kind === "reference" ? " as references" : ""), { icon: "drive", tone: "brand" }); ping(); } catch (e) { toast(e.message, { icon: "alert" }); } }, [go]);
 
   const match = ROUTES.find(([re]) => re.test(route)) || NOT_FOUND;
@@ -129,7 +145,7 @@ function App() {
   useEffect(() => { if (pathname === "/login" && auth === "out") setLogin({ after: null, mode: "login" }); }, [pathname, auth]);
   const requireUser = useCallback((fn) => { if (user) fn(); else setLogin({ after: () => setTimeout(fn, 0), mode: "login" }); }, [user]);
   const page = guarded ? (auth === "checking" ? null : html`<${HomePage} />`) : match[1](m);
-  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addFromDrive, importDriveFolder, theme, setTheme, addOpen, openAdd: (kind, folder) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage", folder: folder && folder.id ? folder : null })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser };
+  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addFromDrive, importDriveFolder, importDriveFolders, theme, setTheme, addOpen, openAdd: (kind, folder) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage", folder: folder && folder.id ? folder : null })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser };
   // Closing the login on a private page goes back to Explore.
   const onCloseLogin = () => { const leave = login?.leave; setLogin(null); if (leave || pathname === "/login") go("/explore"); };
   return html`<${NavCtx.Provider} value=${{ route, go }}><${AppCtx.Provider} value=${ctx}>

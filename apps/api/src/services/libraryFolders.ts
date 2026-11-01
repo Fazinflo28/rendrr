@@ -143,6 +143,8 @@ export async function deleteLibraryFolder(userId: string, id: string) {
     await prisma.libraryFolder.update({ where: { id: s.id }, data: { parentId: up, name } });
   }
   await prisma.libraryFolder.delete({ where: { id: f.id } });
+  // A folder that came from Google Drive: the sync of the folder above it must not make it again.
+  if (f.driveFolderId) await prisma.driveRemoved.upsert({ where: { userId_itemId: { userId, itemId: f.driveFolderId } }, create: { userId, itemId: f.driveFolderId }, update: {} });
   return { ok: true, moved: count, folders: subs.length, to: up };
 }
 

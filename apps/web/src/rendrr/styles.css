@@ -1247,3 +1247,8 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .cmt-ink.drawing { pointer-events: auto; cursor: crosshair; touch-action: none; z-index: 6; }
 @media (pointer: coarse) { .cbox-icon { width: 36px; height: 36px; } .cbox-pen { width: 26px; height: 26px; } .cbox-x { width: 22px; height: 22px; } }
 @keyframes spin { to { transform: rotate(360deg) } }
+/* Drive picker: a folder row's tick box (a bigger target than the box, so a thumb hits it) and Select all folders. */
+.dcheck { display: grid; place-items: center; width: 32px; height: 32px; margin: -8px; flex: none; cursor: pointer; border-radius: var(--r-sm); }
+.dcheck:hover { background: var(--accent-soft); }
+.dbar .dlink { flex: none; margin-left: auto; white-space: nowrap; }
+@media (max-width: 760px) { .dfoot > span:last-child { flex: 1 1 100% !important; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; } }

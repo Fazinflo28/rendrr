@@ -128,6 +128,40 @@ describe("importing a Drive folder", { skip: !ready && "needs DATABASE_URL and R
     assert.match(no.body.error.message, /not linked to a Google Drive folder/);
   });
 
+  it("a video or folder the user deletes stays deleted: the sync does not bring it back; picking or importing again does", async () => {
+    const course = (await child(null, "Course"))!;
+    const mod = (await child(course.id, "Module 1"))!;
+    const p2 = await prisma.video.findFirstOrThrow({ where: { userId, driveFileId: "vP2" } });
+    const del = await app.inject({ method: "DELETE", url: `/videos/${p2.id}`, headers: headers() });
+    assert.equal(del.statusCode, 200, del.body);
+    // Module 2 deleted from the library too (its video moves up into Course).
+    const mod2 = (await child(course.id, "Module 2"))!;
+    const delF = await app.inject({ method: "DELETE", url: `/library/folders/${mod2.id}`, headers: headers() });
+    assert.equal(delF.statusCode, 200, delF.body);
+    // Opening the folder syncs it: Part 2 is still in the Drive folder, but it stays out; Module 2 is not made again.
+    const r = await post(`/library/folders/${mod.id}/sync`, {});
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual([r.body.added, r.body.folders], [0, 0]);
+    assert.equal(await prisma.video.count({ where: { userId, driveFileId: "vP2" } }), 0, "the deleted video is not linked again");
+    assert.equal(await child(course.id, "Module 2"), null, "the deleted folder is not made again");
+    // A new video put in the Drive folder still comes in.
+    ITEMS.push(vid("vP5", "Part 5.mp4", "cMod1", 30));
+    await prisma.libraryFolder.update({ where: { id: course.id }, data: { driveSyncedAt: new Date(Date.now() - 3600_000) } });
+    const { syncStaleDriveFolders } = await import("../src/services/driveLibrary");
+    const swept = await syncStaleDriveFolders({ userId, age: 10 * 60_000 });
+    assert.deepEqual(swept.map((x) => [x.added, x.folders]), [[1, 0]]);
+    assert.deepEqual(await videosIn(mod.id), ["Part 1", "Part 3", "Part 4", "Part 5"]);
+    // Picked again on purpose: it comes back, and a later sync keeps it.
+    const pick = await post("/videos/drive", { fileIds: ["vP2"] });
+    assert.equal(pick.status, 200, JSON.stringify(pick.body));
+    assert.equal(await prisma.driveRemoved.count({ where: { userId, itemId: "vP2" } }), 0);
+    // Importing the folder again on purpose brings the deleted folder back.
+    const again = await post("/videos/drive-folder", { folderId: "cCourse", name: "Course" });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.ok(await child(course.id, "Module 2"), "imported again: Module 2 is back");
+    assert.equal(await prisma.driveRemoved.count({ where: { userId } }), 0);
+  });
+
   it("into a library folder, without its folders; the name from Drive when not sent; an empty folder is refused", async () => {
     const clients = await prisma.libraryFolder.create({ data: { userId, name: `Clients ${run}` } });
     const r = await post("/videos/drive-folder", { folderId: "cMod1", libraryFolderId: clients.id, subfolders: false });

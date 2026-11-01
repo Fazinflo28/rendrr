@@ -21,6 +21,13 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Quick fixes: client comments, several Drive folders, deleting from the Library (1 November)
+
+- Client review page: the comment box is always under the comments. A tap or click on the video pauses it and opens the box at that moment. Phone, small phone and desktop tested (`demo/review-phone.mjs`).
+- Google Drive picker: every folder has a tick box. Tick several (and videos too, from anywhere in the Drive), or "Select all folders", then one button imports them all. A folder ticked inside a ticked folder is not brought in twice. One that fails (no videos) does not stop the others. Tested in `demo/library-folders.mjs` (desktop and phone).
+- Deleting from the Library: the delete itself worked, but a Drive video in a synced folder came back with the next sync (on opening the folder, or within 5 minutes). Now Rendrr remembers what you deleted (table `DriveRemoved`, migration `20261101120000_drive_removed`); syncs leave it out. Deleting a Drive subfolder keeps it out too. Picking the video again, or importing its folder again, brings it back. Tested in `apps/api/test/drive-folder-import.test.ts`.
+- Select mode in the Library has Delete: several videos at once. Videos used by edits are named and asked about once more; "Keep those" keeps them. Tested in `demo/library-delete.mjs` (desktop and phone).
+
 ## Drive folders that stay in step, and videos and pictures from the chat (1 November)
 
 - **Drive folders sync.** A folder imported from Google Drive stays linked to it. Videos you put in that Drive folder later come into the Library by themselves: when you open the folder (at most every 2 minutes), with Sync now, when Claude lists the folder or makes an edit from it, and every 5 minutes on the server. New Drive folders become library folders. A video you moved elsewhere stays where you put it; nothing is removed.

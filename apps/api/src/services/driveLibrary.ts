@@ -24,6 +24,7 @@ export async function driveConn(userId: string) {
 
 /** One Drive file linked as a video (its preview made by the worker), in a library folder or none. */
 export async function linkDriveFile(userId: string, f: drive.DriveFile & { sampleKey?: string }, o: { stub: boolean; kind?: VideoKind | null; libraryFolderId?: string | null }) {
+  await forgetRemoved(userId, [f.id]); // picked again: folder syncs may bring it back after a later delete as before
   const v = await prisma.video.create({ data: {
     userId, name: stripExt(f.name), seconds: f.seconds, sizeBytes: BigInt(f.sizeBytes || 0), originalSize: BigInt(f.sizeBytes || 0), originalName: f.name,
     orientation: f.width && f.height ? orientationOf(f.width, f.height) : "Landscape", source: "drive", driveFileId: f.id, status: "linking", art: randomArt(), kind: o.kind || "footage", libraryFolderId: o.libraryFolderId ?? null,
@@ -52,6 +53,17 @@ async function folderFor(userId: string, node: { id: string; name: string }, par
 
 type Walked = Awaited<ReturnType<typeof drive.walkFolder>>;
 /** The user's Drive files already in the library (any folder), by Drive file id. */
+/** A Drive video or folder the user deleted from the library: folder syncs leave it out from now on. */
+export async function rememberRemoved(userId: string, itemId: string | null | undefined) {
+  if (!itemId) return;
+  await prisma.driveRemoved.upsert({ where: { userId_itemId: { userId, itemId } }, create: { userId, itemId }, update: {} });
+}
+/** Brought in again on purpose (picked, or its folder imported again): no longer left out. */
+async function forgetRemoved(userId: string, itemIds: string[]) {
+  if (itemIds.length) await prisma.driveRemoved.deleteMany({ where: { userId, itemId: { in: itemIds } } });
+}
+const treeIds = (n: drive.DriveTree): string[] => [n.id, ...n.files.map((f) => f.id), ...n.folders.flatMap(treeIds)];
+
 async function linkedFiles(userId: string) {
   return new Map((await prisma.video.findMany({ where: { userId, source: "drive", status: { not: "missing" }, driveFileId: { not: null } }, select: { id: true, driveFileId: true } })).map((v) => [v.driveFileId!, v.id]));
 }
@@ -96,6 +108,7 @@ export async function importDriveFolder(userId: string, b: { folderId: string; d
   const name = (b.name || "").trim() || (await drive.folderName(userId, b.folderId, conn.stub));
   const walked = await drive.walkFolder(userId, { id: b.folderId, name, driveId: b.driveId }, conn.stub, { maxDepth: b.subfolders === false ? 1 : depthLeft, maxFiles: DRIVE_FOLDER_MAX_FILES });
   if (!walked.files) throw new AppError(`"${name}" has no videos${b.subfolders === false || !walked.folders ? "" : ", its folders neither"}.`, 400, "folder-empty");
+  await forgetRemoved(userId, treeIds(walked.tree)); // imported on purpose: what was deleted from it before comes back
   const r = await place(userId, walked, parent?.id ?? null, { stub: conn.stub, kind: b.kind, moveExisting: true });
   await prisma.libraryFolder.update({ where: { id: r.topId }, data: { driveFolderId: b.folderId, driveId: b.driveId ?? null, driveKind: b.kind ?? "footage", driveSubfolders: b.subfolders !== false, driveSyncedAt: new Date() } });
   return { folder: await libraryFolderFull(userId, r.topId), added: r.added, moved: r.moved, folders: r.made, truncated: walked.truncated };
@@ -133,9 +146,11 @@ export async function syncDriveFolder(userId: string, libraryFolderId: string, o
     const walked = await drive.walkFolder(userId, { id: f.driveFolderId, name: f.name, driveId: f.driveId ?? undefined }, conn.stub, { maxDepth: f.driveSubfolders ? Math.max(1, depthLeft) : 1, maxFiles: 2000 });
     // Only the new ones count against the limit: a folder of 300 videos already in keeps syncing its new ones.
     const linked = await linkedFiles(userId);
+    // Videos and folders the user deleted from the library stay out: a sync never brings them back.
+    const removed = new Set((await prisma.driveRemoved.findMany({ where: { userId }, select: { itemId: true } })).map((x) => x.itemId));
     let room = DRIVE_FOLDER_MAX_FILES;
     const take = () => (room > 0 ? (room--, true) : false);
-    const trim = (n: drive.DriveTree): drive.DriveTree => ({ ...n, files: n.files.filter((x) => linked.has(x.id) || take()), folders: n.folders.map(trim) });
+    const trim = (n: drive.DriveTree): drive.DriveTree => ({ ...n, files: n.files.filter((x) => linked.has(x.id) || (!removed.has(x.id) && take())), folders: n.folders.filter((x) => !removed.has(x.id)).map(trim) });
     const tree = trim(walked.tree);
     const r = await place(userId, { ...walked, tree }, f.parentId, { stub: conn.stub, kind: (f.driveKind as VideoKind | null) ?? "footage", moveExisting: false, root: f });
     await prisma.libraryFolder.update({ where: { id: f.id }, data: { driveSyncedAt: new Date() } });

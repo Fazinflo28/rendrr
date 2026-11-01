@@ -342,3 +342,13 @@ Object.assign(api, {
 
 export { api };
 export const API_BASE = "";
+
+// The real server refuses to delete a video that edits use until the user says the edits go too (409 in-use); a
+// page's check names which videos are in use.
+const removeVideo = api.removeVideo;
+Object.assign(api, {
+  removeVideo: async (id, withEdits) => {
+    if (!withEdits && (globalThis.__demoInUse || []).includes(id)) { await wait(150); throw Object.assign(new Error(`It is used by 1 edit: "Promo cut". Deleting it deletes that edit too.`), { code: "in-use", status: 409, friendly: true }); }
+    return removeVideo(id, withEdits);
+  },
+});

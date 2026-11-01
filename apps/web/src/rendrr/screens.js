@@ -120,11 +120,13 @@ const SourceBadge = ({ source, size = "sm" }) => { const [ic, label, title] = SO
 const DRIVE_HOME = { id: "root", name: "My Drive" };
 const DRIVE_PLACES = [{ ...DRIVE_HOME, icon: "drive" }, { view: "shared", name: "Shared with me", icon: "shared" }, { view: "recent", name: "Recent videos", icon: "clock" }];
 const placeKey = (p) => p.view || p.id;
-function DrivePicker({ onAdd, single, addLabel, onLocal, onImportFolder, importInto }) {
+// Several folders can be ticked (with videos too, from anywhere in the Drive): one button brings them all in.
+function DrivePicker({ onAdd, single, addLabel, onLocal, onImportFolder, onImportFolders, importInto }) {
   const toast = useToast();
   const dq = useAsync(() => api.getDriveStatus(), []);
   const [trail, setTrail] = useState([DRIVE_HOME]); const [sel, setSel] = useState([]); const [busy, setBusy] = useState(false);
   const [text, setText] = useState(""); const [drives, setDrives] = useState([]); const [withSubs, setWithSubs] = useState(true);
+  const [selF, setSelF] = useState([]); const multiF = !single && !!onImportFolders;
   const here = trail[trail.length - 1];
   // A real folder is open (not My Drive's top, a view or a search): it can be imported whole.
   const inFolder = !!onImportFolder && !!here.id && here.id !== "root" && !here.view && here.id !== here.driveId;
@@ -144,6 +146,19 @@ function DrivePicker({ onAdd, single, addLabel, onLocal, onImportFolder, importI
   }, [text]);
   const connect = async () => { setBusy(true); try { const d = await api.connectDrive(); dq.setData(d); toast("Google Drive connected", { icon: "drive", tone: "brand" }); } catch (e) { toast(e.message); } finally { setBusy(false); } };
   const toggle = (id) => setSel((x) => (single ? [id] : x.includes(id) ? x.filter((i) => i !== id) : [...x, id]));
+  // A ticked folder keeps the folders it was found in, so one ticked inside another ticked one is not brought in twice.
+  const fOn = (f) => selF.some((x) => x.id === f.id);
+  const pickF = (f) => ({ id: f.id, name: f.name, driveId: f.driveId || here.driveId, path: here.view ? [] : trail.map((c) => c.id).filter(Boolean) });
+  const toggleF = (f) => setSelF((x) => (x.some((y) => y.id === f.id) ? x.filter((y) => y.id !== f.id) : [...x, pickF(f)]));
+  const addAll = async () => {
+    setBusy(true);
+    try {
+      if (!selF.length) return await onAdd(sel);
+      const roots = selF.filter((f) => !(withSubs && f.path.some((id) => selF.some((g) => g.id === id))));
+      await onImportFolders(roots.map(({ id, name, driveId }) => ({ id, name, driveId })), withSubs, sel);
+    } finally { setBusy(false); }
+  };
+  const nV = sel.length, nF = selF.length, vids = (n) => `${n} ${n === 1 ? "video" : "videos"}`, flds = (n) => `${n} ${n === 1 ? "folder" : "folders"}`;
   const go = (place) => { setText(""); setTrail([place]); };
   const open = (f) => setTrail((t) => [...t, { id: f.id, name: f.name, driveId: f.driveId || here.driveId }]);
   if (dq.status === "loading") return html`<${Skeleton} rows=${3} card=${false} />`;
@@ -160,24 +175,27 @@ function DrivePicker({ onAdd, single, addLabel, onLocal, onImportFolder, importI
       <div class="dmain">
         <div class="dbar">
           <div class="crumbs" id="drive-crumbs">${trail.map((c, i) => html`${i > 0 && html`<${Icon} name="chev" size="14" />`}<button key=${i} class=${i === trail.length - 1 ? "on" : ""} disabled=${i === trail.length - 1} title=${c.name} onClick=${() => setTrail((t) => t.slice(0, i + 1))}>${c.name}</button>`)}</div>
+          ${multiF && fq.status === "ready" && folders.length > 1 && (() => { const all = folders.every(fOn); return html`<button class="dlink" id="drive-select-folders" onClick=${() => setSelF((x) => all ? x.filter((y) => !folders.some((f) => f.id === y.id)) : [...x, ...folders.filter((f) => !fOn(f)).map(pickF)])}>${all ? "Unselect these folders" : "Select all folders"}</button>`; })()}
         </div>
         <div class="dhead" aria-hidden="true"><span class="dname">Name</span><span>Modified</span><span>Size</span><span>Length</span></div>
         <div class="dlist" id="drive-list">${fq.status === "loading" ? html`<div style="padding:12px"><${Skeleton} rows=${4} card=${false} /></div>`
           : fq.status === "error" ? html`<div class="dempty" role="alert"><p>${fq.error?.message || "We could not open this folder."}</p><${Btn} kind="secondary" size="sm" icon="refresh" onClick=${fq.reload}>Try again<//></div>`
           : folders.length + files.length === 0 ? html`<div class="dempty"><p>${empty}</p></div>`
-          : html`${folders.map((f) => html`<button key=${f.id} class="drow fold" data-folder-id=${f.id} onClick=${() => open(f)}><span class="dname"><span class="dbox" /><${Icon} name="folder" size="18" /><b>${f.name}</b></span><span>${f.date ? fmtAgo(f.date) : ""}</span><span>—</span><span>—</span></button>`)}
+          : html`${folders.map((f) => multiF
+            ? html`<div key=${f.id} role="button" tabindex="0" class=${"drow fold" + (fOn(f) ? " on" : "")} data-folder-id=${f.id} title=${"Open " + f.name} onClick=${() => open(f)} onKeyDown=${(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(f); } }}><span class="dname"><label class="dcheck" title=${"Select " + f.name} onClick=${(e) => e.stopPropagation()}><input type="checkbox" checked=${fOn(f)} onChange=${() => toggleF(f)} data-pick-folder=${f.id} aria-label=${"Select the folder " + f.name} /></label><${Icon} name="folder" size="18" /><b>${f.name}</b></span><span>${f.date ? fmtAgo(f.date) : ""}</span><span>—</span><span>—</span></div>`
+            : html`<button key=${f.id} class="drow fold" data-folder-id=${f.id} onClick=${() => open(f)}><span class="dname"><span class="dbox" /><${Icon} name="folder" size="18" /><b>${f.name}</b></span><span>${f.date ? fmtAgo(f.date) : ""}</span><span>—</span><span>—</span></button>`)}
             ${files.map((f) => { const off = f.added && !single; return html`<label key=${f.id} class=${"drow" + (sel.includes(f.id) ? " on" : "") + (off ? " dim" : "")} title=${off ? "Already in your library" : f.name}><span class="dname"><input type=${single ? "radio" : "checkbox"} name="dfile" checked=${sel.includes(f.id)} disabled=${off} onChange=${() => toggle(f.id)} data-file-id=${f.id} /><${Icon} name="film" size="18" /><b>${f.name}</b>${off && html`<span class="tag">Added</span>`}</span><span>${fmtAgo(f.date)}</span><span>${f.size}</span><span>${fmtLen(f.seconds)}</span></label>`; })}
             ${fq.data?.truncated && html`<p class="t-small muted" style="padding:10px 12px">Showing the first ${folders.length + files.length}. Search to find a video by name.</p>`}`}</div>
       </div>
     </div>
     ${inFolder && html`<div class="row between dimport" id="drive-import-bar"><span class="t-small"><${Icon} name="folder" size="14" /> Bring in all of <b>${here.name}</b>${importInto ? html` into <b>${importInto.name}</b>` : ""}: a folder in your Library with every video in it. No need to pick them.</span>
       <span class="row" style="gap:10px;flex:none"><label class="t-small row" style="gap:6px"><input type="checkbox" id="drive-import-subs" checked=${withSubs} onChange=${(e) => setWithSubs(e.target.checked)} />With its folders</label><${Btn} id="drive-import-folder" icon="folder" disabled=${busy} onClick=${importHere}>${busy ? "Importing…" : "Import this folder"}<//></span></div>`}
-    ${!inFolder && onImportFolder && !here.view && html`<p class="t-small muted" id="drive-import-hint">To bring in a whole folder, open it, then press Import this folder.</p>`}
-    <div class="row between dfoot"><span class="t-small muted">Your raw files stay in your Drive. We only keep a light preview copy.</span><span class="row" style="gap:12px;flex:none">${sel.length > 0 && html`<span class="t-small row" style="gap:8px"><b id="drive-count">${sel.length} selected</b>${!single && html`<button class="dlink" onClick=${() => setSel([])}>Clear</button>`}</span>`}<${Btn} id="drive-add" disabled=${sel.length === 0 || busy} onClick=${async () => { setBusy(true); try { await onAdd(sel); } finally { setBusy(false); } }}>${addLabel || ("Add " + (sel.length || "") + (sel.length === 1 ? " video" : " videos"))}<//></span></div>
+    ${!inFolder && onImportFolder && !here.view && !nF && html`<p class="t-small muted" id="drive-import-hint">${multiF ? "Tick folders to bring in several at once, every video in them. Or open one and press Import this folder." : "To bring in a whole folder, open it, then press Import this folder."}</p>`}
+    <div class="row between dfoot"><span class="t-small muted">Your raw files stay in your Drive. We only keep a light preview copy.</span><span class="row" style="gap:12px;flex:none">${nF > 0 && html`<label class="t-small row" style="gap:6px" title="Bring in the folders inside them too"><input type="checkbox" id="drive-picked-subs" checked=${withSubs} onChange=${(e) => setWithSubs(e.target.checked)} />With their folders</label>`}${nV + nF > 0 && html`<span class="t-small row" style="gap:8px"><b id="drive-count">${[nF && flds(nF), nV && (nF ? vids(nV) : nV)].filter(Boolean).join(", ")} selected</b>${!single && html`<button class="dlink" onClick=${() => { setSel([]); setSelF([]); }}>Clear</button>`}</span>`}<${Btn} id="drive-add" icon=${nF ? "folder" : undefined} disabled=${nV + nF === 0 || busy} onClick=${addAll}>${busy && nF ? "Importing…" : nF ? (nV ? `Add ${vids(nV)} and ${flds(nF)}` : `Import ${flds(nF)}`) : addLabel || ("Add " + (nV || "") + (nV === 1 ? " video" : " videos"))}<//></span></div>
   </div>`;
 }
 function AddFootageModal({ onClose, initialKind = "footage", folder = null }) {
-  const { startUpload, addFromDrive, importDriveFolder } = useApp();
+  const { startUpload, addFromDrive, importDriveFolder, importDriveFolders } = useApp();
   const [tab, setTab] = useState("drive"); const [over, setOver] = useState(false); const fileRef = useRef(); const dirRef = useRef();
   const [asRef, setAsRef] = useState(initialKind === "reference"); const kind = asRef ? "reference" : undefined;
   useEffect(() => { api.getDriveStatus().then((s) => { if (!s.connected && s.available === false) setTab("local"); }).catch(() => {}); }, []);
@@ -185,10 +203,10 @@ function AddFootageModal({ onClose, initialKind = "footage", folder = null }) {
     ${folder && html`<p class="t-small row" id="add-into-folder" style="gap:6px"><${Icon} name="folder" size="14" />They go in the folder <b>${folder.name}</b>.</p>`}
     <div class="row between card flat" id="as-ref-row" style="gap:12px;padding:10px 14px"><div><b class="t-label">Add as a reference</b><p class="t-small muted">For a video to copy the style of, not to edit.</p></div><${Toggle} id="as-ref" on=${asRef} onChange=${setAsRef} label="Add as a reference" /></div>
     <div class="srcpick">
-      <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick videos, or import a whole folder</span></span><span class="tag accent">Recommended</span></button>
+      <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick videos, or import whole folders</span></span><span class="tag accent">Recommended</span></button>
       <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="src-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>From your computer</b><span class="t-small muted">Pick files or a whole folder</span></span></button>
     </div>
-    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind, folder?.id)} onImportFolder=${(f, subs) => importDriveFolder(f, kind, folder?.id, subs)} importInto=${folder} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
+    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind, folder?.id)} onImportFolder=${(f, subs) => importDriveFolder(f, kind, folder?.id, subs)} onImportFolders=${(fs, subs, ids) => importDriveFolders(fs, kind, folder?.id, subs, ids)} importInto=${folder} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
       <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs), kind, folder?.id); e.target.value = ""; }} />
       <input type="file" webkitdirectory="" directory="" multiple ref=${dirRef} class="hide" id="local-folder-input" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs), kind, folder?.id); e.target.value = ""; }} />
       <div class=${"drop" + (over ? " over" : "")} id="local-drop" style="padding:40px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); api.filesFromDrop(e.dataTransfer).then((fs) => { if (fs.length) startUpload(fs, kind, folder?.id); }); }}>
@@ -199,18 +217,32 @@ function AddFootageModal({ onClose, initialKind = "footage", folder = null }) {
   <//>`;
 }
 
-/* ---------- Delete a video: asks first; when edits use it, names them and asks again ---------- */
-function DeleteVideoModal({ video, onClose, onDeleted }) {
+/* ---------- Delete videos (one, or several picked in the Library): asks first; when edits use some, names them and
+   asks again for those. A Drive video deleted here stays out even when its Drive folder syncs. ---------- */
+function DeleteVideoModal({ video, videos, onClose, onDeleted }) {
   const toast = useToast();
-  const [busy, setBusy] = useState(false); const [inUse, setInUse] = useState(null);
+  const list = videos || [video], one = list.length === 1;
+  const [busy, setBusy] = useState(false); const [inUse, setInUse] = useState(null); const gone = useRef(0);
+  const vids = (n) => `${n} ${n === 1 ? "video" : "videos"}`;
+  const finish = () => { if (!gone.current) return onClose(); toast(one ? `Deleted "${list[0].name}"` : `Deleted ${vids(gone.current)}`, { icon: "check", tone: "brand" }); onDeleted(); };
   const go_ = async () => {
     setBusy(true);
-    try { await api.removeVideo(video.id, !!inUse); toast(`Deleted "${video.name}"`, { icon: "check", tone: "brand" }); onDeleted(); }
-    catch (e) { if (e.code === "in-use" && !inUse) setInUse(e.message); else toast(e.message); setBusy(false); }
+    const todo = inUse ? inUse.map((x) => x.v) : list, used = []; let failed = null;
+    for (const v of todo) {
+      try { await api.removeVideo(v.id, !!inUse); gone.current++; }
+      catch (e) { if (e.code === "in-use" && !inUse) used.push({ v, msg: e.message }); else failed = e; }
+    }
+    if (failed) toast(failed.message);
+    if (used.length) { setInUse(used); setBusy(false); return; }
+    finish();
   };
-  const where = video.source === "drive" ? "your Google Drive" : "your computer";
-  return html`<${Modal} title=${inUse ? "Its edits go too" : `Delete "${video.name}"?`} sub=${inUse || `Rendrr's preview copy, transcript and analysis are removed. The raw file stays in ${where}.`} onClose=${busy ? undefined : onClose}
-    footer=${html`<${Btn} kind="ghost" onClick=${onClose} disabled=${busy}>Cancel<//><${Btn} id="confirm-delete-video" icon="trash" disabled=${busy} onClick=${go_}>${busy ? "Deleting…" : inUse ? "Delete the video and its edits" : "Delete"}<//>`} />`;
+  const drive = list.some((v) => v.source === "drive"), local = list.some((v) => v.source !== "drive" && v.source !== "upload");
+  const where = drive && local ? "your Google Drive or on your computer" : drive ? "your Google Drive" : "your computer";
+  const sub = inUse ? (inUse.length === 1 ? inUse[0].msg : `${inUse.length} of them are used by edits. ${inUse.slice(0, 3).map((x) => x.msg).join(" ")}${inUse.length > 3 ? ` And ${inUse.length - 3} more.` : ""}`)
+    : `Rendrr's preview ${one ? "copy, transcript and analysis are" : "copies, transcripts and analysis are"} removed. ${list.every((v) => v.source === "upload") ? "" : `The raw ${one ? "file stays" : "files stay"} in ${where}.`}${drive ? ` ${one ? "It stays" : "They stay"} out of the Library, even when ${one ? "its" : "their"} Drive folder syncs.` : ""}`;
+  const title = inUse ? (inUse.length === 1 && one ? "Its edits go too" : "Their edits go too") : one ? `Delete "${list[0].name}"?` : `Delete ${vids(list.length)}?`;
+  return html`<${Modal} title=${title} sub=${sub} onClose=${busy ? undefined : finish}
+    footer=${html`<${Btn} kind="ghost" onClick=${finish} disabled=${busy}>${inUse && gone.current ? "Keep those" : "Cancel"}<//><${Btn} id="confirm-delete-video" icon="trash" disabled=${busy} onClick=${go_}>${busy ? "Deleting…" : inUse ? (one ? "Delete the video and its edits" : `Delete ${inUse.length === 1 ? "it" : "them"} and the edits`) : one ? "Delete" : `Delete ${vids(list.length)}`}<//>`} />`;
 }
 
 /* ---------- Recreate: pick footage (Drive or computer) > pick a project > straight into the editor ---------- */
@@ -383,7 +415,7 @@ function LibraryPage() {
     setPick((x) => (x.includes(v.id) ? x.filter((i) => i !== v.id) : [...x, v.id]));
   };
   const stopPicking = () => { setPicking(false); setPick([]); };
-  useEffect(() => { const o = (e) => { if (e.detail) { openFolder(e.detail); setSearch(""); } fq.reload(); }; window.addEventListener("rendrr:openfolder", o); return () => window.removeEventListener("rendrr:openfolder", o); }, []);
+  useEffect(() => { const o = (e) => { if (typeof e.detail === "string") { openFolder(e.detail || null); setSearch(""); } fq.reload(); }; window.addEventListener("rendrr:openfolder", o); return () => window.removeEventListener("rendrr:openfolder", o); }, []);
   useEffect(() => { const k = () => { q.reload(); fq.reload(); }; window.addEventListener("rendrr:library", k); return () => window.removeEventListener("rendrr:library", k); }, []);
   // Local previews are made in this tab: if it goes away mid preview, they pause until the user comes back.
   useEffect(() => { const vis = () => { if (document.hidden) { api.pauseLocalPreviews(); } q.reload(); }; document.addEventListener("visibilitychange", vis); window.addEventListener("pagehide", api.pauseLocalPreviews); return () => { document.removeEventListener("visibilitychange", vis); window.removeEventListener("pagehide", api.pauseLocalPreviews); }; }, []);
@@ -399,7 +431,7 @@ function LibraryPage() {
       <${Seg} size="sm" value=${filter} options=${["All", "Ready", "In progress", "Needs attention", "References"]} onChange=${setFilter} />
       <${Btn} kind=${picking ? "secondary" : "ghost"} size="sm" icon=${picking ? "x" : "check"} id="select-videos" title="Select videos to make one edit of them, in order" onClick=${() => (picking ? stopPicking() : setPicking(true))}>${picking ? "Cancel" : "Select"}<//></div></div>
     ${picking && html`<div class="bulk pickbar" id="pick-bar" role="region" aria-label="Selected videos"><span class="grow t-small">${pick.length ? html`<b id="pick-count">${pick.length} selected</b> · ${fmtLen(pick.reduce((a, id) => a + ((q.data || []).find((v) => v.id === id)?.seconds || 0), 0))} · they play in the order you picked them` : "Click videos in the order they play. A video filmed in parts becomes one edit."}</span>
-      ${pick.length > 0 && html`<${Btn} kind="ghost" size="sm" onClick=${() => setPick([])}>Clear<//><${Btn} kind="ghost" size="sm" icon="folder" id="pick-move" onClick=${() => setMoveOf(pick.map((id) => (q.data || []).find((v) => v.id === id)).filter(Boolean))}>Move to folder<//>`}<${Btn} size="sm" icon="scissors" id="pick-make" disabled=${!pick.length} onClick=${() => setNp(true)}>${pick.length > 1 ? "Make one edit" : "Make an edit"}<//></div>`}
+      ${pick.length > 0 && html`<${Btn} kind="ghost" size="sm" onClick=${() => setPick([])}>Clear<//><${Btn} kind="ghost" size="sm" icon="folder" id="pick-move" onClick=${() => setMoveOf(pick.map((id) => (q.data || []).find((v) => v.id === id)).filter(Boolean))}>Move to folder<//><${Btn} kind="ghost" size="sm" icon="trash" id="pick-delete" onClick=${() => setRemove(pick.map((id) => (q.data || []).find((v) => v.id === id)).filter(Boolean))}>Delete<//>`}<${Btn} size="sm" icon="scissors" id="pick-make" disabled=${!pick.length} onClick=${() => setNp(true)}>${pick.length > 1 ? "Make one edit" : "Make an edit"}<//></div>`}
     <${Async} q=${q} skeleton=${html`<${GridSkeleton} />`} whenEmpty=${html`<div class=${"drop" + (over ? " over" : "")} id="drop" onClick=${openAdd}><div class="ico"><${Icon} name="plus" /></div><h2 class="t-heading">Add your first footage</h2><p class="muted">Link videos from Google Drive, or pick files from your computer. Raw files never come to us.</p><div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); openAdd(); }}>Add footage<//></div></div>`}>
       ${(videos) => {
         // In a folder: its videos in name order. At the top: the videos in no folder (a search looks in every folder).
@@ -441,7 +473,7 @@ function LibraryPage() {
                   : v.status === "missing" ? html`<${Btn} size="xs" icon="drive" data-reconnect=${v.id} onClick=${(e) => { e.stopPropagation(); setReconnect(v); }}>Reconnect file<//>`
                   : v.status === "expired" ? html`<${Btn} size="xs" icon="refresh" data-rebuild=${v.id} onClick=${(e) => act(e, () => api.rebuildPreview(v.id), "Rebuilding the preview")}>Rebuild preview<//>`
                   : html`<span class="t-small muted">${fmtAgo(v.date)} · ${v.size}</span>`}
-                  <span class="row" style="gap:2px;flex:none"><${Btn} kind="quiet" size="xs" icon="folder" aria-label=${"Move " + v.name + " to a folder"} title="Move to a folder" data-move=${v.id} onClick=${(e) => { e.stopPropagation(); setMoveOf([v]); }} /><${Btn} kind="quiet" size="xs" icon="trash" aria-label=${"Delete " + v.name} data-delete=${v.id} onClick=${(e) => { e.stopPropagation(); setRemove(v); }} /></span></div>
+                  <span class="row" style="gap:2px;flex:none"><${Btn} kind="quiet" size="xs" icon="folder" aria-label=${"Move " + v.name + " to a folder"} title="Move to a folder" data-move=${v.id} onClick=${(e) => { e.stopPropagation(); setMoveOf([v]); }} /><${Btn} kind="quiet" size="xs" icon="trash" aria-label=${"Delete " + v.name} data-delete=${v.id} onClick=${(e) => { e.stopPropagation(); setRemove([v]); }} /></span></div>
                 ${v.status === "failed" && html`<span class="t-small muted">${v.error}</span>`}
               </div>
             </button>`; })}
@@ -450,7 +482,7 @@ function LibraryPage() {
         </div>`;
       }}
     <//>
-    ${remove && html`<${DeleteVideoModal} video=${remove} onClose=${() => setRemove(null)} onDeleted=${() => { setRemove(null); reloadAll(); }} />`}
+    ${remove && html`<${DeleteVideoModal} videos=${remove} onClose=${() => setRemove(null)} onDeleted=${() => { const many = remove.length > 1; setRemove(null); if (many) stopPicking(); else setPick((p) => p.filter((id) => id !== remove[0].id)); reloadAll(); }} />`}
     ${nameModal && html`<${FolderNameModal} folder=${nameModal.folder} parent=${nameModal.parent} onClose=${() => setNameModal(null)} onSaved=${(f, made) => { setNameModal(null); toast(made ? `Folder "${f.name}" made` : "Renamed", { icon: "folder", tone: "brand" }); fq.reload(); if (made && nameModal.then) nameModal.then(f); }} />`}
     ${moveOf && html`<${MoveToFolderModal} videos=${moveOf} folders=${folders} into=${cur} onClose=${() => setMoveOf(null)} onMoved=${(f) => { setMoveOf(null); stopPicking(); toast(f ? `Moved to ${f.name}` : "Taken out of the folder", { icon: "folder", tone: "brand" }); reloadAll(); }} />`}
     ${delFolder && html`<${Modal} title=${"Delete " + delFolder.name + "?"} sub=${`The folder goes. Its videos${delFolder.folders ? " and folders" : ""} move up into ${parentOf(delFolder) ? `"${parentOf(delFolder).name}"` : "the Library"}; nothing is deleted.`} onClose=${() => setDelFolder(null)} footer=${html`<${Btn} kind="ghost" onClick=${() => setDelFolder(null)}>Cancel<//><${Btn} id="folder-delete-ok" onClick=${async () => { const up = parentOf(delFolder); try { await api.deleteLibraryFolder(delFolder.id); toast(`Folder deleted. What was in it is in ${up ? up.name : "the Library"}.`, { icon: "folder" }); setDelFolder(null); openFolder(up ? up.id : null); reloadAll(); } catch (e) { toast(e.message); } }}>Delete folder<//>`} />`}

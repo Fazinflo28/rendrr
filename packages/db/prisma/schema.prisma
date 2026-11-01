@@ -25,6 +25,7 @@ model User {
   updatedAt      DateTime @updatedAt
 
   drive       DriveConnection?
+  driveRemoved DriveRemoved[]
   videos      Video[]
   folders     Folder[]
   libraryFolders LibraryFolder[]
@@ -66,6 +67,17 @@ model DriveConnection {
   scopes       String
   stub         Boolean  @default(false) // true when Google keys are not set: a fake Drive with sample files
   connectedAt  DateTime @default(now())
+}
+
+// A Google Drive video or folder the user deleted from the library: a folder sync does not bring it back. Picking the
+// video again, or importing its folder again, does (and clears it).
+model DriveRemoved {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  itemId    String   // the Drive file or folder id
+  createdAt DateTime @default(now())
+
+  @@id([userId, itemId])
 }
 
 model Video {

@@ -6,7 +6,7 @@ import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { projectOut, videoOut } from "../serialize";
 import { purgeProjectFiles } from "../services/projects";
-import { DRIVE_SYNC_FRESH_MS, driveConn, folderNamed, importDriveFolder, linkDriveFile, syncDriveFolder, syncStaleDriveFolders } from "../services/driveLibrary";
+import { DRIVE_SYNC_FRESH_MS, driveConn, folderNamed, importDriveFolder, linkDriveFile, rememberRemoved, syncDriveFolder, syncStaleDriveFolders } from "../services/driveLibrary";
 import { createLibraryFolder, deleteLibraryFolder, folderTree, libraryFolderFull, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, updateLibraryFolder } from "../services/libraryFolders";
 
 /** The folder new videos go in: the user's own, or none. */
@@ -184,6 +184,8 @@ export default async function library(app: FastifyInstance) {
       await purgeProjectFiles({ videoId: v.id, deletedAt: { not: null } });
       await prisma.project.deleteMany({ where: { videoId: v.id, deletedAt: { not: null } } });
       await prisma.video.delete({ where: { id: v.id } });
+      // From a Drive folder the Library syncs with: the sync must not link it again (it is still in the Drive folder).
+      if (v.source === "drive") await rememberRemoved(v.userId, v.driveFileId);
       return { ok: true };
     });
 
