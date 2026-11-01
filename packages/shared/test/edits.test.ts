@@ -122,7 +122,8 @@ describe("connector tool list", () => {
     // 48: move_footage (library folders: videos of one kind kept together; create_project libraryFolder edits a whole one).
     // 50: render_samples and get_samples (a few frames and short clips drawn as the render draws them, shown to the user
     // as a storyboard in the chat before the whole preview; the changes they ask on each).
-    expect(MCP_TOOLS.length).toBeLessThanOrEqual(50);
+    // 51: add_footage (a video or picture the user gives the AI in the chat, into their library and the edit).
+    expect(MCP_TOOLS.length).toBeLessThanOrEqual(51);
     const names = MCP_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
     for (const gone of ["cut_silences", "remove_fillers", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);

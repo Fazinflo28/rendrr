@@ -28,6 +28,12 @@ export async function analyzeJob(ctx: Ctx) {
   const v = await prisma.video.findUnique({ where: { id: videoId } });
   if (!v) return;
   if (!v.audioKey || !v.proxyKey) throw new JobError("The preview copy is missing. Press Retry to make it again.", "no-proxy", false);
+  // A picture (a still clip): nothing to hear or cut. Ready as it is (its key frames came with the preview).
+  if (v.still) {
+    await prisma.footageAnalysis.upsert({ where: { videoId: v.id }, create: { videoId: v.id, transcriber: "none", transcript: [], silences: [], sceneCuts: [] }, update: { transcriber: "none", transcript: [], silences: [], sceneCuts: [] } });
+    await prisma.video.update({ where: { id: v.id }, data: { status: "ready", step: null, progress: null, error: null, previewExpiresAt: new Date(Date.now() + PREVIEW_RETENTION_DAYS * DAY_MS) } });
+    return;
+  }
   const step = (n: number) => prisma.video.update({ where: { id: v.id }, data: { status: "processing", step: n } });
 
   await step(0);

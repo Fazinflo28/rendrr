@@ -21,6 +21,17 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Drive folders that stay in step, and videos and pictures from the chat (1 November)
+
+- **Drive folders sync.** A folder imported from Google Drive stays linked to it. Videos you put in that Drive folder later come into the Library by themselves: when you open the folder (at most every 2 minutes), with Sync now, when Claude lists the folder or makes an edit from it, and every 5 minutes on the server. New Drive folders become library folders. A video you moved elsewhere stays where you put it; nothing is removed.
+- **Videos and pictures from the chat.** A new tool, add_footage. When you give Claude a video or a picture (attached to the chat, a link, or a file in your Drive), Claude puts it in your library, and in the edit's Media panel. Then it places it with apply_edits like any footage.
+  - From the chat: Claude gets a one-time link and its code workspace sends the file to it. Up to 2 GB for a video, 50 MB for a picture.
+  - A link (Google Drive, Dropbox, any direct link), or a file in your Drive. A Drive video is linked, not copied.
+  - A picture becomes a 60 s still clip: b-roll over the talk, a V1 clip, a background, inside text. Pictures are not transcribed.
+  - Rendrr keeps these files (there is no Drive or computer copy). Deleting the video deletes the file. The Library marks them "From the chat", and pictures "Picture".
+- **Known limits.** HEIC/AVIF pictures are refused (send JPEG or PNG). A transparent PNG loses its transparency (it becomes a still clip). Claude's code workspace must be allowed to reach Rendrr's API host to send a file; if not, a link or Drive works.
+- **Tests.** API: drive-folder-import (sync, the server sweep, a moved video left alone) and add-footage (a picture and a video through the link, the real worker making their previews, the picture placed as b-roll, deletion). Browser: library-folders (linked folder, Sync now).
+
 ## Review of every phase: bugs found and fixed (1 November)
 
 Three reviewers read the new phases side by side; every finding was checked and fixed with a test.

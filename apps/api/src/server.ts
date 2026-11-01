@@ -13,6 +13,7 @@ import render from "./routes/render";
 import color from "./routes/color";
 import lutUpload from "./routes/lutUpload";
 import soundUpload from "./routes/soundUpload";
+import footageUpload from "./routes/footageUpload";
 import graphicUpload from "./routes/graphicUpload";
 import fonts from "./routes/fonts";
 import reviews from "./routes/reviews";
@@ -113,6 +114,7 @@ export async function buildServer() {
   await app.register(color);
   await app.register(lutUpload);
   await app.register(soundUpload);
+  await app.register(footageUpload);
   await app.register(graphicUpload);
   await app.register(fonts);
   await app.register(reviews);

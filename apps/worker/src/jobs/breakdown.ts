@@ -96,7 +96,7 @@ export async function breakdownJob(ctx: Ctx) {
  * (at most once a day each). Returns how many.
  */
 export async function queueMissingBreakdowns(): Promise<number> {
-  const missing = await prisma.video.findMany({ where: { status: "ready", proxyKey: { not: null }, kind: { not: "canvas" }, analysis: { is: { breakdown: { equals: Prisma.DbNull } } } }, select: { id: true }, take: 200, orderBy: { createdAt: "desc" } });
+  const missing = await prisma.video.findMany({ where: { status: "ready", proxyKey: { not: null }, kind: { not: "canvas" }, still: false, analysis: { is: { breakdown: { equals: Prisma.DbNull } } } }, select: { id: true }, take: 200, orderBy: { createdAt: "desc" } });
   const made = await prisma.footageAnalysis.findMany({ where: { breakdown: { not: Prisma.DbNull }, video: { status: "ready", proxyKey: { not: null } } }, select: { videoId: true, breakdown: true }, take: 500 });
   const noOverview = made.filter((a) => { const f = (a.breakdown as { frames?: { sheets?: unknown[]; overview?: unknown } } | null)?.frames; return !!f && f.overview === undefined && (f.sheets?.length ?? 0) > 1; }).map((a) => ({ id: a.videoId }));
   const day = new Date().toISOString().slice(0, 10);

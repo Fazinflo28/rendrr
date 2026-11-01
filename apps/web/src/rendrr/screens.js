@@ -112,7 +112,9 @@ function Shell({ children }) {
 }
 
 /* ---------- Add footage: Google Drive (recommended) or this computer ---------- */
-const SourceBadge = ({ source, size = "sm" }) => html`<span class=${"tag src " + (source === "drive" ? "drive" : "local")} title=${source === "drive" ? "Raw file stays in your Google Drive" : "Raw file stays on your computer"}><${Icon} name=${source === "drive" ? "drive" : "laptop"} size="12" />${source === "drive" ? "Google Drive" : "This computer"}</span>`;
+// Where the raw file is: your Drive, your computer, or kept by Rendrr (brought in from the chat by your AI).
+const SOURCE = { drive: ["drive", "Google Drive", "Raw file stays in your Google Drive"], upload: ["spark", "From the chat", "Brought in by your AI from the chat; Rendrr keeps the file"], local: ["laptop", "This computer", "Raw file stays on your computer"] };
+const SourceBadge = ({ source, size = "sm" }) => { const [ic, label, title] = SOURCE[source] || SOURCE.local; return html`<span class=${"tag src " + (source === "drive" ? "drive" : "local")} title=${title}><${Icon} name=${ic} size="12" />${label}</span>`; };
 // Drive picker, laid out like Google Drive's list view: places on the left (My Drive, Shared with me, Recent, shared
 // drives), a path you can click back along, folders first then videos, and a search over the whole Drive.
 const DRIVE_HOME = { id: "root", name: "My Drive" };
@@ -433,7 +435,7 @@ function LibraryPage() {
                 ${v.status === "expired" && html`<div class="veil"><${Icon} name="clock" size="22" /><b class="t-small">Preview expired</b><span class="t-small" style="opacity:.7">30 days passed</span></div>`}
               </div>
               <div class="meta"><div class="row between"><b class="t-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.name}</b><${StatusChip} status=${v.status} /></div>
-                <div class="row between" style="gap:8px"><span class="row" style="gap:6px;min-width:0"><${SourceBadge} source=${v.source} />${v.kind === "reference" && html`<span class="tag accent" data-ref=${v.id}>Reference</span>`}${!openF && v.libraryFolderId && folderName(v.libraryFolderId) && html`<span class="tag" data-in-folder=${v.id}>${folderName(v.libraryFolderId)}</span>`}</span>
+                <div class="row between" style="gap:8px"><span class="row" style="gap:6px;min-width:0"><${SourceBadge} source=${v.source} />${v.still && html`<span class="tag" data-picture=${v.id}>Picture</span>`}${v.kind === "reference" && html`<span class="tag accent" data-ref=${v.id}>Reference</span>`}${!openF && v.libraryFolderId && folderName(v.libraryFolderId) && html`<span class="tag" data-in-folder=${v.id}>${folderName(v.libraryFolderId)}</span>`}</span>
                   ${v.status === "failed" ? html`<${Btn} kind="ghost" size="xs" onClick=${(e) => act(e, () => api.retryVideo(v.id), "Trying again")}>Retry<//>`
                   : v.status === "paused" ? html`<${Btn} size="xs" icon="play" data-resume=${v.id} onClick=${(e) => act(e, () => api.resumeLocalPreview(v.id), "Resumed")}>Resume<//>`
                   : v.status === "missing" ? html`<${Btn} size="xs" icon="drive" data-reconnect=${v.id} onClick=${(e) => { e.stopPropagation(); setReconnect(v); }}>Reconnect file<//>`
@@ -499,9 +501,9 @@ function FootagePage({ id }) {
         <div class="row" style="gap:8px"><${Btn} kind="ghost" icon="trash" id="delete-video" onClick=${() => setRemove(true)}>Delete<//><${Btn} id="start-edit" icon="spark" disabled=${busy || v.status !== "ready"} onClick=${start}>${busy ? "Creating…" : "Start an edit"}<//></div>
         ${remove && html`<${DeleteVideoModal} video=${v} onClose=${() => setRemove(false)} onDeleted=${() => go("/library")} />`}</div>
       ${v.status !== "ready" && html`<div class="card flat row"><span class="dot brand pulse" />This footage is not ready yet (${v.stepName || v.status}). You can start an edit once it is ready.</div>`}
-      <div class="card tight storagebox" id="storage-box"><div class="sb-cell"><span class="t-small muted">Raw file location</span><b class="t-label row" style="gap:6px"><${Icon} name=${v.source === "drive" ? "drive" : "laptop"} size="14" />${v.source === "drive" ? "Google Drive · " + (v.driveFile?.folder || "My Drive") : "This computer · " + (v.originalName || v.name)}</b></div>
+      <div class="card tight storagebox" id="storage-box"><div class="sb-cell"><span class="t-small muted">Raw file location</span><b class="t-label row" style="gap:6px"><${Icon} name=${(SOURCE[v.source] || SOURCE.local)[0]} size="14" />${v.source === "drive" ? "Google Drive · " + (v.driveFile?.folder || "My Drive") : v.source === "upload" ? "Kept by Rendrr · " + (v.originalName || v.name) : "This computer · " + (v.originalName || v.name)}</b></div>
         <div class="sb-cell"><span class="t-small muted">Preview copy</span><b class="t-label">${v.previewSize || "Not made yet"}${v.previewDays != null ? html` <span class="muted" style="font-weight:400">· Deletes in ${v.previewDays} days</span>` : ""}</b></div>
-        <div class="sb-cell"><span class="t-small muted">We keep</span><b class="t-label">Only the preview. Raw never leaves ${v.source === "drive" ? "your Drive" : "your computer"}.</b></div>
+        <div class="sb-cell"><span class="t-small muted">We keep</span><b class="t-label">${v.source === "upload" ? `The file your AI brought in${v.still ? " (a picture, played as a still clip)" : ""}, until you delete it.` : `Only the preview. Raw never leaves ${v.source === "drive" ? "your Drive" : "your computer"}.`}</b></div>
         ${v.source === "drive" && html`<${Btn} kind="secondary" size="sm" icon="link" id="open-drive" onClick=${() => v.driveFile?.webViewLink ? window.open(v.driveFile.webViewLink, "_blank", "noopener") : toast("We could not find this file in Google Drive.", { icon: "drive" })}>Open in Drive<//>`}</div>
       <div class="two" style="grid-template-columns: 1.4fr 1fr; align-items:start">
         <div class="col" style="gap:16px">

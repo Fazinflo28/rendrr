@@ -153,7 +153,8 @@ export default async function library(app: FastifyInstance) {
 
     a.post("/videos/:id/retry", async (req) => {
       const v = await ownedVideo(req.user!.id, (req.params as { id: string }).id);
-      if (v.source === "drive" || v.sample) {
+      // Rendrr has the raw (Drive, a sample, footage brought in from the chat): the preview is made again from it.
+      if (v.source === "drive" || v.sample || (v.source === "upload" && v.sourceKey)) {
         await prisma.video.update({ where: { id: v.id }, data: { status: v.sample ? "previewing" : "linking", progress: 0, step: null, error: null } });
         await enqueue<ProxyJob>("proxy", { videoId: v.id });
       } else if (v.proxyKey && v.audioKey) {
@@ -177,7 +178,8 @@ export default async function library(app: FastifyInstance) {
       }
       if (edits.length) await prisma.project.updateMany({ where: { id: { in: edits.map((p) => p.id) } }, data: { deletedAt: new Date() } });
       const an = await prisma.footageAnalysis.findUnique({ where: { videoId: v.id } });
-      await deleteObjects([v.proxyKey, v.audioKey, v.thumbKey, ...(((an?.keyFrames as { key: string }[]) || []).map((k) => k.key))]);
+      // Footage brought in from the chat: Rendrr kept its raw, so that goes too.
+      await deleteObjects([v.proxyKey, v.audioKey, v.thumbKey, v.source === "upload" ? v.sourceKey : null, ...(((an?.keyFrames as { key: string }[]) || []).map((k) => k.key))]);
       await deletePrefix(framesPrefix(v)); // key frames, contact sheets, frames taken for the AI
       await purgeProjectFiles({ videoId: v.id, deletedAt: { not: null } });
       await prisma.project.deleteMany({ where: { videoId: v.id, deletedAt: { not: null } } });
@@ -305,7 +307,7 @@ export default async function library(app: FastifyInstance) {
 
     a.post("/videos/:id/rebuild", async (req) => {
       const v = await ownedVideo(req.user!.id, (req.params as { id: string }).id);
-      if (v.source === "drive" || v.sample) {
+      if (v.source === "drive" || v.sample || (v.source === "upload" && v.sourceKey)) {
         const u = await prisma.video.update({ where: { id: v.id }, data: { status: v.sample ? "previewing" : "preview", progress: 0, error: null } });
         await enqueue<ProxyJob>("proxy", { videoId: v.id });
         return videoOut(u);

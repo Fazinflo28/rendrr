@@ -32,6 +32,7 @@ import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, lat
 import { resolveMulticam, resolveMulticamAuto } from "./services/multicam";
 import { ensureLibraryFolderPath, findLibraryFolder, folderFootage, listLibraryFolders, moveVideos, projectFromLibraryFolder } from "./services/libraryFolders";
 import { syncDriveFolder, syncText } from "./services/driveLibrary";
+import { footageFromSource, footageText, footageUploadLink, intoEdit, waitForFootage } from "./services/footage";
 import { resolveSoundRefs, soundFromSource, soundLine, soundOut, soundsText, soundUploadLink } from "./services/sounds";
 import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
 
@@ -461,9 +462,9 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const lf = i.libraryFolder ? await findLibraryFolder(c.userId, i.libraryFolder) : null;
     if (i.libraryFolder && !lf) throw notFound(`There is no library folder "${i.libraryFolder}". ${folders.length ? `Library folders: ${folders.map((f) => `${f.path} (${f.id})`).join(", ")}.` : "There are none yet: move_footage makes one."}`);
     const acct = await accountLine(c.userId);
-    const where = (v: { sample: boolean; source: string }) => (v.sample ? "sample" : v.source === "drive" ? "drive" : "computer");
-    const row = (v: { id: string; name: string; kind: string; seconds: number; orientation: string; width: number | null; height: number | null; status: string; error: string | null; sample: boolean; source: string }, folder?: string) =>
-      `${v.id} | ${v.name} | ${v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${where(v)}${folder !== undefined ? ` | ${folder || "-"}` : ""}`;
+    const where = (v: { sample: boolean; source: string }) => (v.sample ? "sample" : v.source === "drive" ? "drive" : v.source === "upload" ? "rendrr" : "computer");
+    const row = (v: { id: string; name: string; kind: string; seconds: number; orientation: string; width: number | null; height: number | null; status: string; error: string | null; sample: boolean; source: string; still?: boolean }, folder?: string) =>
+      `${v.id} | ${v.name} | ${v.still ? "picture" : v.kind} | ${fmtClock(v.seconds)} | ${v.orientation}${v.width ? ` ${v.width}x${v.height}` : ""} | ${v.status}${v.error ? ` (${v.error})` : ""} | ${where(v)}${folder !== undefined ? ` | ${folder || "-"}` : ""}`;
     if (lf) {
       // A folder: its videos and its subfolders', in the order create_project libraryFolder puts them. A folder imported
       // from Google Drive first takes in what was put in the Drive folder since.
@@ -526,7 +527,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const lines = [
       ...(isRef ? ["REFERENCE: copy its rhythm, shot lengths, hook and look onto the user's footage, not its content. Then save_style with fromVideoId so it is not read again."] : []),
       code.text,
-      `RAW FILE ${v.sample ? "Rendrr's sample" : v.source === "drive" ? "in Google Drive" : "on the user's computer"}${v.status === "expired" ? " | preview copy expired: rebuild it in the Library to edit or take frames" : ""}`,
+      `RAW FILE ${v.sample ? "Rendrr's sample" : v.source === "drive" ? "in Google Drive" : v.source === "upload" ? `kept by Rendrr (brought in from the chat)${v.still ? `; a picture, played as a still clip of ${v.seconds.toFixed(0)} s` : ""}` : "on the user's computer"}${v.status === "expired" ? " | preview copy expired: rebuild it in the Library to edit or take frames" : ""}`,
       `TRANSCRIPT (${v.analysis.transcriber === "stub" ? "SAMPLE: transcription is not set up" : "AssemblyAI"}) ${words.length} words. Line id [start] text${i.detail === "words" ? "; words as text(wordId@start-end)" : ""}:`,
       transcriptAsText(tr, undefined, i.detail === "words" ? "words" : "sentences") || "(no speech found)",
       `SILENCES 0.4s+ (${sil.length}): ${sil.slice(0, 80).map((s) => `${s.start.toFixed(1)}-${s.end.toFixed(1)}`).join(", ") || "none"}${sil.length > 80 ? ", …" : ""}`,
@@ -1027,6 +1028,26 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     if (!i.url && !i.driveFileId) return { text: `Your audio files (newest first): ${await soundsText(c.userId)}. add_audio upload: true, url or driveFileId brings one in.` };
     const s = await soundFromSource(c.userId, { url: i.url, driveFileId: i.driveFileId, name: i.name });
     return { text: soundOut(s), data: { soundId: s.id, seconds: s.seconds, status: s.status } };
+  },
+  async add_footage(c, i) {
+    const o = { name: i.name ?? null, kind: i.kind ?? null, libraryFolder: i.libraryFolder ?? null, projectId: i.projectId ?? null, ai: c.ai === "chatgpt" ? "chatgpt" as const : "claude" as const, aiName: c.aiName };
+    const waitMs = Math.min(120, i.wait_seconds ?? 0) * 1000;
+    if (i.upload) {
+      const u = await footageUploadLink(c.userId, o);
+      return { text: `Upload link for one video or picture, for 30 minutes: ${u.url}\nSend the file from your code workspace (a file the user attached is in your uploads folder):\n  curl -sS -T "<file>" "${u.url}?filename=<its file name>"\nThe reply is JSON with its videoId and how to place it (it waits up to 45 s for a picture or a short clip to be ready). ${c.ai === "chatgpt" ? "ChatGPT's code sandbox has no internet, so it cannot send the file: use url (a share link) or driveFileId instead." : `If the workspace cannot reach ${u.host}, the user allows that host in their AI's settings (Claude: Settings > Capabilities, code execution, allowed domains), or use url (a share link) or driveFileId instead.`}`, data: { uploadUrl: u.url } };
+    }
+    if (i.url || i.driveFileId) {
+      const v = await footageFromSource(c.userId, { url: i.url, driveFileId: i.driveFileId, ...o });
+      const now = await waitForFootage(v.id, waitMs || 30_000);
+      return { text: footageText(now, { projectId: i.projectId }), data: { videoId: now.id, status: now.status } };
+    }
+    if (i.videoId) {
+      const v0 = await ownedVideo(c.userId, i.videoId);
+      if (i.projectId) await intoEdit(c.userId, i.projectId, v0.id, o);
+      const v = await waitForFootage(v0.id, waitMs);
+      return { text: footageText(v, { projectId: i.projectId }), data: { videoId: v.id, status: v.status } };
+    }
+    return { text: "Send one of: upload: true (a file in your code workspace, such as one the user attached), url (a share link), driveFileId (a file in their Google Drive), or videoId (one already in the library: where it is; with projectId it goes in that edit's Media panel)." };
   },
   async add_lut(c, i) {
     const l = AddLutInput.safeParse(i);

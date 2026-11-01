@@ -1,6 +1,6 @@
-import { drive, enqueue, signGet, uploadFile, type AnalyzeJob, type ProxyJob } from "@rendrr/core";
-import { prisma, type Prisma } from "@rendrr/db";
-import { DAY_MS, orientationOf, PREFIX, PREVIEW_RETENTION_DAYS } from "@rendrr/shared";
+import { deleteObject, downloadFile, drive, enqueue, signGet, uploadFile, type AnalyzeJob, type ProxyJob } from "@rendrr/core";
+import { prisma, type Prisma, type Video } from "@rendrr/db";
+import { DAY_MS, orientationOf, PREFIX, PREVIEW_RETENTION_DAYS, STILL_SECONDS } from "@rendrr/shared";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { frameAt, JobError, probe, run } from "../lib/ffmpeg";
@@ -24,11 +24,33 @@ export async function sourceInput(v: { userId: string; source: string; driveFile
   throw new JobError("We need the file from your computer again. Add it again from the Library.", "local", false);
 }
 
+/**
+ * A picture brought in from the chat (add_footage) made into its raw video once: a still clip STILL_SECONDS long at
+ * 30 fps, its own size (even sides, 3840 at most), silent, nearly lossless. Then it is footage like any other: the
+ * preview, the renders and finals all read it. A GIF or a WebP gives its first frame.
+ */
+export async function stillToVideo(v: Video, dir: string, signal?: AbortSignal): Promise<Video> {
+  if (!v.still || !v.sourceKey || /\.mp4$/i.test(v.sourceKey)) return v;
+  const img = join(dir, "still-src"), first = join(dir, "still-first.png"), out = join(dir, "still.mp4");
+  await downloadFile(v.sourceKey, img);
+  const bad = () => new JobError("That picture could not be read. Send it as a JPEG or PNG.", "damaged", false);
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", img, "-frames:v", "1", "-update", "1", first], { signal }).catch((e) => { if (signal?.aborted) throw e; throw bad(); });
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-loop", "1", "-framerate", "30", "-t", String(STILL_SECONDS), "-i", first,
+    "-vf", "scale='min(3840,iw)':'min(3840,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+    "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-crf", "14", "-r", "30", "-g", "30", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+    "-an", "-movflags", "+faststart", out], { signal }).catch((e) => { if (signal?.aborted) throw e; throw bad(); });
+  const key = v.sourceKey.replace(/\.[a-z0-9]+$/i, "") + ".mp4";
+  await uploadFile(key, out, "video/mp4");
+  await deleteObject(v.sourceKey).catch(() => {});
+  return prisma.video.update({ where: { id: v.id }, data: { sourceKey: key } });
+}
+
 export async function proxyJob(ctx: Ctx) {
   const { videoId } = ctx.job.data as ProxyJob;
-  const v = await prisma.video.findUnique({ where: { id: videoId } });
+  let v = await prisma.video.findUnique({ where: { id: videoId } });
   if (!v) return;
   const local = v.source === "local";
+  v = await stillToVideo(v, ctx.dir, ctx.signal);
   // Status names the UI expects: Drive shows Linking -> Making preview; samples show the local steps.
   await prisma.video.update({ where: { id: v.id }, data: { status: local ? "previewing" : "linking", progress: 0, error: null, step: null } });
 

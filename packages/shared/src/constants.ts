@@ -2,6 +2,8 @@
 export const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts", "Reading the frames"] as const;
 export const DRIVE_STEPS = ["Linking", "Making preview", ...PROC_STEPS] as const;
 export const LOCAL_STEPS = ["Making preview in your browser", "Uploading preview", ...PROC_STEPS] as const;
+/** Footage brought in from the chat (add_footage): kept by Rendrr, its preview made on the server. */
+export const UPLOAD_STEPS = ["Bringing it in", "Making preview", ...PROC_STEPS] as const;
 
 export const PREVIEW_STEPS = ["Reading timeline", "Measuring loudness", "Cutting clips", "Burning captions", "Packing preview"] as const;
 export const FINAL_RENDER_STEPS = ["Reading timeline", "Measuring loudness", "Cutting clips", "Adding zooms", "Mixing music", "Burning captions", "Encoding 1080p", "Cleaning up raw file"] as const;
@@ -115,7 +117,14 @@ export const PREFIX = {
   tests: "tests/", // test_graphic clips and frames, swept after a day
   canvas: "canvas/", // the blank canvas of an edit made from scratch (no footage)
   sounds: "sounds/", // the user's own audio files (add_audio): a voice made better outside Rendrr, their own music
+  uploads: "uploads/", // videos and images the AI brought in from the chat (add_footage): kept as the raw file
 } as const;
+/** Footage the AI brings in from the chat (add_footage): the biggest file taken through an upload link or a share link
+ *  (bigger: link it from Google Drive, which copies nothing). An image becomes a still clip this long: it plays as a
+ *  video anywhere one does (b-roll, a V1 clip, a background, inside text); a background loops it. */
+export const FOOTAGE_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+export const STILL_SECONDS = 60;
+export const IMAGE_MAX_BYTES = 50 * 1024 * 1024;
 /** The user's own audio files: the longest kept, and the biggest file taken. */
 export const SOUND_MAX_SECONDS = 4 * 3600;
 export const SOUND_MAX_BYTES = 500 * 1024 * 1024;

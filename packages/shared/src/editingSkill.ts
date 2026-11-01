@@ -9,8 +9,9 @@ export const MCP_INSTRUCTIONS = [
   "Core rules: read the whole video first; keep the best take (usually the last complete one); remove fillers, stutters, false starts and look-downs; tight, but never cut a word; no grading, audio processing, text animation, b-roll or graphics unless asked; one caption system, big and centred.",
   "ONE render per user request: make every change, check_edit (no render), fix, then render_preview ONCE and reply. Never render again for your own fixes: Rendrr refuses a second preview until the user asks again (then newRequest: true).",
   "Comments: get_comments, fix each spot and the same kind of mistake everywhere, one render, then resolve_comment.",
-  "Shorts from a long video: create_shorts (one edit per short, cut, 9:16, reframed on the speaker, captioned). Another shape of an edit: create_project fromProjectId with aspect and reframe. New client or series: create_folder.",
+  "Shorts from a long video: create_shorts. Another shape of an edit: create_project fromProjectId with aspect and reframe. New client: create_folder.",
   "No footage (a SaaS promo, an explainer, animated type): create_project blank {seconds, color} is a blank canvas; build the video with create_graphic scenes, add_graphic, add_text, music and sound effects.",
+  "A video or image the user gives you (attached, a link, Drive): add_footage puts it in their library and the edit.",
   "open_projects shows the user's edits, previews and comments in the chat; render_samples a few frames of a new look first. Guide: rendrr://how-to-edit.",
 ].join(" ");
 

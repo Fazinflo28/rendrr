@@ -2,13 +2,13 @@
 import { signGet } from "@rendrr/core";
 import { commentMedia } from "./services/commentMedia";
 import type { AiAction, Folder, GalleryItem, Project, ProjectComment, Review, ReviewComment, Style, User, Video } from "@rendrr/db";
-import { DAY_MS, DRIVE_STEPS, fmtShortDate, fmtSize, LOCAL_STEPS, type ReferenceRef } from "@rendrr/shared";
+import { DAY_MS, DRIVE_STEPS, fmtShortDate, fmtSize, LOCAL_STEPS, UPLOAD_STEPS, type ReferenceRef } from "@rendrr/shared";
 
 const ms = (d: Date | null | undefined) => (d ? d.getTime() : null);
 const num = (b: bigint | number | null | undefined) => (b == null ? null : Number(b));
 
 export function stepInfo(v: Pick<Video, "source" | "status" | "step">) {
-  const steps = v.source === "drive" ? DRIVE_STEPS : LOCAL_STEPS;
+  const steps = v.source === "drive" ? DRIVE_STEPS : v.source === "upload" ? UPLOAD_STEPS : LOCAL_STEPS;
   const map: Record<string, number> = { linking: 0, preview: 1, previewing: 0, uploading: 1, paused: 0, processing: 2 + (v.step || 0) };
   const idx = map[v.status];
   if (idx == null) return {};
@@ -21,7 +21,7 @@ export async function videoOut(v: Video) {
     id: v.id, name: v.name, seconds: Math.round(v.seconds * 100) / 100,
     size: fmtSize(v.originalSize ?? v.sizeBytes), orientation: v.orientation, date: v.createdAt.getTime(),
     status: v.status, step: v.step ?? undefined, progress: v.progress ?? undefined, error: v.error ?? undefined,
-    art: v.art, source: v.source, sample: v.sample, kind: v.kind, libraryFolderId: v.libraryFolderId ?? null, driveFileId: v.driveFileId ?? undefined,
+    art: v.art, source: v.source, sample: v.sample, still: v.still, kind: v.kind, libraryFolderId: v.libraryFolderId ?? null, driveFileId: v.driveFileId ?? undefined,
     originalName: v.originalName ?? undefined, originalSize: num(v.originalSize) ?? undefined,
     previewSize: fmtSize(v.previewSizeBytes), previewExpires: expires,
     previewDays: expires != null && v.status !== "expired" ? Math.max(0, Math.ceil((expires - Date.now()) / DAY_MS)) : v.status === "expired" ? 0 : null,
