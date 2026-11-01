@@ -5,7 +5,7 @@
 import { AppError, applyTimelineChange, drive, enqueue, env, features, redis, uploadFile, type ChangeActor, type ProxyJob } from "@rendrr/core";
 import { prisma, type Video } from "@rendrr/db";
 import { FOOTAGE_UPLOAD_MAX_BYTES, IMAGE_MAX_BYTES, PREFIX, STILL_SECONDS, type VideoKind } from "@rendrr/shared";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdtemp, open, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -161,4 +161,66 @@ export function footageText(v: Pick<Video, "id" | "name" | "status" | "error" | 
   const where = `${o.projectId ? "In the library and this edit's Media panel" : "In the library"}${v.source === "drive" ? " (linked from Google Drive)" : ""}`;
   if (v.status !== "ready") return `${where}: the ${what} "${v.name}" ${v.id}${size}, being prepared (${v.status}). add_footage {videoId: "${v.id}", wait_seconds: 60} waits for it; then apply_edits ${place}.`;
   return `${where}: the ${what} "${v.name}" ${v.id}${size}${v.still ? "" : `, ${v.seconds.toFixed(2)} s`}, ready. Place it with apply_edits ${place}.`;
+}
+
+/** Waits (up to ms) until a video's preview copy is made (enough to place it as b-roll) or it failed. */
+async function waitForPreview(id: string, ms: number): Promise<Video> {
+  const end = Date.now() + ms;
+  for (;;) {
+    const v = await prisma.video.findUniqueOrThrow({ where: { id } });
+    if ((v.proxyKey && (v.status === "ready" || v.status === "processing")) || ["failed", "missing"].includes(v.status) || Date.now() >= end) return v;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+const isUrl = (s: string) => /^https?:\/\//i.test(s.trim());
+const looksLikeDriveId = (s: string) => /^[A-Za-z0-9_-]{20,80}$/.test(s.trim());
+const urlKey = (userId: string, url: string) => `footage-url:${userId}:${createHash("sha1").update(url.trim()).digest("hex")}`;
+
+/**
+ * apply_edits ops that place footage (add_broll, add_clip, set_background, multicam angles, text with video inside)
+ * may name a Google Drive file (its id or link) or any link to a video or picture instead of a library video: Rendrr
+ * brings it in first (as add_footage does: a Drive video is linked, anything else kept), puts it in the edit's Media
+ * panel and waits for its preview, then the edit runs with the library id. An AI whose tool list is older than
+ * add_footage can still place a clip from Drive this way. Not ready in time: nothing changes, and it says which
+ * videoId to send again.
+ */
+export async function resolveFootageRefs<T extends { op: string }>(userId: string, edits: T[], o: { projectId: string; ai?: "claude" | "chatgpt"; waitMs?: number }): Promise<T[]> {
+  const known = new Map<string, string>();
+  const brought: string[] = [];
+  const conn = features().drive ? await prisma.driveConnection.findUnique({ where: { userId } }) : null;
+  const resolve = async (ref: string | undefined | null): Promise<string | undefined | null> => {
+    if (!ref || known.has(ref)) return ref ? known.get(ref) : ref;
+    if (await prisma.video.findFirst({ where: { id: ref, userId }, select: { id: true } })) { known.set(ref, ref); return ref; }
+    let v: Video | null = null;
+    if (isUrl(ref)) {
+      const cached = await redis().get(urlKey(userId, ref));
+      v = cached ? await prisma.video.findFirst({ where: { id: cached, userId } }) : null;
+      if (!v) { v = await footageFromSource(userId, { url: ref.trim(), ai: o.ai }); await redis().set(urlKey(userId, ref), v.id, "EX", 7 * 24 * 3600); }
+    } else if (looksLikeDriveId(ref) && conn && !conn.stub && (await drive.getFile(userId, ref.trim(), false).catch(() => null))) {
+      v = await footageFromSource(userId, { driveFileId: ref.trim(), ai: o.ai });
+    } else return ref; // not a library video nor a file Rendrr can reach: the edit says it is not in the library
+    known.set(ref, v.id);
+    brought.push(v.id);
+    return v.id;
+  };
+  const out: T[] = [];
+  for (const e of edits) {
+    const x = { ...e } as T & { videoId?: string | null; angles?: { videoId: string }[]; inside?: { videoId: string } | null };
+    if ((e.op === "add_broll" || e.op === "add_clip" || e.op === "set_background") && typeof x.videoId === "string") x.videoId = (await resolve(x.videoId)) as string;
+    if (e.op === "multicam" && Array.isArray(x.angles)) x.angles = await Promise.all(x.angles.map(async (a) => ({ ...a, videoId: (await resolve(a.videoId)) as string })));
+    if ((e.op === "add_text" || e.op === "set_text") && x.inside && typeof x.inside.videoId === "string") x.inside = { ...x.inside, videoId: (await resolve(x.inside.videoId)) as string };
+    out.push(x);
+  }
+  if (!brought.length) return out;
+  // Each one brought in waits for its preview (they are made side by side).
+  const end = Date.now() + (o.waitMs ?? 75_000);
+  const waited = [];
+  for (const id of brought) waited.push(await waitForPreview(id, Math.max(0, end - Date.now())));
+  const bad = waited.filter((v) => v.status === "failed" || v.status === "missing");
+  if (bad.length) throw new AppError(`Nothing was changed. ${bad.map((v) => footageText(v)).join(" ")}`, 400, "bad-footage");
+  const slow = waited.filter((v) => !v.proxyKey);
+  if (slow.length) throw new AppError(`Nothing was changed yet. Brought into the library: ${slow.map((v) => `"${v.name}" (videoId ${v.id})`).join(", ")}; its preview is being made (a short clip takes about a minute, a long video longer). Send the same apply_edits again in a minute with videoId "${slow[0].id}"${slow.length > 1 ? " (and the others' ids)" : ""} in place of the link.`, 409, "footage-preparing");
+  // In the edit's Media panel too, with the rest of the change.
+  return [{ op: "add_media", videoIds: brought } as unknown as T, ...out];
 }

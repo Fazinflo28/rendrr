@@ -32,7 +32,7 @@ import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, lat
 import { resolveMulticam, resolveMulticamAuto } from "./services/multicam";
 import { ensureLibraryFolderPath, findLibraryFolder, folderFootage, listLibraryFolders, moveVideos, projectFromLibraryFolder } from "./services/libraryFolders";
 import { syncDriveFolder, syncText } from "./services/driveLibrary";
-import { footageFromSource, footageText, footageUploadLink, intoEdit, waitForFootage } from "./services/footage";
+import { footageFromSource, footageText, footageUploadLink, intoEdit, resolveFootageRefs, waitForFootage } from "./services/footage";
 import { resolveSoundRefs, soundFromSource, soundLine, soundOut, soundsText, soundUploadLink } from "./services/sounds";
 import { drawingText, storedDrawing, storedImages } from "./services/commentMedia";
 
@@ -202,7 +202,9 @@ async function applyEdits(c: Ctx, projectId: string, edits: EditOp[], note: stri
   // Phase 6: match_color gets the clips' measured frames (the worker reads them; a failure stops here, loudly).
   // Phase 10: multicam angles sent without an offset are synced (phase 22: by timecode, else by their sound).
   const mainVid = (p0.timeline as unknown as Timeline).mainVideoId || p0.videoId;
-  const synced = await resolveMulticam(c.userId, mainVid, await resolveSoundRefs(c.userId, await resolveLutRefs(c.userId, await rerecordFirst(c.userId, edits)), c.ai ?? undefined));
+  // Footage named by a Google Drive file or a link (not yet in the library) is brought in first.
+  const withFootage = await resolveFootageRefs(c.userId, edits, { projectId, ai: c.ai === "chatgpt" ? "chatgpt" : "claude" });
+  const synced = await resolveMulticam(c.userId, mainVid, await resolveSoundRefs(c.userId, await resolveLutRefs(c.userId, await rerecordFirst(c.userId, withFootage)), c.ai ?? undefined));
   const ready = await withMeasurements(projectId, withIcons(await resolveMulticamAuto(c.userId, mainVid, p0.timeline as unknown as Timeline, synced)));
   const luts = ready.some((e) => e.op === "match_color") ? await lutsFor(c.userId, p0.timeline as unknown as Timeline) : undefined;
   const r = await applyTimelineChange(projectId, ready.length === 1 ? ready[0] : { op: "batch", ops: ready }, actorFor(c, "apply_edits", logged), { luts });
@@ -1023,7 +1025,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async add_audio(c, i) {
     if (i.upload) {
       const u = await soundUploadLink(c.userId, i.name);
-      return { text: `Upload link for one audio file, for 30 minutes: ${u.url}\nSend the file from your code workspace (up to 500 MB):\n  curl -sS -T "<file>" "${u.url}"${i.name ? "" : "\n(add ?name=<a name> to the link to name it; else it is called Audio)"}\nThe reply is JSON with the file's id and length once it is ready (a few seconds; a long file up to a minute). Then apply_edits set_voice{soundId} or add_music{soundId}. ${c.ai === "chatgpt" ? "ChatGPT's code sandbox has no internet, so it cannot send the file: use url (a share link) or driveFileId instead." : `If the workspace cannot reach ${u.host}, the user allows that host in their AI's settings (Claude: Settings > Capabilities, code execution, allowed domains), or use url (a share link) or driveFileId instead.`}`, data: { uploadUrl: u.url } };
+      return { text: `Upload link for one audio file, for 30 minutes: ${u.url}\nSend the file from your code workspace (up to 500 MB):\n  curl -sS -T "<file>" "${u.url}"${i.name ? "" : "\n(add ?name=<a name> to the link to name it; else it is called Audio)"}\nThe reply is JSON with the file's id and length once it is ready (a few seconds; a long file up to a minute). Then apply_edits set_voice{soundId} or add_music{soundId}. The link takes a video or a picture too (one the user attached to the chat): send it to "${u.url}?kind=footage&filename=<its file name>"; it goes into the library and the reply names its videoId for apply_edits add_broll{videoId, start, end}. ${c.ai === "chatgpt" ? "ChatGPT's code sandbox has no internet, so it cannot send the file: use url (a share link) or driveFileId instead." : `If the workspace cannot reach ${u.host}, the user allows that host in their AI's settings (Claude: Settings > Capabilities, code execution, allowed domains), or use url (a share link) or driveFileId instead.`}`, data: { uploadUrl: u.url } };
     }
     if (!i.url && !i.driveFileId) return { text: `Your audio files (newest first): ${await soundsText(c.userId)}. add_audio upload: true, url or driveFileId brings one in.` };
     const s = await soundFromSource(c.userId, { url: i.url, driveFileId: i.driveFileId, name: i.name });

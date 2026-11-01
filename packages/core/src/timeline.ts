@@ -41,7 +41,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
   if (!video) throw notFound("The footage for this edit is gone.");
   const styles = await tx.style.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] } });
   const styleMap = new Map<string, StyleLite>(styles.map((s) => [s.id, { id: s.id, name: s.name, captionLook: s.captionLook as StyleLite["captionLook"], rules: StyleRulesSchema.parse(s.rules) }]));
-  const videos = await tx.video.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
+  const videos = await tx.video.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true, proxyKey: true } });
   const graphics = await tx.graphic.findMany({ where: { OR: [{ ownerId: null }, { ownerId: userId }] }, select: { id: true, name: true, durationSec: true, status: true, error: true, kind: true, paramsSchema: true } });
   const lutRows = await tx.lut.findMany({ where: { userId }, select: { id: true, name: true } });
   const soundRows = await tx.sound.findMany({ where: { userId }, select: { id: true, name: true, seconds: true, status: true } });
@@ -56,7 +56,7 @@ export async function editContext(tx: Prisma.TransactionClient, userId: string, 
     sceneCuts: (video.analysis?.sceneCuts as unknown as number[]) || [],
     duration: video.seconds,
     getStyle: (id) => styleMap.get(id),
-    getVideo: (id) => { const v = videos.find((x) => x.id === id); return v ? { id: v.id, name: v.name, seconds: v.seconds, ready: v.status === "ready" } : undefined; },
+    getVideo: (id) => { const v = videos.find((x) => x.id === id); return v ? { id: v.id, name: v.name, seconds: v.seconds, ready: v.status === "ready", preview: !!v.proxyKey && (v.status === "ready" || v.status === "processing") } : undefined; },
     getGraphic: (id) => {
       const g = graphics.find((x) => x.id === id) || findTemplate(id);
       if (!g) return undefined;

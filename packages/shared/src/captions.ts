@@ -83,7 +83,7 @@ export type TextAnim = (typeof TEXT_ANIMS)[number];
 export const CardSchema = z.object({ color: hex, opacity: unit });
 export type Card = z.infer<typeof CardSchema>;
 /** Phase 2b: a library video played inside a text layer's letters, from `from` seconds into it (looped when shorter). */
-export const TextInsideSchema = z.object({ videoId: z.string().max(80), from: z.number().min(0).max(4 * 3600).default(0) });
+export const TextInsideSchema = z.object({ videoId: z.string().max(2000), from: z.number().min(0).max(4 * 3600).default(0) });
 export type TextInside = z.infer<typeof TextInsideSchema>;
 /** A partial style: what set_caption_style, add_text and set_text take. Nested parts replace as a whole; null removes. */
 export const CaptionStylePatchSchema = CaptionStyleSchema.partial();

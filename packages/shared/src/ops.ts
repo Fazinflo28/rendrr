@@ -66,7 +66,7 @@ const EDIT_OPS = [
   // Model A only (picture and dialogue linked by matching times); in the sequence dialogue always follows its picture.
   z.object({ op: z.literal("set_link"), track: TrackNameSchema, clipId, linked: z.boolean() }),
   z.object({ op: z.literal("add_zoom"), start: t, end: t, scale: z.number().min(1.01).max(2), edit }),
-  z.object({ op: z.literal("add_broll"), videoId: z.string().max(80), start: t, end: t, sourceStart: t.default(0), label: z.string().max(200).optional(), edit }),
+  z.object({ op: z.literal("add_broll"), videoId: z.string().max(2000), start: t, end: t, sourceStart: t.default(0), label: z.string().max(200).optional(), edit }),
   // look: back to that look's preset style. styleId: the captions of that style (its full caption style if it has one).
   z.object({ op: z.literal("set_captions"), on: z.boolean(), look: CaptionLookSchema.optional(), styleId: z.string().max(80).optional() }),
   z.object({ op: z.literal("edit_caption"), lineId: z.string().max(40), text: z.string().max(2000) }),
@@ -102,7 +102,7 @@ const EDIT_OPS = [
   // clip's own picture, 1-100) or pattern (grid, dots, paper); none: black again.
   z.object({ op: z.literal("set_background"), color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "a colour like #FF66AA").optional(),
     gradient: z.object({ from: z.string().regex(/^#[0-9a-fA-F]{6}$/), to: z.string().regex(/^#[0-9a-fA-F]{6}$/), angle: z.number().min(0).max(360).optional() }).optional(),
-    videoId: z.string().min(1).max(80).optional(), blur: z.number().min(1).max(100).optional(), pattern: BackgroundSchema.innerType().shape.pattern, none: z.boolean().optional() }),
+    videoId: z.string().min(1).max(2000).optional(), blur: z.number().min(1).max(100).optional(), pattern: BackgroundSchema.innerType().shape.pattern, none: z.boolean().optional() }),
   z.object({ op: z.literal("rename"), name: z.string().min(1).max(200) }),
   // The project bin (the editor's Media panel): library videos kept with the edit to use, or taken off it.
   z.object({ op: z.literal("add_media"), videoIds: z.array(z.string().min(1).max(80)).min(1).max(50) }),
@@ -114,7 +114,7 @@ const EDIT_OPS = [
   // ---- the sequence ----
   // A clip of any video (default the main footage) into V1: at position `index`, or at edit time `at` (a clip
   // playing there is split), else at the end.
-  z.object({ op: z.literal("add_clip"), videoId: z.string().max(80).optional(), from: t, to: t, index: z.number().int().min(0).max(4000).optional(), at: t.optional(), label: z.string().max(200).optional() }),
+  z.object({ op: z.literal("add_clip"), videoId: z.string().max(2000).optional(), from: t, to: t, index: z.number().int().min(0).max(4000).optional(), at: t.optional(), label: z.string().max(200).optional() }),
   // Reorder: to position `index` (0 = first) or to the cut nearest edit time `at`.
   z.object({ op: z.literal("move_clip"), clipId, index: z.number().int().min(0).max(4000).optional(), at: t.optional() }),
   // J/L cuts. start -0.5: the clip's sound starts 0.5 s before its picture (J); end 0.5: its sound runs 0.5 s into
@@ -223,7 +223,7 @@ const EDIT_OPS = [
   // the angle's second at the main video's second 0 (left out: Rendrr's server syncs it by timecode, else by the sound); rotate and
   // framing: the angle's own. audio: "main" keeps the main video's sound under every angle, "follow" plays each
   // angle's own. remove: angles to take out; off: no multicam (every clip back on the main camera).
-  z.object({ op: z.literal("multicam"), angles: z.array(z.object({ videoId: z.string().min(1).max(80), offset: z.number().min(-86400).max(86400).optional(), name: z.string().max(40).optional(), rotate: RotationSchema.optional(), framing: FramingSchema.nullable().optional(), score: z.number().min(0).max(1).optional(), sync: z.enum(["timecode", "sound"]).optional() })).max(8).optional(),
+  z.object({ op: z.literal("multicam"), angles: z.array(z.object({ videoId: z.string().min(1).max(2000), offset: z.number().min(-86400).max(86400).optional(), name: z.string().max(40).optional(), rotate: RotationSchema.optional(), framing: FramingSchema.nullable().optional(), score: z.number().min(0).max(1).optional(), sync: z.enum(["timecode", "sound"]).optional() })).max(8).optional(),
     audio: z.enum(["main", "follow"]).optional(), remove: z.array(z.string().max(80)).max(8).optional(), off: z.boolean().optional() }),
   // Which camera V1 shows: angle = an angle's videoId or name, or "main". Over clipId / clipIds, a range start..end, or
   // from `at` to the next change of angle (as cutting live in Premiere's multicam monitor). Times: main-footage
@@ -275,7 +275,8 @@ export type StyleLite = { id: string; name: string; captionLook: "clean" | "bold
 /** custom: made with create_graphic (params: its declared params and their defaults). */
 /** failed: why its recording failed (it can still be placed; retry_graphic records it again). */
 export type GraphicLite = { id: string; name: string; durationSec: number; custom?: boolean; params?: Record<string, unknown>; failed?: string };
-export type VideoLite = { id: string; name: string; seconds: number; ready: boolean };
+/** ready: analysed (transcribed); preview: its preview copy is made (enough for b-roll, a background, video in text). */
+export type VideoLite = { id: string; name: string; seconds: number; ready: boolean; preview?: boolean };
 export type EditContext = {
   /** The project's footage (the sequence's main video). */
   videoId?: string;
@@ -478,8 +479,8 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
   const footage = (vid: string) => {
     if (vid === main) return { name: "the footage", seconds: ctx.duration };
     const v = ctx.getVideo?.(vid);
-    if (!v) throw new EditError(`Video "${vid}" is not in your library. Use list_footage for the ids.`);
-    if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
+    if (!v) throw new EditError(`Video "${vid}" is not in your library. Use list_footage for the ids (a Google Drive file's id or link, or a link to the file, is brought in by itself).`);
+    if (!v.ready && !v.preview) throw new EditError(`"${v.name}" is not ready yet. Wait until its preview is made.`);
     return { name: `"${v.name}"`, seconds: v.seconds };
   };
   const inFootage = (vid: string, a: number, b: number) => {
@@ -686,8 +687,8 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
     }
     case "add_broll": {
       const v = ctx.getVideo?.(op.videoId);
-      if (!v) throw new EditError("That b-roll footage is not in your library.");
-      if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
+      if (!v) throw new EditError(`That b-roll footage ("${op.videoId.slice(0, 80)}") is not in your library: send a library videoId (list_footage), a Google Drive file's id or link (Rendrr brings it in when the user's Drive is connected), or a link to the file (shared as anyone with the link).`);
+      if (!v.ready && !v.preview) throw new EditError(`"${v.name}" is not ready yet. Wait until its preview is made.`);
       if (!(op.end > op.start)) throw new EditError("B-roll must end after it starts.");
       const s = toEdit(op.start, op.edit), e = toEdit(op.end, op.edit);
       if (e - s < 0.05) throw new EditError("That range is not in the edit (its footage is cut).");
@@ -900,7 +901,7 @@ function applyLeaf(snap: Snapshot, op: Exclude<Op, { op: "batch" }>, ctx: EditCo
       if (op.videoId) {
         const v = ctx.getVideo?.(op.videoId);
         if (!v) throw new EditError("That background video is not in your library.");
-        if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
+        if (!v.ready && !v.preview) throw new EditError(`"${v.name}" is not ready yet. Wait until its preview is made.`);
       }
       const bg = BackgroundSchema.parse({ ...(op.color ? { color: op.color.toUpperCase() } : {}), ...(op.gradient ? { gradient: op.gradient } : {}), ...(op.videoId ? { videoId: op.videoId } : {}), ...(op.blur ? { blur: op.blur } : {}), ...(op.pattern ? { pattern: { ...op.pattern, color: op.pattern.color.toUpperCase(), ink: op.pattern.ink.toUpperCase() } } : {}) });
       return { snap: { ...snap, timeline: { ...tl, background: bg } }, summary: `background: ${backgroundText(bg, (id) => ctx.getVideo?.(id)?.name)} (it shows where V1 is framed smaller, cropped, rounded, keyed, masked or has its background removed)` };
@@ -1785,7 +1786,7 @@ function textInside(op: { inside?: TextInside | null; cutout?: boolean; card?: C
   if (op.inside) {
     const v = ctx.getVideo?.(op.inside.videoId);
     if (!v) throw new EditError("That video is not in your library (inside takes a library video's id: list_footage).");
-    if (!v.ready) throw new EditError(`"${v.name}" is not ready yet. Wait until it finishes processing.`);
+    if (!v.ready && !v.preview) throw new EditError(`"${v.name}" is not ready yet. Wait until its preview is made.`);
     if (inside!.from >= v.seconds) throw new EditError(`"${v.name}" is only ${v.seconds.toFixed(1)}s long: inside.from must be under that.`);
     said = `; ${v.name} plays inside the letters${inside!.from ? ` from ${+inside!.from.toFixed(3)}s` : ""} (looped when shorter than the text)`;
   } else if (op.inside === null && cur.inside) said = "; no video inside the letters";
