@@ -23,6 +23,8 @@ describe("thread watchdog", () => {
     assert.equal(isStray(proc(54, "chromium", process.pid)), false, "a browser the worker runs");
     assert.equal(isStray(proc(55, "chromium", 1, 1, "Z")), false, "a zombie cannot be stopped, only collected");
     assert.equal(isStray(proc(56, "node", 1)), false, "npx and the worker itself are left alone");
+    assert.equal(isStray(proc(57, "chrome_crashpad", 1)), false, "a live browser's crash handler always runs under process 1");
+    assert.equal(isStray(proc(58, "python3.12", 1)), true);
     const r = threadReport([proc(60, "chromium", 1, 40), proc(61, "chromium", process.pid, 30), proc(62, "ffmpeg", process.pid, 12), proc(63, "x", 1, 1, "Z"), proc(process.pid, "node", 1, 11)]);
     assert.deepEqual([r.zombies, r.strays.map((p) => p.pid), r.browserThreads, r.ffmpegThreads, r.workerThreads], [1, [60], 70, 12, 11]);
   });

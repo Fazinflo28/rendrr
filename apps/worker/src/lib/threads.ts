@@ -54,8 +54,9 @@ export function processes(): Proc[] {
 }
 
 /** The programs the worker starts for a job. One whose parent is gone (handed to process 1) is a stray: nothing will
- *  read its output or wait for it. */
-const JOB_PROGRAM = /^(chrom|headless_shell|ffmpeg|ffprobe|python)/i;
+ *  read its output or wait for it. Chromium's crash handler (chrome_crashpad) is not one: it always runs under process
+ *  1, beside its live browser, and ends with it. */
+const JOB_PROGRAM = /^(chrome|chromium|chromium-browse|headless_shell|ffmpeg|ffprobe|python[\d.]*)$/i;
 export const isStray = (p: Proc, self = process.pid) => p.ppid === 1 && p.pid !== self && p.state !== "Z" && JOB_PROGRAM.test(p.comm);
 
 /** What holds the budget: zombies, strays, browsers and FFmpeg (processes and their threads). */
