@@ -1,6 +1,6 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import { ensureBucketCors, env, redis, safeEqual, toFriendly } from "@rendrr/core";
+import { ensureBucketCors, env, internalSecrets, redis, safeEqual, toFriendly } from "@rendrr/core";
 import { DRIVE_SWEEP_AGE_MS, syncStaleDriveFolders } from "./services/driveLibrary";
 import { prisma } from "@rendrr/db";
 import Fastify from "fastify";
@@ -63,12 +63,12 @@ export async function buildServer() {
     const real = req.headers["x-real-ip"];
     return onRailway && typeof real === "string" && real ? real : req.ip;
   };
-  const internalSecret = e.INTERNAL_API_SECRET;
+  const internalKeys = internalSecrets();
   await app.register(rateLimit, {
     global: true, max: 600, timeWindow: "1 minute",
     keyGenerator: (req) => {
       const s = req.headers["x-internal-secret"];
-      if (internalSecret && typeof s === "string" && safeEqual(s, internalSecret)) return "internal:" + String(req.headers["x-rendrr-clerk-id"] || "");
+      if (typeof s === "string" && internalKeys.some((x) => safeEqual(s, x))) return "internal:" + String(req.headers["x-rendrr-clerk-id"] || "");
       return clientIp(req);
     },
     errorResponseBuilder: () => ({ statusCode: 429, error: { message: "Too many requests. Wait a minute and try again.", code: "rate-limit" } }),

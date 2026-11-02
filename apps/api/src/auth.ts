@@ -1,5 +1,5 @@
 import { createClerkClient, verifyToken } from "@clerk/backend";
-import { env, safeEqual, unauthorized, AppError } from "@rendrr/core";
+import { env, internalSecrets, safeEqual, unauthorized, AppError } from "@rendrr/core";
 import { prisma, type User } from "@rendrr/db";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
@@ -71,8 +71,7 @@ async function sameEmailAccount(email: string): Promise<ReqUser | null> {
 export async function authenticate(req: FastifyRequest, _reply: FastifyReply) {
   const internal = req.headers["x-internal-secret"];
   if (typeof internal === "string") {
-    const secret = env().INTERNAL_API_SECRET;
-    if (!secret || !safeEqual(internal, secret)) throw unauthorized();
+    if (!internalSecrets().some((s) => safeEqual(internal, s))) throw unauthorized();
     const clerkId = String(req.headers["x-rendrr-clerk-id"] || "");
     if (!clerkId) throw unauthorized();
     req.user = await ensureUser(clerkId);

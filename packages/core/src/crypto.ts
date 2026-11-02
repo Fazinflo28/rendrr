@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync, timingSafeEqual, createHash } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync, timingSafeEqual, createHash } from "node:crypto";
 import { env, isProd } from "./env";
 
 function key(): Buffer {
@@ -50,4 +50,16 @@ export function token(len = 10): string {
 export function safeEqual(a: string, b: string): boolean {
   const x = Buffer.from(a), y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
+}
+
+/**
+ * The secret the MCP server sends the API with each tool call (x-internal-secret). INTERNAL_API_SECRET when it is set;
+ * else one worked out from the Clerk secret key, which both services already hold, so no other secret has to be copied
+ * between them. apps/mcp/src/secret.ts works it out the same way (a test keeps the two equal).
+ */
+export const internalSecretFromClerk = (clerkSecret: string) => createHmac("sha256", clerkSecret).update("rendrr-internal-api-v1").digest("hex");
+/** Every secret the API accepts from the MCP server: the one set, and the one from the Clerk key. */
+export function internalSecrets(): string[] {
+  const e = env();
+  return [e.INTERNAL_API_SECRET, e.CLERK_SECRET_KEY ? internalSecretFromClerk(e.CLERK_SECRET_KEY) : ""].filter((x): x is string => !!x);
 }

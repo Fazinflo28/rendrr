@@ -8,11 +8,12 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { MCP_RATE_LIMIT_PER_MIN } from "@rendrr/shared";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { buildServer, type Who } from "./build";
+import { internalSecret } from "./secret";
 
 const API = (process.env.API_INTERNAL_URL || process.env.PUBLIC_API_URL || "http://localhost:4000").replace(/\/$/, "");
-const SECRET = process.env.INTERNAL_API_SECRET || "";
+const SECRET = internalSecret();
 const WEB = (process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "");
-if (!SECRET) console.warn("[mcp] INTERNAL_API_SECRET is not set: tool calls will be refused by the API");
+if (!SECRET) console.warn("[mcp] neither INTERNAL_API_SECRET nor CLERK_SECRET_KEY is set: tool calls will be refused by the API");
 if (!process.env.CLERK_SECRET_KEY || !process.env.CLERK_PUBLISHABLE_KEY) console.warn("[mcp] CLERK keys are not set: logins will fail");
 
 // ---------------- which AI is calling ----------------

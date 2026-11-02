@@ -1,6 +1,7 @@
 // The MCP server one request gets: the tools (forwarded to the API as the user), the guide, the editing skill, and the
 // Rendrr app in the chat (an MCP App: open_projects shows it, its own tools are hidden from the AI).
 import { createHash } from "node:crypto";
+import { internalSecret } from "./secret";
 import { readFileSync } from "node:fs";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { APP_MIME_TYPE, APP_RESOURCE_URI, APP_TOOLS, EDITING_SKILL, HOW_TO_EDIT, MCP_INSTRUCTIONS, MCP_TOOLS, type ToolDef } from "@rendrr/shared";
@@ -9,7 +10,7 @@ import { z } from "zod";
 export type Who = { clerkId: string; kind: "claude" | "chatgpt"; name: string };
 
 const API = () => (process.env.API_INTERNAL_URL || process.env.PUBLIC_API_URL || "http://localhost:4000").replace(/\/$/, "");
-const SECRET = () => process.env.INTERNAL_API_SECRET || "";
+const SECRET = internalSecret;
 
 /** The app's page: one file, no network of its own (it plays the signed preview links the API gives it). */
 export const APP_HTML = readFileSync(new URL("./app/projects.html", import.meta.url), "utf8");
