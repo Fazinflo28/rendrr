@@ -21,6 +21,12 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Claude card opened and closed at once (2 November)
+
+- Claude now speaks MCP protocol version `2026-07-28`; the MCP library we use (1.32.1) knows versions up to `2025-11-25` and refused, with 400, every call whose header named the newer one, before any tool ran. The connector's logs showed these 400s each time the card was opened.
+- The connector now answers such calls as the newest version it knows (`apps/mcp/src/protocol.ts`), and logs any request it refuses with its method and version. Confirmed live: the log names `2026-07-28` and the calls succeed.
+- Test: `apps/mcp/test/protocol.test.ts` (the library alone refuses an unknown version; with the fix it answers).
+
 ## Claude card on phones: the comments scroll (2 November)
 
 - Full screen in Claude's phone app the card did not scroll, and its top sat under Claude's header (the safe area Claude gives counts only the phone's notch and home bar; its header and chat box lie over the card).
