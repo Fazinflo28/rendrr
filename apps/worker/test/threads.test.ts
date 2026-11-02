@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { describe, it } from "node:test";
-import { isStray, makeWatchdog, processes, stopStrays, threadReport, waitForThreads, type Proc } from "../src/lib/threads";
+import { fitFfmpegThreads, isStray, makeWatchdog, processes, stopStrays, threadReport, waitForThreads, type Proc } from "../src/lib/threads";
 
 const proc = (pid: number, comm: string, ppid: number, threads = 1, state = "S"): Proc => ({ pid, comm, ppid, threads, state });
 
@@ -93,6 +93,19 @@ describe("thread watchdog", () => {
     assert.equal(await waitForThreads(150, 500, undefined, use, 0), true, "a smaller one fits beside it");
     await new Promise((r) => setTimeout(r, 900)); // the first one's hold ends (its threads now count in the container's use)
     assert.equal(await waitForThreads(400, 500, undefined, use, 0), true);
+  });
+
+  it("FFmpeg's threads fit what is free: all of them when there is room, fewer filter threads when not, one each at worst", () => {
+    const graph = Array.from({ length: 70 }, (_, i) => `[v${i}]scale=1080:1920[s${i}]`).join(";"); // a graded graph: 70 scalers
+    const args = ["-i", "a.mp4", "-i", "b.mp4", "-i", "g.webm", "-filter_complex_script", "x"];
+    const roomy = fitFfmpegThreads({ graph, args, ft: 4, dec: 12, cpus: 6, free: 900 });
+    assert.deepEqual([roomy.ft, roomy.dec, roomy.scalers, roomy.inputs], [4, 12, 70, 3]);
+    assert.equal(roomy.need, 70 * 5 + 3 * 3 + 12 + 18 + 60);
+    const tight = fitFfmpegThreads({ graph, args, ft: 4, dec: 12, cpus: 6, free: 400 });
+    assert.ok(tight.ft < 4 && tight.ft >= 1 && tight.need <= 350, `fewer filter threads (${tight.ft}, about ${tight.need})`);
+    const full = fitFfmpegThreads({ graph, args, ft: 4, dec: 12, cpus: 6, free: 120 });
+    assert.deepEqual([full.ft, full.dec], [1, 1], "nothing fits: one each (the caller waits for room)");
+    assert.deepEqual(fitFfmpegThreads({ graph, args, ft: 4, dec: 12, cpus: 6, free: null }).ft, 4, "no limit: as asked");
   });
 
   it("stops strays at each look and says so", () => {

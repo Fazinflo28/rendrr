@@ -45,6 +45,25 @@ export async function waitForThreads(need: number, ms: number, signal?: AbortSig
   }
 }
 
+/**
+ * FFmpeg's threads for a render, fitted to what is free: every scaler in the graph starts `ft` threads (plus its own),
+ * each input a demuxer and a decoder, the decoders share `dec`, the encoder and FFmpeg's own threads come on top. The
+ * largest filter-thread count that fits is kept (the graph is the same text whatever it is); when even one does not
+ * fit, one each, and the caller waits for that much. Starting big and retrying at one thread after running out made
+ * every render slow, and some went over their time limit.
+ */
+export function fitFfmpegThreads(o: { graph: string; args: string[]; ft: number; dec: number; cpus: number; free: number | null }) {
+  const scalers = (o.graph.match(/\bz?scale=/g) || []).length;
+  const inputs = o.args.filter((a) => a === "-i").length;
+  const need = (ft: number, dec: number) => scalers * (ft + 1) + inputs * 3 + dec + 3 * o.cpus + 60;
+  const pick = (ft: number, dec: number) => ({ ft, dec, need: need(ft, dec), scalers, inputs });
+  if (o.free == null) return pick(o.ft, o.dec);
+  const room = o.free - 50;
+  for (let ft = o.ft; ft >= 1; ft--) if (need(ft, o.dec) <= room) return pick(ft, o.dec);
+  const fewer = Math.max(1, Math.min(o.dec, inputs));
+  return pick(1, need(1, fewer) <= room ? fewer : 1);
+}
+
 /** Every process the container can see, from /proc (empty where there is no /proc). */
 export function processes(): Proc[] {
   let ids: string[] = [];

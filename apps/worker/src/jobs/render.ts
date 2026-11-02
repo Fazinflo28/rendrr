@@ -1,5 +1,5 @@
 import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
-import { waitForThreads } from "../lib/threads";
+import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
 import { formatFile, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
@@ -14,7 +14,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { COVER_SIZE, cpuBudget, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, windowBudget } from "../lib/ffmpeg";
 import { cachedAsset, cachedCopy } from "../lib/assets";
-import { renderGraphicClip } from "../lib/graphics";
+import { closeIdleBrowsers, renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
 import { writeMoving } from "../lib/moving";
 import { morphFaces } from "../lib/morph";
@@ -316,6 +316,7 @@ export async function renderJob(ctx: Ctx) {
       const total = items.reduce((acc, it) => acc + weightOf(it), 0);
       const done: SampleDone[] = [], keys: string[] = [];
       let spent = 0, bytes = 0;
+      await closeIdleBrowsers().catch(() => {}); // the browsers kept from recording its graphics are not needed now
       est.encStart = Date.now();
       try {
       for (const [k, it] of items.entries()) {
@@ -371,8 +372,15 @@ export async function renderJob(ctx: Ctx) {
     else if (fmt === "audio") files.output = join(ctx.dir, "out.m4a");
     else if (fmt === "wav") files.output = join(ctx.dir, "out.wav");
     const argsFor = (ft: number, decode = cpus * 2, pictureAs?: "black" | "white") => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, ...(fmt === "overlay" ? { pictureAs: pictureAs ?? "black" } : {}) });
-    // The graph decides how many filter threads it may have (it is the same text whatever that number).
-    const { args, filterGraph } = argsFor(filterThreads(argsFor(4).filterGraph));
+    // The browsers kept from recording this edit's graphics (about 80 threads each) are not needed for the encode.
+    await closeIdleBrowsers().catch(() => {});
+    // The graph decides how many filter threads it may have (it is the same text whatever that number); then what is
+    // free in the container decides how many it gets.
+    const ft0 = filterThreads(argsFor(4).filterGraph), atFull = argsFor(ft0);
+    const use = threadUse(), free = use.current != null && use.max != null ? use.max - use.current : null;
+    const fit = fitFfmpegThreads({ graph: atFull.filterGraph, args: atFull.args, ft: ft0, dec: cpus * 2, cpus, free });
+    console.log(`[render] ${r.id}: ${fit.scalers} scalers, ${fit.inputs} inputs, ${free ?? "?"} threads free: filter threads ${fit.ft} of ${ft0}, decoders ${fit.dec} (about ${fit.need} threads)`);
+    const { args, filterGraph } = fit.ft === ft0 && fit.dec === cpus * 2 ? atFull : argsFor(fit.ft, fit.dec);
     const graphPath = join(ctx.dir, "graph.txt");
     await writeFile(graphPath, filterGraph);
 
@@ -389,7 +397,7 @@ export async function renderJob(ctx: Ctx) {
     est.encStart = Date.now();
     try {
       // A nearly full container (other jobs hold its threads): wait up to a minute for room; still full, start small.
-      const room = await waitForThreads(400, 60_000, signal);
+      const room = await waitForThreads(fit.need, 60_000, signal);
       try {
         await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress });
       } catch (e) {
