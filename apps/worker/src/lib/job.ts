@@ -7,6 +7,10 @@ import { JobError } from "./ffmpeg";
 
 export type Ctx = { signal: AbortSignal; dir: string; job: Job; isLastAttempt: boolean };
 
+/** Jobs running in this worker now (the thread watchdog restarts the worker only when none is). */
+let running = 0;
+export const activeJobs = () => running;
+
 /**
  * Wraps every job: a temp folder that is always deleted, a hard timeout that kills child processes,
  * and a log row for start / finish / fail with the duration. Friendly errors that retrying cannot fix
@@ -22,7 +26,9 @@ export function guarded<T>(queue: string, timeoutMs: number | ((job: Job) => Pro
     // the job fails on time, the temp folder is removed and the queue moves on.
     let timer: NodeJS.Timeout | undefined;
     const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; ac.abort(); reject(new Error(`${queue} job over its ${Math.round(limit / 1000)} s limit`)); }, limit); });
-    const dir = await mkdtemp(join(tmpdir(), `rendrr-${queue}-`));
+    running++;
+    let dir = "";
+    try { dir = await mkdtemp(join(tmpdir(), `rendrr-${queue}-`)); } catch (e) { running--; clearTimeout(timer); throw e; }
     const userId = userIdOf ? await userIdOf(job).catch(() => null) : null;
     const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
     await logJob({ queue, jobId: String(job.id), name: job.name, event: "start", userId, meta: { attempt: job.attemptsMade + 1 } });
@@ -44,6 +50,7 @@ export function guarded<T>(queue: string, timeoutMs: number | ((job: Job) => Pro
       }
       throw e;
     } finally {
+      running--;
       clearTimeout(timer);
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }

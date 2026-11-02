@@ -49,7 +49,12 @@ COPY apps/worker apps/worker
 COPY apps/web/public/fonts apps/web/public/fonts
 RUN mkdir -p /usr/share/fonts/truetype/rendrr-captions && cp apps/web/public/fonts/*.ttf /usr/share/fonts/truetype/rendrr-captions/ && fc-cache -f
 RUN cd packages/db && npx prisma generate
+# tini as process 1: it collects the processes a killed or crashed browser leaves behind. Without it they piled up as
+# zombies (process 1 was npx, which collects nobody), each holding one of the container's 1000 threads, until no
+# graphic or FFmpeg could start ("pthread_create() failed") for hours.
+RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production PORT=8080
 EXPOSE 8080
 WORKDIR /app/apps/worker
+ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
 CMD ["npx", "tsx", "src/index.ts"]

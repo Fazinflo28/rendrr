@@ -21,6 +21,13 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Renders failing with "ran out of threads" (2 November)
+
+- The worker hit its 1000-thread cap and stayed there for hours: every graphic recording and loudness pass failed with `pthread_create() failed`.
+- Cause: the worker ran as `npx tsx` as process 1. A recording browser that was killed or crashed left its child processes behind; process 1 never collected them, so they piled up as zombies or kept running.
+- Fix: `tini` is process 1 now (Dockerfile ENTRYPOINT) and collects them. A watchdog (`apps/worker/src/lib/threads.ts`) looks every minute: it stops stray browsers, FFmpeg and Python whose parent is gone, logs what holds the threads when over half are used, and restarts the worker if they stay used up (over 90% for 3 minutes with no job running, or over 97% for 10 minutes).
+- Tested in `apps/worker/test/threads.test.ts`.
+
 ## The Rendrr card in Claude: projects first, then their videos (2 November)
 
 - The card used to list every edit of every project in one grid. Now it opens on your projects (one card each: the newest video's picture, how many videos, open comments, rendering).

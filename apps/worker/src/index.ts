@@ -24,7 +24,8 @@ import { proxyJob } from "./jobs/proxy";
 import { renderFailed, renderJob } from "./jobs/render";
 import { cpuBudget, filterThreads } from "./lib/ffmpeg";
 import { BROWSER_SLOTS, closeIdleBrowsers, GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
-import { guarded } from "./lib/job";
+import { activeJobs, guarded } from "./lib/job";
+import { makeWatchdog, stopStrays, threadReport, threadUse } from "./lib/threads";
 // Object tracking runs in the frames queue but takes longer than frames (up to a minute of footage, the tracker's own
 // 120 s limit inside it); the API waits 150 s for it.
 const TRACK_TIMEOUT_MS = 140_000;
@@ -114,6 +115,17 @@ createServer(async (_req, res) => {
   console.log(`[worker] up, health on :${port}; cpus ${availableParallelism()}, pids.max ${pids}, filter threads ${filterThreads()}, graphics browsers ${GRAPHIC_WORKERS} (${BROWSER_SLOTS} in all), ${align}`);
 });
 
-const stop = async () => { await Promise.all(workers.map((w) => w.close())); await closeIdleBrowsers().catch(() => {}); await prisma.$disconnect(); process.exit(0); };
-process.on("SIGTERM", stop);
-process.on("SIGINT", stop);
+// The thread watchdog (lib/threads.ts): once a minute, stray browsers and FFmpeg whose parent is gone are stopped,
+// and a worker whose threads stay used up restarts (Railway starts it again at once: restart policy "always").
+{ const r = threadReport(); const n = stopStrays(r.strays); const u = threadUse(); console.log(`[threads] at start: ${u.current ?? "?"} of ${u.max ?? "?"} in use, ${r.zombies} zombies${n ? `, stopped ${n} strays` : ""}`); }
+const watch = makeWatchdog({ activeJobs, restart: (why) => { console.error(`[threads] restarting the worker: ${why}`); void stop(1); } });
+setInterval(() => { try { watch(); } catch (e) { console.error("[threads] watchdog error:", (e as Error).message); } }, 60_000).unref();
+
+// A restart for used-up threads waits at most 15 s for jobs (they fail anyway: nothing can start a thread).
+const stop = async (code = 0) => {
+  const closing = Promise.all(workers.map((w) => w.close()));
+  await (code ? Promise.race([closing, new Promise((r) => setTimeout(r, 15_000))]) : closing);
+  await closeIdleBrowsers().catch(() => {}); await prisma.$disconnect().catch(() => {}); process.exit(code);
+};
+process.on("SIGTERM", () => void stop());
+process.on("SIGINT", () => void stop());
