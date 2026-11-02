@@ -533,8 +533,8 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     if (state.view === "list") render();
   }
   // Open a project (its videos), or go back to the list of projects.
-  function openFolder(f) { stopPolling(); state.folder = { id: f.id, name: f.name }; state.query = ""; state.page = null; state.view = "list"; state.project = null; state.pendingProject = null; render(); loadList(); }
-  function goHome() { stopPolling(); state.folder = null; state.query = ""; state.page = null; state.view = "list"; state.project = null; state.pendingProject = null; render(); loadList(); }
+  function openFolder(f) { stopPolling(); state.share = null; state.folder = { id: f.id, name: f.name }; state.query = ""; state.page = null; state.view = "list"; state.project = null; state.pendingProject = null; render(); loadList(); }
+  function goHome() { stopPolling(); state.share = null; state.folder = null; state.query = ""; state.page = null; state.view = "list"; state.project = null; state.pendingProject = null; render(); loadList(); }
 
   function showProject(view, picked) {
     const prevRender = state.project && state.project.preview && state.project.preview.renderId;
@@ -561,7 +561,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
 
   async function openProject(id) {
     remember(id);
-    state.view = "project"; state.project = null; state.pendingProject = id; render();
+    state.view = "project"; state.project = null; state.share = null; state.pendingProject = id; render();
     try { const v = await callTool("app_get_project", { projectId: id }); if (v && state.pendingProject === id) showProject(v); }
     catch (e) { state.err = e.message; state.view = "list"; render(); if (!state.page && !state.folders) loadList(); }
   }
@@ -747,9 +747,12 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         home ? null : iconBtn("back", "All projects", goHome, "ghost"),
         h("div", { class: "grow title" }, h("h1", { id: "list-title" }, home ? "Projects" : f.name), h("div", { class: "muted small" }, sub)),
         state.webUrl ? h("button", { class: "btn ghost", onClick: () => openLink(state.webUrl + (home ? "/projects" : "/projects/" + f.id)) }, h("span", { class: "lg" }, "Open Rendrr"), h("span", { class: "sm" }, "Rendrr ↗")) : null,
+        // A project open: one link to the whole project (every video in it, and the ones added later).
+        home ? null : iconBtn("share", "Share this project: one link to watch all its videos, no account needed", () => toggleFolderShare(f)),
         fsButton()),
       search);
     const errNote = state.err ? h("div", { class: "note err" }, state.err) : null;
+    const shared = !home && state.share ? [h("div", { class: "shade", onClick: () => { state.share = null; render(); } }), shareView(null)] : [];
     // The projects: one card each, the newest video's picture on it.
     if (home && !searching && (fs || !pg)) {
       if (!fs) return h("div", {}, top, errNote || h("div", { class: "skel" }));
@@ -768,7 +771,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
       });
       return h("div", {}, top, errNote, cards.length ? h("div", { class: "grid" }, cards) : h("div", { class: "empty" }, "No projects yet. Ask your AI to make an edit from your footage."));
     }
-    if (!pg) return h("div", {}, top, errNote || h("div", { class: "skel" }));
+    if (!pg) return h("div", {}, top, ...shared, errNote || h("div", { class: "skel" }));
     // The videos of the project open (or, searching from the projects, every video that matches).
     const cards = pg.projects.map((p) => {
       const chips = [
@@ -785,7 +788,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         h("div", { class: "body" }, h("div", { class: "muted small" }, "Updated " + ago(p.updated) + " · v" + p.version), h("div", { class: "chips" }, chips)));
     });
     const none = searching ? "No videos match \"" + state.query + "\"." : home ? "No edits yet. Ask your AI to make one from your footage." : "No videos in this project yet. Ask your AI to make one.";
-    return h("div", {}, top, errNote,
+    return h("div", {}, top, ...shared, errNote,
       pg.projects.length ? h("div", { class: "grid" }, cards) : h("div", { class: "empty" }, none),
       pg.projects.length < pg.total ? h("button", { class: "btn more", disabled: state.loadingMore, onClick: () => { state.loadingMore = true; render(); loadList(true); } }, state.loadingMore ? "Loading…" : "Show more") : null);
   }
@@ -1054,6 +1057,15 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     } catch (e) { state.share = { error: e.message }; }
     render();
   }
+  async function toggleFolderShare(f) {
+    if (state.share) { state.share = null; render(); return; }
+    state.share = { loading: true }; render();
+    try {
+      const d = await callTool("app_share_link", { folderId: f.id });
+      state.share = d || { error: "No link came back." };
+    } catch (e) { state.share = { error: e.message }; }
+    render();
+  }
   async function copyText(text, input) {
     // The clipboard only where the host allows it (else the browser logs an error), then the old way.
     const pol = document.permissionsPolicy || document.featurePolicy;
@@ -1067,8 +1079,10 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     if (sh.error) return h("div", { class: "share" }, h("span", { class: "note err" }, sh.error));
     const input = h("input", { value: sh.url, readonly: true, "aria-label": "Review link", onFocus: (e) => e.target.select() });
     return h("div", { class: "share" },
-      h("div", { class: "row" }, h("b", { class: "grow" }, "Share v" + sh.version), h("button", { class: "act", "aria-label": "Close", onClick: () => { state.share = null; render(); } }, "×")),
-      h("span", { class: "muted small" }, "Anyone with this link can watch this version and leave comments, no account needed. Their comments come back here." + (sh.expires ? " It works until " + new Date(sh.expires).toLocaleDateString() + "." : "")),
+      h("div", { class: "row" }, h("b", { class: "grow" }, sh.folder ? "Share " + sh.folder.name : "Share v" + sh.version), h("button", { class: "act", "aria-label": "Close", onClick: () => { state.share = null; render(); } }, "×")),
+      h("span", { class: "muted small" }, (sh.folder
+        ? "Anyone with this link can watch every video in this project (" + sh.edits + " now, and the ones you add later), each at its newest version, and leave comments, no account needed. Their comments come back here."
+        : "Anyone with this link can watch this version and leave comments, no account needed. Their comments come back here.") + (sh.expires ? " It works until " + new Date(sh.expires).toLocaleDateString() + "." : "")),
       input,
       h("div", { class: "row" },
         h("button", { class: "btn primary", onClick: async () => { toast((await copyText(sh.url, input)) ? "Link copied." : "Select the link and copy it."); } }, "Copy link"),

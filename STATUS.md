@@ -21,6 +21,13 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Share a whole project with one link (2 November)
+
+- One link to a project folder: anyone with it watches every video in it, each at its newest version, and leaves comments, no account needed. Videos added to the project later show up on the same link. Comments come back to each video.
+- Web app: the project's Share button (and Share folder in the projects list), as before. The review page of a shared project now shows its videos as cards (picture, length, name) in a row that scrolls sideways; tap one to watch it. The header says how many videos; the version switch is gone there (each video is at its newest version).
+- Claude: `create_review_link` takes `folderId` (from list_folders) for the whole project, or `projectId` for one edit. In the Rendrr card, an open project has a Share button: the project's link (the same one each time), with how many videos it has.
+- Tests: `apps/api/test/claude-app.test.ts` (folder link from Claude and from the card, the same link again, someone else's project refused), `apps/mcp/test/app-browser.mjs` (the card's Share on a project), `apps/web/demo/review-folder.mjs` (the shared project page on desktop and phone).
+
 ## Claude card opened and closed at once (2 November)
 
 - Claude now speaks MCP protocol version `2026-07-28`; the MCP library we use (1.32.1) knows versions up to `2025-11-25` and refused, with 400, every call whose header named the newer one, before any tool ran. The connector's logs showed these 400s each time the card was opened.

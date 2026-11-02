@@ -1203,8 +1203,14 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return renderOut(r.id);
   },
   async create_review_link(c, i) {
-    const r = await createReviewLink(c.userId, { projectId: i.projectId, password: i.password, expiresDays: i.expiresDays, allowDownload: i.allowDownload });
-    return { text: `Review link: ${WEB()}/review/${r.token}${r.password ? `\nPassword: ${r.password} (share it separately)` : ""}\nExpires ${r.expires}. ${r.allowDownload ? "Download on." : "No download."} If this version has no render yet, a preview is being made for the client now.` };
+    if (!i.projectId === !i.folderId) throw new AppError("Give projectId (one edit) or folderId (a whole project folder, from list_folders), not both.", 400);
+    const r = await createReviewLink(c.userId, { projectId: i.projectId ?? null, folderId: i.folderId ?? null, password: i.password, expiresDays: i.expiresDays, allowDownload: i.allowDownload });
+    const tail = `${r.password ? `\nPassword: ${r.password} (share it separately)` : ""}\nExpires ${r.expires}. ${r.allowDownload ? "Download on." : "No download."}`;
+    if (i.folderId) {
+      const n = await prisma.project.count({ where: { folderId: i.folderId, deletedAt: null } });
+      return { text: `Review link for the whole project (${n} edit${n === 1 ? "" : "s"}): ${WEB()}/review/${r.token}${tail} Each edit shows its newest version; edits added to the project later show up on the same link. An edit with no render of its newest version gets a preview now.` };
+    }
+    return { text: `Review link: ${WEB()}/review/${r.token}${tail} If this version has no render yet, a preview is being made for the client now.` };
   },
   async resolve_comment(c, i) {
     const cm = await prisma.reviewComment.findUnique({ where: { id: i.commentId }, include: { review: true } });

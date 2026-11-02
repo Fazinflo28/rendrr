@@ -1,7 +1,7 @@
 // The Rendrr app inside the chat (an MCP App): every edit, each one's latest preview with its render progress, and its
 // comments. The app calls these through the host and the MCP server, as the signed-in user; comments land in the same
 // tables as the editor's (the Comments tab and the markers show them, and get_comments reads them for the AI).
-import { applyTimelineChange, notFound, signGet } from "@rendrr/core";
+import { AppError, applyTimelineChange, notFound, signGet } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import type { AppComment, AppFolderCard, AppOpen, AppProjectCard, AppProjectsPage, AppProjectView } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
@@ -183,8 +183,19 @@ export const APP_HANDLERS: Record<string, (c: ToolCtx, input: any) => Promise<To
   },
   // Share: the review link for the version being watched (one made before and still good, else a new one).
   async app_share_link(c, i) {
-    const p = await getOwnedProject(c.userId, i.projectId);
     const now = new Date();
+    // A whole project folder: its link (made before and still good, else a new one) shows every edit in it.
+    if (i.folderId) {
+      const f = await prisma.folder.findUnique({ where: { id: i.folderId } });
+      if (!f || f.userId !== c.userId) throw notFound("That project is gone, or is not yours.");
+      const had = await prisma.review.findFirst({ where: { userId: c.userId, folderId: f.id, passwordHash: null, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }, orderBy: { createdAt: "desc" } });
+      const r = had ?? (await prisma.review.findUniqueOrThrow({ where: { token: (await createReviewLink(c.userId, { folderId: f.id })).token } }));
+      const edits = await prisma.project.count({ where: { folderId: f.id, deletedAt: null } });
+      const url = `${WEB() ?? ""}/review/${r.token}`;
+      return { text: `Review link for ${f.name} (${edits} edits): ${url}`, data: { url, folder: { id: f.id, name: f.name }, edits, created: !had, expires: r.expiresAt ? r.expiresAt.getTime() : null, allowDownload: r.allowDownload } };
+    }
+    if (!i.projectId) throw new AppError("Pick an edit or a project to share.", 400);
+    const p = await getOwnedProject(c.userId, i.projectId);
     const had = await prisma.review.findFirst({ where: { userId: c.userId, projectId: p.id, passwordHash: null, ...(i.version ? { version: i.version } : {}), OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }, orderBy: { createdAt: "desc" } });
     const r = had ?? (await prisma.review.findUniqueOrThrow({ where: { token: (await createReviewLink(c.userId, { projectId: p.id, ...(i.version ? { version: i.version } : {}) })).token } }));
     const url = `${WEB() ?? ""}/review/${r.token}`;

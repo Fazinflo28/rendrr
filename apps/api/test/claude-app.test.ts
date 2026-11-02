@@ -290,6 +290,29 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
     for (const j of await queue("graphic").getJobs(["waiting", "delayed"])) if ((j.data as { graphicId?: string }).graphicId === g.id) await j.remove().catch(() => {});
   });
 
+  it("a whole project folder is shared with one link: create_review_link folderId, and the app's Share on a project", async () => {
+    const folderId = (await prisma.project.findUniqueOrThrow({ where: { id: projectId } })).folderId;
+    const edits = await prisma.project.count({ where: { folderId, deletedAt: null } });
+    const out = await tool("create_review_link", { folderId });
+    assert.match(out.text, new RegExp(`Review link for the whole project \\(${edits} edits?\\): .*/review/(\\w+)`));
+    assert.match(out.text, /added to the project later show up/);
+    const tok = /\/review\/(\w+)/.exec(out.text)![1];
+    const row = await prisma.review.findUniqueOrThrow({ where: { token: tok } });
+    assert.deepEqual([row.folderId, row.projectId], [folderId, null], "the link is the folder's, not one edit's");
+    await assert.rejects(() => tool("create_review_link", {}), /projectId \(one edit\) or folderId/);
+    await assert.rejects(() => tool("create_review_link", { projectId, folderId }), /not both/);
+    // The app's Share on a project: that link again (no password, still good), with the project and how many edits.
+    const a1 = await app("app_share_link", { folderId }) as { data: { url: string; folder: { id: string; name: string }; edits: number; created: boolean } };
+    assert.equal(a1.data.folder.id, folderId);
+    assert.equal(a1.data.edits, edits);
+    assert.match(a1.data.url, /\/review\/\w+$/);
+    const a2 = await app("app_share_link", { folderId }) as { data: { url: string; created: boolean } };
+    assert.deepEqual([a2.data.url, a2.data.created], [a1.data.url, false], "the same link the next time");
+    // Someone else's project is not theirs to share.
+    await assert.rejects(() => APP_HANDLERS.app_share_link(c(otherId), { folderId }), /gone, or is not yours/);
+    await assert.rejects(() => app("app_share_link", {}), /Pick an edit or a project/);
+  });
+
   it("get_editing_skill returns the skill", async () => {
     const out = await tool("get_editing_skill", {});
     assert.match(out.text, /^# Fazinflo Editing Skill \(Rendrr edition\)/);

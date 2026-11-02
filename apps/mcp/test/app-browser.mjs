@@ -96,6 +96,7 @@ function tool(name, args) {
     c.images = c.images.filter((im) => !(args.removeImages || []).includes(im.id)).concat(pics(args.images));
     c.edited = true; return view(args.projectId);
   }
+  if (name === "app_share_link" && args.folderId) return { url: `https://app.rendrr.live/review/tok-${args.folderId}`, folder: { id: args.folderId, name: db.folders.find((f) => f.id === args.folderId)?.name || "?" }, edits: db.projects.filter((p) => p.folderId === args.folderId).length, created: true, expires: null, allowDownload: false };
   if (name === "app_share_link") return { url: `https://app.rendrr.live/review/tok-${args.projectId}`, version: args.version ?? 2, created: true, expires: null, allowDownload: false };
   if (name === "app_delete_comment") { db.comments[args.projectId] = db.comments[args.projectId].filter((x) => x.id !== args.commentId); return view(args.projectId); }
   if (name === "app_resolve_comment") { const c = db.comments[args.projectId].find((x) => x.id === args.commentId); c.resolved = args.resolved !== false; return view(args.projectId); }
@@ -168,6 +169,13 @@ check(calls.some((c) => c.name === "app_list_projects" && c.args.folderId === "f
 check((await app.locator(".card").count()) === 2, "the project shows its two videos");
 check(/Knee pain reel/.test(await app.locator(".card").first().innerText()) && /Preview v1/.test(await app.locator(".card").first().innerText()) && /1 open comment/.test(await app.locator(".card").first().innerText()), "a card says its preview and open comments");
 check(/No preview/.test(await app.locator(".card").nth(1).innerText()), "an edit without a preview says so");
+// Share the whole project: one link to every video in it.
+await app.locator('button[aria-label^="Share this project"]').click();
+await app.locator(".share input").waitFor({ timeout: 5000 });
+check(calls.some((c) => c.name === "app_share_link" && c.args.folderId === "f1" && !c.args.projectId), "Share on a project asks Rendrr for the project's link");
+check((await app.locator(".share input").inputValue()) === "https://app.rendrr.live/review/tok-f1" && /Share Spine clinic/.test(await app.locator(".share").innerText()) && /every video in this project \(2 now, and the ones you add later\)/.test(await app.locator(".share").innerText()), "the panel gives the project's link and says it shows every video, new ones too");
+await app.locator('.share button[aria-label="Close"]').click();
+check((await app.locator(".share").count()) === 0 && (await app.locator(".card").count()) === 2, "the panel closes, the videos stay");
 check(await frame().evaluate(() => getComputedStyle(document.body).backgroundColor === "rgb(15, 17, 19)" && !document.documentElement.style.getPropertyValue("--color-background-primary")), "the Rendrr web app's own dark look, though the host is light");
 check(await frame().evaluate(() => { const t = getComputedStyle(document.querySelector("h1")); return /Space Grotesk/.test(t.fontFamily) && t.textTransform === "uppercase" && t.fontWeight === "700"; }), "titles in the web app's Space Grotesk, bold, upper case");
 check(await frame().evaluate(() => { const c = document.querySelector(".card"); const o = c.querySelector(".thumb .over .name"); return getComputedStyle(c).backgroundColor === "rgb(28, 30, 33)" && !!o && o.textContent.length > 0; }), "project cards as in the web app (surface colour, the name over the picture)");
