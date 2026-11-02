@@ -45,12 +45,16 @@ const media = createServer(async (req, res) => {
 await new Promise((r) => media.on("listening", r));
 const M = `http://127.0.0.1:${media.address().port}`;
 
-// Rendrr behind the host: two edits, comments, a render that moves on with each look.
+// Rendrr behind the host: two projects (one with two edits, one empty), comments, a render that moves on with each look.
 const now = Date.now();
 const db = {
+  folders: [
+    { id: "f1", name: "Spine clinic", edits: 2, updated: now - 3600e3, thumb: `${M}/thumb.jpg?X-Amz-Credential=tid%2F20261029%2Fiad&X-Amz-Signature=a`, aspect: "9:16", openComments: 1, rendering: false },
+    { id: "f2", name: "New client", edits: 0, updated: now - 86400e3 * 5, thumb: null, aspect: null, openComments: 0, rendering: false },
+  ],
   projects: [
-    { id: "p1", name: "Knee pain reel", folder: "Spine clinic", aspect: "9:16", status: "In review", version: 2, updated: now - 3600e3, seconds: 8, thumb: `${M}/thumb.jpg?X-Amz-Credential=tid%2F20261029%2Fiad&X-Amz-Signature=a`, previewVersion: 1, rendering: false, openComments: 1 },
-    { id: "p2", name: "Founder story", folder: "Brand", aspect: "16:9", status: "Draft", version: 1, updated: now - 86400e3 * 2, seconds: null, thumb: null, previewVersion: null, rendering: false, openComments: 0 },
+    { id: "p1", name: "Knee pain reel", folder: "Spine clinic", folderId: "f1", aspect: "9:16", status: "In review", version: 2, updated: now - 3600e3, seconds: 8, thumb: `${M}/thumb.jpg?X-Amz-Credential=tid%2F20261029%2Fiad&X-Amz-Signature=a`, previewVersion: 1, rendering: false, openComments: 1 },
+    { id: "p2", name: "Founder story", folder: "Spine clinic", folderId: "f1", aspect: "16:9", status: "Draft", version: 1, updated: now - 86400e3 * 2, seconds: null, thumb: null, previewVersion: null, rendering: false, openComments: 0 },
   ],
   comments: { p1: [{ id: "c0", time: 1.2, text: "The client wants the logo smaller", author: "Dana", mine: false, resolved: false, at: now - 7200e3 }], p2: [] },
   preview: { p1: { renderId: "r1", version: 1, url: `${M}/v1.webm?X-Amz-Signature=b&slow=1500`, seconds: 8, quality: "540p", at: now - 3600e3 }, p2: null },
@@ -65,12 +69,16 @@ const view = (id, renderId) => {
   const pv = (x, kind) => x && { ...x, kind, download: x.url + "&dl=1", fileName: `${p.name} ${kind} v${x.version}.mp4` };
   const all = [pv(db.preview[id], "preview"), ...db.older[id].map((x) => pv(x, "preview")), ...db.finals[id].map((x) => pv(x, "final"))].filter(Boolean).sort((a, b) => b.at - a.at);
   const shown = (renderId && all.find((x) => x.renderId === renderId)) || pv(db.preview[id], "preview") || all.find((x) => x.kind === "final") || null;
-  return { project: { id: p.id, name: p.name, folder: p.folder, aspect: p.aspect, status: p.status, version: p.version, updated: p.updated, seconds: p.seconds, editorUrl: `https://app.rendrr.live/editor/${p.id}` },
+  return { project: { id: p.id, name: p.name, folder: p.folder, folderId: p.folderId, aspect: p.aspect, status: p.status, version: p.version, updated: p.updated, seconds: p.seconds, editorUrl: `https://app.rendrr.live/editor/${p.id}` },
     preview: shown, versions: all.map(({ renderId: r, version, kind, quality, at }) => ({ renderId: r, version, kind, quality, at })), rendering: db.rendering[id], failed: null, comments: [...db.comments[id]].sort((a, b) => a.time - b.time) };
 };
 function tool(name, args) {
   calls.push({ name, args });
-  if (name === "app_list_projects") { const ps = db.projects.filter((p) => !args.query || p.name.toLowerCase().includes(args.query.toLowerCase())); return { projects: ps, total: ps.length, offset: 0 }; }
+  if (name === "app_list_projects") {
+    const ps = db.projects.filter((p) => (!args.query || p.name.toLowerCase().includes(args.query.toLowerCase())) && (!args.folderId || p.folderId === args.folderId));
+    const f = args.folderId ? db.folders.find((x) => x.id === args.folderId) : null;
+    return { projects: ps, total: ps.length, offset: 0, ...(!args.folderId && !args.query ? { folders: db.folders } : {}), folder: f ? { id: f.id, name: f.name } : null };
+  }
   if (name === "app_get_project") {
     const r = db.rendering[args.projectId];
     if (r) { r.percent += 45; r.queued = false; r.step = "Encoding"; if (r.percent >= 100) { db.rendering[args.projectId] = null; db.older[args.projectId].unshift(db.preview[args.projectId]); db.preview[args.projectId] = { renderId: "r2", version: 2, url: `${M}/v2.webm?X-Amz-Signature=c`, seconds: 6, quality: "540p", at: Date.now() }; } }
@@ -143,9 +151,16 @@ const frame = () => page.frame({ url: /about:srcdoc/ }) ?? page.frames()[1];
 const hostLog = () => page.evaluate(() => window.log.map((m) => ({ method: m.method, params: m.params })));
 const seekTo = (t) => frame().evaluate((x) => new Promise((ok) => { const v = document.querySelector("video"); v.pause(); v.addEventListener("seeked", () => ok(), { once: true }); v.currentTime = x; }), t);
 
-// 1. The grid of every edit, in the Rendrr web app's look, sized to its content.
+// 1. The projects first, one card each; open one to see only its videos (in the Rendrr web app's look, sized to fit).
 await app.locator(".card").first().waitFor({ timeout: 10000 }).catch(async (e) => { console.log("LOG", JSON.stringify(await hostLog()).slice(0, 2000)); console.log("ERR", errors, violations); console.log("HTML", (await frame()?.content())?.slice(-1500)); throw e; });
-check((await app.locator(".card").count()) === 2, "All projects shows both edits");
+check((await app.locator(".card.proj").count()) === 2 && !(await app.locator("[data-edit]").count()) && /^Projects$/i.test(await app.locator("#list-title").innerText()), "the app opens on the projects, not a pile of every edit");
+const f1Text = await app.locator('[data-folder="f1"]').innerText();
+check(/Spine clinic/.test(f1Text) && /2 videos/.test(f1Text) && /1 open comment/.test(f1Text), `a project card names it, counts its videos and open comments (${f1Text.replace(/\s+/g, " ")})`);
+check(/0 videos/.test(await app.locator('[data-folder="f2"]').innerText()) && /No videos yet/.test(await app.locator('[data-folder="f2"]').innerText()), "an empty project says so");
+await app.locator('[data-folder="f1"]').click();
+await app.locator("[data-edit]").first().waitFor({ timeout: 5000 });
+check(calls.some((c) => c.name === "app_list_projects" && c.args.folderId === "f1") && /Spine clinic/i.test(await app.locator("#list-title").innerText()), "opening a project asks Rendrr for its videos and names it");
+check((await app.locator(".card").count()) === 2, "the project shows its two videos");
 check(/Knee pain reel/.test(await app.locator(".card").first().innerText()) && /Preview v1/.test(await app.locator(".card").first().innerText()) && /1 open comment/.test(await app.locator(".card").first().innerText()), "a card says its preview and open comments");
 check(/No preview/.test(await app.locator(".card").nth(1).innerText()), "an edit without a preview says so");
 check(await frame().evaluate(() => getComputedStyle(document.body).backgroundColor === "rgb(15, 17, 19)" && !document.documentElement.style.getPropertyValue("--color-background-primary")), "the Rendrr web app's own dark look, though the host is light");
@@ -161,7 +176,7 @@ await page.screenshot({ path: join(dir, "app-list.png") });
 
 // 2. Search keeps the field focused while results come back.
 await app.locator(".search").click(); await app.locator(".search").pressSequentially("knee", { delay: 40 }); await sleep(700);
-check(calls.some((c) => c.name === "app_list_projects" && c.args.query === "knee") && (await app.locator(".card").count()) === 1, "search asks Rendrr and shows the match");
+check(calls.some((c) => c.name === "app_list_projects" && c.args.query === "knee" && c.args.folderId === "f1") && (await app.locator(".card").count()) === 1, "search in a project asks Rendrr and shows the match");
 check(await frame().evaluate(() => document.activeElement?.classList.contains("search") && document.activeElement.value === "knee"), "the search field keeps focus and text");
 await app.locator(".search").fill(""); await sleep(600);
 
@@ -374,7 +389,7 @@ check(!/has changes the latest preview/.test(await app.locator("body").innerText
 
 // 7b. The header: icons with their names on hover; download what is watched; the versions to watch; rename.
 const acts = await frame().evaluate(() => [...document.querySelectorAll(".pv .top .acts button, .pv .top > button")].map((b) => ({ label: b.getAttribute("aria-label"), title: b.title, svg: !!b.querySelector("svg"), text: b.innerText.trim() })));
-check(acts.length === 5 && acts.every((a) => a.svg && !a.text && a.title) && ["All projects", "Share", "Download", "Open in Rendrr"].every((l) => acts.some((a) => a.label === l)) && acts.some((a) => /^(Exit )?[Ff]ull screen$/.test(a.label)), `the header buttons are icons, named on hover (${acts.map((a) => a.label).join(", ")})`);
+check(acts.length === 5 && acts.every((a) => a.svg && !a.text && a.title) && ["Back to Spine clinic", "Share", "Download", "Open in Rendrr"].every((l) => acts.some((a) => a.label === l)) && acts.some((a) => /^(Exit )?[Ff]ull screen$/.test(a.label)), `the header buttons are icons, named on hover (${acts.map((a) => a.label).join(", ")})`);
 await app.locator('button[aria-label="Download"]').click(); await sleep(200);
 check((await hostLog()).some((m) => m.method === "ui/open-link" && /v2\.webm\?X-Amz-Signature=c&dl=1$/.test(m.params.url)) && /Downloading Knee pain reel preview v2\.mp4/.test(await app.locator("#toast").innerText()), "Download gets the file being watched (through the host)");
 const opts = await app.locator("select.ver option").allInnerTexts();
@@ -401,18 +416,32 @@ await app.locator('button[aria-label="Full screen"]').click(); await sleep(200);
 check((await hostLog()).some((m) => m.method === "ui/request-display-mode" && m.params.mode === "fullscreen") && await frame().evaluate(() => document.documentElement.classList.contains("fs")), "full screen asks the host and lays out for it");
 await app.locator('button[aria-label="Open in Rendrr"]').click(); await sleep(200);
 check((await hostLog()).some((m) => m.method === "ui/open-link" && m.params.url === "https://app.rendrr.live/editor/p1"), "Open in Rendrr opens the editor");
-await app.locator('button[aria-label="All projects"]').click();
-await app.locator(".card").first().waitFor();
-check((await app.locator(".card").count()) === 2, "back to all projects");
+await app.locator('button[aria-label="Back to Spine clinic"]').click();
+await app.locator("[data-edit]").first().waitFor();
+check((await app.locator(".card").count()) === 2 && /Spine clinic/i.test(await app.locator("#list-title").innerText()), "back goes to the project's videos");
 // An edit never rendered (the editor plays edits live, so many have no preview): its first preview starts on its own.
 const renders = () => calls.filter((c) => c.name === "app_render_preview" && c.args.projectId === "p2").length;
 await app.locator(".card", { hasText: "Founder story" }).click();
 await app.locator(".noprev").waitFor({ timeout: 5000 }); await sleep(600);
 check(renders() === 1 && /Making a preview to watch here/.test(await app.locator(".noprev").innerText()), `an edit with no preview starts one on its own and says so (${renders()} render asked)`);
-await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card").first().waitFor();
+await app.locator('button[aria-label="Back to Spine clinic"]').click(); await app.locator("[data-edit]").first().waitFor();
 await app.locator(".card", { hasText: "Founder story" }).click(); await sleep(800);
 check(renders() === 1, "opening it again does not start another");
-await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card").first().waitFor();
+await app.locator('button[aria-label="Back to Spine clinic"]').click(); await app.locator("[data-edit]").first().waitFor();
+
+// From a project back to all projects, and into another one (empty).
+await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card.proj").first().waitFor();
+check((await app.locator(".card.proj").count()) === 2 && !(await app.locator("[data-edit]").count()), "back from a project to all projects");
+await app.locator('[data-folder="f2"]').click(); await app.locator(".empty").waitFor({ timeout: 5000 });
+check(/New client/i.test(await app.locator("#list-title").innerText()) && /No videos in this project yet/.test(await app.locator(".empty").innerText()), "any project opens; an empty one says so");
+await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card.proj").first().waitFor();
+// An edit the AI opened (open_projects with its id): back goes to that edit's project.
+const opened = view("p2");
+await page.evaluate((o) => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: { open: o, webUrl: "https://app.rendrr.live" } } }, "*"), opened);
+await app.locator('button[aria-label="Back to Spine clinic"]').waitFor({ timeout: 5000 });
+await app.locator('button[aria-label="Back to Spine clinic"]').click(); await app.locator("[data-edit]").first().waitFor({ timeout: 5000 });
+check(/Spine clinic/i.test(await app.locator("#list-title").innerText()) && (await app.locator(".card").count()) === 2, "an edit the AI opened goes back to its project's videos");
+await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card.proj").first().waitFor();
 
 // The host switches theme: the app keeps Rendrr's look.
 await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark", styles: { variables: { "--color-background-primary": "rgb(31, 30, 29)" } } } }, "*"));
@@ -432,8 +461,11 @@ await papp.locator(".card").first().waitFor({ timeout: 10000 });
 const fits = () => pframe().evaluate(() => { const d = document.documentElement; const wide = Array.from(document.querySelectorAll("button, input, textarea, video, .card")).filter((e) => { const r = e.getBoundingClientRect(); return r.width && (r.right > innerWidth + 1 || r.left < -1); }).map((e) => (e.textContent || e.tagName).trim().slice(0, 20)); return { over: d.scrollWidth - d.clientWidth, wide, w: innerWidth }; });
 let fit = await fits();
 check(fit.over <= 1 && !fit.wide.length, `phone, the grid fits the screen (${fit.w} px; ${fit.wide.join(", ") || "nothing sticks out"})`);
-check(await pframe().evaluate(() => { const cs = Array.from(document.querySelectorAll(".card")).map((c) => c.getBoundingClientRect().top); return cs.length === 2 && Math.abs(cs[0] - cs[1]) < 2; }), "two cards side by side");
-await papp.locator(".card").first().tap();
+check(await pframe().evaluate(() => { const cs = Array.from(document.querySelectorAll(".card")).map((c) => c.getBoundingClientRect().top); return cs.length === 2 && Math.abs(cs[0] - cs[1]) < 2; }), "two project cards side by side");
+await papp.locator('[data-folder="f1"]').tap(); await papp.locator("[data-edit]").first().waitFor({ timeout: 5000 });
+fit = await fits();
+check(fit.over <= 1 && !fit.wide.length && (await papp.locator("[data-edit]").count()) === 2, `phone, a project's videos fit the screen (${fit.wide.join(", ") || "nothing sticks out"})`);
+await papp.locator("[data-edit]").first().tap();
 await papp.locator("video").waitFor({ timeout: 10000 }); await sleep(400);
 fit = await fits();
 check(await pframe().evaluate(() => document.documentElement.classList.contains("fs")) && fit.over <= 1 && !fit.wide.length, `phone, the edit opens full screen and fits (${fit.wide.join(", ") || "nothing sticks out"})`);

@@ -22,8 +22,8 @@ export const CommentImageInput = z.object({ name: z.string().max(200).optional()
 export const COMMENT_IMAGES_MAX = 4;
 
 export const APP_TOOLS: ToolDef[] = [
-  { name: "app_list_projects", title: "Projects for the app", app: true, description: "The Rendrr app: a page of the user's edits, newest first.",
-    input: z.object({ offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(60).optional(), query: z.string().max(100).optional() }) },
+  { name: "app_list_projects", title: "Projects for the app", app: true, description: "The Rendrr app: the user's projects (folders), and a page of edits, newest first: those of one project (folderId), or all.",
+    input: z.object({ offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(60).optional(), query: z.string().max(100).optional(), folderId: id("project folder").optional() }) },
   { name: "app_get_project", title: "One project for the app", app: true, description: "The Rendrr app: one edit's latest preview (or the render asked for), its rendered versions, its render progress and its comments.",
     input: z.object({ projectId: id("project"), renderId: id("render").optional() }) },
   { name: "app_rename_project", title: "Rename the edit", app: true, write: true, description: "The Rendrr app: rename the edit.",
@@ -50,7 +50,7 @@ export type CommentDrawing = { w: number; h: number; strokes: Stroke[] };
 export type CommentImage = { id: string; url: string; w: number | null; h: number | null; name: string | null };
 export type AppComment = { id: string; time: number; text: string; author: string; mine: boolean; resolved: boolean; at: number; edited: boolean; renderId: string | null; drawing: CommentDrawing | null; images: CommentImage[] };
 export type AppProjectView = {
-  project: { id: string; name: string; folder: string; aspect: string; status: string; version: number; updated: number; seconds: number | null; editorUrl: string | null };
+  project: { id: string; name: string; folder: string; folderId: string; aspect: string; status: string; version: number; updated: number; seconds: number | null; editorUrl: string | null };
   /** The render being watched: the latest preview, or the version picked (a preview or a final); download: its file. */
   preview: { renderId: string; version: number; kind: "preview" | "final"; url: string; download: string; fileName: string; seconds: number; quality: string; at: number } | null;
   /** Every rendered version to pick from, newest first (a final and a preview of the same version are both there). */
@@ -60,10 +60,13 @@ export type AppProjectView = {
   comments: AppComment[];
 };
 export type AppProjectCard = {
-  id: string; name: string; folder: string; aspect: string; status: string; version: number; updated: number; seconds: number | null;
+  id: string; name: string; folder: string; folderId: string; aspect: string; status: string; version: number; updated: number; seconds: number | null;
   thumb: string | null; previewVersion: number | null; rendering: boolean; openComments: number;
 };
-export type AppProjectsPage = { projects: AppProjectCard[]; total: number; offset: number };
+/** A project (a folder of edits, one per client or campaign) on the app's first page. */
+export type AppFolderCard = { id: string; name: string; edits: number; updated: number; thumb: string | null; aspect: string | null; openComments: number; rendering: boolean };
+/** folders: every project of the user (sent with the first page); folder: the project the edits are of, when one was asked for. */
+export type AppProjectsPage = { projects: AppProjectCard[]; total: number; offset: number; folders?: AppFolderCard[]; folder?: { id: string; name: string } | null };
 /** Samples (render_samples): a few frames and short clips of an edit, shown as a storyboard to ask changes on. */
 export type AppSampleItem = { kind: "frame" | "clip"; at: number; end: number | null; note: string | null; still: string | null; clip: string | null };
 export type AppSamples = {

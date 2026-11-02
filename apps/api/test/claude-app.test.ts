@@ -90,6 +90,19 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
     assert.match(p.thumb, /^https?:\/\/.*X-Amz-Signature=/);
     assert.equal(((await app("app_list_projects", { query: "nothing like it" })).data as any).total, 0);
     assert.equal(((await app("app_list_projects", { query: `reel ${run}` })).data as any).total, 1);
+    // The projects come with the first page: each with its count of edits, open comments and whether one renders.
+    const f = page.folders.find((x: any) => x.name === "Client A");
+    assert.deepEqual({ edits: f.edits, openComments: f.openComments, rendering: f.rendering, aspect: f.aspect }, { edits: 1, openComments: 1, rendering: true, aspect: p.aspect });
+    assert.match(f.thumb, /^https?:\/\/.*X-Amz-Signature=/);
+    assert.equal(p.folderId, f.id);
+    // One project's edits: only its own, named.
+    const inF = (await app("app_list_projects", { folderId: f.id })).data as any;
+    assert.deepEqual([inF.total, inF.projects[0].id, inF.folder.name, inF.folders], [1, projectId, "Client A", undefined]);
+    const empty = await prisma.folder.create({ data: { userId, name: `Empty ${run}`, workspace: "W" } });
+    assert.equal(((await app("app_list_projects", { folderId: empty.id })).data as any).total, 0);
+    assert.equal(((await app("app_list_projects", {})).data as any).folders.find((x: any) => x.id === empty.id).edits, 0);
+    await assert.rejects(APP_HANDLERS.app_list_projects(c(otherId), { folderId: f.id }), /could not find|not found|does not exist|gone/i);
+    assert.equal(((await app("app_get_project", { projectId })).data as any).project.folderId, f.id);
   });
 
   it("the app shows one edit: the latest preview (signed), the render of the newer version, and its comments", async () => {
@@ -117,7 +130,7 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
 
   it("open_projects tells the AI what the user sees and gives the app the page, or only the edit asked for", async () => {
     const all = await tool("open_projects", {});
-    assert.match(all.text, /^Showing the Rendrr app with 1 edit\. Newest: Reel \w+ \(\w+, v2, 1 open comments\)\./);
+    assert.match(all.text, /^Showing the Rendrr app: \d+ projects?, 1 edit \(the user opens a project to see its videos\)\. Newest: Reel \w+ \(\w+, v2, 1 open comments\)\./);
     assert.equal((all.data as any).open, null);
     const one = await tool("open_projects", { projectId });
     console.log(one.text);

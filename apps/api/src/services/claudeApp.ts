@@ -3,7 +3,7 @@
 // tables as the editor's (the Comments tab and the markers show them, and get_comments reads them for the AI).
 import { applyTimelineChange, notFound, signGet } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import type { AppComment, AppOpen, AppProjectCard, AppProjectsPage, AppProjectView } from "@rendrr/shared";
+import type { AppComment, AppFolderCard, AppOpen, AppProjectCard, AppProjectsPage, AppProjectView } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
 import { renderResult, renderStatus, startRender } from "./render";
 import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
@@ -22,8 +22,33 @@ export async function appMediaOrigins(): Promise<string[]> {
 /** Client comments on an edit (its own review links and its folder's), as get_comments reads them. */
 const clientCommentsWhere = (p: { id: string; folderId: string }) => ({ review: { OR: [{ projectId: p.id }, { folderId: p.folderId }] }, OR: [{ projectId: null }, { projectId: p.id }] });
 
-export async function appProjects(userId: string, i: { offset?: number; limit?: number; query?: string }): Promise<AppProjectsPage> {
-  const where = { userId, deletedAt: null, ...(i.query?.trim() ? { name: { contains: i.query.trim(), mode: "insensitive" as const } } : {}) };
+/** The user's projects (folders of edits), the one worked on last first: how many edits, the newest one's picture,
+ *  open comments and whether one is rendering. */
+export async function appFolders(userId: string): Promise<AppFolderCard[]> {
+  const [folders, edits, notes, client, running] = await Promise.all([
+    prisma.folder.findMany({ where: { userId }, select: { id: true, name: true, updatedAt: true } }),
+    prisma.project.findMany({ where: { userId, deletedAt: null }, orderBy: { updatedAt: "desc" }, select: { id: true, folderId: true, updatedAt: true, aspect: true, video: { select: { thumbKey: true } } } }),
+    prisma.projectComment.groupBy({ by: ["projectId"], where: { project: { userId, deletedAt: null }, resolved: false }, _count: true }),
+    prisma.reviewComment.groupBy({ by: ["projectId"], where: { projectId: { not: null }, review: { userId }, resolved: false }, _count: true }),
+    prisma.render.findMany({ where: { project: { userId }, kind: "preview", status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - 3 * 3600_000) } }, select: { projectId: true } }),
+  ]);
+  const folderOf = new Map(edits.map((e) => [e.id, e.folderId]));
+  const by = new Map(folders.map((f) => [f.id, { f, edits: [] as typeof edits, open: 0, rendering: false }]));
+  for (const e of edits) by.get(e.folderId)?.edits.push(e);
+  for (const r of [...notes, ...client]) { const f = r.projectId ? by.get(folderOf.get(r.projectId) ?? "") : null; if (f) f.open += r._count; }
+  for (const r of running) { const f = by.get(folderOf.get(r.projectId) ?? ""); if (f) f.rendering = true; }
+  const cards = await Promise.all([...by.values()].map(async ({ f, edits: es, open, rendering }) => {
+    const newest = es[0];
+    return { id: f.id, name: f.name, edits: es.length, updated: Math.max(f.updatedAt.getTime(), newest?.updatedAt.getTime() ?? 0), aspect: newest?.aspect ?? null,
+      thumb: newest?.video?.thumbKey ? await signGet(newest.video.thumbKey, LINK_SECONDS) : null, openComments: open, rendering };
+  }));
+  return cards.sort((a, b) => b.updated - a.updated);
+}
+
+export async function appProjects(userId: string, i: { offset?: number; limit?: number; query?: string; folderId?: string }): Promise<AppProjectsPage> {
+  const folder = i.folderId ? await prisma.folder.findFirst({ where: { id: i.folderId, userId }, select: { id: true, name: true } }) : null;
+  if (i.folderId && !folder) throw notFound("That project is gone, or is not yours.");
+  const where = { userId, deletedAt: null, ...(folder ? { folderId: folder.id } : {}), ...(i.query?.trim() ? { name: { contains: i.query.trim(), mode: "insensitive" as const } } : {}) };
   const offset = i.offset ?? 0, limit = i.limit ?? 24;
   const [total, ps] = await Promise.all([
     prisma.project.count({ where }),
@@ -42,11 +67,13 @@ export async function appProjects(userId: string, i: { offset?: number; limit?: 
   for (const r of previews) if (!lastPreview.has(r.projectId)) lastPreview.set(r.projectId, r.version);
   const busy = new Set(running.map((r) => r.projectId));
   const projects: AppProjectCard[] = await Promise.all(ps.map(async (p) => ({
-    id: p.id, name: p.name, folder: p.folder.name, aspect: p.aspect, status: p.status, version: p.currentVersion, updated: p.updatedAt.getTime(),
+    id: p.id, name: p.name, folder: p.folder.name, folderId: p.folderId, aspect: p.aspect, status: p.status, version: p.currentVersion, updated: p.updatedAt.getTime(),
     seconds: p.outputSeconds || null, thumb: p.video.thumbKey ? await signGet(p.video.thumbKey, LINK_SECONDS) : null,
     previewVersion: lastPreview.get(p.id) ?? null, rendering: busy.has(p.id), openComments: open.get(p.id) ?? 0,
   })));
-  return { projects, total, offset };
+  // The first page of all edits also brings the projects, for the app's first page.
+  const folders = !folder && offset === 0 && !i.query?.trim() ? await appFolders(userId) : undefined;
+  return { projects, total, offset, ...(folders ? { folders } : {}), folder };
 }
 
 export async function appProject(userId: string, projectId: string, renderId?: string): Promise<AppProjectView> {
@@ -75,7 +102,7 @@ export async function appProject(userId: string, projectId: string, renderId?: s
     ...client.map((c) => ({ id: c.id, time: c.time, text: c.text, author: c.author, mine: false, resolved: c.resolved, at: c.createdAt.getTime(), edited: false, renderId: null, drawing: null, images: [] })),
   ].sort((a, b) => a.time - b.time || a.at - b.at);
   return {
-    project: { id: p.id, name: p.name, folder: folder?.name ?? "", aspect: p.aspect, status: p.status, version, updated: p.updatedAt.getTime(), seconds: p.outputSeconds || null, editorUrl: WEB() ? `${WEB()}/editor/${p.id}` : null },
+    project: { id: p.id, name: p.name, folder: folder?.name ?? "", folderId: p.folderId, aspect: p.aspect, status: p.status, version, updated: p.updatedAt.getTime(), seconds: p.outputSeconds || null, editorUrl: WEB() ? `${WEB()}/editor/${p.id}` : null },
     preview: shown?.outputKey && res ? { renderId: shown.id, version: shown.version, kind: shown.kind === "final" ? "final" : "preview", url: await signGet(shown.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), download: res.downloadUrl!, fileName: res.fileName, seconds: shown.seconds, quality: shown.quality ?? (shown.kind === "final" ? "1080p" : "540p"), at: shown.createdAt.getTime() } : null,
     versions: versions.map((r) => ({ renderId: r.id, version: r.version, kind: r.kind === "final" ? "final" as const : "preview" as const, quality: r.quality ?? (r.kind === "final" ? "1080p" : "540p"), at: r.createdAt.getTime() })),
     rendering: live && st ? { renderId: live.id, version: live.version, percent: Math.round(st.percent ?? 0), step: st.steps[st.step] ?? null, etaSec: st.etaSec, queued: st.status === "queued" } : null,
@@ -95,7 +122,8 @@ async function setResolved(userId: string, commentId: string, resolved: boolean)
 
 /** A short line for the AI next to the app (open_projects): what the user sees. */
 function openText(page: AppProjectsPage | null, open: AppProjectView | null): string {
-  if (!open) return `Showing the Rendrr app with ${page?.total ?? 0} ${page?.total === 1 ? "edit" : "edits"}. Newest: ${(page?.projects ?? []).slice(0, 5).map((p) => `${p.name} (${p.id}, v${p.version}${p.openComments ? `, ${p.openComments} open comments` : ""})`).join("; ") || "none"}.`;
+  const nf = page?.folders?.length ?? 0;
+  if (!open) return `Showing the Rendrr app: ${nf} ${nf === 1 ? "project" : "projects"}, ${page?.total ?? 0} ${page?.total === 1 ? "edit" : "edits"} (the user opens a project to see its videos). Newest: ${(page?.projects ?? []).slice(0, 5).map((p) => `${p.name} (${p.id}, v${p.version}${p.openComments ? `, ${p.openComments} open comments` : ""})`).join("; ") || "none"}.`;
   const o = open.comments.filter((c) => !c.resolved).length;
   return `Showing "${open.project.name}" (${open.project.id}) in the Rendrr app, v${open.project.version}; ${open.preview ? `preview v${open.preview.version}` : "no preview yet"}${open.rendering ? `, rendering v${open.rendering.version} (${open.rendering.percent}%)` : ""}; ${o} open ${o === 1 ? "comment" : "comments"} (get_comments reads them).`;
 }

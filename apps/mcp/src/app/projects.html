@@ -80,7 +80,8 @@ h1 { margin: 0; font-family: var(--display); font-size: 22px; line-height: 28px;
 .thumb .sub { font-size: 11.5px; line-height: 16px; color: rgba(255,255,255,.75); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .thumb .dur, .thumb .shape { position: absolute; z-index: 1; background: rgba(0,0,0,.55); color: #fff; font-size: 11px; line-height: 16px; padding: 2px 7px; border-radius: var(--r-xs); backdrop-filter: blur(4px); }
 .thumb .dur { right: 10px; top: 10px; }
-.thumb .shape { left: 10px; top: 10px; }
+.thumb .shape { left: 10px; top: 10px; display: inline-flex; align-items: center; gap: 5px; }
+.thumb .shape svg { width: 12px; height: 12px; }
 .card .body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: var(--pill); font-size: 12px; font-weight: 500; white-space: nowrap; background: var(--raised); color: var(--dim); box-shadow: 0 0 0 1px var(--hair), inset 0 2px 3px rgba(255,255,255,.03); }
@@ -434,7 +435,8 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   new ResizeObserver(sizeNow).observe(document.documentElement);
 
   // ---------------- state ----------------
-  const state = { view: "list", page: null, query: "", loadingMore: false, project: null, filter: "open", draft: "", webUrl: null, err: null, pendingProject: null, busy: false,
+  // folder: the project (a folder of edits) whose videos are listed; null: the list of projects. folders: every project.
+  const state = { view: "list", page: null, query: "", loadingMore: false, project: null, folder: null, folders: null, filter: "open", draft: "", webUrl: null, err: null, pendingProject: null, busy: false,
     // The comment being written or edited: its moment (null: the player's), drawing, pictures; drawing on the player.
     compose: null, drawMode: false, pen: "#ff3b30", viewDrawing: null, confirmDelete: null, lightbox: null, sending: false, share: null,
     // Samples (render_samples): the set shown, the one picked, the change being written.
@@ -451,23 +453,39 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     if (res.isError || !d) { state.err = ((res.content || [])[0] || {}).text || null; if (!state.page) loadList(); return; }
     // With an edit open the list is not sent: loaded when the user goes back to it.
     state.page = d.projects ? { projects: d.projects, total: d.total || 0, offset: 0 } : null;
+    if (d.folders) state.folders = d.folders;
+    if (!d.open) state.folder = null;
     state.webUrl = d.webUrl || null;
     if (d.samples) return showSamples(d.samples);
     const again = !d.open && isFullscreen() ? remembered() : null;
     if (d.open) showProject(d.open); else if (again) openProject(again); else { state.view = "list"; render(); }
   }
 
+  // The list on screen: the projects (with the first page of all videos), or the videos of the project open.
   async function loadList(more) {
+    const f = state.folder;
     try {
       const off = more && state.page ? state.page.projects.length : 0;
-      const d = await callTool("app_list_projects", { offset: off, limit: 24, query: state.query || undefined });
-      if (!d) return;
-      state.page = more && state.page ? { projects: state.page.projects.concat(d.projects), total: d.total, offset: 0 } : d;
+      let d;
+      try { d = await callTool("app_list_projects", { offset: off, limit: 24, query: state.query || undefined, ...(f ? { folderId: f.id } : {}) }); }
+      catch (e) {
+        // A chat whose tool list is older than projects in the app: its videos are picked out here instead.
+        if (!f) throw e;
+        const all = await callTool("app_list_projects", { offset: 0, limit: 60, query: state.query || undefined });
+        const mine = ((all && all.projects) || []).filter((p) => p.folderId === f.id || (!p.folderId && p.folder === f.name));
+        d = { projects: mine, total: mine.length, offset: 0, folder: f };
+      }
+      if (!d || state.folder !== f) return;
+      if (d.folders) state.folders = d.folders;
+      state.page = more && state.page ? { ...d, projects: state.page.projects.concat(d.projects) } : d;
       state.err = null;
     } catch (e) { state.err = e.message; }
     state.loadingMore = false;
     if (state.view === "list") render();
   }
+  // Open a project (its videos), or go back to the list of projects.
+  function openFolder(f) { stopPolling(); state.folder = { id: f.id, name: f.name }; state.query = ""; state.page = null; state.view = "list"; state.project = null; state.pendingProject = null; render(); loadList(); }
+  function goHome() { stopPolling(); state.folder = null; state.query = ""; state.page = null; state.view = "list"; state.project = null; state.pendingProject = null; render(); loadList(); }
 
   function showProject(view, picked) {
     const prevRender = state.project && state.project.preview && state.project.preview.renderId;
@@ -496,7 +514,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     remember(id);
     state.view = "project"; state.project = null; state.pendingProject = id; render();
     try { const v = await callTool("app_get_project", { projectId: id }); if (v && state.pendingProject === id) showProject(v); }
-    catch (e) { state.err = e.message; state.view = "list"; render(); }
+    catch (e) { state.err = e.message; state.view = "list"; render(); if (!state.page && !state.folders) loadList(); }
   }
 
   // While a preview renders, its progress every 3 s; otherwise a look every 20 s, so a render your AI starts shows up.
@@ -665,40 +683,71 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   const onTime = (fn) => { timeHooks.push(fn); if (player) fn(player.currentTime); };
 
   function listView() {
-    const pg = state.page;
+    const pg = state.page, f = state.folder, home = !f, searching = !!state.query.trim();
     let timer = null;
-    const search = h("input", { class: "search", type: "search", placeholder: "Search edits", value: state.query, "aria-label": "Search edits", "data-key": "search",
+    const search = h("input", { class: "search", type: "search", placeholder: home ? "Search all videos" : "Search in " + f.name, value: state.query, "aria-label": home ? "Search all videos" : "Search in this project", "data-key": "search",
       onInput: (e) => { state.query = e.target.value; clearTimeout(timer); timer = setTimeout(() => loadList(false), 300); } });
+    const fs = state.folders;
+    const sub = home
+      ? (fs ? fs.length + (fs.length === 1 ? " project" : " projects") + " · open one to see its videos" : "Your projects, their videos, previews and comments")
+      : (pg ? pg.total + (pg.total === 1 ? " video" : " videos") + " · previews and comments" : "Videos in this project");
     const top = h("div", { class: "head" },
       h("div", { class: "row top" },
-        h("div", { class: "grow title" }, h("h1", {}, "All projects"), h("div", { class: "muted small" }, pg ? pg.total + (pg.total === 1 ? " edit" : " edits") + " · previews and comments" : "Your edits, previews and comments")),
-        state.webUrl ? h("button", { class: "btn ghost", onClick: () => openLink(state.webUrl + "/projects") }, h("span", { class: "lg" }, "Open Rendrr"), h("span", { class: "sm" }, "Rendrr ↗")) : null,
+        home ? null : iconBtn("back", "All projects", goHome, "ghost"),
+        h("div", { class: "grow title" }, h("h1", { id: "list-title" }, home ? "Projects" : f.name), h("div", { class: "muted small" }, sub)),
+        state.webUrl ? h("button", { class: "btn ghost", onClick: () => openLink(state.webUrl + (home ? "/projects" : "/projects/" + f.id)) }, h("span", { class: "lg" }, "Open Rendrr"), h("span", { class: "sm" }, "Rendrr ↗")) : null,
         fsButton()),
       search);
-    if (!pg) return h("div", {}, top, state.err ? h("div", { class: "note err" }, state.err) : h("div", { class: "skel" }));
+    const errNote = state.err ? h("div", { class: "note err" }, state.err) : null;
+    // The projects: one card each, the newest video's picture on it.
+    if (home && !searching && (fs || !pg)) {
+      if (!fs) return h("div", {}, top, errNote || h("div", { class: "skel" }));
+      const cards = fs.map((x) => {
+        const chips = [
+          x.rendering ? h("span", { class: "chip warn" }, "Rendering") : null,
+          x.openComments ? h("span", { class: "chip" }, x.openComments + (x.openComments === 1 ? " open comment" : " open comments")) : null,
+          !x.edits ? h("span", { class: "chip" }, "No videos yet") : null,
+        ].filter(Boolean);
+        return h("button", { class: "card proj", "data-folder": x.id, onClick: () => openFolder(x), "aria-label": "Open project " + x.name },
+          h("div", { class: "thumb" },
+            x.thumb ? h("img", { src: x.thumb, alt: "", loading: "lazy", decoding: "async", onError: (e) => e.target.remove() }) : null,
+            h("span", { class: "shape" }, icon("folder"), x.edits + (x.edits === 1 ? " video" : " videos")),
+            h("div", { class: "over" }, h("span", { class: "name", title: x.name }, x.name), h("span", { class: "sub" }, "Updated " + ago(x.updated)))),
+          h("div", { class: "body" }, chips.length ? h("div", { class: "chips" }, chips) : h("div", { class: "muted small" }, "Open to see its videos")));
+      });
+      return h("div", {}, top, errNote, cards.length ? h("div", { class: "grid" }, cards) : h("div", { class: "empty" }, "No projects yet. Ask your AI to make an edit from your footage."));
+    }
+    if (!pg) return h("div", {}, top, errNote || h("div", { class: "skel" }));
+    // The videos of the project open (or, searching from the projects, every video that matches).
     const cards = pg.projects.map((p) => {
       const chips = [
         p.rendering ? h("span", { class: "chip warn" }, "Rendering") : null,
         p.previewVersion ? h("span", { class: "chip ok" }, "Preview v" + p.previewVersion) : h("span", { class: "chip" }, "No preview"),
         p.openComments ? h("span", { class: "chip" }, p.openComments + (p.openComments === 1 ? " open comment" : " open comments")) : null,
       ];
-      return h("button", { class: "card", onClick: () => { if (canFullscreen() && !isFullscreen()) setDisplay("fullscreen"); openProject(p.id); }, "aria-label": "Open " + p.name },
+      return h("button", { class: "card", "data-edit": p.id, onClick: () => { if (canFullscreen() && !isFullscreen()) setDisplay("fullscreen"); openProject(p.id); }, "aria-label": "Open " + p.name },
         h("div", { class: "thumb" },
           // The signed link exactly as given: changing it (encodeURI made its %2F %252F) breaks its signature.
           p.thumb ? h("img", { src: p.thumb, alt: "", loading: "lazy", decoding: "async", onError: (e) => e.target.remove() }) : null,
           h("span", { class: "shape" }, p.aspect), p.seconds ? h("span", { class: "dur mono" }, fmtTime(p.seconds, false)) : null,
-          h("div", { class: "over" }, h("span", { class: "name", title: p.name }, p.name), h("span", { class: "sub" }, p.folder))),
+          h("div", { class: "over" }, h("span", { class: "name", title: p.name }, p.name), home ? h("span", { class: "sub" }, p.folder) : null)),
         h("div", { class: "body" }, h("div", { class: "muted small" }, "Updated " + ago(p.updated) + " · v" + p.version), h("div", { class: "chips" }, chips)));
     });
-    return h("div", {}, top,
-      state.err ? h("div", { class: "note err" }, state.err) : null,
-      pg.projects.length ? h("div", { class: "grid" }, cards) : h("div", { class: "empty" }, state.query ? "No edits match \"" + state.query + "\"." : "No edits yet. Ask your AI to make one from your footage."),
+    const none = searching ? "No videos match \"" + state.query + "\"." : home ? "No edits yet. Ask your AI to make one from your footage." : "No videos in this project yet. Ask your AI to make one.";
+    return h("div", {}, top, errNote,
+      pg.projects.length ? h("div", { class: "grid" }, cards) : h("div", { class: "empty" }, none),
       pg.projects.length < pg.total ? h("button", { class: "btn more", disabled: state.loadingMore, onClick: () => { state.loadingMore = true; render(); loadList(true); } }, state.loadingMore ? "Loading…" : "Show more") : null);
   }
 
   function projectView(fresh) {
     const v = state.project;
-    const back = iconBtn("back", "All projects", () => { stopPolling(); state.view = "list"; state.project = null; state.pendingProject = null; state.share = null; state.pick = null; state.renaming = false; player = null; render(); if (!state.page) loadList(); }, "ghost");
+    // Back goes to the videos of this edit's project (the list it was opened from, or its project when the AI opened it).
+    const pf = v ? { id: v.project.folderId, name: v.project.folder } : state.folder;
+    const back = iconBtn("back", pf && pf.id ? "Back to " + pf.name : "All projects", () => {
+      stopPolling(); state.share = null; state.pick = null; state.renaming = false; player = null;
+      if (pf && pf.id && !(state.folder && state.folder.id === pf.id && state.page)) return openFolder(pf);
+      state.view = "list"; state.project = null; state.pendingProject = null; render(); if (!state.page) loadList();
+    }, "ghost");
     if (!v) return h("div", {}, h("div", { class: "row top" }, back), h("div", { class: "skel" }));
     const p = v.project;
     // The name: click it to rename (Enter saves, Esc leaves it as it was).
@@ -825,6 +874,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
 
   const ICONS = {
     back: '<svg class="st" viewBox="0 0 16 16"><path d="M13 8H3M7.5 3.5L3 8l4.5 4.5"/></svg>',
+    folder: '<svg class="st" viewBox="0 0 16 16"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/></svg>',
     prev: '<svg viewBox="0 0 16 16"><path d="M10 3L5 8l5 5"/></svg>',
     next: '<svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5"/></svg>',
     expand: '<svg class="st" viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"/></svg>',

@@ -21,6 +21,14 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## The Rendrr card in Claude: projects first, then their videos (2 November)
+
+- The card used to list every edit of every project in one grid. Now it opens on your projects (one card each: the newest video's picture, how many videos, open comments, rendering).
+- Tap a project to see only its videos, with a search inside it. The back button goes to all projects; any project opens from there.
+- In a video, back goes to that video's project, also when Claude opened the video itself.
+- Server: `app_list_projects` takes `folderId` and sends `folders` with the first page; every edit carries `folderId`. A chat whose cached tool list is older still works: the card picks the project's videos out of the full list.
+- Tested in `apps/mcp/test/app-browser.mjs` (desktop and phone) and `apps/api/test/claude-app.test.ts`.
+
 ## Quick fixes: client comments, several Drive folders, deleting from the Library (1 November)
 
 - Client review page: the comment box is always under the comments. A tap or click on the video pauses it and opens the box at that moment. Phone, small phone and desktop tested (`demo/review-phone.mjs`).
