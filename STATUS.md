@@ -10,9 +10,9 @@ Last updated: 31 October 2026 (UTC). New tonight: object tracking, a face-aware 
 | API health | https://api-production-2428.up.railway.app/health | Yes (served by `api2` since 2 November) |
 | AI connector (MCP) | https://mcp-production-7fa0.up.railway.app/mcp | Yes |
 | https://app.rendrr.live | Same web app on your domain | Yes (verified, certificate valid, 23 October) |
-| api.rendrr.live | Not used by the app | Only bots visit it; it moves to `api2` when the old `api` is deleted |
+| api.rendrr.live | On `api2` (not used by the app) | Needs its DNS CNAME changed to `oefcghrl.up.railway.app` |
 
-The Railway project `rendrr` runs Postgres, Redis, a private file bucket and the four services (`web`, `api`, `worker`, `mcp`), all in **US East**. Each service builds from the branch `claude/rendrr-backend-mcp-1vbkgg`, so every push redeploys it.
+The Railway project `rendrr` runs Postgres, Redis, a private file bucket and the four services (`web`, `api2`, `worker`, `mcp`), all in **US East**. Each service builds from the branch `claude/rendrr-backend-mcp-1vbkgg`, so every push redeploys it.
 
 Checked on the live servers on 23 October: smoke test 23/23 (including the video breakdown, frames on request and reference videos), and the AI connector's full login and tools (see section 2).
 
@@ -28,7 +28,8 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - The internal key between the AI connector and the API is now worked out from the Clerk secret both already have (`packages/core/src/crypto.ts`), so no key had to be copied from `api`. `INTERNAL_API_SECRET` still works if it is set.
 - The address `api-production-2428.up.railway.app` moved from `api` to `api2` (the old one is now `api-retired-2428`). The address stayed the same, so the Google Drive login link, the web app, upload links and Claude did not need changes.
 - Checked after the move: health, the web app allowed through, no-login calls refused, the live web app's calls arrive at `api2`, Claude's list of edits and the Drive library.
-- Left: delete the old `api` service in Railway, then put `api.rendrr.live` on `api2`. Railway's delete asks for an approval the session could not show.
+- The old `api` service is deleted (you deleted it in Railway; the tool's approval prompt did not reach you). Checked again after: health, the web app allowed through, no-login calls refused, the Drive callback, the live web app, Claude's projects card, and no errors on `mcp` or `worker`.
+- `api.rendrr.live` is now on `api2`. Only bots ever visited it. For it to work, change its DNS CNAME at your domain provider from `s1qj853o.up.railway.app` to `oefcghrl.up.railway.app`.
 
 ## Renders failing with "ran out of threads" (2 November)
 
