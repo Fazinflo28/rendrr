@@ -8,6 +8,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { MCP_RATE_LIMIT_PER_MIN } from "@rendrr/shared";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { buildServer, type Who } from "./build";
+import { useKnownProtocolVersion } from "./protocol";
 import { internalSecret } from "./secret";
 
 const API = (process.env.API_INTERNAL_URL || process.env.PUBLIC_API_URL || "http://localhost:4000").replace(/\/$/, "");
@@ -93,12 +94,20 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+const newerVersions = new Set<string>();
 app.post("/mcp", requireAuth, rateLimit, async (req, res) => {
   try {
     const w = await who(req);
     if (!w.clerkId) { res.status(401).json({ error: "Unauthorized" }); return; }
     const server = buildServer(w);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const body = req.body as { method?: string } | { method?: string }[] | undefined;
+    const method = Array.isArray(body) ? body.map((m) => m?.method).join(",") : body?.method || "?";
+    const sent = useKnownProtocolVersion(req);
+    if (sent && !newerVersions.has(sent)) { newerVersions.add(sent); console.warn(`[mcp] a client asks for protocol ${sent}, newer than this server knows: answered as the newest it knows`); }
+    // Why a request was refused (the SDK answers 400 before any tool runs), so it shows in the logs.
+    transport.onerror = (e) => console.warn(`[mcp] ${method}: ${e.message}`);
+    res.on("finish", () => { if (res.statusCode >= 400) console.warn(`[mcp] ${res.statusCode} for ${method} (protocol ${req.headers["mcp-protocol-version"] || "none"}${sent ? `, asked ${sent}` : ""})`); });
     res.on("close", () => { transport.close().catch(() => {}); server.close().catch(() => {}); });
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
