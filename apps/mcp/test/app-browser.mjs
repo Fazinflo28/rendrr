@@ -109,7 +109,10 @@ const doc = APP.replace("<head>", `<head><meta http-equiv="Content-Security-Poli
 const hostHtml = `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width, initial-scale=1"><body style="margin:0;background:#fff"><iframe id=app sandbox="allow-scripts" style="width:900px;border:0;height:600px"></iframe><script>
 const f = document.getElementById("app");
 const phone = location.search.includes("phone");
+// tall: a panel that gives the app a frame taller than the screen and cuts it off (nothing outside the app scrolls).
+const tall = location.search.includes("tall");
 if (phone) f.style.width = "100vw";
+if (tall) document.body.style.overflow = "hidden";
 window.log = [];
 window.addEventListener("message", async (e) => {
   if (e.source !== f.contentWindow) return;
@@ -127,10 +130,11 @@ window.addEventListener("message", async (e) => {
   // Full screen: a fixed panel, as a host gives it; inline: the frame follows the app's height.
   else if (m.method === "ui/request-display-mode") {
     window.fs = m.params.mode === "fullscreen";
-    f.style.width = phone ? "100vw" : window.fs ? "1200px" : "900px"; f.style.height = window.fs ? (phone ? "100vh" : "1000px") : (window.inlineH || 600) + "px";
+    f.style.width = phone ? "100vw" : window.fs ? "1200px" : "900px"; f.style.height = window.fs ? (phone ? (tall ? "2000px" : "100vh") : "1000px") : (window.inlineH || 600) + "px";
     reply({ mode: m.params.mode });
-    // A phone's full-screen panel lays its header and chat box over the app, and says so.
-    f.contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { displayMode: m.params.mode, ...(phone ? { safeAreaInsets: window.fs ? { top: 100, right: 0, bottom: 140, left: 0 } : { top: 0, right: 0, bottom: 0, left: 0 } } : {}) } }, "*");
+    // A phone's full-screen panel lays its header and chat box over the app, but its safe area insets count only the
+    // phone's notch and home bar (as Claude's phone app does).
+    f.contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { displayMode: m.params.mode, ...(phone ? { safeAreaInsets: window.fs ? { top: 47, right: 0, bottom: 34, left: 0 } : { top: 0, right: 0, bottom: 0, left: 0 } } : {}) } }, "*");
   }
   else if (m.method === "ui/notifications/size-changed") { window.inlineH = Math.min(1400, m.params.height); if (!window.fs) f.style.height = window.inlineH + "px"; }
 });
@@ -450,7 +454,12 @@ check(await frame().evaluate(() => getComputedStyle(document.body).backgroundCol
 await page.screenshot({ path: join(dir, "app-dark.png") });
 
 // 9. On a phone: nothing wider than the screen, full screen on open, comment, draw and share with the thumb.
-const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+// Enough comments that they go past the screen.
+for (const pid of Object.keys(db.comments)) for (let k = 0; k < 9; k++) db.comments[pid].push({ id: `m${pid}${k}`, time: 2 + k, text: `Note ${k + 1}: tighten this part`, author: "Dana", mine: false, resolved: false, at: now - k * 60e3 });
+const phoneCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, screen: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+// Playwright's screen size does not reach the sandboxed frame (it says 800 x 600 there): every frame gets the phone's.
+const phoneScreen = (ctx) => ctx.addInitScript(() => { Object.defineProperty(screen, "width", { get: () => 390 }); Object.defineProperty(screen, "height", { get: () => 844 }); });
+await phoneScreen(phoneCtx);
 const ph = await phoneCtx.newPage();
 ph.on("pageerror", (e) => errors.push("phone: " + e.message));
 await ph.exposeFunction("hostTool", (name, args) => (name === "open" ? { ...tool("app_list_projects", {}), open: null, webUrl: "https://app.rendrr.live" } : tool(name, args)));
@@ -469,10 +478,22 @@ await papp.locator("[data-edit]").first().tap();
 await papp.locator("video").waitFor({ timeout: 10000 }); await sleep(400);
 fit = await fits();
 check(await pframe().evaluate(() => document.documentElement.classList.contains("fs")) && fit.over <= 1 && !fit.wide.length, `phone, the edit opens full screen and fits (${fit.wide.join(", ") || "nothing sticks out"})`);
-const pBox = await pframe().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); return { top: r(".top").top, v: r("video"), c: r(".compose"), l: r(".side > .list, .side > .empty"), h: innerHeight, padB: parseFloat(getComputedStyle(document.body).paddingBottom) }; });
+const pBox = await pframe().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); return { top: r(".top").top, v: r("video"), c: r(".compose"), l: r(".side > .list, .side > .empty"), h: innerHeight, padB: parseFloat(getComputedStyle(document.getElementById("root")).paddingBottom) }; });
 check(pBox.top >= 100, `phone: the app's header is clear of Claude's header (${Math.round(pBox.top)} px down)`);
 check(pBox.v.height >= 250 && pBox.c.top > pBox.v.bottom && pBox.c.bottom < pBox.l.top && pBox.c.bottom <= pBox.h - 140, `phone: the player (${Math.round(pBox.v.height)} px), then the box to write a comment, clear of Claude's chat box (${Math.round(pBox.h - pBox.c.bottom)} px above the bottom), then the comments`);
 check(pBox.padB >= 140, "phone: the page ends clear of Claude's chat box");
+// The comments scroll with a swipe (the app scrolls in its own box), and the last one comes up clear of the chat box.
+const scrollPhone = async (pg, fr) => {
+  const lb = await pg.frameLocator("#app").locator(".side > .list").boundingBox();
+  await pg.mouse.move(lb.x + lb.width / 2, Math.min(lb.y + 40, 700));
+  for (let k = 0; k < 12; k++) await pg.mouse.wheel(0, 400);
+  await sleep(300);
+  return fr().evaluate(() => { const root = document.getElementById("root"), cms = document.querySelectorAll(".cm"), last = cms[cms.length - 1].getBoundingClientRect();
+    return { y: root.scrollTop, box: root.clientHeight, all: root.scrollHeight, last: last.bottom, rootBottom: root.getBoundingClientRect().bottom, n: cms.length, scr: screen.height }; });
+};
+const pScroll = await scrollPhone(ph, pframe);
+check(pScroll.y > 100 && pScroll.last <= pScroll.rootBottom - 140, `phone: a swipe scrolls the ${pScroll.n} comments (${Math.round(pScroll.y)} px) and the last one comes up clear of Claude's chat box (${Math.round(pScroll.rootBottom - pScroll.last)} px above the bottom)`);
+await pframe().evaluate(() => { document.getElementById("root").scrollTop = 0; });
 await papp.locator("textarea").tap();
 await papp.locator("textarea").fill("From my phone");
 check(await pframe().evaluate(() => parseFloat(getComputedStyle(document.querySelector("textarea")).fontSize) >= 16), "the box's text is 16 px (phones do not zoom in)");
@@ -506,9 +527,27 @@ check(!(await pframe().evaluate(() => document.documentElement.classList.contain
 await sleep(500); await ph.screenshot({ path: join(dir, "app-phone-inline.png") });
 await phoneCtx.close();
 
+// 10. A phone panel that gives the app a frame taller than the screen and cuts it off: the app's box is the screen's
+// height, so the comments still scroll into view.
+const tallCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, screen: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+await phoneScreen(tallCtx);
+const tp = await tallCtx.newPage();
+tp.on("pageerror", (e) => errors.push("tall phone: " + e.message));
+await tp.exposeFunction("hostTool", (name, args) => (name === "open" ? { ...tool("app_list_projects", {}), open: null, webUrl: "https://app.rendrr.live" } : tool(name, args)));
+await tp.goto(`http://127.0.0.1:${host.address().port}/?phone&tall`);
+const tapp = tp.frameLocator("#app"), tframe = () => tp.frames().find((f) => f !== tp.mainFrame());
+await tapp.locator(".card").first().waitFor({ timeout: 10000 });
+await tapp.locator('[data-folder="f1"]').tap(); await tapp.locator("[data-edit]").first().waitFor({ timeout: 5000 });
+await tapp.locator("[data-edit]").first().tap();
+await tapp.locator("video").waitFor({ timeout: 10000 }); await sleep(400);
+const tScroll = await scrollPhone(tp, tframe);
+check(tScroll.box <= tScroll.scr && tScroll.y > 100 && tScroll.last <= tScroll.scr - 140, `phone, a frame taller than the screen: the app's box is ${tScroll.box} px (screen ${tScroll.scr}), a swipe scrolls the comments and the last one shows above the chat box`);
+await tp.screenshot({ path: join(dir, "app-phone-tall.png") });
+await tallCtx.close();
+
 check(violations.length === 0, `nothing blocked by the content security policy${violations.length ? ": " + violations.join(" | ") : ""}`);
 check(errors.length === 0, `no errors${errors.length ? ": " + errors.join(" | ") : ""}`);
-console.log(`screenshots: ${["app-loading", "app-list", "app-fullscreen", "app-project", "app-comments", "app-dark", "app-phone", "app-phone-inline"].map((n) => join(dir, n + ".png")).join(" ")}`);
+console.log(`screenshots: ${["app-loading", "app-list", "app-fullscreen", "app-project", "app-comments", "app-dark", "app-phone", "app-phone-inline", "app-phone-tall"].map((n) => join(dir, n + ".png")).join(" ")}`);
 await browser.close(); host.close(); media.close();
 if (fails.length) { console.log(`\n${fails.length} failed`); process.exit(1); }
 console.log("\nall passed");

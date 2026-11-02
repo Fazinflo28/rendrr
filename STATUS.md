@@ -21,6 +21,12 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Claude card on phones: the comments scroll (2 November)
+
+- Full screen in Claude's phone app the card did not scroll, and its top sat under Claude's header (the safe area Claude gives counts only the phone's notch and home bar; its header and chat box lie over the card).
+- Now, full screen on a phone, the card scrolls in its own box, never taller than the screen or the container Claude reports, so a frame taller than the screen still scrolls. It keeps at least 112 px clear at the top and 172 px at the bottom, so the last comment comes up above Claude's chat box. The toast and the picture viewer stay in that box.
+- Tested in `apps/mcp/test/app-browser.mjs`: a swipe scrolls 11 comments to the last one, with Claude's real insets, and again in a frame taller than the screen. Before the fix both failed (the header sat 59 px down, behind Claude's).
+
 ## Old API service removed (2 November)
 
 - `api2` (made earlier to get past a stuck deploy) now does all the API work. The old `api` service was a second copy of the same code on the same database, costing about $3-5 a month.
