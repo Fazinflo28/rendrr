@@ -57,6 +57,7 @@ const view = () => {
 };
 function tool(name, args) {
   calls.push({ name, args });
+  if (name === "app_log") return {};
   if (name === "app_get_samples") { db.looks++; return view(); }
   if (name === "app_add_comment") { db.comments.push({ id: "c" + calls.length, time: args.time, text: args.text, author: "Ana", mine: true, resolved: false, at: Date.now(), edited: false, renderId: args.renderId ?? null, drawing: null, images: [] }); return {}; }
   if (name === "app_delete_comment") { db.comments = db.comments.filter((x) => x.id !== args.commentId); return {}; }

@@ -82,6 +82,12 @@ export function buildServer(w: Who) {
       let n = 0;
       const tick = token != null ? setInterval(() => { n++; extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: n, message: "Still working…" } }).catch(() => {}); }, 5000) : null;
       try {
+        // The card's own log: written to the connector's log (who, what, how long the card was open), nothing saved.
+        if (def.name === "app_log") {
+          const a = args as { event?: string; detail?: string; seconds?: number };
+          console.log(`[card] ${w.clerkId || "?"} ${a.event}${a.seconds != null ? ` after ${Math.round(a.seconds)} s` : ""}${a.detail ? `: ${String(a.detail).replace(/\s+/g, " ").slice(0, 500)}` : ""}`);
+          return { content: [{ type: "text" as const, text: "ok" }] };
+        }
         const r = await callApi(w, `/internal/tools/${def.name}`, args);
         if (!r.ok) return { content: [{ type: "text" as const, text: r.json?.error?.message || "That did not work. Try again." }], isError: true };
         const out = r.json as ToolOut;

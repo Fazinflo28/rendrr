@@ -26,6 +26,8 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - Claude now speaks MCP protocol version `2026-07-28`; the MCP library we use (1.32.1) knows versions up to `2025-11-25` and refused, with 400, every call whose header named the newer one, before any tool ran. The connector's logs showed these 400s each time the card was opened.
 - The connector now answers such calls as the newest version it knows (`apps/mcp/src/protocol.ts`), and logs any request it refuses with its method and version. Confirmed live: the log names `2026-07-28` and the calls succeed.
 - Test: `apps/mcp/test/protocol.test.ts` (the library alone refuses an unknown version; with the fix it answers).
+- Then the card disappeared after a few minutes. Found: a `ping` from Claude (only checking the card is alive) stopped the card's refreshing, as a close does; fixed. The card now refreshes once a minute when nothing renders (was every 20 s; every 3 s while rendering, as before).
+- The card now writes its life to the connector's log (`app_log`, a card-only tool, nothing saved): when it starts (host, phone or desktop, size), when Claude changes its mode or closes it (and after how long), errors, and when the page goes away. Search the `mcp` logs for `[card]`.
 
 ## Claude card on phones: the comments scroll (2 November)
 

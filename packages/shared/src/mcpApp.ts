@@ -40,6 +40,8 @@ export const APP_TOOLS: ToolDef[] = [
     input: z.object({ projectId: id("project"), version: z.number().int().min(1).max(100_000).optional() }) },
   { name: "app_render_preview", title: "Render a preview", app: true, write: true, description: "The Rendrr app: render a preview of the latest version when it has none.",
     input: z.object({ projectId: id("project") }) },
+  { name: "app_log", title: "Card log", app: true, description: "The Rendrr app: what happened to the card (it started, the host closed it, an error), kept in the connector's log to find problems. Nothing is saved.",
+    input: z.object({ event: z.enum(["start", "mode", "teardown", "error", "hide"]), detail: z.string().max(500).optional(), seconds: z.number().min(0).max(7 * 86400).optional() }) },
   { name: "app_get_samples", title: "Samples for the app", app: true, description: "The Rendrr app: a set of samples (render_samples): its progress, each frame's picture and each clip's video, and the user's changes on them.",
     input: z.object({ renderId: id("render") }) },
 ];

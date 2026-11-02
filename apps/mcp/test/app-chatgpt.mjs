@@ -44,6 +44,7 @@ const view = () => ({ project: { id: "p1", name: "SaaS launch video", folder: "A
   preview: { renderId: "r3", version: 3, url: `${M}/v1.webm`, seconds: 6, quality: "540p", at: now - 60e3 }, rendering: null, failed: null, comments: [...db.comments.p1] });
 function tool(name, args) {
   calls.push({ name, args });
+  if (name === "app_log") return {};
   if (name === "app_list_projects") return { projects: db.projects, total: 1, offset: 0 };
   if (name === "app_get_project") return view();
   if (name === "app_add_comment") { db.comments.p1.push({ id: "c" + calls.length, time: args.time, text: args.text, author: "Ana", mine: true, resolved: false, at: Date.now(), edited: false, drawing: null, images: [] }); return view(); }

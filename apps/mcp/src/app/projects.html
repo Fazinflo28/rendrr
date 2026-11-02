@@ -357,6 +357,18 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   });
   const notify = (method, params) => post({ jsonrpc: "2.0", method, params: params || {} });
   let host = { caps: {}, ctx: {} };
+  // The card's own log, kept in the connector's log (app_log): it started (with the host and the screen), the host
+  // changed its mode or closed it, an error, the page went away. Each says how long the card had been open; at most 20.
+  const bornAt = Date.now();
+  let logged = 0;
+  const cardLog = (event, detail) => {
+    if (logged >= 20) return Promise.resolve();
+    logged++;
+    return callTool("app_log", { event, seconds: Math.round((Date.now() - bornAt) / 1000), ...(detail ? { detail: String(detail).slice(0, 500) } : {}) }).catch(() => {});
+  };
+  window.addEventListener("error", (e) => { cardLog("error", (e.message || "error") + (e.filename ? " at " + String(e.filename).slice(-40) + ":" + e.lineno : "")); });
+  window.addEventListener("unhandledrejection", (e) => { const r = e.reason; cardLog("error", "unhandled: " + ((r && r.message) || String(r))); });
+  window.addEventListener("pagehide", () => { cardLog("hide", "page closed (" + (host.ctx.displayMode || "?") + ")"); });
 
   window.addEventListener("message", (e) => {
     if (e.source !== window.parent) return;
@@ -371,8 +383,15 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
       return;
     }
     if (m.id != null && m.method) {
-      // Requests from the host: teardown and ping are answered, anything else is not known here.
-      if (m.method === "ui/resource-teardown" || m.method === "ping") { stopPolling(); post({ jsonrpc: "2.0", id: m.id, result: {} }); }
+      // Requests from the host: teardown and ping are answered, anything else is not known here. A ping is only the
+      // host checking the card is alive (it stopped the card's refreshing, as teardown does); teardown is the host
+      // closing the card: it is logged first (the card used to vanish with nothing said), then answered.
+      if (m.method === "ping") post({ jsonrpc: "2.0", id: m.id, result: {} });
+      else if (m.method === "ui/resource-teardown") {
+        stopPolling();
+        const done = () => post({ jsonrpc: "2.0", id: m.id, result: {} });
+        Promise.race([cardLog("teardown", (m.params && m.params.reason) || ""), new Promise((r) => setTimeout(r, 800))]).then(done, done);
+      }
       else post({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "Method not found" } });
       return;
     }
@@ -405,10 +424,15 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   const sendMessage = (text) => (viaOpenAI ? Promise.resolve(oa().sendFollowUpMessage({ prompt: text })).then(() => ({})) : request("ui/message", { role: "user", content: [{ type: "text", text }] }));
   const tellModel = (text) => { if (host.caps.updateModelContext) request("ui/update-model-context", { content: [{ type: "text", text }] }).catch(() => {}); };
 
+  let lastMode = null;
   function applyContext(ctx) {
     host.ctx = Object.assign({}, host.ctx, ctx);
     // The host's theme and colours are not used: the app keeps the Rendrr web app's own dark look.
-    if (ctx.displayMode) { document.documentElement.classList.toggle("fs", ctx.displayMode === "fullscreen"); lastH = 0; if (state.page || state.project) render(); }
+    if (ctx.displayMode) {
+      if (lastMode && ctx.displayMode !== lastMode) cardLog("mode", lastMode + " to " + ctx.displayMode);
+      lastMode = ctx.displayMode;
+      document.documentElement.classList.toggle("fs", ctx.displayMode === "fullscreen"); lastH = 0; if (state.page || state.project) render();
+    }
     applyInsets();
   }
   // Keep clear of the host's own bars: its safe area insets. A phone's full-screen panel (Claude's) lays its header and
@@ -546,7 +570,9 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   function schedulePoll() {
     stopPolling();
     if (state.view !== "project" || !state.project) return;
-    const ms = state.project.rendering ? 3000 : 20000;
+    // While it renders, every 3 s; otherwise once a minute (new comments from a client are rare, and every refresh is
+    // a call through the host).
+    const ms = state.project.rendering ? 3000 : 60000;
     polling = setTimeout(async () => {
       if (state.view !== "project" || !state.project) return;
       if (document.visibilityState === "hidden") return schedulePoll();
@@ -1345,6 +1371,8 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
       host.info = (r && r.hostInfo) || null;
       applyContext((r && r.hostContext) || {});
       notify("ui/notifications/initialized", {});
+      const hi = host.info || {}, hc = host.ctx || {};
+      cardLog("start", [(hi.name || "host") + " " + (hi.version || ""), hc.platform || "", hc.displayMode || "", innerWidth + "x" + innerHeight, "screen " + (screen.width || 0) + "x" + (screen.height || 0)].join(", "));
     } catch {
       if (oa()) useOpenAI(); /* else an old host: carry on, the tools may still work */
     }

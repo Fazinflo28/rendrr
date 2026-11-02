@@ -74,6 +74,7 @@ const view = (id, renderId) => {
 };
 function tool(name, args) {
   calls.push({ name, args });
+  if (name === "app_log") return {};
   if (name === "app_list_projects") {
     const ps = db.projects.filter((p) => (!args.query || p.name.toLowerCase().includes(args.query.toLowerCase())) && (!args.folderId || p.folderId === args.folderId));
     const f = args.folderId ? db.folders.find((x) => x.id === args.folderId) : null;
@@ -452,6 +453,15 @@ await page.evaluate(() => document.getElementById("app").contentWindow.postMessa
 await sleep(200);
 check(await frame().evaluate(() => getComputedStyle(document.body).backgroundColor === "rgb(15, 17, 19)"), "a theme change from the host leaves the Rendrr look as it is");
 await page.screenshot({ path: join(dir, "app-dark.png") });
+
+// The card says in the connector's log when it starts (with the host) and when the host closes it; a ping is answered.
+check(calls.some((c) => c.name === "app_log" && c.args.event === "start" && /test-host/.test(c.args.detail || "")), "the card logs that it started, with the host's name");
+await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", id: "ping1", method: "ping", params: {} }, "*"));
+await sleep(300);
+check(await page.evaluate(() => window.log.some((m) => m.id === "ping1" && m.result)), "a ping from the host is answered");
+await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", id: "td1", method: "ui/resource-teardown", params: {} }, "*"));
+await sleep(600);
+check(calls.some((c) => c.name === "app_log" && c.args.event === "teardown" && c.args.seconds >= 1) && await page.evaluate(() => window.log.some((m) => m.id === "td1" && m.result)), "when the host closes the card it logs that (and how long it was open), then answers");
 
 // 9. On a phone: nothing wider than the screen, full screen on open, comment, draw and share with the thumb.
 // Enough comments that they go past the screen.
