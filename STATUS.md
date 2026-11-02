@@ -24,7 +24,8 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 ## Renders failing with "ran out of threads" (2 November)
 
 - The worker hit its 1000-thread cap and stayed there for hours: every graphic recording and loudness pass failed with `pthread_create() failed`.
-- Cause: the worker ran as `npx tsx` as process 1. A recording browser that was killed or crashed left its child processes behind; process 1 never collected them, so they piled up as zombies or kept running.
+- Cause (reproduced): the worker ran as `npx tsx` as process 1, which never collects processes handed to it. Every browser start leaves Chromium helper processes with process 1 as parent; when the browser closes they die but stay as zombies. Measured: 4 zombies per browser opened and closed, for good. The worker opens a browser for each graphic, variant, test and snapshot, so after about 150-200 of them the cap was full and nothing could render until a restart. With tini as process 1: 0 zombies.
+- Also: under heavy load (many graphic variants and a render at once) FFmpeg could still run out. Browsers, the loudness pass and the render now wait up to a minute for free threads before starting (and before retrying), instead of failing at once.
 - Fix: `tini` is process 1 now (Dockerfile ENTRYPOINT) and collects them. A watchdog (`apps/worker/src/lib/threads.ts`) looks every minute: it stops stray browsers, FFmpeg and Python whose parent is gone, logs what holds the threads when over half are used, and restarts the worker if they stay used up (over 90% for 3 minutes with no job running, or over 97% for 10 minutes).
 - Tested in `apps/worker/test/threads.test.ts`.
 

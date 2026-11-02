@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-core";
 import { cpuBudget, JobError, run } from "./ffmpeg";
+import { waitForThreads } from "./threads";
 
 /** Threads this container may start (cgroup pids.max; it counts threads). */
 function threadBudget() {
@@ -46,6 +47,9 @@ async function takeBrowsers(want: number, signal?: AbortSignal): Promise<number>
   }
   const n = Math.min(want, freeSlots);
   freeSlots -= n;
+  // Room for the browsers in the container's thread budget: wait up to a minute for it (others end) rather than start
+  // into a full container and fail. Reused browsers need none, so this only waits when it is nearly full.
+  await waitForThreads(THREADS_PER_BROWSER * n + 50, 60_000, signal);
   return n;
 }
 const giveBrowsers = (n: number) => { freeSlots += n; };

@@ -19,6 +19,22 @@ export function threadUse(): { current: number | null; max: number | null } {
 
 export type Proc = { pid: number; ppid: number; comm: string; state: string; threads: number };
 
+/**
+ * Waits (up to ms) until at least `need` threads are free. A job about to start a browser or FFmpeg waits here when the
+ * container is nearly full (other jobs end and give theirs back) instead of starting and failing at once. True when
+ * they are free (or the container sets no limit); false when the time ran out (the caller starts small, or anyway).
+ */
+export async function waitForThreads(need: number, ms: number, signal?: AbortSignal, use = threadUse): Promise<boolean> {
+  const end = Date.now() + ms;
+  for (let said = false; ; ) {
+    const { current, max } = use();
+    if (current == null || max == null || max - current >= need) return true;
+    if (Date.now() >= end || signal?.aborted) return false;
+    if (!said) { console.warn(`[threads] ${current} of ${max} in use: waiting for ${need} to start`); said = true; }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
 /** Every process the container can see, from /proc (empty where there is no /proc). */
 export function processes(): Proc[] {
   let ids: string[] = [];

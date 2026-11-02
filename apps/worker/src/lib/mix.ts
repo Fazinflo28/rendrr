@@ -1,7 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ffmpegArgs, loudnessGain, readMixLoudness, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
-import { JobError, run } from "./ffmpeg";
+import { JobError, outOfThreads, run } from "./ffmpeg";
+import { waitForThreads } from "./threads";
 
 export type MixLoudness = { lufs: number | null; peakDb: number | null; gainDb: number };
 
@@ -16,13 +17,16 @@ export async function measureMix(plan: RenderPlan, files: PlanFiles, source: Sou
   const graph = join(o.dir, "mix-measure.txt");
   await writeFile(graph, filterGraph);
   const timeoutMs = o.timeoutMs ?? Math.max(60_000, plan.outputSeconds * 500);
+  await waitForThreads(150, 60_000, o.signal); // a nearly full container: wait for room rather than fail at once
   const ac = new AbortController();
   const stop = () => ac.abort();
   o.signal?.addEventListener("abort", stop, { once: true });
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; ac.abort(); }, timeoutMs);
   try {
-    const { stderr } = await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? graph : a)), { signal: ac.signal, onProgress: (sec) => o.onProgress?.(Math.min(1, sec / Math.max(0.1, plan.outputSeconds))) });
+    const pass = () => run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? graph : a)), { signal: ac.signal, onProgress: (sec) => o.onProgress?.(Math.min(1, sec / Math.max(0.1, plan.outputSeconds))) });
+    // Out of threads: once more when there is room again.
+    const { stderr } = await pass().catch(async (e) => { if (ac.signal.aborted || !outOfThreads(e)) throw e; console.error("[render] loudness pass ran out of threads; waiting for room, then once more"); await waitForThreads(200, 60_000, ac.signal); return pass(); });
     const m = readMixLoudness(stderr);
     if (m.lufs == null) throw new JobError("Measuring the loudness gave no result. Try again.", "loudness", true);
     return { ...m, gainDb: loudnessGain(target, m.lufs) };

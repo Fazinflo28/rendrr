@@ -1,4 +1,5 @@
 import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
+import { waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
 import { formatFile, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
@@ -387,12 +388,15 @@ export async function renderJob(ctx: Ctx) {
     const withGraph = (a: string[]) => a.map((x) => (x === "__FILTER_SCRIPT__" ? graphPath : x));
     est.encStart = Date.now();
     try {
+      // A nearly full container (other jobs hold its threads): wait up to a minute for room; still full, start small.
+      const room = await waitForThreads(400, 60_000, signal);
       try {
-        await run("ffmpeg", withGraph(args), { signal, onProgress });
+        await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress });
       } catch (e) {
-        // Out of threads (a container limit): once more with one filter thread, which needs far fewer.
+        // Out of threads (a container limit): once more with one filter thread, which needs far fewer, when there is room.
         if (signal.aborted || !outOfThreads(e)) throw e;
-        console.error("[render] ffmpeg ran out of threads; trying again with one filter thread and one per decoder");
+        console.error("[render] ffmpeg ran out of threads; waiting for room, then trying again with one filter thread and one per decoder");
+        await waitForThreads(150, 60_000, signal);
         await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress });
       }
     } catch (e) {

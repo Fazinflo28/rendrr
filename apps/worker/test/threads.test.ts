@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { describe, it } from "node:test";
-import { isStray, makeWatchdog, processes, stopStrays, threadReport, type Proc } from "../src/lib/threads";
+import { isStray, makeWatchdog, processes, stopStrays, threadReport, waitForThreads, type Proc } from "../src/lib/threads";
 
 const proc = (pid: number, comm: string, ppid: number, threads = 1, state = "S"): Proc => ({ pid, comm, ppid, threads, state });
 
@@ -60,6 +60,26 @@ describe("thread watchdog", () => {
     assert.equal(why.length, 0);
     w();
     assert.match(why[0], /threads used up \(990 of 1000\) for 10 minutes/);
+  });
+
+  it("a job waits for room when the container is nearly full, starts at once when there is room, and gives up after its time", async () => {
+    let cur = 980;
+    const use = () => ({ current: cur, max: 1000 });
+    const t0 = Date.now();
+    setTimeout(() => { cur = 500; }, 1200); // another job ends
+    assert.equal(await waitForThreads(300, 5000, undefined, use), true);
+    const waited = Date.now() - t0;
+    assert.ok(waited >= 1000 && waited < 3500, `waited for the room (${waited} ms)`);
+    const t1 = Date.now();
+    assert.equal(await waitForThreads(300, 5000, undefined, use), true);
+    assert.ok(Date.now() - t1 < 50, "room: no wait");
+    cur = 990;
+    assert.equal(await waitForThreads(300, 1500, undefined, use), false, "still full after its time: it says so");
+    assert.equal(await waitForThreads(300, 1500, undefined, () => ({ current: null, max: null })), true, "no limit: no wait");
+    const ac = new AbortController(); setTimeout(() => ac.abort(), 300);
+    const t2 = Date.now();
+    assert.equal(await waitForThreads(300, 10_000, ac.signal, use), false);
+    assert.ok(Date.now() - t2 < 2000, "a stopped job stops waiting");
   });
 
   it("stops strays at each look and says so", () => {
