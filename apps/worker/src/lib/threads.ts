@@ -19,16 +19,26 @@ export function threadUse(): { current: number | null; max: number | null } {
 
 export type Proc = { pid: number; ppid: number; comm: string; state: string; threads: number };
 
+/** Threads promised to jobs that are starting (their processes take a few seconds to start all their threads). */
+const held: { n: number; until: number }[] = [];
+function reserved(now = Date.now()) {
+  for (let i = held.length - 1; i >= 0; i--) if (held[i].until <= now) held.splice(i, 1);
+  return held.reduce((s, h) => s + h.n, 0);
+}
+
 /**
  * Waits (up to ms) until at least `need` threads are free. A job about to start a browser or FFmpeg waits here when the
- * container is nearly full (other jobs end and give theirs back) instead of starting and failing at once. True when
- * they are free (or the container sets no limit); false when the time ran out (the caller starts small, or anyway).
+ * container is nearly full (other jobs end and give theirs back) instead of starting and failing at once. The threads
+ * found are held for it for holdMs while its process starts them, so two jobs starting at once do not both count the
+ * same free threads (two renders and a recording together ran the container out). True when they are free (or the
+ * container sets no limit); false when the time ran out (the caller starts small, or anyway).
  */
-export async function waitForThreads(need: number, ms: number, signal?: AbortSignal, use = threadUse): Promise<boolean> {
+export async function waitForThreads(need: number, ms: number, signal?: AbortSignal, use = threadUse, holdMs = 15_000): Promise<boolean> {
   const end = Date.now() + ms;
   for (let said = false; ; ) {
     const { current, max } = use();
-    if (current == null || max == null || max - current >= need) return true;
+    if (current == null || max == null) return true;
+    if (max - current - reserved() >= need) { if (holdMs > 0) held.push({ n: need, until: Date.now() + holdMs }); return true; }
     if (Date.now() >= end || signal?.aborted) return false;
     if (!said) { console.warn(`[threads] ${current} of ${max} in use: waiting for ${need} to start`); said = true; }
     await new Promise((r) => setTimeout(r, 1000));

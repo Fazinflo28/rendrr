@@ -69,19 +69,30 @@ describe("thread watchdog", () => {
     const use = () => ({ current: cur, max: 1000 });
     const t0 = Date.now();
     setTimeout(() => { cur = 500; }, 1200); // another job ends
-    assert.equal(await waitForThreads(300, 5000, undefined, use), true);
+    assert.equal(await waitForThreads(300, 5000, undefined, use, 0), true);
     const waited = Date.now() - t0;
     assert.ok(waited >= 1000 && waited < 3500, `waited for the room (${waited} ms)`);
     const t1 = Date.now();
-    assert.equal(await waitForThreads(300, 5000, undefined, use), true);
+    assert.equal(await waitForThreads(300, 5000, undefined, use, 0), true);
     assert.ok(Date.now() - t1 < 50, "room: no wait");
     cur = 990;
-    assert.equal(await waitForThreads(300, 1500, undefined, use), false, "still full after its time: it says so");
-    assert.equal(await waitForThreads(300, 1500, undefined, () => ({ current: null, max: null })), true, "no limit: no wait");
+    assert.equal(await waitForThreads(300, 1500, undefined, use, 0), false, "still full after its time: it says so");
+    assert.equal(await waitForThreads(300, 1500, undefined, () => ({ current: null, max: null }), 0), true, "no limit: no wait");
     const ac = new AbortController(); setTimeout(() => ac.abort(), 300);
     const t2 = Date.now();
-    assert.equal(await waitForThreads(300, 10_000, ac.signal, use), false);
+    assert.equal(await waitForThreads(300, 10_000, ac.signal, use, 0), false);
     assert.ok(Date.now() - t2 < 2000, "a stopped job stops waiting");
+  });
+
+  it("two jobs starting at once do not both count the same free threads: the first holds its share while it starts", async () => {
+    const use = () => ({ current: 400, max: 1000 }); // 600 free
+    assert.equal(await waitForThreads(400, 2000, undefined, use, 1500), true, "the first render takes 400");
+    const t = Date.now();
+    assert.equal(await waitForThreads(400, 800, undefined, use, 1500), false, "the second does not see the same 400 (only 200 are not held)");
+    assert.ok(Date.now() - t >= 700);
+    assert.equal(await waitForThreads(150, 500, undefined, use, 0), true, "a smaller one fits beside it");
+    await new Promise((r) => setTimeout(r, 900)); // the first one's hold ends (its threads now count in the container's use)
+    assert.equal(await waitForThreads(400, 500, undefined, use, 0), true);
   });
 
   it("stops strays at each look and says so", () => {
