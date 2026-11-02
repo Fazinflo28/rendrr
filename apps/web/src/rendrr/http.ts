@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // HTTP helpers shared by the api and the local footage jobs.
+// BASE: the API's address, baked in when the web app is built (NEXT_PUBLIC_API_URL on Railway's web service): changing
+// it needs a new build, not just a restart. It is api2 at https://api-production-2428.up.railway.app.
 export const BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000").replace(/\/$/, "");
 export const DEV = process.env.NODE_ENV !== "production";
 export const NETWORK_MSG = "We could not reach Rendrr. Check your connection and try again.";
