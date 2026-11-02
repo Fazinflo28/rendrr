@@ -7,10 +7,10 @@ Last updated: 31 October 2026 (UTC). New tonight: object tracking, a face-aware 
 | What | Address | Live? |
 |---|---|---|
 | Web app | https://web-production-9ef14.up.railway.app | Yes (since 23 October, 05:37 UTC) |
-| API health | https://api-production-2428.up.railway.app/health | Yes |
+| API health | https://api-production-2428.up.railway.app/health | Yes (served by `api2` since 2 November) |
 | AI connector (MCP) | https://mcp-production-7fa0.up.railway.app/mcp | Yes |
 | https://app.rendrr.live | Same web app on your domain | Yes (verified, certificate valid, 23 October) |
-| api.rendrr.live | Verified | Certificate waiting: Let's Encrypt's hourly limit; retried automatically, then the app switches to it |
+| api.rendrr.live | Not used by the app | Only bots visit it; it moves to `api2` when the old `api` is deleted |
 
 The Railway project `rendrr` runs Postgres, Redis, a private file bucket and the four services (`web`, `api`, `worker`, `mcp`), all in **US East**. Each service builds from the branch `claude/rendrr-backend-mcp-1vbkgg`, so every push redeploys it.
 
@@ -20,6 +20,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
+
+## Old API service removed (2 November)
+
+- `api2` (made earlier to get past a stuck deploy) now does all the API work. The old `api` service was a second copy of the same code on the same database, costing about $3-5 a month.
+- `api2` no longer reads any setting from `api`: it takes its keys from `worker`, `mcp`, Postgres, Redis and the file bucket.
+- The internal key between the AI connector and the API is now worked out from the Clerk secret both already have (`packages/core/src/crypto.ts`), so no key had to be copied from `api`. `INTERNAL_API_SECRET` still works if it is set.
+- The address `api-production-2428.up.railway.app` moved from `api` to `api2` (the old one is now `api-retired-2428`). The address stayed the same, so the Google Drive login link, the web app, upload links and Claude did not need changes.
+- Checked after the move: health, the web app allowed through, no-login calls refused, the live web app's calls arrive at `api2`, Claude's list of edits and the Drive library.
+- Left: delete the old `api` service in Railway, then put `api.rendrr.live` on `api2`. Railway's delete asks for an approval the session could not show.
 
 ## Renders failing with "ran out of threads" (2 November)
 
@@ -909,7 +918,7 @@ Earlier, on a full local copy of the system (Postgres, Redis, S3-compatible stor
 
 | Stub | What happens now | Key that unblocks it | Where it goes |
 |---|---|---|---|
-| Google Drive | The Drive tab says Google Drive is not set up yet (the fake Drive with demo folders is gone) | `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (Google Cloud → OAuth client, Drive API on, redirect URI `https://api-production-2428.up.railway.app/drive/callback`) | Railway → `api` and `worker` → Variables |
+| Google Drive | The Drive tab says Google Drive is not set up yet (the fake Drive with demo folders is gone) | `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (Google Cloud → OAuth client, Drive API on, redirect URI `https://api-production-2428.up.railway.app/drive/callback`) | Railway → `api2` and `worker` → Variables |
 | Billing | The Billing page shows Free / Pro / Studio. Switching changes the plan name and storage figure only; there is no card, no invoices and no limits | `STRIPE_SECRET_KEY` (plus product setup, not built yet) | Railway → `api` |
 | Save final to Google Drive | Says it is not switched on yet; Save to this computer works | Same Google keys as Drive (above) | Railway → `api` |
 | Transcription | **Real** (your AssemblyAI key is set). Without a key every video would get the sample transcript | `ASSEMBLYAI_API_KEY` | already set on `api` and `worker` |
