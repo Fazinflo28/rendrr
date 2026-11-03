@@ -24,7 +24,7 @@ describe("editing skill", () => {
 
   it("fits in one tool answer and the instructions stay short", () => {
     expect(EDITING_SKILL.length).toBeLessThan(24_000);
-    expect(MCP_INSTRUCTIONS.length).toBeLessThan(1_600);
+    expect(MCP_INSTRUCTIONS.length).toBeLessThan(1_750); // about 430 tokens: what every chat with Rendrr carries
     expect(MCP_INSTRUCTIONS).toContain("get_editing_skill");
     expect(MCP_INSTRUCTIONS).toMatch(/render_preview ONCE/);
   });

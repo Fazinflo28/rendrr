@@ -1,10 +1,10 @@
 import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
-import { formatFile, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
-import { makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
+import { bestResolution, formatFile, isBestQuality, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
+import { joinPieces, makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
 import { allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
-import { ffmpegArgs, lookFileData, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
+import { ffmpegArgs, lookFileData, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -166,7 +166,15 @@ export async function renderJob(ctx: Ctx) {
     const soundIds = Array.from(new Set([...(snapshot.timeline.tracks.a2 as { soundId?: string }[]).map((c) => c.soundId), (snapshot.timeline as { voice?: { soundId?: string } | null }).voice?.soundId].filter((x): x is string => !!x)));
     const soundRows = soundIds.length ? await prisma.sound.findMany({ where: { id: { in: soundIds }, userId: video.userId, status: "ready" } }) : [];
     const sounds = Object.fromEntries(soundRows.map((s) => [s.id, { key: s.key, seconds: s.seconds, name: s.name }]));
-    const planBase = { kind: planKind, snapshot, transcript, source: sourceInfo, videoId: video.id, sources, transcripts, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])), luts, hdrFootage, sounds };
+    // Best quality (render_final quality "best", in the render's quality label): the highest resolution the main
+    // footage fills in the edit's shape (4K vertical phone footage in a 9:16 edit: 4K; never below 1080p) and a finer
+    // encode (RenderPlan.best).
+    const best = kind === "final" && isBestQuality(r.quality);
+    if (best) {
+      const ex = snapshot.timeline.export ?? {};
+      snapshot.timeline.export = { ...ex, resolution: ex.resolution === "4k" || bestResolution(snapshot.aspect, info.width, info.height) === "4k" ? "4k" : "1080p" };
+    }
+    const planBase = { kind: planKind, snapshot, transcript, source: sourceInfo, best, videoId: video.id, sources, transcripts, captionRules: rules?.success ? rules.data.captions : undefined, brollSeconds: Object.fromEntries(brollVideos.map((b) => [b.id, b.seconds])), luts, hdrFootage, sounds };
 
     // A first plan tells us the output size, so graphics can be drawn at the right resolution.
     const first = planRender(planBase);
@@ -394,6 +402,40 @@ export async function renderJob(ctx: Ctx) {
       sendThrottled(i + Math.min(span - 1, Math.floor(pos)), pos - Math.min(span - 1, Math.floor(pos)));
     };
     const withGraph = (a: string[]) => a.map((x) => (x === "__FILTER_SCRIPT__" ? graphPath : x));
+    // ---- In pieces: FFmpeg killed by the container (its memory ran out: many big sources at once, e.g. wide b-roll
+    // scaled up to cover a vertical frame) makes the edit again in pieces of about 15 s, each drawn from the plan cut
+    // down to it (windowPlan: only the sources it shows, drawn exactly as the whole), its sound uncompressed; then the
+    // pieces are joined (picture copied, sound encoded once). A piece killed again is made as two halves (down to 2 s).
+    const killed = (e: unknown) => !signal.aborted && /exited with null/.test((e as Error)?.message || "");
+    const canPiece = plan.model !== "A" && fmt !== "overlay" && fmt !== "audio" && fmt !== "wav";
+    const renderInPieces = async () => {
+      const FPS = plan.fps || 30, onGrid = (t: number) => Math.round(t * FPS) / FPS;
+      const queue = pieceRanges(plan);
+      const made: string[] = [];
+      console.error(`[render] ${r.id}: FFmpeg was killed (out of memory): making it in ${queue.length} pieces`);
+      for (let n = 0; queue.length; n++) {
+        const pc = queue.shift()!;
+        const out = join(ctx.dir, `piece-${n}.mov`), gp = join(ctx.dir, `graph-piece-${n}.txt`);
+        const sub = windowPlan(plan, pc.a, pc.b);
+        const argsOf = (ft: number, decode = cpus * 2) => ffmpegArgs(sub, { ...files, output: out }, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, audioCodec: "pcm" });
+        const go = async (a: ReturnType<typeof argsOf>) => { await writeFile(gp, a.filterGraph); await run("ffmpeg", a.args.map((x) => (x === "__FILTER_SCRIPT__" ? gp : x)), { signal, onProgress: (sec) => onProgress(pc.a + Math.min(sec, pc.b - pc.a)) }); };
+        try {
+          try { await go(argsOf(filterThreads(argsOf(4).filterGraph))); }
+          catch (e) { if (signal.aborted || !outOfThreads(e)) throw e; await waitForThreads(150, 60_000, signal); await go(argsOf(1, 1)); }
+        } catch (e) {
+          if (killed(e) && pc.b - pc.a > 2 + 1e-6) {
+            const mid = onGrid((pc.a + pc.b) / 2);
+            console.error(`[render] ${r.id}: piece ${pc.a.toFixed(2)}-${pc.b.toFixed(2)} s killed too: making it as two halves`);
+            queue.unshift({ a: pc.a, b: mid }, { a: mid, b: pc.b });
+            continue;
+          }
+          throw e;
+        }
+        made.push(out);
+      }
+      await joinPieces(ctx.dir, made, files.output, kind === "preview" ? "96k" : best ? "320k" : "192k", signal);
+      console.log(`[render] ${r.id}: made in ${made.length} pieces and joined`);
+    };
     est.encStart = Date.now();
     try {
       // A nearly full container (other jobs hold its threads): wait up to a minute for room; still full, start small.
@@ -401,11 +443,15 @@ export async function renderJob(ctx: Ctx) {
       try {
         await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress });
       } catch (e) {
-        // Out of threads (a container limit): once more with one filter thread, which needs far fewer, when there is room.
-        if (signal.aborted || !outOfThreads(e)) throw e;
-        console.error("[render] ffmpeg ran out of threads; waiting for room, then trying again with one filter thread and one per decoder");
-        await waitForThreads(150, 60_000, signal);
-        await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress });
+        if (canPiece && killed(e)) await renderInPieces();
+        else {
+          // Out of threads (a container limit): once more with one filter thread, which needs far fewer, when there is room.
+          if (signal.aborted || !outOfThreads(e)) throw e;
+          console.error("[render] ffmpeg ran out of threads; waiting for room, then trying again with one filter thread and one per decoder");
+          await waitForThreads(150, 60_000, signal);
+          try { await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress }); }
+          catch (e2) { if (canPiece && killed(e2)) await renderInPieces(); else throw e2; }
+        }
       }
     } catch (e) {
       if (signal.aborted) throw e;
@@ -528,7 +574,7 @@ export async function renderJob(ctx: Ctx) {
     }
     await prisma.render.update({ where: { id: r.id }, data: {
       status: "done", outputKey: outKey, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
-      quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}) } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr, best }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}) } as unknown as Prisma.InputJsonValue,
     } });
     // Engine Part 3: the preview's sound is transcribed again after it is ready (it never holds the render up).
     if (heard?.status === "queued") await enqueue<HeardJob>("heard", { renderId: r.id }, { jobId: `heard-${r.id}` }).catch((e) => console.error("[render] heard not queued:", (e as Error).message));

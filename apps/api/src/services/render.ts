@@ -1,7 +1,7 @@
 import { chapterProblems, chaptersText, type Chapter } from "@rendrr/shared";
 import { AppError, enqueue, publishRender, readRender, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
-import { FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, qualityLabel, renderTimeoutMs } from "@rendrr/shared";
+import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, qualityLabel, renderTimeoutMs } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
 import { samplesView } from "./samples";
 
@@ -11,7 +11,7 @@ export function stepsFor(kind: "preview" | "final", source: string, sample: bool
 }
 
 /** Starts a render. Local footage needs its original once for a final (code "need-original", as the UI expects). */
-export async function startRender(userId: string, projectId: string, kind: "preview" | "final", opts: { version?: number; by?: string } = {}) {
+export async function startRender(userId: string, projectId: string, kind: "preview" | "final", opts: { version?: number; by?: string; best?: boolean } = {}) {
   const p = await getOwnedProject(userId, projectId);
   const video = await prisma.video.findUniqueOrThrow({ where: { id: p.videoId } });
   if (kind === "preview" && (!video.proxyKey || video.status === "expired")) {
@@ -24,18 +24,22 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   if (kind === "final" && video.status === "missing") {
     throw new AppError("We could not reach your Drive file. Reconnect it and try again.", 409, "drive");
   }
+  // Best quality: the highest resolution the footage fills in the edit's shape, a finer encode (the worker reads "best"
+  // in the quality label). A best final and a standard one of the same version are different renders.
+  const best = kind === "final" && !!opts.best;
   const version = opts.version ?? (await sealLatestVersion(projectId));
   const exists = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   if (!exists) throw new AppError(`Version ${version} does not exist.`, 400);
   // Asking again while the same version is already rendering joins that render.
-  const running = await prisma.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - renderTimeoutMs(kind, video.seconds) - 60_000) } } });
+  const running = await prisma.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, ...(kind === "final" ? { quality: best ? { contains: "best" } : { not: { contains: "best" } } } : {}), createdAt: { gt: new Date(Date.now() - renderTimeoutMs(kind, video.seconds) - 60_000) } } });
   if (running) return running;
 
   const steps = stepsFor(kind, video.source, video.sample);
   // Phase 7: the final's quality from its version's export settings (its time limit follows it); HDR is learnt by the
   // worker from the original and added then.
   const ex = (exists.timeline as unknown as { timeline?: { export?: { resolution?: string; codec?: string } } })?.timeline?.export;
-  const quality = kind === "final" ? qualityLabel({ resolution: ex?.resolution, codec: ex?.codec, hdr: !!video.hdr && ((ex as { hdr?: string })?.hdr ?? "keep") === "keep" }) : "540p";
+  const resolution = best && (ex?.resolution === "4k" || bestResolution(p.aspect, video.width, video.height) === "4k") ? "4k" : best ? "1080p" : ex?.resolution;
+  const quality = kind === "final" ? qualityLabel({ resolution, codec: ex?.codec, hdr: !!video.hdr && ((ex as { hdr?: string })?.hdr ?? "keep") === "keep", best }) : "540p";
   const r = await prisma.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality, by: opts.by ?? "user" } });
   // Review states (In review, Changes requested, Approved) stay put while rendering; the render has its own progress.
   // A finished final still moves the edit to "Final ready", as in the UI.

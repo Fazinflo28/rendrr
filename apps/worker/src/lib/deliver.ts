@@ -2,6 +2,7 @@
 // file itself), or the overlay export's two passes (over black and over white) merged into ProRes 4444 with alpha
 // (alpha from their difference, colour un-premultiplied from the black one). Captions and chapters as text files.
 import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { chaptersText, gifSpec, srtText, vttText, type Chapter } from "@rendrr/shared";
 import { run } from "./ffmpeg";
 
@@ -33,3 +34,14 @@ export async function writeSideFiles(dir: string, plan: { subtitles?: { start: n
   if (plan.chapters?.length) { out.chapters = `${dir}/chapters.txt`; await writeFile(out.chapters, chaptersText(plan.chapters) + "\n"); }
   return out;
 }
+
+/**
+ * Joins the pieces of a final rendered in pieces (each a MOV of the same encode with its sound as PCM) into one MP4:
+ * the picture copied as it is, the sound encoded once (no gap or click where pieces meet), ready to play from the start.
+ */
+export async function joinPieces(dir: string, pieces: string[], output: string, audioBitrate: string, signal?: AbortSignal) {
+  const list = join(dir, "pieces.txt");
+  await writeFile(list, pieces.map((m) => `file '${m.replace(/'/g, "'\\''")}'`).join("\n") + "\n");
+  await run("ffmpeg", ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-map", "0:v", "-map", "0:a?", "-c:v", "copy", "-c:a", "aac", "-b:a", audioBitrate, "-ar", "48000", "-movflags", "+faststart", output], { signal });
+}
+

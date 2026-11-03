@@ -41,6 +41,10 @@ check((await page.locator("#export-summary").textContent()).includes("12 Mbit/s"
 await page.locator("#export-format").selectOption("overlay"); await sleep(250);
 check(await page.locator("#export-overlay-note").count() === 1, "the overlay export says what it holds");
 await page.locator("#export-format").selectOption("mp4"); await sleep(200);
+// Quality: Standard by default; Best says what it does (for this export only) and is sent with the export.
+check(await page.locator('#export-quality [data-v="standard"]').getAttribute("aria-pressed") === "true" || await page.locator('#export-quality [data-v="standard"].on').count() === 1, "Standard quality by default");
+await page.locator('#export-quality [data-v="best"]').click(); await sleep(200);
+check(/4K from 4K footage/.test((await page.locator("#export-best-note").textContent()) || ""), "Best says what it makes");
 // Captions files from the edit itself.
 check(await page.locator("#export-srt").isEnabled(), "SRT can be saved");
 const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 5000 }).catch(() => null), page.locator("#export-srt").click()]);
@@ -49,6 +53,8 @@ check(/^1\n\d\d:\d\d:\d\d,\d{3} --> \d\d:\d\d:\d\d,\d{3}\n\S/.test(srt), `the SR
 const [dv] = await Promise.all([page.waitForEvent("download", { timeout: 5000 }).catch(() => null), page.locator("#export-vtt").click()]);
 check(!!dv && dv.suggestedFilename().endsWith(".vtt"), "WebVTT saved as .vtt");
 check(await page.locator("#export-chapters").isDisabled() && (await page.locator("#export-chapters-note").textContent()).includes("chapter marks"), "no chapter marks: the chapters button says where they come from");
+await page.locator("#export-render").click(); await sleep(600);
+check(await page.evaluate(() => globalThis.__lastRenderOpts?.best === true), "Export final with Best asks for the best quality");
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close();
 console.log(fails.length ? `\n${fails.length} failed` : "\nall passed");

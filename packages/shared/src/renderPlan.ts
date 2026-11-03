@@ -46,6 +46,8 @@ export type PlanInput = {
   /** The user's own audio files the edit uses (add_audio), by id: own music on A2 and the voice (set_voice). One that
    *  is missing is left out (and said so). */
   sounds?: Record<string, { key: string; seconds: number; name: string }>;
+  /** A final at the best quality (see RenderPlan.best). */
+  best?: boolean;
 };
 
 /** through: the zoom transition (in to the cut, out after it). */
@@ -191,6 +193,8 @@ export type RenderPlan = {
    *  and the edit's chapters (chapter marks, in edit seconds). */
   format?: ExportFormat;
   bitrate?: number;
+  /** A final at the best quality: a slower, finer encode (x264 medium at CRF 16, x265 CRF 18/16 HDR) and 320k sound. */
+  best?: boolean;
   chapters?: Chapter[];
   /** Phase 12: the words as subtitle cues in edit seconds (the captions, or the words when captions are off). */
   subtitles?: CaptionEvent[];
@@ -888,6 +892,7 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(Object.keys(stabilize).length ? { stabilize } : {}), ...(Object.keys(stabilized).length ? { stabilized } : {}), ...(adjust.length ? { adjust } : {}),
     ...(kind === "final" && tl.export?.format && tl.export.format !== "mp4" ? { format: tl.export.format } : {}),
     ...(kind === "final" && tl.export?.bitrate && !hdr ? { bitrate: tl.export.bitrate } : {}),
+    ...(kind === "final" && input.best ? { best: true } : {}),
     ...(chapters.length ? { chapters } : {}), ...(subtitles.length ? { subtitles } : {}),
   };
 }
@@ -993,6 +998,32 @@ export function movingFrames(spec: Extract<LookFile, { kind: "moving" }>, plan: 
     return px;
   };
   return { w, h, count, fps, frame };
+}
+
+/**
+ * Where a final rendered in pieces is cut (the worker does this when FFmpeg was killed for running out of memory: each
+ * piece reads only the sources it shows): about every `every` seconds, each cut moved to the nearest join of two
+ * picture parts within a third of that, never inside a transition; on the frame grid. A short edit is one piece.
+ */
+export function pieceRanges(plan: Pick<RenderPlan, "fps" | "outputSeconds" | "parts" | "transitions">, every = 15): { a: number; b: number }[] {
+  const FPS = plan.fps || 30, onGrid = (t: number) => Math.round(t * FPS) / FPS, total = onGrid(plan.outputSeconds);
+  if (!(total > every * 1.5)) return [{ a: 0, b: total }];
+  const inside = (t: number) => (plan.transitions ?? []).find((x) => t > x.start - 1e-6 && t < x.end + 1e-6);
+  const joins = plan.parts.slice(1).map((p) => onGrid(p.start)).filter((t) => t > 0 && t < total && !inside(t));
+  const cuts: number[] = [];
+  let last = 0;
+  while (total - last > every * 1.5) {
+    const at = last + every;
+    const near = joins.filter((t) => t > last + 1 && Math.abs(t - at) <= every / 3).sort((x, y) => Math.abs(x - at) - Math.abs(y - at))[0];
+    let c = near ?? onGrid(at);
+    const tr = near == null ? inside(c) : undefined;
+    if (tr) c = onGrid(tr.end + 1 / FPS);
+    if (!(c > last + 1 && c < total - 1)) break;
+    cuts.push(c);
+    last = c;
+  }
+  const ends = [...cuts, total];
+  return ends.map((b, i) => ({ a: i ? ends[i - 1] : 0, b }));
 }
 
 /**
@@ -1248,6 +1279,8 @@ export type FfmpegOpts = {
   inputThreads?: number;
   /** The loudness gain the measuring pass found (dB). Needed when the plan normalizes loudness. */
   loudnessGainDb?: number;
+  /** "pcm": the sound as 16-bit PCM in place of AAC (a piece of a final rendered in pieces, see the worker). */
+  audioCodec?: "pcm";
   /** Audio only, up to the mix, through ebur128: the measuring pass (its stderr has the loudness summary). */
   measure?: boolean;
   /** Phase 12 (overlay export): the picture under the overlays as one colour (the worker renders black and white and
@@ -2343,12 +2376,14 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
   // HDR (Phase 6): HEVC Main 10 with BT.2020 and the source's transfer in the stream and the container.
   // Phase 7: the output's frame rate (a final keeps its footage's), a keyframe every 2 s, and the export's codec. HEVC
   // carries the hvc1 tag so Apple devices play it; at 4K x265 runs one preset faster.
-  const R = plan.rate || "30", gop = String(Math.round((plan.fps || 30) * 2)), x265Preset = plan.width * plan.height > 4e6 ? "faster" : "fast";
+  // Best quality: one preset slower and a lower CRF (finer), each codec.
+  const best = !preview && !!plan.best;
+  const R = plan.rate || "30", gop = String(Math.round((plan.fps || 30) * 2)), x265Preset = plan.width * plan.height > 4e6 ? (best ? "fast" : "faster") : best ? "medium" : "fast";
   const video0 = plan.hdr
-    ? ["-c:v", "libx265", "-preset", x265Preset, "-crf", "20", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1", "-x265-params", `log-level=error:colorprim=bt2020:transfer=${trc}:colormatrix=bt2020nc:range=limited:repeat-headers=1${plan.hdr.transfer === "pq" ? ":hdr10=1:hdr10-opt=1" : ""}`, "-r", R, "-g", gop, "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", trc]
+    ? ["-c:v", "libx265", "-preset", x265Preset, "-crf", best ? "16" : "20", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1", "-x265-params", `log-level=error:colorprim=bt2020:transfer=${trc}:colormatrix=bt2020nc:range=limited:repeat-headers=1${plan.hdr.transfer === "pq" ? ":hdr10=1:hdr10-opt=1" : ""}`, "-r", R, "-g", gop, "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", trc]
     : plan.codec === "hevc"
-      ? ["-c:v", "libx265", "-preset", x265Preset, "-crf", "22", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-x265-params", "log-level=error:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
-      : ["-c:v", "libx264", "-preset", preview ? "ultrafast" : "veryfast", "-crf", preview ? "28" : "20", "-pix_fmt", "yuv420p", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+      ? ["-c:v", "libx265", "-preset", x265Preset, "-crf", best ? "18" : "22", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-x265-params", "log-level=error:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+      : ["-c:v", "libx264", "-preset", preview ? "ultrafast" : best ? "medium" : "veryfast", "-crf", preview ? "28" : best ? "16" : "20", "-pix_fmt", "yuv420p", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
   // Phase 12: a bitrate the export asks for, in place of constant quality (peaks allowed to 1.5x).
   const crf = video0.indexOf("-crf");
   const video = plan.bitrate && crf >= 0 ? [...video0.slice(0, crf), "-b:v", `${plan.bitrate}M`, "-maxrate", `${Math.round(plan.bitrate * 15) / 10}M`, "-bufsize", `${plan.bitrate * 2}M`, ...video0.slice(crf + 2)] : video0;
@@ -2367,7 +2402,8 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
     "-filter_complex_script", "__FILTER_SCRIPT__",
     "-map", "[vout]", "-map", "[aout]",
     ...video,
-    "-c:a", "aac", "-b:a", preview ? "96k" : "192k", "-ar", "48000",
+    // Pieces of a final rendered apart keep their sound uncompressed (PCM): joined, it is encoded once, with no gap.
+    ...(opts.audioCodec === "pcm" ? ["-c:a", "pcm_s16le"] : ["-c:a", "aac", "-b:a", preview ? "96k" : best ? "320k" : "192k"]), "-ar", "48000",
     "-t", n3(outLen),
     "-movflags", "+faststart",
     ...(opts.threads ? ["-threads", String(opts.threads)] : []),

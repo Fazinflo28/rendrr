@@ -1144,12 +1144,12 @@ function EditorInner({ project, reload, ai, keep }) {
   });
 
   // ---- render flow ----
-  const startRender = async (kind) => {
+  const startRender = async (kind, opts = {}) => {
     pb.setPlaying(false);
     setRender({ kind, status: "running", progress: { step: 0, steps: [], percent: 0 } });
     try {
       const fn = kind === "preview" ? api.renderPreview : api.renderFinal;
-      const result = await fn(project.id, (p) => setRender((r) => r && { ...r, progress: p }));
+      const result = await fn(project.id, (p) => setRender((r) => r && { ...r, progress: p }), opts);
       setRender((r) => ({ ...r, status: "done", result })); setStatus(kind === "preview" ? "Preview ready" : "Final ready"); refreshUsage();
       // A new preview of this version: reload so the player plays the file itself.
       if (kind === "preview") { setRender(null); toast("Preview rendered. The player now plays the file.", { icon: "check", tone: "brand" }); reload(); return; }
@@ -1528,7 +1528,7 @@ function EditorInner({ project, reload, ai, keep }) {
         <div class="row">${render.hasFile ? html`<${Btn} id="upload-original" icon="upload" onClick=${() => sendOriginal(null)}>Upload original and export<//>` : html`<${Btn} id="pick-original" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the original file<//>`}<${Btn} kind="ghost" onClick=${() => setRender(null)}>Not now<//></div></div>`}
     <//>`}
     ${samplesOpen && html`<${SamplesWindow} projectId=${project.id} time=${pb.time} duration=${dur} aspect=${S.aspect} toast=${toast} onSeek=${(t) => pb.seek(t)} onClose=${() => setSamplesOpen(false)} />`}
-    ${exportOpen && html`<${ExportModal} snap=${{ timeline, aspect: S.aspect }} plan=${plan} name=${(S.name || "edit").replace(/[^\w\- ]+/g, "").trim() || "edit"} video=${project.video} doOp=${doOp} onReframe=${() => reframeFace(true)} reframing=${reframing} onRender=${() => { setExportOpen(false); startRender("final"); }} onClose=${() => setExportOpen(false)} />`}
+    ${exportOpen && html`<${ExportModal} snap=${{ timeline, aspect: S.aspect }} plan=${plan} name=${(S.name || "edit").replace(/[^\w\- ]+/g, "").trim() || "edit"} video=${project.video} doOp=${doOp} onReframe=${() => reframeFace(true)} reframing=${reframing} onRender=${(o) => { setExportOpen(false); startRender("final", o); }} onClose=${() => setExportOpen(false)} />`}
     ${share && html`<${CreateLinkModal} projectId=${project.id} onClose=${() => setShare(false)} onCreated=${() => setStatus("In review")} />`}
     ${addOpen && html`<${AddClipModal} main=${{ id: main, name: project.video?.name || "Footage", seconds: footDur }} at=${pb.time} onAdd=${addClip} onClose=${() => setAddOpen(false)} />`}
     ${help && html`<${Modal} title="Keyboard shortcuts" onClose=${() => setHelp(false)}><div class="list">${SHORTCUTS.map(([k, d]) => html`<div key=${k} class="row between" style="padding:6px 4px"><span>${d}</span><span class="kbd">${k}</span></div>`)}</div><//>`}

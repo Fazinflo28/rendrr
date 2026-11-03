@@ -21,6 +21,14 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Finals that failed to export; best quality; straight to Drive (3 November)
+
+- Video 4's final failed every time at "Cutting clips" (FFmpeg "exited with null": killed). The worker's memory was at its 6 GB limit each time. The edit had four wide 3D b-roll clips: in a vertical edit each is scaled up to cover the frame (about 3400x1920) before it is cropped, and FFmpeg's crop keeps the big frame, so every b-roll branch held frames three times the output size. It worked once Claude swapped in clips cropped to vertical.
+- Fix: when FFmpeg is killed (out of memory), the worker makes the edit again in pieces of about 15 s, each drawn from the plan cut down to it (`windowPlan`: only the sources it shows, drawn exactly as the whole), with its sound as PCM; then joins them (`joinPieces`: picture copied, sound encoded once). A piece killed again is made as two halves (down to 2 s). Cuts go on joins of two clips where one is near, never inside a transition (`pieceRanges`).
+- Tested (`apps/worker/test/pieces-render.test.ts`): an edit with a slowed clip, a dissolve, b-roll, a text box and a zoom, whole vs 4 pieces joined: same length, every frame the same (worst difference 0.19; one frame off is 17.9), the same sound (correlation 1.0000), no gap or click at any join.
+- Best quality: `render_final` takes `quality: "best"` (and the web Export window has Quality: Standard / Best): the largest resolution the footage fills in the edit's shape (`bestResolution`: 4K from vertical 4K footage in a 9:16 edit; landscape 4K cropped to vertical is 1080p), x264 medium at CRF 16 (x265 CRF 18, 16 for HDR) and 320k sound; twice the time limit. Carried as "best" in the render's quality label.
+- Drive: Rendrr already saves a final into a Drive folder itself (render_final driveFolder: a folder link, path, id or name; save_to_drive). In this chat Claude downloaded the files to the Mac and uploaded them with another connector instead. render_final's description and the connector's instructions now say to use driveFolder and never download and re-upload.
+
 ## Share a whole project with one link (2 November)
 
 - One link to a project folder: anyone with it watches every video in it, each at its newest version, and leaves comments, no account needed. Videos added to the project later show up on the same link. Comments come back to each video.

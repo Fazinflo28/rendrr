@@ -73,14 +73,30 @@ export const FINAL_TIMEOUT_MS = 15 * 60_000;
 export function renderTimeoutMs(kind: "preview" | "final", sourceSeconds: number, quality?: string | null): number {
   const s = Math.max(0, Number(sourceSeconds) || 0);
   if (kind === "preview") return Math.max(PREVIEW_TIMEOUT_MS, Math.round(s * 300));
-  const k = (/4K/i.test(quality || "") ? 3 : 1) * (/HEVC/i.test(quality || "") ? 2 : 1);
+  // Best quality encodes more carefully (and may render in pieces), so it gets twice the time.
+  const k = (/4K/i.test(quality || "") ? 3 : 1) * (/HEVC/i.test(quality || "") ? 2 : 1) * (/best/i.test(quality || "") ? 2 : 1);
   return Math.max(FINAL_TIMEOUT_MS * k, Math.round(s * 1500 * k));
 }
 
-/** Phase 7: a final's quality label, e.g. "1080p", "4K HEVC", "1080p HEVC HDR" (HDR kept is always HEVC). */
-export function qualityLabel(o: { resolution?: string | null; codec?: string | null; hdr?: boolean }): string {
+/** Phase 7: a final's quality label, e.g. "1080p", "4K HEVC", "1080p HEVC HDR" (HDR kept is always HEVC); "best" at the
+ *  end for a final rendered at the best quality (render_final quality "best"; the worker reads it from the label). */
+export function qualityLabel(o: { resolution?: string | null; codec?: string | null; hdr?: boolean; best?: boolean }): string {
   const res = o.resolution === "4k" ? "4K" : o.resolution === "720p" ? "720p" : "1080p";
-  return [res, o.hdr || o.codec === "hevc" ? "HEVC" : null, o.hdr ? "HDR" : null].filter(Boolean).join(" ");
+  return [res, o.hdr || o.codec === "hevc" ? "HEVC" : null, o.hdr ? "HDR" : null, o.best ? "best" : null].filter(Boolean).join(" ");
+}
+/** Whether a render's quality label asks for the best quality. */
+export const isBestQuality = (quality?: string | null) => /\bbest\b/i.test(quality || "");
+/**
+ * The best final resolution for footage of this size in an edit of this shape: 4K when the largest frame of the edit's
+ * shape that fits inside the footage is 4K or more on its short side (no scaling up), else 1080p (smaller footage is
+ * still made 1080p). Vertical 4K phone footage in a 9:16 edit: 4K; landscape 4K in a 9:16 edit (a crop of 1215 px
+ * wide): 1080p.
+ */
+export function bestResolution(aspect: string, width?: number | null, height?: number | null): "4k" | "1080p" {
+  const [aw, ah] = String(aspect).split(":").map(Number);
+  if (!aw || !ah || !width || !height) return "1080p";
+  const short = Math.min(aw, ah) * Math.min(width / aw, height / ah);
+  return short >= 2160 * 0.98 ? "4k" : "1080p";
 }
 /** Preview copy and analysis limits: 10 minutes, or more for footage longer than about 17 minutes. */
 export function processTimeoutMs(sourceSeconds: number): number {

@@ -1,7 +1,7 @@
 // Phase 7: the Export window before a final. Shape, resolution, codec and (for HDR footage) HDR; the frame rate is the
 // footage's and is shown, not chosen. Every control sends the connector's own op (set_aspect, set_export), so the
 // choice is part of the edit, undoable, and what the AI sees in get_project.
-import { html, Btn, Modal } from "./ui";
+import { html, Btn, Modal, useState } from "./ui";
 import { outputRate, outputSize, rateText } from "@rendrr/shared/renderPlan";
 import { ASPECT_RATIO, chapterProblems, chaptersText, srtText, vttText } from "@rendrr/shared";
 
@@ -10,6 +10,7 @@ const SIZES = [["720p", "720p"], ["1080p", "1080p"], ["4k", "4K"]];
 const CODECS = [["h264", "H.264"], ["hevc", "HEVC"]];
 // Phase 12: what the final is made as; its frame rate.
 const FORMATS = [["mp4", "MP4 video"], ["gif", "GIF (up to 10 min)"], ["audio", "Sound only (.m4a)"], ["wav", "Sound only (WAV)"], ["overlay", "Titles on transparency (ProRes 4444)"]];
+const QUALITY = [["standard", "Standard"], ["best", "Best"]];
 const RATES = [["", "Footage"], ["24", "24"], ["25", "25"], ["30", "30"], ["50", "50"], ["60", "60"]];
 /** A text file the browser saves (captions, chapters). */
 function saveText(name, text, type = "text/plain") {
@@ -46,6 +47,8 @@ export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, r
   const otherShape = !!footAr && Math.abs(Math.log(footAr / (ASPECT_RATIO[snap.aspect] || 16 / 9))) > 0.05;
   const reframed = (snap.timeline.tracks?.v1 || []).some((c) => c.framing?.focus);
   const row = (label, child) => html`<div class="row between" style="gap:12px;align-items:center"><span class="t-label">${label}</span>${child}</div>`;
+  // Best quality is for this export only (not kept with the edit).
+  const [best, setBest] = useState(false);
   return html`<${Modal} title="Export" sub="The final is made from your original at these settings." onClose=${onClose}>
     <div class="col" style="gap:14px" id="export-panel">
       ${row("Shape", html`<${Seg} id="export-aspect" value=${snap.aspect} options=${SHAPES} onPick=${(v) => doOp({ op: "set_aspect", aspect: v })} />`)}
@@ -57,6 +60,8 @@ export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, r
       ${hdrFootage && row("HDR", html`<${Seg} id="export-hdr" value=${ex.hdr || "keep"} options=${[["keep", "Keep HDR"], ["sdr", "Convert to SDR"]]} onPick=${(v) => doOp({ op: "set_export", hdr: v })} />`)}
       ${row("Format", html`<select class="input sm" id="export-format" value=${ex.format || "mp4"} onChange=${(e) => doOp({ op: "set_export", format: e.target.value })}>${FORMATS.map(([v, l]) => html`<option key=${v} value=${v}>${l}</option>`)}</select>`)}
       ${(!ex.format || ex.format === "mp4" || ex.format === "overlay") && row("Frame rate", html`<${Seg} id="export-fps" value=${ex.fps ? String(ex.fps) : ""} options=${RATES} onPick=${(v) => doOp({ op: "set_export", fps: v ? Number(v) : null })} />`)}
+      ${(!ex.format || ex.format === "mp4") && row("Quality", html`<${Seg} id="export-quality" value=${best ? "best" : "standard"} options=${QUALITY} onPick=${(v) => setBest(v === "best")} />`)}
+      ${best && (!ex.format || ex.format === "mp4") && html`<p class="t-small muted" id="export-best-note">Best: the largest size your footage fills in this shape (4K from 4K footage), a slower, finer encode and 320k sound. About twice as long to render.</p>`}
       ${(!ex.format || ex.format === "mp4") && row("Bitrate", html`<label class="row t-small" style="gap:6px;align-items:center"><input class="input sm mono" type="number" min="1" max="200" step="1" id="export-bitrate" placeholder="Auto" value=${ex.bitrate ?? ""} style="width:80px" onChange=${(e) => doOp({ op: "set_export", bitrate: e.target.value ? Number(e.target.value) : null })} />Mbit/s</label>`)}
       ${ex.format === "overlay" && html`<p class="t-small muted" id="export-overlay-note">The graphics, text and captions alone, on transparency, to lay over footage in another editor. Footage, b-roll and zooms are left out.</p>`}
       <p class="t-small muted" id="export-summary">${exportSummary(snap, video)}</p>
@@ -70,7 +75,7 @@ export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, r
         <span class="t-small muted" id="export-chapters-note">${plan.chapters?.length ? `${plan.chapters.length} chapters from your chapter marks${chapterProblems(plan.chapters, plan.outputSeconds).length ? `. YouTube shows none until there are: ${chapterProblems(plan.chapters, plan.outputSeconds).join("; ")}` : "."}` : "Chapters come from chapter marks (your AI adds them with add_marks, kind chapter)."}</span>
       </div>`}
       <p class="t-small muted">${(ex.resolution === "4k" || ex.codec === "hevc") ? "4K and HEVC take longer to render; the window shows the time left." : "Frame rate: the final keeps your footage's. Previews are 30 fps."}</p>
-      <div class="row"><${Btn} icon="film" id="export-render" onClick=${onRender}>Export final<//><${Btn} kind="ghost" onClick=${onClose}>Cancel<//></div>
+      <div class="row"><${Btn} icon="film" id="export-render" onClick=${() => onRender({ best: best && (!ex.format || ex.format === "mp4") })}>Export final<//><${Btn} kind="ghost" onClick=${onClose}>Cancel<//></div>
     </div>
   <//>`;
 }

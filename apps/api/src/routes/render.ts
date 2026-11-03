@@ -14,7 +14,7 @@ export default async function render(app: FastifyInstance) {
 
   app.post("/projects/:id/renders", async (req) => {
     const kind = (req.body as { kind?: string })?.kind === "final" ? "final" : "preview";
-    const r = await startRender(req.user!.id, (req.params as { id: string }).id, kind);
+    const r = await startRender(req.user!.id, (req.params as { id: string }).id, kind, { best: (req.body as { best?: unknown })?.best === true });
     // Phase 7: the server's time limit for this render, so the app waits as long as the server does (no less).
     const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { video: { select: { seconds: true } } } });
     return { renderId: r.id, kind, steps: r.steps, status: r.status, quality: r.quality, limitMs: renderTimeoutMs(kind, v?.video.seconds ?? 0, r.quality) };

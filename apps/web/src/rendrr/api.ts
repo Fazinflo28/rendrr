@@ -50,7 +50,7 @@ const folderRoute = async <T,>(fn: () => Promise<T>): Promise<T> => {
   catch (e: any) { if (isMissingRoute(e)) throw fail("Folders are not on the server yet: it is still being updated. Try again in a few minutes.", "server-old"); throw e; }
 };
 
-async function runRender(kind: "preview" | "final", projectId: string, onProgress?: (p: any) => void) {
+async function runRender(kind: "preview" | "final", projectId: string, onProgress?: (p: any) => void, opts: { best?: boolean } = {}) {
   if (DEV && demo.failNextRender) {
     demo.failNextRender = false;
     const steps = kind === "preview" ? ["Reading timeline", "Cutting clips", "Burning captions", "Packing preview"] : ["Reading timeline", "Cutting clips", "Adding zooms", "Mixing music", "Burning captions", "Encoding 1080p", "Cleaning up raw file"];
@@ -62,7 +62,7 @@ async function runRender(kind: "preview" | "final", projectId: string, onProgres
     onProgress?.({ step: 0, steps: ["Fetching raw from Drive"], percent: 10 }); await wait(700);
     throw fail("We could not reach your Drive file. Reconnect it and try again.", "drive");
   }
-  const started = await post(`/projects/${enc(projectId)}/renders`, { kind });
+  const started = await post(`/projects/${enc(projectId)}/renders`, { kind, ...(kind === "final" && opts.best ? { best: true } : {}) });
   return followRender(started, kind === "preview" ? "Preview render" : "Final render", kind === "final" ? 17 : 5, onProgress);
 }
 
@@ -350,7 +350,7 @@ export const api: any = {
 
   // ---- render ----
   renderPreview: (projectId: string, onProgress?: (p: any) => void) => runRender("preview", projectId, onProgress),
-  renderFinal: (projectId: string, onProgress?: (p: any) => void) => runRender("final", projectId, onProgress),
+  renderFinal: (projectId: string, onProgress?: (p: any) => void, opts?: { best?: boolean }) => runRender("final", projectId, onProgress, opts),
   // Samples: a few frames and short clips drawn as the export draws them; the set once done (its pictures and clips).
   renderSamples: async (projectId: string, ask: { frames?: { at: number; note?: string }[]; clips?: { start: number; end?: number; note?: string }[] }, onProgress?: (p: any) => void) => {
     const started = await post(`/projects/${enc(projectId)}/samples`, ask);

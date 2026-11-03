@@ -313,6 +313,26 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
     await assert.rejects(() => app("app_share_link", {}), /Pick an edit or a project/);
   });
 
+  it("render_final quality best: a render at the best quality (its label says so), apart from a standard one; asked again, the same", async () => {
+    const finals = () => prisma.render.findMany({ where: { projectId, kind: "final" }, orderBy: { createdAt: "asc" } });
+    const before = (await finals()).length;
+    await tool("render_final", { projectId, quality: "best" });
+    let fs = await finals();
+    const best = fs[fs.length - 1];
+    assert.equal(fs.length, before + 1);
+    assert.match(best.quality, /^1080p best$/, `vertical 1080p footage: 1080p, at the best quality (${best.quality})`);
+    await tool("render_final", { projectId, quality: "best" });
+    assert.equal((await finals()).length, before + 1, "asked again while it renders: the same render");
+    await tool("render_final", { projectId });
+    fs = await finals();
+    const std = fs[fs.length - 1];
+    assert.equal(fs.length, before + 2, "a standard final of the same version is a render of its own");
+    assert.doesNotMatch(std.quality, /best/);
+    const desc = MCP_TOOLS.find((t) => t.name === "render_final")!.description;
+    assert.match(desc, /never download the file and upload it again/);
+    assert.match(desc, /Drive folder link/);
+  });
+
   it("get_editing_skill returns the skill", async () => {
     const out = await tool("get_editing_skill", {});
     assert.match(out.text, /^# Fazinflo Editing Skill \(Rendrr edition\)/);
