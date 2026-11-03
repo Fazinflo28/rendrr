@@ -97,9 +97,11 @@ h1 { margin: 0; font-family: var(--display); font-size: 22px; line-height: 28px;
 html.fs, html.fs body { height: 100%; }
 html.fs body { padding: calc(16px + var(--it, 0px)) calc(20px + var(--ir, 0px)) calc(16px + var(--ib, 0px)) calc(20px + var(--il, 0px)); overflow: hidden; }
 html.fs #root { height: 100%; overflow: auto; }
-html.fs .pv { height: 100%; }
+/* Full screen: the player, the comments and the box to write one fill the panel; the comments always keep room for a
+   few (a short panel, e.g. a laptop's, made them 0 px tall between the tabs and the box) and the page scrolls then. */
+html.fs .pv { min-height: 100%; }
 html.fs .pv .side { flex: 1; min-height: 0; }
-html.fs .pv .side > .list, html.fs .pv .side > .empty { flex: 1; min-height: 0; max-height: none; }
+html.fs .pv .side > .list, html.fs .pv .side > .empty { flex: 1 1 0; min-height: 160px; max-height: none; }
 .pv .top { margin-bottom: 0; }
 .pv .top .meta { font-size: 12px; line-height: 16px; color: var(--muted); }
 .stage { background: #000; border-radius: var(--r-md); overflow: hidden; display: flex; justify-content: center; align-items: center; box-shadow: var(--shadow-card); }
@@ -108,8 +110,10 @@ html.fs .pv .side > .list, html.fs .pv .side > .empty { flex: 1; min-height: 0; 
 .stage video { display: block; width: 100%; max-height: 480px; background: #000; cursor: pointer; }
 .stage.tall video { width: auto; max-width: 100%; height: 540px; max-height: none; }
 /* Full screen the player gets what the panel can spare while the comments keep at least about 160 px. */
-html.fs .stage video { max-height: max(220px, min(60vh, calc(100vh - 600px))); }
-html.fs .stage.tall video { height: max(220px, min(60vh, calc(100vh - 600px))); }
+/* The rest of the page (header, seek bar, controls, tabs, a few comments, the box, the room at the bottom) needs about
+   620 px plus the host's bars; the player gets what is left (at least 220 px: below that the page scrolls). */
+html.fs .stage video { max-height: max(220px, min(60vh, calc(100vh - 620px - var(--ib, 0px)))); }
+html.fs .stage.tall video { height: max(220px, min(60vh, calc(100vh - 620px - var(--ib, 0px)))); }
 .noprev { color: var(--dim); padding: 64px 16px; text-align: center; }
 /* The drawing sits exactly on the picture (the player keeps the picture's shape inside its box). */
 .frame { position: relative; width: 100%; display: flex; justify-content: center; }
@@ -305,8 +309,8 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 .viewer { position: relative; background: #000; border-radius: var(--r-md); overflow: hidden; display: flex; justify-content: center; align-items: center; box-shadow: var(--shadow-card); min-height: 160px; }
 .viewer img, .viewer video { display: block; width: 100%; max-height: 480px; object-fit: contain; background: #000; }
 .viewer.tall img, .viewer.tall video { width: auto; max-width: 100%; height: 520px; max-height: none; }
-html.fs .viewer img, html.fs .viewer video { max-height: max(220px, min(58vh, calc(100vh - 520px))); }
-html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58vh, calc(100vh - 520px))); }
+html.fs .viewer img, html.fs .viewer video { max-height: max(220px, min(58vh, calc(100vh - 520px - var(--ib, 0px)))); }
+html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58vh, calc(100vh - 520px - var(--ib, 0px)))); }
 .viewer .wait { width: 100%; aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; gap: 8px; color: rgba(255,255,255,.85); font-size: 13px; background: linear-gradient(100deg, rgba(14,15,18,.92) 30%, rgba(54,58,66,.92) 50%, rgba(14,15,18,.92) 70%); background-size: 200% 100%; animation: sk 1.4s linear infinite; }
 .viewer.tall .wait { width: auto; height: 520px; aspect-ratio: 9 / 16; }
 .viewer .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.5); color: #fff; display: grid; place-items: center; backdrop-filter: blur(4px); z-index: 2; }
@@ -437,13 +441,15 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   }
   // Keep clear of the host's own bars: its safe area insets. A phone's full-screen panel (Claude's) lays its header and
   // its chat box over the app, and the insets it gives count only the phone's notch and home bar (the app's header was
-  // under Claude's): there the app keeps at least 100 px on top and 160 px at the bottom (plus its own 12 px).
+  // under Claude's): there the app keeps at least 100 px on top and 160 px at the bottom (plus its own 12 px). On a
+  // computer, Claude's full-screen panel lays its reply box over the bottom: at least 72 px there.
   const phoneFs = () => host.ctx.displayMode === "fullscreen" && (host.ctx.platform === "mobile" || matchMedia("(pointer: coarse) and (max-width: 560px)").matches);
   function applyInsets() {
     const i = host.ctx.safeAreaInsets || {}, root = document.documentElement.style;
     const n = (x) => Math.max(0, Number(x) || 0);
     const v = { it: n(i.top), ir: n(i.right), ib: n(i.bottom), il: n(i.left) };
     if (phoneFs()) { v.it = Math.max(v.it, 100); v.ib = Math.max(v.ib, 160); }
+    else if (host.ctx.displayMode === "fullscreen") v.ib = Math.max(v.ib, 72);
     for (const k in v) root.setProperty("--" + k, v[k] + "px");
     fitScreen();
   }

@@ -46,6 +46,8 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 
 ## Claude card on phones: the comments scroll (2 November)
 
+- 3 November, on a computer: full screen in a short panel (a laptop's), the comments were squeezed to 0 px between the tabs and the box to write one, so there was nothing to scroll. Now they keep at least 160 px, the page scrolls when the panel is short, the player takes what is left (at least 220 px), and the bottom keeps 72 px clear of Claude's reply box. Tested with a 560 px panel: a wheel scrolls to the comments and the box.
+
 - Full screen in Claude's phone app the card did not scroll, and its top sat under Claude's header (the safe area Claude gives counts only the phone's notch and home bar; its header and chat box lie over the card).
 - Now, full screen on a phone, the card scrolls in its own box, never taller than the screen or the container Claude reports, so a frame taller than the screen still scrolls. It keeps at least 112 px clear at the top and 172 px at the bottom, so the last comment comes up above Claude's chat box. The toast and the picture viewer stay in that box.
 - Tested in `apps/mcp/test/app-browser.mjs`: a swipe scrolls 11 comments to the last one, with Claude's real insets, and again in a frame taller than the screen. Before the fix both failed (the header sat 59 px down, behind Claude's).

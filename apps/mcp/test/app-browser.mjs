@@ -201,7 +201,7 @@ await app.locator("video").waitFor({ timeout: 10000 });
 // While the first picture is on its way: a shimmer over the player, at the edit's shape (not a small black box).
 const loading = await frame().evaluate(() => { const f = document.querySelector(".frame"), l = document.querySelector(".load"), v = document.querySelector("video").getBoundingClientRect(); return { on: f.classList.contains("loading"), shown: getComputedStyle(l).visibility === "visible", text: l.innerText, w: v.width, h: v.height, ready: document.querySelector("video").readyState }; });
 check(loading.on && loading.shown && /Loading preview/.test(loading.text) && loading.ready < 2, `a shimmer shows while the preview loads (${loading.text}, ready ${loading.ready})`);
-check(Math.abs(loading.w / loading.h - 9 / 16) < 0.02 && loading.h >= 400, `the player keeps the edit's shape while it loads (${Math.round(loading.w)}x${Math.round(loading.h)})`);
+check(Math.abs(loading.w / loading.h - 9 / 16) < 0.02 && loading.h >= 300, `the player keeps the edit's shape while it loads (${Math.round(loading.w)}x${Math.round(loading.h)})`);
 await page.screenshot({ path: join(dir, "app-loading.png") });
 await frame().waitForFunction(() => !document.querySelector(".frame").classList.contains("loading"), null, { timeout: 10000 }).catch(() => {});
 check(await frame().evaluate(() => document.querySelector("video").readyState >= 2 && !document.querySelector(".frame").classList.contains("loading")), "the shimmer goes once the picture is in");
@@ -214,7 +214,22 @@ const boxes = () => frame().evaluate(() => {
   return { vh: document.querySelector("video").getBoundingClientRect().height, listH: l.height, order: v.bottom <= l.top && l.bottom <= c.top, gapBelow: Math.round(innerHeight - c.bottom), h: innerHeight, fs: document.documentElement.classList.contains("fs") };
 });
 const fsBox = await boxes();
-check(fsBox.order && fsBox.gapBelow <= 30 && fsBox.vh >= 400 && fsBox.listH >= 140, `full screen: the player on top (${Math.round(fsBox.vh)} of ${fsBox.h} px), the comments in the middle (${Math.round(fsBox.listH)} px), the box at the bottom (${fsBox.gapBelow} px from the edge)`);
+check(fsBox.order && fsBox.gapBelow >= 72 && fsBox.gapBelow <= 110 && fsBox.vh >= 300 && fsBox.listH >= 140, `full screen: the player on top (${Math.round(fsBox.vh)} of ${fsBox.h} px), the comments in the middle (${Math.round(fsBox.listH)} px), the box at the bottom, clear of the host's reply box (${fsBox.gapBelow} px from the edge)`);
+// A short full-screen panel (a laptop's): the comments keep their room (they were squeezed to 0 px between the tabs and
+// the box), and a wheel over the card scrolls down to them and to the box, clear of the reply box.
+await page.evaluate(() => { document.getElementById("app").style.height = "560px"; });
+await sleep(400);
+const shortBox = await frame().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); const root = document.getElementById("root"); return { listH: r(".side > .list").height, scroll: root.scrollHeight > root.clientHeight + 20, h: innerHeight }; });
+const vb = await app.locator(".stage").boundingBox();
+await page.mouse.move(vb.x + vb.width / 2, vb.y + 40);
+for (let k = 0; k < 8; k++) await page.mouse.wheel(0, 300);
+await sleep(300);
+const shortEnd = await frame().evaluate(() => { const r = (q) => document.querySelector(q).getBoundingClientRect(); return { list: r(".side > .list"), c: r(".compose"), h: innerHeight, y: document.getElementById("root").scrollTop }; });
+check(shortBox.listH >= 150 && shortBox.scroll, `a short panel (${shortBox.h} px): the comments keep ${Math.round(shortBox.listH)} px and the card scrolls`);
+check(shortEnd.y > 0 && shortEnd.list.top >= 0 && shortEnd.list.bottom <= shortEnd.h && shortEnd.c.bottom <= shortEnd.h - 72 + 1, `scrolled down, the comments and the box are in view, the box clear of the reply box (${Math.round(shortEnd.h - shortEnd.c.bottom)} px from the bottom)`);
+await page.evaluate(() => { document.getElementById("app").style.height = "1000px"; });
+await frame().evaluate(() => { document.getElementById("root").scrollTop = 0; });
+await sleep(300);
 const fsSizes = (await hostLog()).filter((m) => m.method === "ui/notifications/size-changed").length;
 check(calls.some((c) => c.name === "app_get_project" && c.args.projectId === "p1"), "opening an edit asks Rendrr for it");
 await frame().waitForFunction(() => document.querySelector("video").readyState >= 2, null, { timeout: 10000 }).catch(() => {});
