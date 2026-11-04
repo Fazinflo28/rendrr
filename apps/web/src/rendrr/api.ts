@@ -31,7 +31,9 @@ const videoMeta: Record<string, any> = {};
 let resetSignIn: any = null;
 const reviewKey = (t: string) => { try { return sessionStorage.getItem("rendrr-review-" + t) || ""; } catch { return ""; } };
 const reviewHeaders = (t: string): Record<string, string> => (reviewKey(t) ? { "x-review-key": reviewKey(t) } : {});
-const remember = (v: any) => { if (v && v.id) videoMeta[v.id] = v; return v; };
+import { keepThumb } from "./thumbs";
+const remember = (v: any) => { if (v && v.id) videoMeta[v.id] = v; return keepThumb(v); };
+
 
 async function finishSignIn(ticket: string) {
   const c = await clerk();

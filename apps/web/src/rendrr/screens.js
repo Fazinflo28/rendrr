@@ -420,7 +420,9 @@ function LibraryPage() {
   // Local previews are made in this tab: if it goes away mid preview, they pause until the user comes back.
   useEffect(() => { const vis = () => { if (document.hidden) { api.pauseLocalPreviews(); } q.reload(); }; document.addEventListener("visibilitychange", vis); window.addEventListener("pagehide", api.pauseLocalPreviews); return () => { document.removeEventListener("visibilitychange", vis); window.removeEventListener("pagehide", api.pauseLocalPreviews); }; }, []);
   // Poll while anything is in progress so cards move on their own.
-  useEffect(() => { const busy = q.data?.some((v) => BUSY.includes(v.status)); if (!busy) return; const t = setTimeout(q.reload, 1000); return () => clearTimeout(t); }, [q.data]);
+  // While a video is being prepared, the list is asked for again every 3 s (its step and progress); thumbnails keep
+  // their links (api.keepThumb), so nothing already shown is fetched again.
+  useEffect(() => { const busy = q.data?.some((v) => BUSY.includes(v.status)); if (!busy) return; const t = setTimeout(q.reload, 3000); return () => clearTimeout(t); }, [q.data]);
   const onDrop = (e) => { e.preventDefault(); setOver(false); if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return; api.captureDrop?.(e.dataTransfer); api.filesFromDrop(e.dataTransfer).then((fs) => { if (fs.length) startUpload(fs, undefined, openF || undefined); }); };
   const dropProps = { onDragOver: (e) => { e.preventDefault(); if (Array.from(e.dataTransfer?.types || []).includes("Files")) setOver(true); }, onDragLeave: () => setOver(false), onDrop };
   const act = async (e, fn, msg) => { e.stopPropagation(); try { await fn(); if (msg) toast(msg); q.reload(); } catch (er) { toast(er.message); } };

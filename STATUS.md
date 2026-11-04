@@ -21,6 +21,12 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Library thumbnails load fast (4 November)
+
+- The Library asked for the whole list again every second while any video was being prepared, and every answer signed each thumbnail's link afresh (the time is in the link), so the browser fetched every picture again each time: on a slow connection they never finished.
+- Now: links to stored files are signed at the start of a time slot (a quarter of their life, from a minute to an hour) and last that much longer (`signGet`, `packages/core/src/storage.ts`), so asking again gives the same link; the web app keeps a thumbnail's first link while it is good (`apps/web/src/rendrr/thumbs.ts`); the Library refreshes every 3 s while a video is being prepared (was 1 s). Thumbnails are 640 px JPEGs; videos load only when one is opened.
+- Tests: `packages/core/test/sign.test.ts` (the same link within a slot, a new one after, always good for the life asked), `apps/web/test/thumbs.test.ts`.
+
 ## Finals that failed to export; best quality; straight to Drive (3 November)
 
 - Video 4's final failed every time at "Cutting clips" (FFmpeg "exited with null": killed). The worker's memory was at its 6 GB limit each time. The edit had four wide 3D b-roll clips: in a vertical edit each is scaled up to cover the frame (about 3400x1920) before it is cropped, and FFmpeg's crop keeps the big frame, so every b-roll branch held frames three times the output size. It worked once Claude swapped in clips cropped to vertical.

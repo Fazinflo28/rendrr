@@ -35,13 +35,22 @@ export function s3(): S3Client {
 }
 const Bucket = () => env().S3_BUCKET;
 
-export async function signGet(key: string, seconds = 3600, opts: { download?: string; contentType?: string } = {}): Promise<string> {
+/**
+ * A link to a stored file, good for at least `seconds`. Links are signed at the start of a time slot (a quarter of
+ * their life, from a minute to an hour) and last that much longer, so asking again within the slot gives the same
+ * link: a page that refreshes a list every few seconds (the Library, with 500 thumbnails) keeps the pictures the
+ * browser already has, where a new link each time made it fetch them all again.
+ */
+export async function signGet(key: string, seconds = 3600, opts: { download?: string; contentType?: string; now?: number } = {}): Promise<string> {
+  const slot = signSlot(seconds), nowS = Math.floor((opts.now ?? Date.now()) / 1000);
   return getSignedUrl(s3(), new GetObjectCommand({
     Bucket: Bucket(), Key: key,
     ...(opts.download ? { ResponseContentDisposition: `attachment; filename="${opts.download.replace(/[^\w.\- ]/g, "_")}"` } : {}),
     ...(opts.contentType ? { ResponseContentType: opts.contentType } : {}),
-  }), { expiresIn: seconds });
+  }), { expiresIn: Math.min(604_800, seconds + slot), signingDate: new Date((nowS - (nowS % slot)) * 1000) });
 }
+/** The time slot links of this life are signed in (seconds): a quarter of it, from a minute to an hour. */
+export const signSlot = (seconds: number) => Math.min(3600, Math.max(60, Math.floor(seconds / 4)));
 export async function signPut(key: string, contentType: string, seconds = 3600): Promise<string> {
   return getSignedUrl(s3(), new PutObjectCommand({ Bucket: Bucket(), Key: key, ContentType: contentType }), { expiresIn: seconds });
 }
