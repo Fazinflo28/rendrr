@@ -320,7 +320,7 @@ async function driveTargetOrText(userId: string, folder: string | undefined, cre
 async function renderOut(renderId: string): Promise<ToolOut> {
   const r = await prisma.render.findUniqueOrThrow({ where: { id: renderId } });
   if (r.kind === "sample") return samplesAnswer(r.userId, r.id, false);
-  if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Render final; the app will ask for the original file." : ""}${driveLine(r) ? `\n${driveLine(r)}` : ""}` };
+  if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Export final; the app will ask for the original file." : ""}${driveLine(r) ? `\n${driveLine(r)}` : ""}` };
   if (r.status !== "done") {
     // Phase 7: where it is and the time left (the worker's estimate), so the AI can say when to look again.
     const st = await renderStatus(r);
@@ -1167,7 +1167,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     let r;
     try { r = await startRender(c.userId, i.projectId, "final", { by: c.ai ?? "claude", best: i.quality === "best" }); } catch (e) {
       const code = (e as AppError).code;
-      if (code === "need-original") return { text: "This footage is on the user's computer. Full quality needs the original file once: ask the user to open this edit in Rendrr and press Render final. The app will ask for the file and delete it within 24 hours." };
+      if (code === "need-original") return { text: "This footage is on the user's computer. Full quality needs the original file once: ask the user to open this edit in Rendrr and press Export final. The app will ask for the file and delete it within 24 hours." };
       if (code === "drive") return { text: "The original file is no longer reachable in Google Drive. Ask the user to reconnect it in the Rendrr Library." };
       throw e;
     }

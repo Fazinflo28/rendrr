@@ -21,6 +21,13 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Export final with footage from this computer (5 November)
+
+- "Upload original and export" did nothing but say "Pick the original file to continue." The window showed that button whenever the browser remembered the file from a drop (Chrome keeps a handle to it), but the upload only looked for a file already open in the tab, which is gone after a reload. The picker button was hidden, so there was no way through.
+- Now the button opens the remembered file in the click (Chrome may ask to allow it) and, if it can't, opens a file picker. A "Pick the file" button is always there too. The final keeps the Export window's choices (Best quality).
+- Claude's message for this case now says "Export final" (the button's name).
+- Test: `apps/web/demo/original-file.mjs` (a remembered file uploads and makes the final with Best kept; a file the browser can't open shows the picker; a wrong file is refused by name). It fails on the old code.
+
 ## Library thumbnails load fast (4 November)
 
 - The Library asked for the whole list again every second while any video was being prepared, and every answer signed each thumbnail's link afresh (the time is in the link), so the browser fetched every picture again each time: on a slow connection they never finished.

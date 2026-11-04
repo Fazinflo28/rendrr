@@ -235,6 +235,9 @@ export const api: any = {
     return made;
   },
   hasLocalFile: (videoId: string) => localJobs.has(videoId),
+  /** The original of local footage: held by this tab, else the file this browser remembers (Chrome asks to allow it),
+   *  else a file picker. Call from a click. */
+  ensureLocalFile: (videoId: string, expectedName?: string) => localJobs.ensureFile(videoId, expectedName),
   captureDrop: (dt: DataTransfer | null) => localJobs.capture(dt),
   /** A drop's files, a dropped folder's videos included (call inside the drop event). */
   filesFromDrop: (dt: DataTransfer | null) => filesFromDrop(dt),
@@ -362,9 +365,10 @@ export const api: any = {
   // Local source only: the original is uploaded once for the export and deleted within 24h.
   uploadOriginalForExport: async (projectId: string, file: File | null, onProgress?: (p: any) => void) => {
     const p = await get(`/projects/${enc(projectId)}`);
-    const f = file || localJobs.file(p.videoId);
-    if (!f) throw fail("Pick the original file to continue.", "need-original");
     const v = p.video || {};
+    // A file this browser only remembers (no File in this tab yet) is opened here, not given up on.
+    const f = file || localJobs.file(p.videoId) || (await localJobs.ensureFile(p.videoId, v.originalName));
+    if (!f) throw fail("Pick the original file to continue.", "need-original");
     if (v.originalName && (f.name !== v.originalName || (v.originalSize && f.size !== v.originalSize))) {
       throw fail("That is not the same file. We need '" + v.originalName + "'" + (v.originalSize ? " (" + (v.originalSize / 1e6).toFixed(0) + " MB)" : "") + ".");
     }

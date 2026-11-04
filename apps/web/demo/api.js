@@ -46,6 +46,7 @@ function demoBreakdown(v) {
 }
 const getReview = api.getReview;
 const renderFinal0 = api.renderFinal;
+const hasLocalFile0 = api.hasLocalFile;
 const listDriveFiles = api.listDriveFiles;
 // The design's fake Drive is flat; the demo nests it (folders in folders, Shared with me, a shared drive) like a real one.
 const DEMO_TREE = { root: ["fd1", "fd2", "fd3"], fd2: ["fdB"], fdB: ["fdC"], shared: ["fdS"] };
@@ -97,6 +98,14 @@ Object.assign(api, {
   listSamples: async (projectId) => (demoSamples[projectId] || []).slice(0, 4),
   // The Export window's choice for this export (Best quality) is kept where the page's checks can read it.
   renderFinal: async (projectId, onProgress, opts) => { globalThis.__lastRenderOpts = opts || {}; return renderFinal0(projectId, onProgress); },
+  // A file the browser remembers from a drop (globalThis.__demoRemembered[videoId]: a File, or "denied" when the
+  // browser can no longer open it). The real app opens it in the click; this one hands it over the same way.
+  hasLocalFile: (videoId) => hasLocalFile0(videoId) || !!globalThis.__demoRemembered?.[videoId],
+  ensureLocalFile: async (videoId) => {
+    const f = globalThis.__demoRemembered?.[videoId];
+    if (f && f !== "denied") return f;
+    throw Object.assign(new Error("Pick the original file to continue."), { code: "need-original", friendly: true });
+  },
   // The review page plays a rendered file; the demo has none, so it draws the design's preview instead.
   getReview: async (t) => {
     // globalThis.__demoVersions: as many versions as a long-running edit has; __demoLocked: a password on it (the page's checks set them).

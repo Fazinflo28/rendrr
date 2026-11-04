@@ -1156,15 +1156,22 @@ function EditorInner({ project, reload, ai, keep }) {
       setChat((c) => [...c, { id: "r" + Date.now(), role: "ai", ai: "Rendrr", text: "Final rendered.", workflow: result.steps || ["Encoded 1080p", "Cleaned up raw file"], at: Date.now() }]);
     } catch (e) {
       // Local footage: full quality needs the original once. Ask for it, then run the final.
-      if (e.code === "need-original") { setRender({ kind, status: "original", hasFile: api.hasLocalFile(project.videoId), error: null, progress: { step: 0, steps: [], percent: 0 } }); return; }
+      if (e.code === "need-original") { setRender({ kind, opts, status: "original", hasFile: api.hasLocalFile(project.videoId), error: null, progress: { step: 0, steps: [], percent: 0 } }); return; }
       setRender((r) => ({ ...r, status: "error", code: e.code, error: e.message }));
     }
   };
   const sendOriginal = async (file) => {
+    const opts = render?.opts || {};
+    // No file picked here: open the one this browser remembers (Chrome may ask to allow it), else a file picker.
+    // Asked first, inside the click, so the browser lets it ask.
+    if (!file) {
+      try { file = await api.ensureLocalFile(project.videoId, project.video?.originalName); }
+      catch (e) { setRender((r) => ({ ...r, status: "original", hasFile: false, error: e.message })); return; }
+    }
     setRender((r) => ({ ...r, status: "running", progress: { step: 0, steps: ["Uploading original"], percent: 0 } }));
     try { await api.uploadOriginalForExport(project.id, file, (p) => setRender((r) => r && { ...r, progress: p })); }
     catch (e) { setRender((r) => ({ ...r, status: "original", hasFile: api.hasLocalFile(project.videoId), error: e.message })); return; }
-    startRender("final");
+    startRender("final", opts);
   };
   const reconnectDrive = async () => { try { await api.reconnectDriveFile(project.videoId, project.video?.driveFileId); toast("Drive file reconnected", { icon: "drive", tone: "brand" }); startRender("final"); } catch (e) { toast(e.message); } };
 
@@ -1525,7 +1532,7 @@ function EditorInner({ project, reload, ai, keep }) {
         ${project.video && html`<p class="t-small muted">Looking for <b style="color:var(--ink)">${project.video.originalName}</b> · ${project.video.size}</p>`}
         ${render.error && html`<p class="t-small" role="alert" id="original-error" style="color:var(--ink)"><${Icon} name="alert" size="13" /> ${render.error}</p>`}
         <input type="file" accept="video/*" class="hide" id="original-file" onChange=${(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) sendOriginal(f); }} />
-        <div class="row">${render.hasFile ? html`<${Btn} id="upload-original" icon="upload" onClick=${() => sendOriginal(null)}>Upload original and export<//>` : html`<${Btn} id="pick-original" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the original file<//>`}<${Btn} kind="ghost" onClick=${() => setRender(null)}>Not now<//></div></div>`}
+        <div class="row wrap">${render.hasFile ? html`<${Btn} id="upload-original" icon="upload" onClick=${() => sendOriginal(null)}>Upload original and export<//><${Btn} kind="secondary" id="pick-other" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the file<//>` : html`<${Btn} id="pick-original" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the original file<//>`}<${Btn} kind="ghost" onClick=${() => setRender(null)}>Not now<//></div></div>`}
     <//>`}
     ${samplesOpen && html`<${SamplesWindow} projectId=${project.id} time=${pb.time} duration=${dur} aspect=${S.aspect} toast=${toast} onSeek=${(t) => pb.seek(t)} onClose=${() => setSamplesOpen(false)} />`}
     ${exportOpen && html`<${ExportModal} snap=${{ timeline, aspect: S.aspect }} plan=${plan} name=${(S.name || "edit").replace(/[^\w\- ]+/g, "").trim() || "edit"} video=${project.video} doOp=${doOp} onReframe=${() => reframeFace(true)} reframing=${reframing} onRender=${(o) => { setExportOpen(false); startRender("final", o); }} onClose=${() => setExportOpen(false)} />`}
