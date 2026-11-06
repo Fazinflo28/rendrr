@@ -21,6 +21,15 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## The editor made clean and dark like Edits (6 November)
+
+- Rail icons redrawn in one plain outline style like the Edits app's (my own drawings: picture, music notes, "Aa", "CC", three rings for Color, a camera for Multicam, a page for Transcript, a bookmark, a sparkle, a speech bubble).
+- No coloured backgrounds: the open tool, the active timeline tool and toggles just turn white. While no tool is open the rail shows the names beside the icons; with one open, icons only.
+- Darker (#0b0c0e) and flat: no cards or shadows; the rail, the open tool, the player, the inspector and the timeline are split by hairlines. Settings in the panes are flat sections with hairlines. Top bar buttons are outlined pills; Export is a white pill.
+- The inspector with nothing selected only says "Select a clip".
+- Phone: the top bar grows with its rows (it overlapped the player).
+- Tests: `apps/web/demo/panel.mjs` (names only while no tool is open, no coloured background, empty inspector says only "Select a clip"), plus the phone and comment tests.
+
 ## The editor laid out like Instagram Edits for Mac (6 November)
 
 - Studied from the screen recording you shared (Edits for macOS, every screen). The lupikovoleg/instagram-edits-sdk repo (MIT) is a Reel analytics SDK (insights, retention); it has nothing on the editor's layout, so nothing was taken from it.

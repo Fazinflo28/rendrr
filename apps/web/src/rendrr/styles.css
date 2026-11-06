@@ -1347,3 +1347,70 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
   .ed-top .tb-search { flex: 1 1 100%; order: 9; }
   .tb-search-box { width: 100%; }
 }
+
+/* ---------- The editor, clean and dark like Edits: flat panes split by hairlines, plain icons ----------
+   No cards or shadows; the rail is icons (with their names beside them while no tool is open); the open tool, the
+   selection and the active timeline tool show by turning white, never by a coloured background. */
+.editor { --ed-bg: #0b0c0e; --ed-pane: #0b0c0e; --ed-line: rgba(255,255,255,.07); --ed-dim: #8b8c90; background: var(--ed-bg); }
+.editor .ed-body { padding: 0; gap: 0; grid-template-rows: minmax(0, 1fr) clamp(250px, 36vh, 360px); }
+.editor .ed-work { gap: 0; grid-template-columns: 60px 340px minmax(0, 1fr) 352px; }
+.editor .ed-work.lib-closed { grid-template-columns: 196px minmax(0, 1fr) 352px; }
+.editor .ed-top { height: 60px; border-bottom: 1px solid var(--ed-line); }
+.editor .ed-top .name { font-size: 15px; }
+.editor .ed-top .btn.secondary, .editor .ed-top .btn.ghost, .editor .ed-top .btn.quiet, .editor .tb-chip, .editor .tb-search-box { background: transparent; box-shadow: none; border: 1px solid rgba(255,255,255,.12); border-radius: var(--pill); height: 34px; font-size: 13px; font-weight: 500; color: var(--ink); }
+.editor .ed-top .btn.secondary:hover, .editor .ed-top .btn.ghost:hover, .editor .tb-chip:hover, .editor .tb-chip[aria-expanded=true] { background: rgba(255,255,255,.06); }
+.editor .ed-top #render-final { background: #f1f1f2; color: #0b0c0e; box-shadow: none; border-radius: var(--pill); height: 34px; padding: 0 16px; font-size: 13px; }
+.editor .ed-top #render-final:hover { background: #fff; box-shadow: none; }
+.editor .ed-top #version-btn { background: transparent; border: 1px solid rgba(255,255,255,.12); box-shadow: none; }
+.editor .tb-search-box:focus-within { background: rgba(255,255,255,.04); box-shadow: none; border-color: rgba(255,255,255,.24); }
+/* rail */
+.editor .ed-rail { background: transparent; box-shadow: none; border-radius: 0; padding: 14px 8px; gap: 10px; }
+.editor .rail-group + .rail-group { border-top: 0; padding-top: 0; }
+.editor .rail-btn { color: var(--ed-dim); background: none; box-shadow: none; border-radius: 10px; padding: 9px 0; }
+.editor .rail-btn:hover { color: var(--ink); background: none; }
+.editor .rail-btn.on { color: #fff; background: none; box-shadow: none; }
+.editor .rail-btn .gi { width: 26px; height: 26px; flex: none; }
+.editor .rail-btn .gi path[stroke] { stroke-width: 1.8; }
+.editor .rail-l { font-size: 14px; font-weight: 500; line-height: 18px; letter-spacing: 0; }
+.editor .ed-work:not(.lib-closed) .rail-l { display: none; }
+.editor .ed-work.lib-closed .rail-btn { flex-direction: row; justify-content: flex-start; gap: 18px; padding: 10px 14px; }
+.editor .rail-btn .n { top: 2px; right: 4px; background: #fff; color: #0b0c0e; }
+.editor .ed-work.lib-closed .rail-btn .n { position: static; margin-left: auto; }
+/* panes */
+.editor .ed-lib, .editor .ed-insp { background: var(--ed-pane); box-shadow: none; border-radius: 0; }
+.editor .ed-lib { border-right: 1px solid var(--ed-line); }
+.editor .ed-insp { border-left: 1px solid var(--ed-line); }
+.editor .ed-lib .rp-head, .editor .ed-insp .rp-head { border-bottom: 0; min-height: 52px; }
+.editor .ed-lib .rp-ico, .editor .ed-insp .rp-ico { background: none; color: var(--ink); width: 22px; }
+.editor .rp-back { background: rgba(255,255,255,.06); color: var(--ink-dim); width: 28px; height: 28px; }
+.editor .ed-lib .lib-media .mon, .editor .ed-lib .lib-media .bin { background: rgba(255,255,255,.03); box-shadow: none; }
+.editor .ed-work > .center { padding: 16px 20px 12px; }
+.editor .player { box-shadow: none; border-radius: 4px; }
+.editor .controls { background: transparent; box-shadow: none; padding: 0; }
+.editor .insp-empty { height: 100%; justify-content: center; padding: 0 0 12%; }
+.editor .insp-empty span { color: var(--ed-dim); font-size: 15px; }
+/* timeline */
+.editor .ed-body > .tl { background: var(--ed-bg); box-shadow: none; border-radius: 0; border-top: 1px solid var(--ed-line); }
+.editor .tl-bar { border-bottom: 0; min-height: 52px; }
+.editor .tl-acts .tool, .editor .tl-bar .tool { color: var(--ink-dim); }
+.editor .tl-acts .tool:hover, .editor .tl-bar .tool:hover { color: #fff; background: rgba(255,255,255,.06); }
+.editor .tl-acts .tool.on { background: rgba(255,255,255,.1); color: #fff; box-shadow: none; }
+.editor .tl-acts .tbar-sep { background: rgba(255,255,255,.12); }
+.editor .tl-labels { background: transparent; border-right: 0; }
+.editor .tl-labels div b { background: transparent; color: var(--ed-dim); }
+@media (max-width: 1023px) {
+  .editor .ed-top { height: auto; flex: none; padding-top: 10px; padding-bottom: 10px; }
+  .editor .ed-body { padding: 0 var(--gutter-r) calc(24px + env(safe-area-inset-bottom, 0px)) var(--gutter-l); gap: 0; }
+  .editor .ed-work, .editor .ed-work.lib-closed { gap: 0; }
+  .editor .ed-rail { border-top: 1px solid var(--ed-line); border-bottom: 1px solid var(--ed-line); padding: 6px 0; }
+  .editor .ed-work .rail-l, .editor .ed-work:not(.lib-closed) .rail-l { display: block; font-size: 11px; line-height: 13px; }
+  .editor .ed-work .rail-btn, .editor .ed-work.lib-closed .rail-btn { flex-direction: column; gap: 4px; padding: 8px 0; width: 66px; }
+  .editor .ed-lib, .editor .ed-insp { border: 0; border-bottom: 1px solid var(--ed-line); }
+  .editor .ed-work > .center { padding: 12px 0; }
+  .editor .ed-insp { min-height: 120px; }
+}
+/* the settings in the panes: flat sections split by hairlines, not cards */
+.editor .panel .pb > .col > .col, .editor .panel .pb > .col > details, .editor .panel .pb > .col > label#hdr-row { background: transparent; border-radius: 0; padding: 14px 2px; border-top: 1px solid var(--ed-line); }
+.editor .panel .pb > .col > .col:first-child, .editor .panel .pb > .col > :first-child { border-top: 0; padding-top: 2px; }
+.editor .panel .pb:not(.cmts) > .col { gap: 2px !important; }
+.editor .panel .card.flat { background: rgba(255,255,255,.03); box-shadow: none; }

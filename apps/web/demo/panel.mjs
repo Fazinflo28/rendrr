@@ -63,9 +63,18 @@ for (const [tag, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
   const w0 = await playerW();
   await page.locator("#tool-back").click(); await sleep(250);
   check(await page.locator("#lib-panel").count() === 0, `${tag}: the X closes the panel`);
-  if (tag === "desktop") check(await playerW() > w0 + 200, `${tag}: the player takes the room (${Math.round(w0)} -> ${Math.round(await playerW())} px)`);
+  if (tag === "desktop") {
+    check(await playerW() > w0 + 120, `${tag}: the player takes the room (${Math.round(w0)} -> ${Math.round(await playerW())} px)`);
+    // Like Edits: the rail shows the tools' names while no tool is open, icons only while one is; no coloured background.
+    check(await page.locator("#tab-media .rail-l").isVisible(), `${tag}: with no tool open the rail shows the names`);
+    await page.locator("#tab-media").click(); await sleep(200);
+    check(!(await page.locator("#tab-media .rail-l").isVisible()), `${tag}: with a tool open it shows icons only`);
+    const bg = await page.$eval("#tab-media", (e) => getComputedStyle(e).backgroundColor);
+    check(/rgba\(0, 0, 0, 0\)|transparent/.test(bg), `${tag}: the open tool has no coloured background (${bg})`);
+    await page.locator("#tool-back").click(); await sleep(200);
+  }
   // Inspector: nothing selected, a clip, a text.
-  check(/Select a clip/.test(await page.locator("#inspector").innerText()) && await page.locator("#project-facts").count() === 1, `${tag}: with nothing selected the inspector says "Select a clip" and shows the project`);
+  check((await page.locator("#inspector").innerText()).trim() === "Select a clip", `${tag}: with nothing selected the inspector only says "Select a clip"`);
   check((await overflow(page, "#inspector")).length === 0, `${tag}: the empty inspector fits`);
   await page.locator(".clip.video").nth(1).click(); await sleep(300);
   check(await page.locator("#inspector #clip-panel").count() === 1 && await page.locator("#inspector #audio-inspector").count() === 1, `${tag}: a clip shows its speed, motion and sound in the inspector`);

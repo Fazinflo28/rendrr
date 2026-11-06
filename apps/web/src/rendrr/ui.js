@@ -93,6 +93,17 @@ const ICONS = {
   edit: { s: "M15.5 5a2.1 2.1 0 0 1 3 3L8.5 18l-4 1.5 1.5-4z M13.5 7l3 3" },
   lines: { s: "M4.5 6.5h15 M4.5 11h15 M4.5 15.5h9" },
   cc: { s: "M5 5.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z M10.6 10.1a2 2 0 1 0 0 3.8 M16.6 10.1a2 2 0 1 0 0 3.8" },
+  // The editor's rail, drawn in one plain outline style (like the Edits app's): picture, notes, glyphs, rings.
+  rMedia: { s: "M6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11A2.5 2.5 0 0 1 6.5 4z M4.5 16.5l4.2-4.2a1.5 1.5 0 0 1 2.1 0l5.7 5.7 M14.2 15.8l1.6-1.6a1.5 1.5 0 0 1 2.1 0l1.6 1.6", f: "M15.5 7.2a1.7 1.7 0 1 1 0 3.4a1.7 1.7 0 0 1 0-3.4z" },
+  rAudio: { s: "M9 17.5V6.8l10-2.3v10.7 M9 9.6l10-2.3", f: "M6.2 15.3a2.8 2.3 0 1 1 0 4.6a2.8 2.3 0 0 1 0-4.6z M16.2 13a2.8 2.3 0 1 1 0 4.6a2.8 2.3 0 0 1 0-4.6z" },
+  rText: { t: "Aa", ts: 15.5 },
+  rCaptions: { t: "CC", ts: 14.5 },
+  rColor: { s: "M12 3.8a4.6 4.6 0 1 1 0 9.2a4.6 4.6 0 0 1 0-9.2z M8.2 10.4a4.6 4.6 0 1 1 0 9.2a4.6 4.6 0 0 1 0-9.2z M15.8 10.4a4.6 4.6 0 1 1 0 9.2a4.6 4.6 0 0 1 0-9.2z" },
+  rMulticam: { s: "M4.5 7.5h9a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 3 15V9a1.5 1.5 0 0 1 1.5-1.5z M15 10.6l4.6-2.7a.6.6 0 0 1 .9.5v7.2a.6.6 0 0 1-.9.5L15 13.4" },
+  rTranscript: { s: "M7 3.8h7.2L19 8.6V18a2.2 2.2 0 0 1-2.2 2.2H7A2.2 2.2 0 0 1 4.8 18V6A2.2 2.2 0 0 1 7 3.8z M14 4v4.6h4.6 M8.4 12.4h7.2 M8.4 16h4.6" },
+  rReference: { s: "M6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5v-11A2.5 2.5 0 0 1 6.5 4z M9 4v6.5l2-1.5 2 1.5V4" },
+  rAI: { s: "M12 3.5l1.7 4.6a3 3 0 0 0 1.8 1.8l4.6 1.7-4.6 1.7a3 3 0 0 0-1.8 1.8L12 19.7l-1.7-4.6a3 3 0 0 0-1.8-1.8L3.9 11.6l4.6-1.7a3 3 0 0 0 1.8-1.8z M19 3.5v3 M17.5 5h3" },
+  rComments: { s: "M12 4.2c4.6 0 8.2 3.1 8.2 7s-3.6 7-8.2 7c-1 0-2-.1-2.9-.4L5 19.4l1.1-3.5c-1.4-1.3-2.3-2.9-2.3-4.7 0-3.9 3.6-7 8.2-7z" },
   quality: { s: "M4 7h16 M4 12h16 M4 17h16", f: "M7 5.2h2.4v3.6H7z M14 10.2h2.4v3.6H14z M9 15.2h2.4v3.6H9z" },
   gauge: { s: "M4.5 16.5a7.5 7.5 0 1 1 15 0 M12 16.5l3.5-4.5", f: "M12 15a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" },
   type: { s: "M5 7V5h14v2 M12 5v14 M9 19h6" },
@@ -102,7 +113,8 @@ const ICONS = {
 };
 function Icon({ name, size }) {
   const ic = ICONS[name] || ICONS.more;
-  return html`<svg viewBox="0 0 24 24" width=${size} height=${size} aria-hidden="true" class="gi">${ic.s && html`<path d=${ic.s} fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />`}${ic.f && html`<path d=${ic.f} fill="currentColor" stroke="none" />`}</svg>`;
+  // t: a glyph drawn as text (the editor rail's "Aa" and "CC"), in the app's own font.
+  return html`<svg viewBox="0 0 24 24" width=${size} height=${size} aria-hidden="true" class="gi">${ic.s && html`<path d=${ic.s} fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />`}${ic.f && html`<path d=${ic.f} fill="currentColor" stroke="none" />`}${ic.t && html`<text x="12" y="17.2" text-anchor="middle" font-size=${ic.ts || 14} font-weight="700" letter-spacing="-0.4" fill="currentColor" style="font-family: var(--font-display, inherit)">${ic.t}</text>`}</svg>`;
 }
 
 const Btn = ({ kind = "primary", size = "", icon, children, className = "", ...rest }) => html`<button class=${["btn", kind, size, icon && !children ? "icon" : "", className].join(" ")} ...${rest}>${icon && html`<${Icon} name=${icon} />`}${children}</button>`;
