@@ -1,7 +1,7 @@
 /* ===================== shared UI ===================== */
 // Ported from ui/rendrr-ui.html (shared UI script). Changes: module imports/exports, the app contexts
 // live here, the Player can play a real video (`src`), and Thumb shows a real frame when there is one.
-import React, { useState, useEffect, useRef, useMemo, useCallback, useContext, createContext } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, useContext, createContext } from "react";
 import htm from "htm";
 import { createPortal } from "react-dom";
 import { ASPECT_RATIO, aspectSize } from "@rendrr/shared";
@@ -121,12 +121,29 @@ const Btn = ({ kind = "primary", size = "", icon, children, className = "", ...r
 const Toggle = ({ on, onChange, id, label }) => html`<button id=${id} role="switch" aria-checked=${!!on} aria-label=${label} class=${"toggle" + (on ? " on" : "")} onClick=${() => onChange(!on)} />`;
 // JS masonry: fills every column edge to edge (shortest column first), unlike CSS columns which leave trailing columns empty.
 const ORI_H = { "9:16": 16 / 9, "16:9": 9 / 16, "1:1": 1, "4:5": 5 / 4 };
+// The column count is measured before the first paint (a layout effect), so the tiles never show in a wrong count first.
+const useIsoLayout = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 function Masonry({ items, render, oriOf, colWidth = 230, gap = 6 }) {
-  const ref = useRef(); const [cols, setCols] = useState(5);
-  useEffect(() => { const el = ref.current; if (!el) return; const calc = () => setCols(Math.max(2, Math.floor((el.clientWidth + gap) / (colWidth + gap)))); calc(); const ro = new ResizeObserver(calc); ro.observe(el); return () => ro.disconnect(); }, [colWidth, gap]);
+  const ref = useRef();
+  const guess = () => (typeof window === "undefined" ? 4 : Math.max(2, Math.floor((Math.min(window.innerWidth, 1600) * 0.8 + gap) / (colWidth + gap))));
+  const [cols, setCols] = useState(guess);
+  useIsoLayout(() => { const el = ref.current; if (!el) return; const calc = () => { const n = Math.max(2, Math.floor((el.clientWidth + gap) / (colWidth + gap))); setCols((c) => (c === n ? c : n)); }; calc(); const ro = new ResizeObserver(calc); ro.observe(el); return () => ro.disconnect(); }, [colWidth, gap]);
   const buckets = Array.from({ length: cols }, () => ({ h: 0, items: [] }));
   for (const it of items) { const b = buckets.reduce((a, c) => (c.h < a.h ? c : a)); b.items.push(it); b.h += (ORI_H[oriOf(it)] || 1) + gap / colWidth; }
   return html`<div class="jm" ref=${ref} style=${{ gap: gap + "px" }}>${buckets.map((b, i) => html`<div key=${i} class="jm-col" style=${{ gap: gap + "px" }}>${b.items.map(render)}</div>`)}</div>`;
+}
+// The gallery's loading state: tiles of mixed shapes in the same columns the real tiles use.
+const SK_ORI = ["9:16", "16:9", "9:16", "1:1", "4:5", "9:16", "16:9", "1:1", "9:16", "4:5", "9:16", "16:9"];
+const MasonrySkeleton = ({ n = 12 }) => html`<${Masonry} items=${Array.from({ length: n }, (_, i) => ({ id: i, ori: SK_ORI[i % SK_ORI.length] }))} oriOf=${(x) => x.ori} render=${(x) => html`<div key=${x.id} class="skeleton" style=${{ aspectRatio: String(ASPECT_RATIO[x.ori] || 9 / 16), borderRadius: "14px" }} />`} />`;
+// A "…" button with a short menu of actions (the less used ones, so a page shows only its main buttons).
+// items: [{ id, label, icon, onClick, danger }]. Closes on outside click, Escape or a pick.
+function MoreMenu({ id, items, label = "More", size = "sm" }) {
+  const [open, setOpen] = useState(false); const ref = useRef();
+  useEffect(() => { if (!open) return; const k = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); }; const esc = (e) => e.key === "Escape" && setOpen(false); window.addEventListener("mousedown", k); window.addEventListener("keydown", esc); return () => { window.removeEventListener("mousedown", k); window.removeEventListener("keydown", esc); }; }, [open]);
+  return html`<div class="dd" ref=${ref}>
+    <${Btn} kind="ghost" size=${size} icon="more" id=${id} aria-label=${label} title=${label} aria-haspopup="menu" aria-expanded=${open} onClick=${(e) => { e.stopPropagation(); setOpen((o) => !o); }} />
+    ${open && html`<div class="menu dd-menu" role="menu">${items.filter(Boolean).map((it) => html`<button key=${it.id || it.label} id=${it.id} class=${"item" + (it.danger ? " danger" : "")} role="menuitem" disabled=${!!it.disabled} title=${it.title} onClick=${(e) => { e.stopPropagation(); setOpen(false); it.onClick(); }}>${it.icon ? html`<${Icon} name=${it.icon} />` : html`<span style="width:16px" />`}${it.label}</button>`)}</div>`}
+  </div>`;
 }
 // A small dropdown: a secondary button that opens a menu of options. Closes on outside click or Escape.
 function Dropdown({ value, options, onChange, id, size = "sm", icon, left }) {
@@ -149,7 +166,8 @@ const ToastCtx = createContext(() => {});
 function ToastHost({ children }) {
   const [items, setItems] = useState([]);
   const push = useCallback((text, opts = {}) => { const id = Math.random(); setItems((x) => [...x.slice(-2), { id, text, ...opts }]); setTimeout(() => setItems((x) => x.filter((i) => i.id !== id)), opts.ms || 2600); }, []);
-  return html`<${ToastCtx.Provider} value=${push}>${children}<div class="toasts" aria-live="polite">${items.map((t) => html`<div key=${t.id} class=${"toast " + (t.tone || "")}>${t.icon && html`<${Icon} name=${t.icon} />`}${t.text}</div>`)}</div><//>`;
+  // action: { label, onClick } shows a button in the toast (Undo after a delete).
+  return html`<${ToastCtx.Provider} value=${push}>${children}<div class="toasts" aria-live="polite">${items.map((t) => html`<div key=${t.id} class=${"toast " + (t.tone || "")}>${t.icon && html`<${Icon} name=${t.icon} />`}<span class="grow">${t.text}</span>${t.action && html`<button class="toast-act" data-toast-action=${t.action.label} onClick=${() => { setItems((x) => x.filter((i) => i.id !== t.id)); t.action.onClick(); }}>${t.action.label}</button>`}</div>`)}</div><//>`;
 }
 const useToast = () => useContext(ToastCtx);
 
@@ -172,39 +190,64 @@ function Modal({ title, sub, onClose, children, wide, footer }) {
   const node = html`<div class="scrim" ref=${scrim} onMouseDown=${(e) => e.target === e.currentTarget && onClose?.()}><div class=${"modal" + (wide ? " wide" : "")} role="dialog" aria-modal="true" aria-label=${title}>
     <div class="modal-head"><div><h2 class="t-title">${title}</h2>${sub && html`<p class="muted">${sub}</p>`}</div>${onClose && html`<${Btn} kind="quiet" icon="x" aria-label="Close" onClick=${onClose} />`}</div>
     ${children}
-    ${footer && html`<div class="row" style="justify-content:flex-end">${footer}</div>`}
+    ${footer && html`<div class="row modal-foot" style="justify-content:flex-end">${footer}</div>`}
   </div></div>`;
   const host = typeof document !== "undefined" ? document.getElementById("root") || document.body : null;
   return host ? createPortal(node, host) : node;
 }
 
 // ---------- async states ----------
-// status: loading | ready | empty | error. Delay the skeleton 250ms so quick loads do not flash.
+// status: loading | ready | empty | error. Pages remember what they loaded (for the browser tab's life): going back to
+// a page shows it at once from memory and refreshes it in the background. A change sent to the server (any write)
+// forgets them all, so a page never shows something just deleted or renamed elsewhere.
+const memo = new Map(); // key -> { data, writes }
+const writes = () => globalThis.__rendrrWrites || 0;
+const keyOf = (fn, deps) => { try { return fn.toString() + "|" + JSON.stringify(deps); } catch { return null; } };
+function remembered(key) {
+  const m = key && memo.get(key);
+  return m && m.writes === writes() ? m.data : undefined;
+}
+function remember(key, data) {
+  if (!key) return;
+  memo.delete(key); memo.set(key, { data, writes: writes() });
+  if (memo.size > 80) memo.delete(memo.keys().next().value);
+}
+const isEmpty = (data) => data == null || (Array.isArray(data) && data.length === 0);
+/** Forgets every remembered page (another account signed in or out: nothing of the last one may show). */
+const forgetPages = () => { globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1; memo.clear(); };
 function useAsync(fn, deps = []) {
-  const [s, set] = useState({ status: "loading", data: null, error: null, slow: false });
+  const key = keyOf(fn, deps);
+  const first = remembered(key);
+  const [s, set] = useState(() => (first !== undefined ? { status: isEmpty(first) ? "empty" : "ready", data: first, error: null } : { status: "loading", data: null, error: null }));
   const n = useRef(0);
   // keep: refresh in the background. What is on screen stays until the new data arrives (no blank, no skeleton),
   // and a failed refresh leaves it as it was. Pages that poll (the Library while a video is processed) use this.
   const load = useCallback((opts) => {
     const me = ++n.current;
-    const keep = !!opts?.keep;
-    set((x) => (keep && x.data != null ? x : { ...x, status: "loading", error: null, slow: false }));
-    const slowT = setTimeout(() => n.current === me && set((x) => (x.status === "loading" ? { ...x, slow: true } : x)), 250);
-    Promise.resolve().then(fn).then((data) => { if (n.current !== me) return; clearTimeout(slowT); const empty = data == null || (Array.isArray(data) && data.length === 0); set({ status: empty ? "empty" : "ready", data, error: null, slow: false }); })
-      .catch((error) => { if (n.current !== me) return; clearTimeout(slowT); set((x) => (keep && x.data != null ? x : { status: "error", data: null, error, slow: false })); });
-    return () => clearTimeout(slowT);
+    const cached = remembered(key);
+    const keep = !!opts?.keep || cached !== undefined;
+    if (cached !== undefined) set((x) => (x.data === cached ? x : { status: isEmpty(cached) ? "empty" : "ready", data: cached, error: null }));
+    else set((x) => (keep && x.data != null ? x : { ...x, status: "loading", error: null }));
+    Promise.resolve().then(fn).then((data) => { if (n.current !== me) return; remember(key, data); set({ status: isEmpty(data) ? "empty" : "ready", data, error: null }); })
+      .catch((error) => { if (n.current !== me) return; set((x) => (keep && x.data != null ? x : { status: "error", data: null, error })); });
   }, deps);
   useEffect(() => { load(); }, [load]);
-  return { ...s, reload: () => load({ keep: true }), setData: (fnOrData) => set((x) => { const data = typeof fnOrData === "function" ? fnOrData(x.data) : fnOrData; const empty = data == null || (Array.isArray(data) && data.length === 0); return { ...x, data, status: empty ? "empty" : "ready" }; }) };
+  return { ...s, reload: () => load({ keep: true }), setData: (fnOrData) => set((x) => { const data = typeof fnOrData === "function" ? fnOrData(x.data) : fnOrData; remember(key, data); return { ...x, data, status: isEmpty(data) ? "empty" : "ready" }; }) };
 }
 const Skeleton = ({ rows = 3, card = true }) => html`<div class=${card ? "card" : ""} aria-busy="true"><div class="col">${Array.from({ length: rows }).map((_, i) => html`<div key=${i} class="skeleton sk-line" style=${{ width: (85 - i * 17) + "%" }} />`)}</div></div>`;
 const GridSkeleton = ({ n = 6 }) => html`<div class="grid" aria-busy="true">${Array.from({ length: n }).map((_, i) => html`<div key=${i} class="card tight"><div class="skeleton" style="aspect-ratio:16/10" /><div class="col" style="padding-top:12px"><div class="skeleton sk-line" style="width:70%" /><div class="skeleton sk-line" style="width:40%" /></div></div>`)}</div>`;
 const EmptyState = ({ icon = "film", title, text, action }) => html`<div class="state"><div class="ico"><${Icon} name=${icon} /></div><h3 class="t-heading">${title}</h3>${text && html`<p>${text}</p>`}${action}</div>`;
-const ErrorState = ({ error, onRetry, title = "Something went wrong" }) => html`<div class="state" role="alert"><div class="ico err"><${Icon} name="alert" /></div><h3 class="t-heading">${title}</h3><p>${error?.message || "Please try again."}</p>${onRetry && html`<${Btn} kind="secondary" size="sm" icon="refresh" onClick=${onRetry}>Try again<//>`}</div>`;
+// back: { label, onClick } for a way out (an edit or a review that is gone cannot be tried again).
+const ErrorState = ({ error, onRetry, back, title }) => {
+  const gone = error?.status === 404 || error?.code === "not-found";
+  return html`<div class="state" role="alert"><div class="ico err"><${Icon} name="alert" /></div><h3 class="t-heading">${title || (gone ? "Not found" : "Something went wrong")}</h3><p>${error?.message || "Please try again."}</p><div class="row" style="gap:8px;justify-content:center">${back && html`<${Btn} kind="secondary" size="sm" icon="back" onClick=${back.onClick}>${back.label}<//>`}${onRetry && html`<${Btn} kind="secondary" size="sm" icon="refresh" onClick=${onRetry}>Try again<//>`}</div></div>`;
+};
 // Picks the view for a useAsync result. `whenEmpty` may be null to treat empty as ready.
-function Async({ q, skeleton, whenEmpty, children }) {
-  if (q.status === "loading") return q.slow ? (skeleton || html`<${Skeleton} />`) : html`<div style="min-height:120px" />`;
-  if (q.status === "error") return html`<${ErrorState} error=${q.error} onRetry=${q.reload} />`;
+// The skeleton is laid out from the first frame (so nothing moves when it shows) and fades in after a moment (so a quick
+// load shows nothing at all, then the page): no blank box, no flash.
+function Async({ q, skeleton, whenEmpty, children, errorBack }) {
+  if (q.status === "loading") return html`<div class="sk-wrap" aria-busy="true">${skeleton || html`<${Skeleton} />`}</div>`;
+  if (q.status === "error") return html`<${ErrorState} error=${q.error} onRetry=${q.error?.status === 404 || q.error?.code === "not-found" ? null : q.reload} back=${errorBack} />`;
   if (q.status === "empty" && whenEmpty) return whenEmpty;
   return children(q.data);
 }
@@ -307,7 +350,9 @@ function turnedVideoStyle(rotate, aspect, crop = null) {
 function fitVideoStyle(rotate, aspect, crop = null) {
   return turnedVideoStyle(rotate, aspect, crop) || { position: "absolute", inset: 0, width: "100%", height: "100%", objectPosition: crop ? `${Math.round(crop.cx * 1000) / 10}% ${Math.round(crop.cy * 1000) / 10}%` : "50% 40%" };
 }
-function Player({ pb, duration, caption, captionDrawn = false, captionLook = "clean", zoom = 1, aspect = "16:9", marks = [], onMark, onClickVideo, showControls = true, style = {}, onSnapshot, children, src, videoFit = "contain", onVideoError, muted = false, overlay = null, zoomTransition = true, rotate = 0, framing = null, media = null }) {
+// tools: the editor's extras (preview quality, snapshot, the timecode over the picture); the Library and the client's
+// review page show only play, time and the seek bar, so the seek bar gets the room on a phone.
+function Player({ pb, duration, caption, captionDrawn = false, captionLook = "clean", zoom = 1, aspect = "16:9", marks = [], onMark, onClickVideo, showControls = true, style = {}, onSnapshot, children, src, videoFit = "contain", onVideoError, muted = false, overlay = null, zoomTransition = true, rotate = 0, framing = null, media = null, tools = false }) {
   const ar = ASPECT_RATIO[aspect] ? aspect.replace(":", " / ") : "16 / 9";
   const toast = useToast();
   // Real footage: the <video> follows the playback state; pb uses it as its clock.
@@ -336,7 +381,7 @@ function Player({ pb, duration, caption, captionDrawn = false, captionLook = "cl
       </div>`}
       ${overlay}
       ${caption && !captionDrawn && html`<div class=${"cap " + captionLook}>${caption}</div>`}
-      <div class="tc mono">${fmtTime(pb.time, true)}<span class="q-badge">${effective}</span></div>
+      ${tools && html`<div class="tc mono">${fmtTime(pb.time, true)}<span class="q-badge">${effective}</span></div>`}
       ${switching && html`<div class="q-switch"><span class="dot brand pulse" />Switching to ${effective}</div>`}
       ${!pb.playing && !switching && html`<div class="big"><button aria-label="Play" onClick=${(e) => { e.stopPropagation(); pb.toggle(); }}><${Icon} name="play" /></button></div>`}
       ${children}
@@ -350,11 +395,11 @@ function Player({ pb, duration, caption, captionDrawn = false, captionLook = "cl
         <div class="knob" style=${{ left: pct + "%" }} />
       </div>
       <span class="mono t-small muted" style="min-width:40px">${fmtTime(duration)}</span>
-      <div style="position:relative" onClick=${(e) => e.stopPropagation()}>
+      ${tools && html`<div style="position:relative" onClick=${(e) => e.stopPropagation()}>
         <button class="pctl" id="quality" aria-haspopup="menu" aria-expanded=${qMenu} title="Preview quality" onClick=${() => setQMenu((m) => !m)}>${quality === "Auto" ? "Auto · " + effective : quality}</button>
         ${qMenu && html`<div class="menu qmenu" role="menu">${QUALITIES.map((q) => html`<button key=${q} role="menuitemradio" aria-checked=${q === quality} class=${"item" + (q === quality ? " on" : "")} data-q=${q} onClick=${() => pickQuality(q)}><${Icon} name=${q === quality ? "check" : "more"} />${q}${q === "Auto" ? html`<span class="muted t-small" style="margin-left:auto">best for you</span>` : q === "480p" ? html`<span class="muted t-small" style="margin-left:auto">fastest</span>` : null}</button>`)}</div>`}
-      </div>
-      <button class="pctl icon" id="snapshot" aria-label="Take a snapshot" title="Snapshot this frame" onClick=${takeSnapshot}><${Icon} name="image" /></button>
+      </div>`}
+      ${tools && html`<button class="pctl icon" id="snapshot" aria-label="Take a snapshot" title="Snapshot this frame" onClick=${takeSnapshot}><${Icon} name="image" /></button>`}
     </div>`}
     ${snap && html`<${Modal} title=${"Snapshot at " + fmtTime(snap.time, true)} sub="A still of this exact frame." onClose=${() => setSnap(null)} wide footer=${html`<${Btn} kind="ghost" onClick=${() => setSnap(null)}>Close<//><${Btn} kind="secondary" icon="copy" id="snap-copy" onClick=${copySnap}>Copy image<//><${Btn} icon="download" id="snap-keep" onClick=${() => { const a = document.createElement("a"); a.href = snap.url; a.download = "frame-" + fmtTime(snap.time, true).replace(/[^0-9]+/g, "-") + ".png"; a.click(); toast("Frame saved to this computer", { icon: "check", tone: "brand" }); setSnap(null); }}>Save image<//>`}>
       <img id="snap-img" src=${snap.url} alt=${"Snapshot at " + fmtTime(snap.time)} style=${{ width: "100%", maxHeight: "60vh", objectFit: "contain", borderRadius: "var(--r-sm)", background: "#000" }} />
@@ -382,7 +427,7 @@ async function copyText(text, toast) { try { await navigator.clipboard.writeText
 export {
   React, useState, useEffect, useRef, useMemo, useCallback, useContext, createContext,
   h, html, fmtTime, fmtLen, fmtAgo, initials, Icon, ICONS, Btn, Toggle, Seg, Chip, Field, StatusChip,
-  ToastCtx, ToastHost, useToast, Modal, useAsync, Skeleton, GridSkeleton, EmptyState, ErrorState, Async,
+  ToastCtx, ToastHost, useToast, Modal, useAsync, forgetPages, Skeleton, GridSkeleton, MasonrySkeleton, MoreMenu, EmptyState, ErrorState, Async,
   usePlayback, QUALITIES, drawFrame, Player, turnedVideoStyle, fitVideoStyle, Art, Thumb, OriIcon, readTheme, applyTheme, ThemeBtn, copyText,
   Masonry, Dropdown, NavCtx, useNav, AppCtx, useApp,
 };

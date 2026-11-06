@@ -2,7 +2,7 @@
 // Ported from ui/rendrr-ui.html (editor script). Changes: real footage in the player, live reload when an AI
 // edits, autosave conflicts, real undo/restore, the rendered preview plays in the player, real downloads.
 // Phase 2: the edit is a sequence (clips of any video, in any order, J/L cuts) with Premiere's tools.
-import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, usePlayback, Player, turnedVideoStyle, fitVideoStyle, Art, useNav, useApp } from "./ui";
+import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, MoreMenu, usePlayback, Player, turnedVideoStyle, fitVideoStyle, Art, useNav, useApp } from "./ui";
 
 // Web addresses in a comment as links (they open in a new tab); the rest stays text.
 function linkified(text) {
@@ -711,14 +711,14 @@ function FrameLook({ clip, doOp, H, liveOp }) {
     <label class="t-small row" style="gap:6px"><input type="checkbox" id="card-border" checked=${!!card.border} onChange=${(e) => doOp(cop({ border: e.target.checked ? { color: "#FFFFFF", width: 0.008 } : null }))} />Border</label>
     ${card.border && html`<div class="row" style="gap:8px;align-items:flex-end"><${OpColor} id="card-border-color" value=${card.border.color.toLowerCase()} opFor=${(c) => cop({ border: { ...card.border, color: c.toUpperCase() } })} ...${sl} />
       <div class="grow"><${OpSlider} id="card-border-width" label="Border width" value=${card.border.width} min=${0.001} max=${0.05} step=${0.001} show=${(v) => (v * 100).toFixed(1) + "%"} opFor=${(v) => cop({ border: { ...card.border, width: v } })} ...${sl} /></div></div>`}
-    ${(card.crop || card.radius || card.shadow) && html`<span class="t-small muted">Cropped edges show what is under the clip${clip.kind === "broll" ? " (the picture)" : " (the background)"}; scale it down with keyframes or framing for picture-in-picture.</span>`}
+    ${(card.crop || card.radius || card.shadow) && html`<span class="t-small muted">Cropped edges show what is under the clip.</span>`}
   </div>`;
 }
 function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek }) {
   const [rampSpeed, setRampSpeed] = useState(2);
-  const empty = html`<div class="pb" id="clip-panel" style="padding-top:16px"><p class="t-small muted">Select a clip: a V1 clip for its speed and the transition into it; any clip on V1, a b-roll clip, a text or a graphic for keyframes.</p></div>`;
+  const empty = html`<div class="pb" id="clip-panel" style="padding-top:16px"><p class="t-small muted">Select a clip on the timeline.</p></div>`;
   if (!clip) return empty;
-  if (track === "v3" && clip.kind === "adjust") return html`<div class="pb" id="clip-panel" style="padding-top:16px"><p class="t-small muted" id="adjust-hint">An adjustment layer: its grade and effects are in the Color tab. Drag its edges on V3 to change when it starts and ends.</p></div>`;
+  if (track === "v3" && clip.kind === "adjust") return html`<div class="pb" id="clip-panel" style="padding-top:16px"><p class="t-small muted" id="adjust-hint">Its grade and effects are in the Color tab.</p></div>`;
   const v1 = track === "v1" || track === "a1";
   const isBroll = track === "v2" && clip.kind === "broll";
   const keyable = v1 || isBroll || (track === "v3" && (clip.kind === "text" || clip.kind === "graphic"));
@@ -789,7 +789,7 @@ function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek 
         ${(clip.motionBlur || 0) > 0 && html`<span class="t-small muted">Motion blur is drawn in the render, on the keyframed movement.</span>`}`}
       ${here && html`<label class="t-small" style="display:grid;gap:4px">Easing to the next key<select class="input sm" id="key-ease" value=${Array.isArray(here.ease) ? "linear" : here.ease || "linear"} onChange=${(e) => doOp(kop(withKey({ ease: e.target.value })), false)}>${EASES.map((x) => html`<option key=${x} value=${x}>${EASE_NAME[x]}</option>`)}</select></label>`}
       ${keys.length ? html`<div class="col" style="gap:4px" id="key-list">${keys.map((k, i) => html`<div key=${i} class="row between tlist${here === k ? " on" : ""}"><button class="t-small" style="all:unset;cursor:pointer" data-key=${i} onClick=${() => onSeek(clip.start + k.t)}><span class="mono">${k.t.toFixed(2)}s</span> ${KEY_PROPS.filter((p) => k[p] != null).join(", ")}${k.ease && k.ease !== "linear" ? ` · ${Array.isArray(k.ease) ? "bezier" : k.ease}` : ""}</button><button class="btn icon sm quiet" aria-label="Remove this key" onClick=${() => doOp(kop(keys.filter((x) => x !== k)), false)}><${Icon} name="x" size="12" /></button></div>`)}
-        <${Btn} kind="ghost" size="xs" id="keys-clear" onClick=${() => doOp(kop([]))}>Remove all keyframes<//></div>` : html`<p class="t-small muted">Move a slider to set a key at the playhead. Keys are seconds into the clip; between two keys the value moves with the first key's easing.</p>`}
+        <${Btn} kind="ghost" size="xs" id="keys-clear" onClick=${() => doOp(kop([]))}>Remove all keyframes<//></div>` : html`<p class="t-small muted">Move a slider to set a key at the playhead.</p>`}
     </div>`}
   </div></div>`;
 }
@@ -875,7 +875,7 @@ function AudioTab({ a, clip, track, len, here = 0, planned, doOp, H, liveOp, voi
         <${ClipSound} clip=${clip} v1=${v1} len=${len} here=${here} gain=${gain} clipOp=${clipOp} doOp=${doOp} sl=${sl} />`
         : html`<p class="t-small muted">Select a clip on V1, A1, A2 or A3 to set its level and fades.</p>`}
     </div>`}
-    ${showEdit && html`<p class="t-small muted" id="audio-note">The live player plays clip levels, fades, volume keys, ducking, music and sound effects, and each clip's pan, EQ and reverb (the render's filters and room). Cleanup, loudness and crossfades are heard in the rendered preview.</p>`}
+    ${showEdit && html`<p class="t-small muted" id="audio-note">Cleanup and loudness are heard in the rendered preview.</p>`}
   </div></div>`;
 }
 
@@ -915,7 +915,11 @@ function EditorPage({ id }) {
   useEffect(() => { setChat(null); keep.current = { tab: "media", time: 0 }; }, [id]);
   // A new version from the AI brings its new messages with it.
   useEffect(() => { if (q.data?.aiChat) setChat(null); }, [q.data?.version]);
-  return html`<${Async} q=${q} skeleton=${html`<div style="padding:24px" class="col"><div class="skeleton sk-pill" style="width:40%" /><div class="skeleton" style="height:60vh;border-radius:20px" /></div>`}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version + ":" + (p.updated || 0)} project=${p} reload=${q.reload} keep=${keep} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])) }} />`}<//>`;
+  // The editor's own frame while it loads (top bar, tool rail, player, side panel, timeline), so nothing jumps; an
+  // edit that is gone offers the way back.
+  const sk = html`<div class="editor" aria-busy="true"><div class="ed-top" style="height:56px"><div class="skeleton sk-pill" style="width:220px;height:36px" /><div class="grow" /><div class="skeleton sk-pill" style="width:200px;height:36px" /></div>
+    <div class="ed-body"><div class="ed-work lib-closed"><div class="skeleton" style="border-radius:16px" /><div class="skeleton" style="border-radius:16px;min-height:300px" /><div class="skeleton" style="border-radius:16px" /></div><div class="skeleton" style="border-radius:16px" /></div></div>`;
+  return html`<${Async} q=${q} skeleton=${sk} errorBack=${{ label: "Projects", onClick: () => go("/projects") }}>${(p) => html`<${EditorInner} key=${p.id + ":" + p.version + ":" + (p.updated || 0)} project=${p} reload=${q.reload} keep=${keep} ai=${{ chat: chat || p.aiChat || [], setChat: (f) => setChat((c) => f(c || p.aiChat || [])) }} />`}<//>`;
 }
 
 function EditorInner({ project, reload, ai, keep }) {
@@ -1434,7 +1438,7 @@ function EditorInner({ project, reload, ai, keep }) {
       </div>
       <span class="t-small muted" id="saved" title=${saved} style="display:inline-flex;align-items:center;gap:4px;opacity:.7">${saved === "Saved" ? "" : saved}</span>
       <div class="grow" />
-      <span class="t-small muted" id="auto-preview" title=${fresh ? "The player plays the rendered preview file of this version." : "The player plays the edit as it will render: every clip and video in order, J/L cuts, captions, zooms, b-roll, graphics, music and sound effects at their levels. Dialogue cleanup and loudness are heard in the rendered preview."}>${fresh ? `Playing the rendered preview (V${project.version})` : "Live edit"}</span>
+      ${fresh && html`<span class="t-small muted" id="auto-preview" title="The player plays the rendered preview file of this version.">Rendered preview</span>`}
       <div class="tb-pop" onClick=${(e) => e.stopPropagation()}>
         <button class="tb-chip" id="aspect-btn" aria-haspopup="menu" aria-expanded=${topMenu === "aspect"} title="Aspect ratio" onClick=${() => setTopMenu((m) => (m === "aspect" ? null : "aspect"))}><i class="ar-ico" style=${{ aspectRatio: S.aspect.replace(":", "/") }} />${S.aspect}<${Icon} name="down" size="12" /></button>
         ${topMenu === "aspect" && html`<div class="menu tb-menu" id="aspect-menu" role="menu"><span class="t-small muted tb-menu-h">Aspect ratio</span>${["9:16", "16:9", "4:5", "1:1"].map((a) => html`<button key=${a} role="menuitemradio" aria-checked=${S.aspect === a} class=${"ar-row" + (S.aspect === a ? " on" : "")} data-aspect=${a} onClick=${() => { setTopMenu(null); if (a !== S.aspect) doOp({ op: "set_aspect", aspect: a }); }}><i class="ar-ico" style=${{ aspectRatio: a.replace(":", "/") }} /><span class="col"><b>${a}</b><small class="muted">${ASPECT_NAMES[a]}</small></span></button>`)}</div>`}
@@ -1447,9 +1451,11 @@ function EditorInner({ project, reload, ai, keep }) {
         <label class="tb-search-box"><${Icon} name="search" size="14" /><input id="tool-search" placeholder="Search tools" aria-label="Search tools" value=${toolQ} onFocus=${() => setTopMenu("search")} onInput=${(e) => { setToolQ(e.target.value); setTopMenu("search"); }} onKeyDown=${(e) => { if (e.key === "Enter" && foundTools[0]) { foundTools[0].run(); setToolQ(""); setTopMenu(null); e.target.blur(); } if (e.key === "Escape") { setToolQ(""); setTopMenu(null); e.target.blur(); } }} /></label>
         ${topMenu === "search" && html`<div class="menu tb-menu" id="tool-search-menu" role="menu">${foundTools.length ? foundTools.slice(0, 9).map((t) => html`<button key=${t.label} role="menuitem" class="tb-found" onClick=${() => { t.run(); setToolQ(""); setTopMenu(null); }}><${Icon} name=${t.icon} size="15" /><span class="grow">${t.label}</span><small class="muted">${t.where}</small></button>`) : html`<span class="t-small muted tb-menu-h">No tool called "${toolQ}"</span>`}</div>`}
       </div>
-      <${Btn} kind="ghost" size="sm" id="samples-btn" icon="image" title="Render a few frames and short clips, drawn as the export draws them" disabled=${saved !== "Saved" || !plan} onClick=${() => { pb.setPlaying(false); setSamplesOpen(true); }}>Samples<//>
-      ${!fresh && html`<${Btn} kind="ghost" size="sm" id="render-preview" icon="play" disabled=${saved !== "Saved" || !plan} onClick=${() => startRender("preview")}>Export preview<//>`}
-      <${Btn} kind="secondary" size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share for review<//>
+      <${MoreMenu} id="editor-more" label="More" items=${[
+        !fresh && { id: "render-preview", label: "Export preview", icon: "play", disabled: saved !== "Saved" || !plan, onClick: () => startRender("preview") },
+        { id: "samples-btn", label: "Samples", icon: "image", title: "A few frames and short clips, drawn as the export draws them", disabled: saved !== "Saved" || !plan, onClick: () => { pb.setPlaying(false); setSamplesOpen(true); } },
+      ]} />
+      <${Btn} kind="secondary" size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share<//>
       <${Btn} size="sm" id="render-final" icon="download" onClick=${() => setExportOpen(true)}>Export<//>
     </div>
 
@@ -1542,10 +1548,10 @@ function EditorInner({ project, reload, ai, keep }) {
           ${!viewVer && !watch && !sideDismissed && sideways.length > 0 && html`<div class="ver-banner" id="sideways"><span>${sideways.length === 1 && sideways[0].vid === main ? "This footage looks" : "Some footage looks"} filmed sideways: faces are upright when it is turned ${sideways[0].turn}° clockwise.</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="turn-upright" onClick=${() => { const ok = sideways.every((x) => doOp({ op: "set_rotation", degrees: x.turn, clipIds: x.clips.map((c) => c.id) }, false)); if (ok) toast("Turned upright", { icon: "refresh" }); }}>Turn it upright<//><${Btn} kind="ghost" size="xs" onClick=${() => setSideDismissed(true)}>Keep as is<//></div></div>`}
           ${watch && html`<div class="ver-banner"><span>Watching the rendered preview (V${watch.version || project.version})</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="back-editing" onClick=${() => { wpb.setPlaying(false); setWatch(null); }}>Back to editing<//></div></div>`}
           <div style="flex:1;min-height:0;display:flex;justify-content:center">${watch
-            ? html`<${Player} key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
+            ? html`<${Player} tools key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
             : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
-            : fresh ? html`<${Player} key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${drawOverlay || inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-            : html`<${Player} key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} mattes=${mattes} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} onBox=${(b) => { setColorMode(null); setBoxDraft(b); }} />` : null}${drawOverlay || inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
+            : fresh ? html`<${Player} tools key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${drawOverlay || inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
+            : html`<${Player} tools key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} mattes=${mattes} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} onBox=${(b) => { setColorMode(null); setBoxDraft(b); }} />` : null}${drawOverlay || inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
         </div>
         <aside class="panel ed-insp" id="inspector" aria-label="Inspector">
           ${insp.kind && html`<div class="rp-head" id="inspector-head"><span class="rp-ico"><${Icon} name=${insp.icon} size="15" /></span><b class="grow ell">${insp.title}</b>${sel && html`<button class="rp-back" id="inspector-clear" aria-label="Clear the selection" title="Clear the selection" onClick=${() => setSel(null)}><${Icon} name="x" size="14" /></button>`}</div>`}

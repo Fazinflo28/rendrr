@@ -31,8 +31,8 @@ export function SourceMonitor({ reference, refs, styles, onReference, source, on
       ${source && html`<button class="tool icon" aria-label="Back to the reference" title="Back to the reference" onClick=${onCloseSource}><${Icon} name="x" size="14" /></button>`}</header>
     <div class="mon-screen">${showing
       ? url ? html`<video key=${url} src=${url} controls playsInline preload="metadata" id=${source ? "source-video" : "reference-video"} />` : html`<div class="mon-empty"><span class="t-small muted">${err || "Loading…"}</span></div>`
-      : reference?.kind === "style" ? html`<div class="mon-empty"><${Icon} name="styles" size="22" /><b class="t-label">Style: ${reference.name}</b><span class="t-small muted">A style reference has no video. Your AI reads its rules.</span></div>`
-      : html`<div class="mon-empty"><${Icon} name="film" size="22" /><b class="t-label">No reference yet</b><span class="t-small muted">Pick a reference video for your AI to copy. It is never applied to the edit.</span></div>`}</div>
+      : reference?.kind === "style" ? html`<div class="mon-empty"><${Icon} name="styles" size="22" /><b class="t-label">Style: ${reference.name}</b></div>`
+      : html`<div class="mon-empty" title="A video your AI copies the style of. It is never applied to the edit."><${Icon} name="film" size="22" /><span class="t-small muted">No reference</span></div>`}</div>
     ${source ? html`<div class="mon-foot row" style="gap:6px"><${Btn} size="xs" icon="plus" id="source-insert" onClick=${() => onInsert(source)}>Insert at playhead<//><${Btn} kind="quiet" size="xs" id="source-append" onClick=${() => onAppend(source)}>Add at the end<//></div>`
       : html`<div class="mon-foot"><select id="reference-pick" class="input sm" aria-label="Reference" value=${key} onChange=${(e) => pick(e.target.value)}>
           <option value="">No reference</option>
@@ -51,7 +51,7 @@ export function MediaBin({ library, used, bin, mainId, onPreview, onAppend, onAd
   const items = ids.map((id) => all.find((v) => v.id === id)).filter(Boolean);
   const rest = all.filter((v) => !ids.includes(v.id) && v.status !== "expired" && (!q || v.name.toLowerCase().includes(q.toLowerCase()))).sort(byName);
   return html`<section class="bin" id="media-bin" aria-label="Project media">
-    <header class="bin-head"><b>Project</b><span class="muted t-small">${items.length} ${items.length === 1 ? "video" : "videos"}</span><div class="grow" />
+    <header class="bin-head"><b>Project</b>${library != null && html`<span class="muted t-small" id="bin-count">${items.length} ${items.length === 1 ? "video" : "videos"}</span>`}<div class="grow" />
       <button class="tool icon" id="bin-library" aria-pressed=${adding} title="Add from your library" aria-label="Add from your library" onClick=${() => setAdding((a) => !a)}><${Icon} name="library" size="15" /></button>
       <button class="tool icon" id="bin-import" title="Import footage (computer or Google Drive)" aria-label="Import footage" onClick=${onImport}><${Icon} name="upload" size="15" /></button></header>
     ${adding && html`<div class="bin-add" id="bin-add">
@@ -60,13 +60,12 @@ export function MediaBin({ library, used, bin, mainId, onPreview, onAppend, onAd
           <div class="bin-thumb sm"><${Thumb} src=${v.thumb} art=${v.art} /></div><div class="grow" style="min-width:0"><b class="t-small ell">${v.name}</b><span class="muted t-small">${fmtTime(v.seconds)}${v.kind === "reference" ? " · reference" : ""}</span></div>
           <button class="tool icon" aria-label=${"Add " + v.name + " to the project"} title="Add to the project" onClick=${() => onAddToBin(v)}><${Icon} name="plus" size="14" /></button></div>`)
         : html`<span class="t-small muted">${q ? "Nothing in your library matches." : "Everything in your library is in this project."}</span>`}</div></div>`}
-    <div class="bin-grid">${items.map((v) => { const inEdit = v.id === mainId || used.includes(v.id); return html`<div key=${v.id} class=${"bin-item" + (previewing === v.id ? " on" : "")} data-media=${v.id} title=${v.name}>
+    <div class="bin-grid">${library == null ? ids.map((id) => html`<div key=${id} class="bin-item" aria-busy="true"><div class="bin-thumb skeleton" /><div class="skeleton sk-line" style="width:70%" /></div>`) : items.map((v) => { const inEdit = v.id === mainId || used.includes(v.id); return html`<div key=${v.id} class=${"bin-item" + (previewing === v.id ? " on" : "")} data-media=${v.id} title=${v.name}>
         <button class="bin-thumb" aria-label=${"Play " + v.name + " in the monitor"} onClick=${() => onPreview(v)}><${Thumb} src=${v.thumb} art=${v.art} /><span class="len">${fmtTime(v.seconds)}</span>${inEdit && html`<span class="badge-in">In edit</span>`}</button>
         <div class="row" style="gap:4px;min-width:0"><span class="t-small ell grow">${v.name}</span>
           <button class="tool icon xs" aria-label=${"Add " + v.name + " at the end of the edit"} title="Add at the end of the edit" onClick=${() => onAppend(v)}><${Icon} name="plus" size="13" /></button>
           ${!inEdit && bin.includes(v.id) && html`<button class="tool icon xs" aria-label=${"Take " + v.name + " out of the project"} title="Take out of the project" onClick=${() => onRemoveFromBin(v)}><${Icon} name="x" size="13" /></button>`}</div>
       </div>`; })}</div>
-    ${items.length <= 1 && !adding && html`<p class="t-small muted" style="padding:0 12px 12px">Keep the videos this edit will use here: add from your library or import new footage. Your AI sees them too.</p>`}
   </section>`;
 }
 

@@ -116,6 +116,7 @@ for (const [vp, w, h] of VIEWPORTS) {
   await page.locator("#tab-comments").click().catch(() => {}); await look("editor comments");
   await page.locator("#tab-media").click({ timeout: 800 }).catch(() => {});
   for (const [id, label] of [["#render-final", "export window"], ["#samples-btn", "samples window"]]) {
+    if (id === "#samples-btn") { await page.locator("#editor-more").click().catch(() => {}); await sleep(200); }
     const b = page.locator(id).first();
     if (await b.count() && await b.isVisible()) { await b.click().catch(() => {}); await sleep(600); await look(label); await page.keyboard.press("Escape"); await sleep(300); }
     else report.push({ vp, label, issues: [`${id} not visible`] });

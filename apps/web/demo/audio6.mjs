@@ -77,7 +77,7 @@ check(await page.locator('#clip-keys [data-key="0"]').count() === 0, "the key ca
 await page.locator("#audio-fine summary").click(); await sleep(200);
 await slide("audio-crossfade", 60);
 check(await val("audio-crossfade") === "60 ms (in the render)", `Crossfade at every cut (${await val("audio-crossfade")})`);
-check(/each clip's pan, EQ and reverb .* Cleanup, loudness and crossfades are heard in the rendered preview/.test(await page.locator("#audio-note").textContent()), "the note says what the player plays");
+check(/Cleanup and loudness are heard in the rendered preview/.test(await page.locator("#audio-note").textContent()), "the note says what only the rendered preview has");
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close();
 console.log(fails.length ? `\n${fails.length} failed` : "\nall passed");

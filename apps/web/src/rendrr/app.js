@@ -5,7 +5,7 @@
 //   /editor/:id  /review/:token  /connect  /usage  /billing  /settings
 //   Login is a modal over Explore (Higgsfield-style): browse free, act after logging in. /login opens that modal.
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, useNav, useApp } from "./ui";
+import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, useNav, useApp, forgetPages } from "./ui";
 import { Mark } from "./logo";
 import { appLink, isChallenge } from "./desktopLogin";
 import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, UsagePage, BillingPage, SettingsPage, Shell } from "./screens";
@@ -105,8 +105,14 @@ function App() {
   const openLogin = useCallback((after, mode) => setLogin({ after: after || null, mode: mode || "login" }), []);
   const closeLogin = useCallback(() => setLogin(null), []);
   const [nonce, setNonce] = useState(0);
-  const [user, setUser] = useState(null);
+  const [user, setUser0] = useState(null);
+  // A different account (or none): the pages remembered for the last one are forgotten before anything renders.
+  const setUser = useCallback((u) => setUser0((prev) => { const next = typeof u === "function" ? u(prev) : u; if ((prev?.id || null) !== (next?.id || null)) forgetPages(); return next; }), []);
   const [auth, setAuth] = useState("checking"); // checking | in | out
+  // Signed in last time on this browser: while the session is checked the page is drawn as signed in (tab bar, no
+  // Log in buttons), so a refresh does not flash the logged-out header.
+  const [wasIn] = useState(() => { try { return localStorage.getItem("rendrr:in") === "1"; } catch { return false; } });
+  useEffect(() => { try { if (auth === "in") localStorage.setItem("rendrr:in", "1"); else if (auth === "out") localStorage.removeItem("rendrr:in"); } catch { /* private window */ } }, [auth]);
   const [usage, setUsage] = useState(null);
   const [uploads, setUploads] = useState([]);
   const [theme, setThemeState] = useState(readTheme);
@@ -119,7 +125,8 @@ function App() {
   useEffect(() => {
     if (user) { setAuth("in"); return; }
     let on = true;
-    setAuth("checking");
+    // Known to be logged out: stays so while it is checked again (no Log in buttons blinking on every page change).
+    setAuth((a) => (a === "out" ? "out" : "checking"));
     (async () => {
       try { if (await api.hasSession()) { const u = await api.getProfile(); if (on) { setUser(u); setAuth("in"); return; } } } catch { /* fall through */ }
       if (on) setAuth("out");
@@ -188,8 +195,9 @@ function App() {
   useEffect(() => { if (guarded && auth === "out") setLogin({ after: null, mode: "login", leave: true }); }, [guarded, auth]);
   useEffect(() => { if (pathname === "/login" && auth === "out") setLogin({ after: null, mode: "login" }); }, [pathname, auth]);
   const requireUser = useCallback((fn) => { if (user) fn(); else setLogin({ after: () => setTimeout(fn, 0), mode: "login" }); }, [user]);
-  const page = guarded ? (auth === "checking" ? null : html`<${HomePage} />`) : match[1](m);
-  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addFromDrive, importDriveFolder, importDriveFolders, theme, setTheme, addOpen, openAdd: (kind, folder) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage", folder: folder && folder.id ? folder : null })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser, auth };
+  // A private page while the session is checked: the app's frame with a quiet placeholder, never a blank screen.
+  const page = guarded ? (auth === "checking" ? html`<div class="page" aria-busy="true"><div class="sk-wrap"><div class="skeleton sk-pill" style="width:180px;height:28px" /><div class="grid" style="margin-top:24px">${[0, 1, 2].map((i) => html`<div key=${i} class="skeleton" style="aspect-ratio:16/10;border-radius:16px" />`)}</div></div></div>` : html`<${HomePage} />`) : match[1](m);
+  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addFromDrive, importDriveFolder, importDriveFolders, theme, setTheme, addOpen, openAdd: (kind, folder) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage", folder: folder && folder.id ? folder : null })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser, auth, wasIn };
   // Closing the login on a private page goes back to Explore.
   const onCloseLogin = () => { const leave = login?.leave; setLogin(null); if (leave || pathname === "/login") go("/explore"); };
   return html`<${NavCtx.Provider} value=${{ route, go }}><${AppCtx.Provider} value=${ctx}>

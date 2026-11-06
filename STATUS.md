@@ -1154,3 +1154,55 @@ From before:
   window closes with "Export stopped". While the original is still uploading, Stop ends the upload and throws the
   half-sent upload away.
 - Tests: apps/api/test/stop-render.test.ts (3), apps/worker/test/stop-job.test.ts (3), apps/web/demo/export-stop.mjs.
+
+### Overnight audit: backend
+
+- Drive login return only goes to the web app's own addresses (origins.ts), never to a site named in the request.
+- A stopped or timed-out render cannot come back as "done": every status write is conditional, a late finish deletes
+  its files. Two exports of the same edit at once join one render (an advisory lock in startRender).
+- Work lost with a dead worker is marked failed: BullMQ's stalled jobs, and a sweep every 10 minutes for renders,
+  videos, style files and graphics past their limit. One time limit (renderLimitMs) for the API, worker and sweep.
+- A second final of the same edit keeps the original file it needs. Review links rate-limit the previews they start.
+- Upload links (add_footage, add_audio) stop a body over the cap with a 413 (Fastify's bodyLimit does not cover a
+  streamed body).
+- Stray promise errors are logged instead of stopping the API or the worker.
+- Drive saves: asking again for the same folder joins the running copy; GIF, sound and ProRes finals keep their real
+  type and extension; the web's Save to Drive refuses a second copy while one uploads.
+- Retry and Rebuild on a video run their job once (the status change is the claim).
+- Captions and chapters files are deleted with their render (Delete all finals, deleted edits, preview retention).
+- A review comment with a non-text projectId, a gallery like pressed twice at once and an upload whose parts S3 does
+  not know get a clear answer, not a 500. The internal-address check reads every IPv6 spelling ([::ffff:7f00:1]).
+  Reconnecting Drive to another account is used at once (the token cache is keyed by the stored connection).
+- The freeze watch covers every render pass (out-of-threads retry, the transparent file's white pass, the sound pass).
+- Projects, a project folder and the gallery load only the styles they show; the share links list returns the newest 200.
+- Tests: upload-body, video-retry, render-files, drive-token, bad-input, drive-save (+2), fonts (IPv6), stall (+1).
+
+### Rendrr icon in AI chats
+
+- The MCP server's info carries the Rendrr icons (MCP `icons`: links on the connector's address and a small one
+  inline), and the connector address serves /favicon.ico, /icon.png, /icon.svg and /apple-touch-icon.png, so Claude
+  and other AI chats show the mark next to "Using Rendrr". Test: apps/mcp/test/icons.test.ts.
+
+### Overnight audit: web app (loading, glitches, less text)
+
+- Loading: pages remember what they loaded for the tab's life and show it at once on the way back, refreshed in the
+  background; any write (or another account) forgets them. The skeleton is laid out from the first frame and fades in
+  after a moment, so a quick load shows nothing and a slow one shows no blank box first.
+- Skeletons in the real shapes: gallery tiles in masonry columns, Library folders and cards, project covers, the
+  project page's full-width cards, Footage, Usage stat cards, Billing plans, Connect, the review page, the editor's
+  own frame. The gallery's columns are measured before the first paint (no 5-column flash).
+- A signed-in refresh draws the signed-in frame while the session is checked (no blank screen, no Log in buttons).
+- Library waits for its folders too (no false "No footage matches"); the editor's media bin shows placeholders, not
+  "0 videos", while it loads.
+- Deleting a project asks first and says how many edits go; a deleted edit has Undo in its toast. The dead
+  "Recently deleted", table view and sort code is gone.
+- Windows fit the screen with the app's zoom, and their main button sticks to the bottom.
+- Video cards line up (the picture at the top); the seek bar gets the room on phones (quality and snapshot only in
+  the editor); the Usage legend dots show and match the bar; the phone heatmap shows the newest weeks; failed,
+  missing and expired footage say so with Try again / Rebuild; error pages have a way back and no "Try again" for
+  something that is gone; Connect loads its cards together; the gallery's buttons show on hover only.
+- Less text: page subtitles, helper paragraphs, the storage pill, the Explore count and style tags, the info cards in
+  the gallery window, the workspace line and New project card, the folder page's members, share links, size and
+  author lines, the editable status select, the Library's badges and step counts, the Footage storage box, scene cuts
+  and legend, the What your AI can do card, and the long editor notes. Rarer actions moved into "…" menus (folder
+  Rename/Move/Delete, Footage/Reference, Export preview and Samples).

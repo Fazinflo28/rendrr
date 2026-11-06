@@ -30,8 +30,10 @@ await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.l
 // Move the playhead 5 s on (L), then open Samples.
 await page.locator("body").click({ position: { x: 5, y: 5 } }).catch(() => {});
 await page.keyboard.press("l"); await sleep(300);
+// Samples sits in the top bar's "…" menu.
+await page.locator("#editor-more").click(); await sleep(200);
 const btn = page.locator("#samples-btn");
-check(await btn.count() === 1 && /Samples/.test(await btn.innerText()), "the top bar has a Samples button");
+check(await btn.count() === 1 && /Samples/.test(await btn.innerText()), "the top bar's menu has Samples");
 await btn.click(); await sleep(400);
 check(await page.locator('[role="dialog"][aria-label="Samples"]').count() === 1, "it opens the Samples window");
 check(await page.locator("#samples-empty").count() === 1, "an edit with no samples says how to make them");
@@ -61,7 +63,7 @@ check(await page.locator('[role="dialog"][aria-label="Samples"]').count() === 0,
 const tc = await page.evaluate(() => (document.querySelector("#timecode, .timecode, .tc")?.textContent || "").trim());
 check(/0?0:05/.test(tc) || tc === "", `the player is at the sample's moment (${tc || "no timecode shown"})`);
 // Open again: the set made is listed (and Claude's would be).
-await page.locator("#samples-btn").click(); await sleep(400);
+await page.locator("#editor-more").click(); await sleep(200); await page.locator("#samples-btn").click(); await sleep(400);
 check((await page.locator(".sample-set").count()) === 1 && /Latest · v1 · 2 samples/.test(await page.locator(".sample-set").first().innerText()), "opening again lists the latest set");
 await page.keyboard.press("Escape"); await sleep(200);
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);

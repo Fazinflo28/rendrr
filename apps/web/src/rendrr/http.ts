@@ -41,6 +41,8 @@ export async function token(): Promise<string | null> {
 type Opts = { auth?: boolean; headers?: Record<string, string>; keepalive?: boolean };
 export async function req(method: string, path: string, body?: unknown, opts: Opts = {}): Promise<any> {
   if (DEV && demo.mode === "error") { await wait(300); throw fail(NETWORK_MSG, "network"); }
+  // A write: pages remembered in memory (ui.js useAsync) are loaded fresh next time.
+  if (method !== "GET") (globalThis as any).__rendrrWrites = ((globalThis as any).__rendrrWrites || 0) + 1;
   const h: Record<string, string> = { ...(opts.headers || {}) };
   if (body !== undefined) h["content-type"] = "application/json";
   if (opts.auth !== false) { const t = await token(); if (t) h.authorization = "Bearer " + t; }

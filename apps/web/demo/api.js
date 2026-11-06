@@ -429,3 +429,9 @@ Object.assign(api, {
     return removeVideo(id, withEdits);
   },
 });
+
+// Writes in the demo forget the pages remembered in memory, as the real API's writes do (http.ts).
+for (const [name, fn] of Object.entries(api)) {
+  if (typeof fn !== "function" || /^(get|list|has|is|read|follow|desktopApp|captureDrop)/.test(name)) continue;
+  api[name] = function (...a) { globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1; return fn.apply(this, a); };
+}

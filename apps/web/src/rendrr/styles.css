@@ -138,6 +138,9 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .card.click { cursor: pointer; transition: transform .2s var(--ease), box-shadow .2s var(--ease); }
 .card.click:hover { box-shadow: var(--shadow-pop); }
 .divider { height: 1px; background: var(--line); }
+/* A loading page's skeleton: laid out at once, seen only after a moment, so a quick load does not flash. */
+.sk-wrap { animation: skin .2s ease .12s both; }
+@keyframes skin { from { opacity: 0; } to { opacity: 1; } }
 .skeleton { background: var(--raised); border-radius: var(--r-sm); position: relative; overflow: hidden; animation: skpulse 1.5s ease-in-out infinite; }
 @keyframes skpulse { 0%, 100% { opacity: 1 } 50% { opacity: .4 } }
 .sk-line { height: 14px; border-radius: 7px; }
@@ -1437,3 +1440,51 @@ html.desktop body:not(:has(.top, .ed-top))::after { content: ""; position: fixed
 .bl-note { font-size: 13px; line-height: 19px; text-align: center; color: var(--ink-dim); margin: -2px 0 0; }
 .bl-note a { color: var(--accent); }
 .bl-note.bad { color: var(--ink); background: rgba(255,255,255,.05); border-radius: 10px; padding: 10px 12px; margin: 0; }
+
+/* Gallery tiles: the video is the tile. On a computer the author and the buttons show on hover only; on a phone (no
+   hover) a short tile (landscape, square) keeps just the small buttons, with no shade over the picture. */
+@media (hover: hover) {
+  .gcard .gtop, .gcard .gbot { opacity: 0; transition: opacity .15s var(--ease); }
+  .gcard:hover .gtop, .gcard:hover .gbot, .gcard:focus-within .gtop, .gcard:focus-within .gbot { opacity: 1; }
+}
+.gcard .gbot { padding-top: 24px; }
+.gcard[data-ori="16:9"] .gtop, .gcard[data-ori="1:1"] .gtop { display: none; }
+.gcard[data-ori="16:9"] .gbot, .gcard[data-ori="1:1"] .gbot { background: none; padding: 6px; }
+.gcard[data-ori="16:9"] .grec, .gcard[data-ori="1:1"] .grec { padding: 0 8px; }
+
+/* Video cards: the picture at the top even when a card in the same row is taller (a <button> centres its content). */
+.vcard { display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; }
+.vcard.sk { cursor: default; box-shadow: var(--shadow-card); }
+.vcard.sk .meta { gap: 8px; }
+
+/* Windows fit the real screen (the scrim measures it into --vvh, the app's zoom included) and keep their main button
+   in view: the footer sticks to the bottom while the rest scrolls. */
+.modal-foot { position: sticky; bottom: -28px; margin: 0 -28px -28px; padding: 14px 28px 20px; background: var(--surface); border-top: 1px solid var(--hair); z-index: 2; }
+@media (min-width: 1024px) { .modal { max-height: calc(var(--vvh, 100vh) - 48px); } }
+@media (max-width: 1023px) {
+  .modal-foot { bottom: -22px; margin: 0 -18px -22px; padding: 12px 18px 16px; }
+  .modal.wide .modal-foot { bottom: calc(-22px - env(safe-area-inset-bottom, 0px)); margin: 0 calc(-1 * var(--gutter-r)) calc(-22px - env(safe-area-inset-bottom, 0px)) calc(-1 * var(--gutter-l, var(--gutter-r))); padding: 12px var(--gutter-r) calc(16px + env(safe-area-inset-bottom, 0px)) var(--gutter-l, var(--gutter-r)); }
+}
+.toast-act { margin-left: 6px; padding: 4px 10px; border-radius: 8px; font: 600 13px/1 var(--font); color: var(--accent-ink, var(--ink)); background: var(--raised); box-shadow: inset 0 0 0 1px var(--hair-strong); }
+.toast-act:hover { background: var(--hair); }
+
+/* Project page: an edit's tick box shows on hover (or once one is ticked); long names fit on a phone. */
+@media (hover: hover) { .acard .acheck { opacity: 0; transition: opacity .15s var(--ease); } .acard:hover .acheck, .acard .acheck.on, .grid.selecting .acheck { opacity: 1; } }
+.fmain .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 40vw; }
+@media (max-width: 1023px) { .fmain .fname { max-width: none; flex: 1 1 auto; } }
+.fcard.sk, .acard.sk { cursor: default; }
+
+/* Usage: the legend's dots match the storage bar (previews in the bar's colour, finals in the second colour). */
+.dot.sw-prev { background: var(--accent); }
+.dot.sw-fin { background: var(--muted); }
+/* Heatmap: on a narrow screen the whole card scrolls sideways (newest weeks shown first, at the right). */
+@media (max-width: 1023px) { .hm { overflow-x: auto; scrollbar-width: none; } .hm::-webkit-scrollbar { display: none; } .hm-grid { overflow: visible; } .hm-days { position: sticky; left: 0; background: var(--surface); z-index: 1; padding-right: 4px; } }
+/* The "Connected" chip's dot shows on the light chip (bug: white on white). */
+.chip .dot.on { background: var(--accent); box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
+/* Billing: "/ month" stays in normal case next to an upper-case price style. */
+.per-month { text-transform: none; letter-spacing: 0; }
+/* An error on a full-screen page (an edit or a review that is gone) sits in the middle, not as a strip at the top. */
+#root > .state[role="alert"], .rv > .state[role="alert"] { max-width: 520px; margin: 15vh auto 0; border-radius: var(--r-lg); }
+/* Editor on a phone: the tool tabs under the player already list every tool, so the search box goes (one row less
+   above the video). */
+@media (max-width: 1023px) { .editor .ed-top .tb-search { display: none; } }

@@ -29,8 +29,8 @@ const email = page.locator('input[type="email"]').first();
 if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await page.waitForTimeout(800); }
 await page.evaluate(() => globalThis.__rendrrNav.go("/library")); await page.locator(".vcard").first().waitFor(); await page.waitForTimeout(500);
 
-// 1. No folders yet: the row explains; New folder makes one.
-check(await page.locator("#lib-folders").isVisible(), "the Library shows a Folders row");
+// 1. No folders yet: no empty Folders row, just the New folder button; it makes one.
+check(!(await page.locator("#lib-folders").count()) && await page.locator("#new-folder").isVisible(), "no empty Folders row; a New folder button");
 await page.locator("#new-folder").click(); await page.locator("#folder-name-input").fill("Course parts");
 await page.locator("#folder-save").click(); await page.locator(".lfcard").first().waitFor();
 check((await page.locator(".lfcard .lfname").allTextContents()).includes("Course parts"), "New folder makes a folder card");
@@ -74,7 +74,7 @@ if (await page.locator("#add-into-folder").count()) await page.locator(".modal [
 
 await page.screenshot({ path: join(here, "dist", "library-folders-open.png") });
 // 4. Rename.
-await page.locator("#folder-rename").click(); await page.locator("#folder-name-input").fill("Course: module 1"); await page.locator("#folder-save").click();
+await page.locator("#folder-more").click(); await page.locator("#folder-rename").click(); await page.locator("#folder-name-input").fill("Course: module 1"); await page.locator("#folder-save").click();
 check(await until(async () => (await page.locator("#folder-title").textContent()).includes("Course: module 1")), "Rename changes the folder's name");
 
 // 5. Edit this folder: the new edit lists the folder's ready videos in name order, named after the folder.
@@ -90,7 +90,7 @@ check(await page.locator("#timeline").isVisible(), "creating it opens the editor
 // 6. Back in the Library (the folder is still open): delete the folder, the videos stay.
 await page.evaluate(() => globalThis.__rendrrNav.go("/library")); await page.locator("#folder-title").waitFor();
 check(true, "the Library comes back to the open folder");
-await page.locator("#folder-delete").click(); await page.locator("#folder-delete-ok").click();
+await page.locator("#folder-more").click(); await page.locator("#folder-delete").click(); await page.locator("#folder-delete-ok").click();
 check(await until(async () => !(await page.locator(".lfcard").count()) && (await page.locator(".vcard").count()) === before), "deleting the folder leaves its videos in the Library");
 
 // 6b. Folders inside folders: Course > Module 1, a video in the inner one, the path at the top, the counts, editing
@@ -122,12 +122,12 @@ await page.waitForTimeout(400); await page.screenshot({ path: join(here, "dist",
 await page.locator("#folder-edit").click(); await page.locator("#np-videos-order").waitFor();
 const ord = await page.locator("#np-videos-order .vorow").evaluateAll((els) => els.map((e) => e.dataset.order));
 check(JSON.stringify(ord) === JSON.stringify([v2, v1]), "Edit this folder takes Course's own video, then its folder's");
-check((await page.locator(".modal").textContent()).includes("and its folders"), "the window says it takes the videos in its folders too");
+check(/^Edit /.test(((await page.locator(".modal h2").textContent()) || "").trim()), "the window is titled with the folder (its folders' videos are listed in the order above)");
 await page.keyboard.press("Escape"); await page.waitForTimeout(200);
 if (await page.locator("#np-videos-order").count()) await page.locator(".modal button", { hasText: "Cancel" }).click();
 // Move Module 1 to the top with the Move window, then drag it back onto Course.
 await page.locator(`.lfcard[data-folder="${modId}"]`).click(); await until(async () => (await page.locator("#folder-title").textContent()).includes("Module 1"));
-await page.locator("#folder-move").click();
+await page.locator("#folder-more").click(); await page.locator("#folder-move").click();
 check(!(await page.locator(`#move-folder-list [data-move-to="${modId}"]`).count()), "a folder cannot be moved into itself (it is not in the list)");
 await page.locator("#move-folder-top").click();
 check(await until(async () => (await page.locator("#folder-crumbs").innerText()).replace(/\s+/g, " ").trim() === "Library /"), `Move to the top of the Library (${(await page.locator("#folder-crumbs").innerText()).trim()})`);
@@ -139,7 +139,7 @@ await page.locator(`.lfcard[data-folder="${courseId}"]`).dispatchEvent("drop", {
 check(await until(async () => !(await page.locator(`.lfcard[data-folder="${modId}"]`).count()) && (await page.locator(`.lfcard[data-folder="${courseId}"]`).textContent()).includes("1 folder")), "dragging a folder onto another puts it inside");
 // Delete Course: its video and Module 1 move up to the top.
 await page.locator(`.lfcard[data-folder="${courseId}"]`).click(); await page.locator("#folder-title").waitFor();
-await page.locator("#folder-delete").click();
+await page.locator("#folder-more").click(); await page.locator("#folder-delete").click();
 check((await page.locator(".modal").textContent()).includes("videos and folders move up into the Library"), "deleting says what is in it moves up");
 await page.locator("#folder-delete-ok").click();
 check(await until(async () => (await page.locator(`.lfcard[data-folder="${modId}"]`).count()) === 1 && !(await page.locator(`.lfcard[data-folder="${courseId}"]`).count())), "after deleting Course, Module 1 is at the top");
@@ -160,7 +160,7 @@ await page.locator("#drive-import-folder").click();
 check(await until(async () => (await page.locator("#folder-title").count()) && (await page.locator("#folder-title").innerText()).toLowerCase().includes("client footage"), 6000), "the Library opens on the imported folder");
 check(await until(async () => (await page.locator(".lfcard", { hasText: "BFS Health" }).count()) === 1), "its Drive folder comes in as a folder inside it");
 // It stays linked to Drive: it says so, and Sync now takes in a video put in the Drive folder since.
-check(/Linked to its Google Drive folder: new videos put there come in by themselves/.test(await page.locator("#folder-drive").innerText()), "the folder says it is linked to Google Drive");
+check(/Synced with Google Drive/.test(await page.locator("#folder-drive").innerText()), "the folder says it is synced with Google Drive");
 const vBefore = await page.locator(".vcard").count();
 await page.evaluate(() => { globalThis.__rendrrDriveNew = "df7"; }); // a video put in the Drive folder after the import
 await page.locator("#folder-sync").click();
