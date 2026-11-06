@@ -458,18 +458,25 @@ export async function renderJob(ctx: Ctx) {
     // pieces are joined (picture copied, sound encoded once). A piece killed again is made as two halves (down to 2 s).
     const killed = (e: unknown) => !signal.aborted && /exited with null/.test((e as Error)?.message || "");
     const canPiece = plan.model !== "A" && fmt !== "overlay" && fmt !== "audio" && fmt !== "wav";
-    // A piece that freezes (FFmpeg waiting on itself, CPU idle: see run's stallMs) is made again with one filter
-    // thread and one thread per decoder; frozen again, as two halves (down to 2 s), each the same way.
+    // The sound is made once for the whole edit, on its own (no picture read), and each piece is picture only: a piece
+    // that made its own sound ran the whole mix from 0 and dropped what came before it, and far into a heavy edit
+    // FFmpeg froze doing that (its picture waiting on its sound, the sound on the picture). The joined picture gets
+    // the one sound track. A piece that still freezes (see run's stallMs) is made again with one filter thread and
+    // one thread per decoder; frozen again, as two halves (down to 2 s), each the same way.
     const renderInPieces = async (why = "FFmpeg was killed (out of memory)") => {
       const FPS = plan.fps || 30, onGrid = (t: number) => Math.round(t * FPS) / FPS;
       const queue: { a: number; b: number; simple?: boolean; froze?: boolean }[] = pieceRanges(plan);
       const made: string[] = [];
       console.error(`[render] ${r.id}: ${why}: making it in ${queue.length} pieces`);
+      const soundPath = join(ctx.dir, "sound.wav"), soundGraph = join(ctx.dir, "graph-sound.txt");
+      const sa = ffmpegArgs(plan, { ...files, output: soundPath }, sourceInfo, { threads: 2, inputThreads: cpus * 2, loudnessGainDb: mixLoudness?.gainDb, sound: "only" });
+      await writeFile(soundGraph, sa.filterGraph);
+      await run("ffmpeg", sa.args.map((x) => (x === "__FILTER_SCRIPT__" ? soundGraph : x)), { signal, stallMs: STALL_MS, onProgress: () => {} });
       for (let n = 0; queue.length; n++) {
         const pc = queue.shift()!;
         const out = join(ctx.dir, `piece-${n}.mov`), gp = join(ctx.dir, `graph-piece-${n}.txt`);
         const sub = windowPlan(plan, pc.a, pc.b);
-        const argsOf = (ft: number, decode = cpus * 2) => ffmpegArgs(sub, { ...files, output: out }, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, audioCodec: "pcm" });
+        const argsOf = (ft: number, decode = cpus * 2) => ffmpegArgs(sub, { ...files, output: out }, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, windowBudget: budgets, sound: "none" });
         const go = async (a: ReturnType<typeof argsOf>) => { await writeFile(gp, a.filterGraph); await run("ffmpeg", a.args.map((x) => (x === "__FILTER_SCRIPT__" ? gp : x)), { signal, stallMs: STALL_MS, onProgress: (sec) => onProgress(pc.a + Math.min(sec, pc.b - pc.a)) }); };
         try {
           if (pc.simple) await go(argsOf(1, 1));
@@ -495,7 +502,7 @@ export async function renderJob(ctx: Ctx) {
         if (pc.froze) console.log(`[render] ${r.id}: piece ${pc.a.toFixed(2)}-${pc.b.toFixed(2)} s made with one thread each after freezing`);
         made.push(out);
       }
-      await joinPieces(ctx.dir, made, files.output, kind === "preview" ? "96k" : best ? "320k" : "192k", signal);
+      await joinPieces(ctx.dir, made, files.output, kind === "preview" ? "96k" : best ? "320k" : "192k", signal, soundPath);
       console.log(`[render] ${r.id}: made in ${made.length} pieces and joined`);
     };
     est.encStart = Date.now();

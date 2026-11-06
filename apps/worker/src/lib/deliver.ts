@@ -36,12 +36,14 @@ export async function writeSideFiles(dir: string, plan: { subtitles?: { start: n
 }
 
 /**
- * Joins the pieces of a final rendered in pieces (each a MOV of the same encode with its sound as PCM) into one MP4:
- * the picture copied as it is, the sound encoded once (no gap or click where pieces meet), ready to play from the start.
+ * Joins the pieces of a final rendered in pieces into one MP4: the picture copied as it is, ready to play from the
+ * start. `sound`: the whole edit's sound made once on its own (a WAV), encoded once under the joined picture. Without
+ * it, each piece's own PCM sound is joined and encoded once (no gap or click where pieces meet).
  */
-export async function joinPieces(dir: string, pieces: string[], output: string, audioBitrate: string, signal?: AbortSignal) {
+export async function joinPieces(dir: string, pieces: string[], output: string, audioBitrate: string, signal?: AbortSignal, sound?: string) {
   const list = join(dir, "pieces.txt");
   await writeFile(list, pieces.map((m) => `file '${m.replace(/'/g, "'\\''")}'`).join("\n") + "\n");
-  await run("ffmpeg", ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-map", "0:v", "-map", "0:a?", "-c:v", "copy", "-c:a", "aac", "-b:a", audioBitrate, "-ar", "48000", "-movflags", "+faststart", output], { signal });
+  const audio = sound ? ["-i", sound, "-map", "0:v", "-map", "1:a"] : ["-map", "0:v", "-map", "0:a?"];
+  await run("ffmpeg", ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, ...audio, "-c:v", "copy", "-c:a", "aac", "-b:a", audioBitrate, "-ar", "48000", "-movflags", "+faststart", output], { signal });
 }
 

@@ -1279,8 +1279,14 @@ export type FfmpegOpts = {
   inputThreads?: number;
   /** The loudness gain the measuring pass found (dB). Needed when the plan normalizes loudness. */
   loudnessGainDb?: number;
-  /** "pcm": the sound as 16-bit PCM in place of AAC (a piece of a final rendered in pieces, see the worker). */
+  /** "pcm": the sound as 16-bit PCM in place of AAC. */
   audioCodec?: "pcm";
+  /**
+   * A final made in pieces (see the worker): "only" makes the whole edit's sound alone, as a WAV (no picture is read
+   * or drawn); "none" makes a piece's picture alone (no sound is read). Each piece once made its own sound by
+   * running the whole mix from 0 and dropping everything before the piece; far into a heavy edit FFmpeg froze doing it.
+   */
+  sound?: "only" | "none";
   /** Audio only, up to the mix, through ebur128: the measuring pass (its stderr has the loudness summary). */
   measure?: boolean;
   /** Phase 12 (overlay export): the picture under the overlays as one colour (the worker renders black and white and
@@ -1320,7 +1326,7 @@ export function ffmpegArgs(plan: RenderPlan, files: PlanFiles, source: SourceInf
 function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opts: FfmpegOpts): { args: string[]; filterGraph: string; windows: Record<string, number> } {
   const mix = plan.audioMix;
   // (A still has no sound: nothing to measure.)
-  if (mix && mix.loudness != null && !opts.measure && !opts.still && opts.loudnessGainDb == null) throw new RenderPlanError("This render sets the loudness: measure the mix first (ffmpegArgs with measure: true), then pass loudnessGainDb.");
+  if (mix && mix.loudness != null && !opts.measure && !opts.still && opts.sound !== "none" && opts.loudnessGainDb == null) throw new RenderPlanError("This render sets the loudness: measure the mix first (ffmpegArgs with measure: true), then pass loudnessGainDb.");
   const inputs: string[] = [];
   const g: string[] = [];
   let idx = 0;
@@ -1653,7 +1659,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
   let v = "";
   /** Phase 2: the person's matte over the whole edit (when layers go behind the person). */
   let personMatte: string | null = null;
-  if (!opts.measure) {
+  const noPicture = !!opts.measure || opts.sound === "only";
+  if (!noPicture) {
     const vt = (k: { srcIn: number; srcOut: number }) => `trim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},setpts=PTS-STARTPTS`;
     const turnOf = (r: number) => (r === 90 ? "transpose=1," : r === 270 ? "transpose=2," : r === 180 ? "hflip,vflip," : "");
     // HDR originals are tone-mapped to SDR BT.709 exactly like the preview copy, so the final looks like the preview
@@ -1926,8 +1933,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     openWindows("v");
   }
 
-  // Samples: a still is picture only (no sound is read or made).
-  if (!opts.still) {
+  // Samples: a still is picture only (no sound is read or made); so is a piece made without its sound.
+  if (!opts.still && opts.sound !== "none") {
     // 2. Dialogue: each sound part from its video (sample-exact), silence for muted parts and parts silent at their speed,
     // joined in edit order. A clip off normal speed plays its stretch through atempo (pitch kept), its speed changing at
     // each step's footage moment. Every unit fades in and out over the declick time (20 ms by default), so no cut clicks.
@@ -1992,15 +1999,15 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     }
   }
 
-  if (opts.pictureAs && !opts.measure) {
+  if (opts.pictureAs && !noPicture) {
     g.push(`[${v}]null[vdrop];color=c=${opts.pictureAs}:s=${plan.width}x${plan.height}:r=${plan.rate || "30"}:d=${n6(plan.outputSeconds + 1)},format=${PF},trim=end=${n6(plan.outputSeconds)}[vplain]`);
     g.push(`[vdrop]nullsink`);
     v = "vplain";
   }
-  if (!opts.measure) v = overlays(opts.pictureAs ? { ...plan, broll: [], under: [], zooms: [], adjust: undefined, person: undefined } : plan, files, g, inputs, () => idx++, v, { still: !!opts.still, colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null, person: opts.pictureAs ? null : personMatte,
+  if (!noPicture) v = overlays(opts.pictureAs ? { ...plan, broll: [], under: [], zooms: [], adjust: undefined, person: undefined } : plan, files, g, inputs, () => idx++, v, { still: !!opts.still, colorChain, PF, PFA, hdrLut: hdr ? lookPath(hdr.lut) : null, person: opts.pictureAs ? null : personMatte,
     // Phase 18: a b-roll clip's matte, put through its own steps, for its look's subject (by its colour chain's tag).
     subjectMatte: (name: string, from: number, to: number, steps: string, tag: string) => { const mt = matteIn(name, from, to); g.push(`[${mt}]${steps},format=gray[smf${tag}]`); mattesFor[tag] = `smf${tag}`; } });
-  if (!opts.still) mixAudio(plan, files, g, inputs, () => idx++, opts);
+  if (!opts.still && opts.sound !== "none") mixAudio(plan, files, g, inputs, () => idx++, opts);
   // Windows that read from the start left empty placeholders where a seek would go (they never move an input's place).
   const windows: Record<string, number> = {};
   for (const w of wins) if (w.made === "v") windows[w.vid] = (windows[w.vid] || 0) + 1;
@@ -2392,6 +2399,9 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
   // Phase 12: the overlay export's two passes (over black, over white), lossless for the worker to take the alpha from.
   // Samples: one frame as a JPEG.
   if (opts.still) return [...head, "-map", "[vout]", "-frames:v", "1", "-update", "1", "-q:v", "2", ...tail, files.output];
+  // A final made in pieces: the whole edit's sound alone (PCM), and each piece's picture alone.
+  if (opts.sound === "only") return [...head, "-map", "[aout]", "-c:a", "pcm_s16le", "-ar", "48000", "-t", n3(outLen), ...tail, files.output];
+  if (opts.sound === "none") return [...head, "-map", "[vout]", ...video, "-an", "-t", n3(outLen), ...tail, files.output];
   if (opts.pictureAs) return [...head, "-map", "[vout]", "-map", "[aout]", "-c:v", "ffv1", "-level", "3", "-g", "1", "-pix_fmt", "yuv444p", "-r", R, "-c:a", "pcm_s16le", "-ar", "48000", "-t", n3(outLen), ...tail, files.output];
   // Phase 12: sound only: the mix as the file, the picture made and dropped (its graph is the same).
   if (plan.format === "audio" || plan.format === "wav") return [...head, "-map", "[aout]", ...(plan.format === "wav" ? ["-c:a", "pcm_s16le"] : ["-c:a", "aac", "-b:a", "256k"]), "-ar", "48000", "-t", n3(outLen), ...tail, files.output, "-map", "[vout]", "-f", "null", "-"];

@@ -1,11 +1,12 @@
-// A final made in pieces (what the worker does when FFmpeg is killed for running out of memory) is the same video as
-// the final made in one pass: an edit with a slowed clip, a dissolve, b-roll, a text box and a zoom, rendered whole and
-// in pieces of about 5 s (pieceRanges: cut at joins, never inside the dissolve), each piece drawn from windowPlan with
-// its sound as PCM, then joined (joinPieces: picture copied, sound encoded once). Same length, the same frame at every
-// edit time (within the encoder's noise), the same sound, and no gap or click where the pieces meet. Also: best
+// A final made in pieces (what the worker does for a heavy final, or when FFmpeg is killed for running out of memory)
+// is the same video as the final made in one pass: an edit with a slowed clip, a dissolve, b-roll, a text box and a
+// zoom, rendered whole and in pieces of about 5 s (pieceRanges: cut at joins, never inside the dissolve). The sound is
+// made once for the whole edit on its own (sound: "only", no picture read), each piece is picture only (sound: "none",
+// drawn from windowPlan), then they are joined under the one sound track (joinPieces). Same length, the same frame at
+// every edit time (within the encoder's noise), the same sound, and no gap or click where the pieces meet. Also: best
 // quality makes the finer encode and 320k sound, and the best resolution is the footage's own.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -47,8 +48,8 @@ describe("a final made in pieces is the final made in one pass", () => {
     if (plan.ass) await writeFile(files.assPath!, plan.ass);
     return files;
   };
-  const render = async (plan: RenderPlan, name: string, opts: { audioCodec?: "pcm" } = {}) => {
-    const files = await filesFor(plan, name, opts.audioCodec ? "mov" : "mp4");
+  const render = async (plan: RenderPlan, name: string, opts: { sound?: "only" | "none" } = {}) => {
+    const files = await filesFor(plan, name, opts.sound === "only" ? "wav" : opts.sound === "none" ? "mov" : "mp4");
     const { args, filterGraph } = ffmpegArgs(plan, files, source, { loudnessGainDb: 0, ...opts });
     await writeFile(join(dir, `${name}.txt`), filterGraph);
     await run("ffmpeg", args.map((a) => (a === "__FILTER_SCRIPT__" ? join(dir, `${name}.txt`) : a)));
@@ -89,9 +90,16 @@ describe("a final made in pieces is the final made in one pass", () => {
     const plan = planRender({ kind: "final", snapshot: snap(), transcript: [], source, videoId: "v", brollSeconds: { orange: 8 } });
     const whole = (await render(plan, "whole")).file;
     const ps = pieceRanges(plan, 5), made: string[] = [];
-    for (const [k, p] of ps.entries()) made.push((await render(windowPlan(plan, p.a, p.b), `piece-${k}`, { audioCodec: "pcm" })).file);
+    const sound = await render(plan, "sound", { sound: "only" });
+    assert.ok(!sound.args.includes("[vout]") && !/scale=|overlay=/.test(await readFile(join(dir, "sound.txt"), "utf8")), "the sound pass reads and draws no picture");
+    for (const [k, p] of ps.entries()) {
+      const piece = await render(windowPlan(plan, p.a, p.b), `piece-${k}`, { sound: "none" });
+      assert.ok(piece.args.includes("-an") && !piece.args.includes("[aout]"), "a piece is picture only");
+      assert.equal((await probe(piece.file)).hasAudio, false);
+      made.push(piece.file);
+    }
     const joined = join(dir, "joined.mp4");
-    await joinPieces(dir, made, joined, "192k");
+    await joinPieces(dir, made, joined, "192k", undefined, sound.file);
     const wi = await probe(whole), ji = await probe(joined);
     console.log(`whole ${wi.seconds.toFixed(3)} s, joined ${ji.seconds.toFixed(3)} s (${ps.length} pieces)`);
     assert.ok(Math.abs(wi.seconds - ji.seconds) < 0.05, "the same length");

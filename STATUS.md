@@ -1137,3 +1137,9 @@ From before:
 - Music shorter than its part was looped by FFmpeg inside the edit's graph (-stream_loop), and the freeze came about
   where a song would come round; the loop is now made first in a small pass of its own (a plain WAV).
 - Tests: apps/worker/test/stall.test.ts (7, including a real FFmpeg frozen on a pipe).
+- Root cause, seen live with the freeze watch: the part from 1:48 froze at its very first frame, every FFmpeg thread
+  waiting on another, with one thread each too. Each part made its own sound by running the whole mix from 0 and
+  dropping what came before the part: the picture waited for that sound and the sound for the picture. Now the
+  sound is made once for the whole edit on its own (ffmpegArgs sound: "only", no picture read) and each part is
+  picture only (sound: "none"); joinPieces puts the one sound track under the joined picture. Same frames and the
+  same sound as the one-pass render (pieces-render.test.ts: correlation 1.0000, no gap at the joins).
