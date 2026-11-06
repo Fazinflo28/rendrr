@@ -1,6 +1,6 @@
 import { env, newRedis, queue, type GraphicJob, type MaintenanceJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { deepTimeoutMs, matteAllowanceMs, matteTimeoutMs, processTimeoutMs, QUEUES, renderTimeoutMs, styleTimeoutMs } from "@rendrr/shared";
+import { deepTimeoutMs, layerAllowanceMs, matteAllowanceMs, matteTimeoutMs, processTimeoutMs, QUEUES, renderTimeoutMs, styleTimeoutMs } from "@rendrr/shared";
 import { Worker, type Job } from "bullmq";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -49,7 +49,8 @@ const videoLimit = async (job: Job) => processTimeoutMs((await prisma.video.find
 const deepLimit = async (job: Job) => deepTimeoutMs((await prisma.video.findUnique({ where: { id: (job.data as { videoId: string }).videoId }, select: { seconds: true } }))?.seconds ?? 0);
 const renderLimit = async (job: Job) => {
   const r = await prisma.render.findUnique({ where: { id: (job.data as { renderId: string }).renderId }, select: { kind: true, quality: true, project: { select: { timeline: true, video: { select: { seconds: true } } } } } });
-  return renderTimeoutMs(r?.kind === "preview" ? "preview" : "final", r?.project.video.seconds ?? 0, r?.quality) + matteAllowanceMs(r?.project.timeline) + 60_000;
+  const kind = r?.kind === "preview" ? "preview" : "final";
+  return renderTimeoutMs(kind, r?.project.video.seconds ?? 0, r?.quality) + matteAllowanceMs(r?.project.timeline) + layerAllowanceMs(r?.project.timeline, kind) + 60_000;
 };
 // A custom graphic's limit grows with its length and size (see recordLimitMs).
 const graphicLimit = async (job: Job) => {

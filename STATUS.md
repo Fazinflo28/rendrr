@@ -21,6 +21,14 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Heavy finals timed out (6 November)
+
+- The V30 final (Shift performance therapy) failed twice with "took too long". Worker log: 43 inputs, 224 scalers. The one pass ran 10 minutes, was killed for memory, started again in 9 pieces, and hit the job's 16-minute limit at 78%.
+- Fixes:
+  - A final with 24+ inputs or 150+ scalers is made in pieces from the start (`piecesFirst`, `apps/worker/src/jobs/render.ts`), so no time is lost on a pass that cannot fit in memory.
+  - A render's time limit grows with its layers (`layerAllowanceMs`, `packages/shared/src/look.ts`): 20 s per b-roll, graphic, text, music, sound effect or other V1 video for a final (5 s for a preview). V30's limit goes from 16 to about 30 minutes.
+- Tests: `packages/shared/test/layer-allowance.test.ts`, `apps/worker/test/pieces-first.test.ts`, and the pieces render test (pieces match one pass frame for frame).
+
 ## Drive picker: one import bar, not two (6 November)
 
 - Inside a Drive folder the picker showed two bars: "Bring in all of <folder> / Import this folder" and, under it, the bar for what was ticked ("1 folder selected / Import 1 folder"), each with its own "With its folders" box.

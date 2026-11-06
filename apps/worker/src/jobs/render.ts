@@ -28,6 +28,9 @@ import { measureSound } from "../lib/sound";
 // The worker image copies them to the same place in the repo layout; system fonts are the fallback (fontconfig).
 const FONTS_DIR = process.env.FONTS_DIR || fileURLToPath(new URL("../../../web/public/fonts", import.meta.url));
 
+/** A final this heavy is made in pieces from the start (its one pass would run out of memory after many minutes). */
+export const piecesFirst = (kind: string, g: { inputs: number; scalers: number }) => kind === "final" && (g.inputs >= 24 || g.scalers >= 150);
+
 export async function renderJob(ctx: Ctx) {
   const { renderId } = ctx.job.data as RenderJob;
   const r = await prisma.render.findUnique({ where: { id: renderId } });
@@ -434,11 +437,11 @@ export async function renderJob(ctx: Ctx) {
     // pieces are joined (picture copied, sound encoded once). A piece killed again is made as two halves (down to 2 s).
     const killed = (e: unknown) => !signal.aborted && /exited with null/.test((e as Error)?.message || "");
     const canPiece = plan.model !== "A" && fmt !== "overlay" && fmt !== "audio" && fmt !== "wav";
-    const renderInPieces = async () => {
+    const renderInPieces = async (why = "FFmpeg was killed (out of memory)") => {
       const FPS = plan.fps || 30, onGrid = (t: number) => Math.round(t * FPS) / FPS;
       const queue = pieceRanges(plan);
       const made: string[] = [];
-      console.error(`[render] ${r.id}: FFmpeg was killed (out of memory): making it in ${queue.length} pieces`);
+      console.error(`[render] ${r.id}: ${why}: making it in ${queue.length} pieces`);
       for (let n = 0; queue.length; n++) {
         const pc = queue.shift()!;
         const out = join(ctx.dir, `piece-${n}.mov`), gp = join(ctx.dir, `graph-piece-${n}.txt`);
@@ -464,10 +467,14 @@ export async function renderJob(ctx: Ctx) {
     };
     est.encStart = Date.now();
     try {
+      // A very heavy final (dozens of sources at once) is made in pieces from the start: in one pass it fills the
+      // container's memory slowly and is killed only after many minutes (then made in pieces anyway).
+      const heavy = canPiece && piecesFirst(kind, fit);
       // A nearly full container (other jobs hold its threads): wait up to a minute for room; still full, start small.
-      const room = await waitForThreads(fit.need, 60_000, signal);
+      const room = heavy || (await waitForThreads(fit.need, 60_000, signal));
       try {
-        await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress });
+        if (heavy) await renderInPieces(`a heavy final (${fit.inputs} inputs, ${fit.scalers} scalers)`);
+        else await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress });
       } catch (e) {
         if (canPiece && killed(e)) await renderInPieces();
         else {

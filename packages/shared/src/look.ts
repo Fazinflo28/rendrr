@@ -394,6 +394,19 @@ export function matteAllowanceMs(timeline: unknown): number {
   return blocks.size ? matteTimeoutMs(Math.ceil(blocks.size / 2)) : 0;
 }
 
+/**
+ * The extra time a render of this timeline may take for its layers: every b-roll, graphic, text, sound and other
+ * video it draws or mixes is one more input the encode decodes and scales (a heavy edit has dozens). A final gets
+ * 20 s a layer, a preview (540p, from the preview copies) 5 s.
+ */
+export function layerAllowanceMs(timeline: unknown, kind: "preview" | "final"): number {
+  const t = (timeline as { tracks?: Record<string, unknown> } | null)?.tracks;
+  const list = (k: string) => (Array.isArray(t?.[k]) ? (t![k] as { kind?: string; sourceVideoId?: string }[]) : []);
+  const v1Sources = new Set(list("v1").map((c) => c?.sourceVideoId ?? "")).size;
+  const layers = list("v2").filter((c) => c?.kind !== "zoom").length + list("v3").filter((c) => c?.kind !== "caption").length + list("a2").length + list("a3").length + Math.max(0, v1Sources - 1);
+  return layers * (kind === "final" ? 20_000 : 5_000);
+}
+
 /** Everything Phase 6 adds to a drawn clip (V1, b-roll). */
 export type ClipLook = { grade?: Grade; key?: ChromaKey; masks?: Mask[]; effects?: Effect[]; skin?: Skin; subject?: Subject; objects?: TrackedObject[] };
 export const hasLook = (c: ClipLook | null | undefined) => !!c && (!!c.grade && gradeIsActive(c.grade) || !!c.key || !!c.masks?.length || !!c.effects?.length || skinActive(c.skin) || !!c.subject);
