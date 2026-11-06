@@ -33,13 +33,12 @@ check(!(await page.locator("#text-behind").isChecked()), "it starts in front");
 await page.locator("#text-behind").check(); await sleep(500);
 check(await page.locator("#text-behind").isChecked(), "ticked: it stays behind the person");
 // The same clip in Speed & motion shows it.
-await page.locator("#tool-back").click(); await sleep(200);
-await page.locator("#tab-clip").click(); await sleep(400);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 check(await page.locator("#clip-behind").count() === 1, "Speed & motion shows the switch for the selected text");
 check(await page.locator("#clip-behind").isChecked(), "and it is ticked there too");
 await page.locator("#clip-behind").uncheck(); await sleep(500);
 check(!(await page.locator("#clip-behind").isChecked()), "unticked: in front again");
-await page.locator("#tool-back").click(); await sleep(200);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 await page.locator("#tab-text").click(); await sleep(300);
 check(!(await page.locator("#text-behind").isChecked()), "the Text tab agrees");
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);

@@ -63,7 +63,7 @@ await page.locator("#mask-add-rect").click(); await sleep(300);
 await page.locator("#mask-0-follow-object").selectOption("o1"); await sleep(300);
 check(/Follows logo/.test((await page.locator("#mask-0-moving").textContent()) || ""), "a mask set to follow it moves with it");
 // Pin a text layer to it.
-await page.locator("#tool-back").click(); await sleep(200);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 await page.locator("#tab-text").click(); await page.locator("#text-layers").waitFor();
 await page.locator("#add-text-callout").click(); await sleep(400);
 await page.locator("#text-pin-object").waitFor();
@@ -74,7 +74,7 @@ check(await page.locator("#text-pin-scale").count() === 1, "and can grow with it
 const keyed = await page.evaluate(() => [...document.querySelectorAll(".clip")].some((c) => c.querySelector(".kf, .keys, [data-keys]")));
 console.log(`     (keyframe marks on the timeline: ${keyed})`);
 // Stop tracking it: the blur keeps its path, the text is unpinned.
-await page.locator("#tool-back").click(); await sleep(200);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 await page.locator(".clip.video").first().click(); await sleep(300);
 await page.locator("#tab-color").click(); await page.locator("#objects-panel").waitFor();
 await page.locator("#obj-del-0").click(); await sleep(400);

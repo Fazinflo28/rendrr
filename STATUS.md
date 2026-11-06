@@ -21,6 +21,19 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## The editor laid out like Instagram Edits for Mac (6 November)
+
+- Studied from the screen recording you shared (Edits for macOS, every screen). The lupikovoleg/instagram-edits-sdk repo (MIT) is a Reel analytics SDK (insights, retention); it has nothing on the editor's layout, so nothing was taken from it.
+- Same structure as Edits, with Rendrr's own look and features:
+  - Top bar: back, name, version; aspect ratio menu (9:16 Reels, TikTok, Shorts / 16:9 / 4:5 / 1:1, set_aspect); quality menu (resolution and frame rate, set_export, and More export settings); Search tools (every panel and action by name, Enter opens the first); Samples, Share for review, Export.
+  - Left: a rail of tools (Media, Audio, Text, Captions, Color, Multicam, Transcript; then Reference, Your AI, Comments with a count). Each opens in the panel beside it, Media first; its X closes the panel and the player takes the room.
+  - Middle: the player.
+  - Right: the inspector, the settings of what is selected: a clip shows speed, motion, transition and its sound; a text its content and style (and keyframes); music or a sound effect its level and fades; an adjustment layer points to Color. Nothing selected: "Select a clip" and the project's shape, length, version, captions and export.
+  - Bottom: the timeline across the whole width, its tools in one bar (select, razor, ripple, roll, slip, slide; split, add, rotate, frame, delete, mute; snapping, marks; undo, redo; zoom). Track names are short (V1...), the hint on hover.
+  - Phone: player, the rail as one scrolling row, the open tool, the inspector, the timeline.
+- Code: `apps/web/src/rendrr/editor.js` (rail, panel, inspector, top bar), the Text and Audio tools split in parts (the panel shows what to add and the whole edit; the inspector the selected item, never twice), `export.js` (QualityMenu), `styles.css`.
+- Tests: `apps/web/demo/panel.mjs` rewritten for this layout (desktop and phone: rail groups, every tool opens under its name with nothing cut off, X closes and the player widens, inspector for nothing, a clip and a text, aspect menu and undo, quality 4K, search tools, tools in the timeline's bar, comment pins); the other browser tests now find a clip's settings in the inspector.
+
 ## Finals from another copy of the footage came out upside down (6 November)
 
 - A final came out upside down while the editor and the preview were upright. The edit was made looking at the preview copy, which the browser makes from the file first added (here a "-compressed" file stored upside down, so the edit turned it 180°). Since the original may now be a renamed or re-saved copy, the copy given for the final (likely the camera's own file) was stored the right way up, so the edit's 180° turn made the final upside down.

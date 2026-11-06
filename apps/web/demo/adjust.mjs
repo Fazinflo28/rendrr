@@ -57,10 +57,9 @@ const adjId = await page.locator("[data-adjust-item]").first().getAttribute("dat
 const adjClip = page.locator(`.clip[data-clip="${adjId}"]`);
 await adjClip.scrollIntoViewIfNeeded(); await adjClip.click(); await sleep(300);
 check(await page.locator("#adjust-panel").count() === 1, "picked on V3, the Color page opens the layer");
-await page.locator("#tool-back").click(); await sleep(200);
-await page.locator("#tab-clip").click(); await sleep(300);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 check((await page.locator("#adjust-hint").textContent().catch(() => "")).includes("Color tab"), "the Clip tab points to the Color tab");
-await page.locator("#tool-back").click(); await sleep(200);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 await page.locator("#tab-color").click(); await page.locator("#adjust-panel").waitFor({ timeout: 3000 }).catch(() => {});
 // Back to the whole edit: it is listed; open it again from the list.
 await page.locator("#adjust-back").click(); await page.locator("#adjust-list").waitFor();

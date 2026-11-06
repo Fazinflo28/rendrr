@@ -42,7 +42,7 @@ await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.l
 
 const clips = page.locator(".clip.video");
 await clips.nth(1).click(); await sleep(300);
-await page.locator("#tab-clip").click(); await page.locator("#transition-type").waitFor({ timeout: 3000 });
+await page.locator("#transition-type").waitFor({ timeout: 3000 });
 const opts = await page.locator("#transition-type option").allInnerTexts();
 check(["Iris box", "Iris cross", "Venetian blinds", "Checker wipe", "Wedge wipe"].every((n) => opts.includes(n)), `the five new wipes are offered (${opts.slice(-5).join(", ")})`);
 await page.locator("#transition-type").selectOption("blinds"); await sleep(400);
@@ -55,9 +55,9 @@ check(await page.locator("#transition-type").inputValue() === "checker" && await
 // footage lengths, so it plans no transition windows to draw.)
 await page.locator("#transition-type").selectOption("box"); await sleep(300);
 check(await page.locator("#transition-type").inputValue() === "box", "Iris box picked");
-await page.locator("#tool-back").click(); await sleep(200);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 // The Export window: GIF up to ten minutes.
-const exp = page.locator("button", { hasText: "Export final" }).first();
+const exp = page.locator("#render-final");
 await exp.click(); await sleep(500);
 const fmt = await page.evaluate(() => Array.from(document.querySelectorAll("option, label, button")).map((e) => e.textContent).find((t) => /GIF \(up to/.test(t || "")) || "");
 check(/GIF \(up to 10 min\)/.test(fmt), `Export offers GIFs up to ten minutes ("${fmt}")`);

@@ -1,7 +1,9 @@
-// The editor's right panel, like Higgsfield's: two tabs (Edit, Comments); Edit lists the tools in two cards, each tool
-// opens on its own page under a back arrow, its icon and name; a comment pin on the timeline opens Comments; no tool
-// page is wider than the panel, on a desktop or a phone. Runs on the demo build (node demo/build.mjs first) in
-// Playwright's Chromium.
+// The editor laid out like Instagram Edits' desktop app: a rail of tools (two groups) opens each tool in the panel
+// beside it, under its icon and name, with an X that closes it (the player gets the room); the inspector on the
+// right shows the selected clip's settings (a clip: speed, motion and its sound; a text: its style) and "Select a clip"
+// with nothing selected; the top bar has the aspect ratio and quality menus and Search tools; the timeline's tools sit
+// in one bar above it, with undo and redo; a comment pin opens Comments. Nothing in a panel is wider than the panel,
+// on a desktop or a phone. Runs on the demo build (node demo/build.mjs first) in Playwright's Chromium.
 //   node demo/panel.mjs   (from apps/web)
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -19,7 +21,7 @@ const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromi
 const fails = [];
 const check = (ok, what) => { console.log(`${ok ? "ok  " : "FAIL"} ${what}`); if (!ok) fails.push(what); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const TOOLS = { transcript: "Transcript", clip: "Speed & motion", text: "Text & captions", audio: "Audio", color: "Color", multicam: "Multicam", style: "Reference", ai: "What your AI did" };
+const RAIL = ["Media", "Audio", "Text", "Captions", "Color", "Multicam", "Transcript"], RAIL_AI = ["Reference", "Your AI", "Comments"];
 
 async function open(width, height) {
   const page = await browser.newPage({ viewport: { width, height } });
@@ -32,37 +34,76 @@ async function open(width, height) {
   await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await sleep(1200);
   return { page, errors };
 }
-// Anything in the panel wider than the panel itself (a row cut off at the right edge).
-const overflow = (page) => page.evaluate(() => {
-  const p = document.querySelector(".ed-body > .panel").getBoundingClientRect();
-  return [...document.querySelectorAll(".ed-body > .panel *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.right > p.right + 1; }).map((e) => e.id || e.className || e.tagName).slice(0, 3);
-});
+// Anything in a panel wider than the panel itself (a row cut off at the right edge).
+const overflow = (page, sel) => page.evaluate((sel) => {
+  const box = document.querySelector(sel); if (!box) return ["(no " + sel + ")"];
+  const p = box.getBoundingClientRect();
+  return [...box.querySelectorAll("*")].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.right > p.right + 1 && !e.closest("[aria-hidden=true]"); }).map((e) => e.id || e.className || e.tagName).slice(0, 3);
+}, sel);
 
 for (const [tag, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
   const { page, errors } = await open(w, h);
-  const tabs = await page.locator(".panel > .tabs [role=tab]").allInnerTexts();
-  check(tabs.length === 2 && /^Edit/.test(tabs[0].trim()) && /^Comments/.test(tabs[1].trim()), `${tag}: two tabs, Edit and Comments (${tabs.map((t) => t.trim()).join(" | ")})`);
-  check(await page.locator("#tab-edit").getAttribute("aria-selected") === "true", `${tag}: it opens on Edit`);
-  const cards = await page.locator("#edit-tools .rp-card-h").allInnerTexts();
-  check(cards.join("|").toUpperCase() === "EDIT VIDEO|YOUR AI", `${tag}: the tools sit in two cards (${cards.join(", ")})`);
-  const rows = await page.locator("#edit-tools .rp-row .grow").allInnerTexts();
-  check(rows.join("|") === Object.values(TOOLS).join("|"), `${tag}: every tool is listed once (${rows.join(", ")})`);
-  check((await overflow(page)).length === 0, `${tag}: the Edit list fits the panel`);
-  for (const [k, label] of Object.entries(TOOLS)) {
-    await page.locator("#tab-" + k).click(); await sleep(250);
-    const head = (await page.locator("#tool-head b").innerText()).trim();
-    const gone = await page.locator(".panel > .tabs").count() === 0;
-    const wide = await overflow(page);
-    check(head === label && gone && wide.length === 0, `${tag}: ${label} opens on its own page under a back arrow, nothing cut off${wide.length ? " (" + wide.join(", ") + ")" : ""}`);
-    await page.locator("#tool-back").click(); await sleep(200);
-    if (await page.locator("#edit-tools").count() !== 1) { check(false, `${tag}: back from ${label} returns to the list`); break; }
+  const groups = await page.$$eval("#edit-tools .rail-group", (gs) => gs.map((g) => [...g.querySelectorAll(".rail-l")].map((x) => x.textContent.trim())));
+  check(groups.length === 2 && groups[0].join("|") === RAIL.join("|") && groups[1].join("|") === RAIL_AI.join("|"), `${tag}: the rail has the tools in two groups (${groups.map((g) => g.join(", ")).join(" / ")})`);
+  check((await page.locator("#tool-head b").innerText()).trim() === "Media" && await page.locator("#tab-media").getAttribute("aria-selected") === "true", `${tag}: it opens on Media`);
+  if (tag === "phone") {
+    const tops = await page.$$eval("#edit-tools .rail-btn", (bs) => [...new Set(bs.map((b) => Math.round(b.getBoundingClientRect().top)))]);
+    check(tops.length === 1, `${tag}: the rail is one row that scrolls (${tops.length} rows)`);
   }
-  check(await page.locator("#edit-tools").count() === 1, `${tag}: the back arrow returns to the list`);
+  for (const label of [...RAIL, ...RAIL_AI]) {
+    const k = await page.locator(`#edit-tools .rail-btn[aria-label="${label}"]`).getAttribute("id");
+    if ((await page.locator("#" + k).getAttribute("aria-selected")) !== "true") await page.locator("#" + k).click();
+    await sleep(250);
+    const headTxt = (await page.locator("#tool-head b").innerText()).trim();
+    const wide = await overflow(page, "#lib-panel");
+    check(headTxt === label && wide.length === 0, `${tag}: ${label} opens in the panel under its name, nothing cut off${wide.length ? " (" + wide.join(", ") + ")" : ""}`);
+  }
+  // The open tool's button, or the X, closes the panel; the player gets its room.
+  const playerW = async () => page.$eval(".ed-work > .center", (e) => e.getBoundingClientRect().width);
+  const w0 = await playerW();
+  await page.locator("#tool-back").click(); await sleep(250);
+  check(await page.locator("#lib-panel").count() === 0, `${tag}: the X closes the panel`);
+  if (tag === "desktop") check(await playerW() > w0 + 200, `${tag}: the player takes the room (${Math.round(w0)} -> ${Math.round(await playerW())} px)`);
+  // Inspector: nothing selected, a clip, a text.
+  check(/Select a clip/.test(await page.locator("#inspector").innerText()) && await page.locator("#project-facts").count() === 1, `${tag}: with nothing selected the inspector says "Select a clip" and shows the project`);
+  check((await overflow(page, "#inspector")).length === 0, `${tag}: the empty inspector fits`);
+  await page.locator(".clip.video").nth(1).click(); await sleep(300);
+  check(await page.locator("#inspector #clip-panel").count() === 1 && await page.locator("#inspector #audio-inspector").count() === 1, `${tag}: a clip shows its speed, motion and sound in the inspector`);
+  const wideI = await overflow(page, "#inspector");
+  check(wideI.length === 0, `${tag}: the clip's settings fit the inspector${wideI.length ? " (" + wideI.join(", ") + ")" : ""}`);
+  await page.locator("#tab-text").click(); await sleep(200);
+  await page.locator("#add-text-title").click(); await sleep(400);
+  const textSel = await page.locator("#inspector #text-inspector").count();
+  if (!textSel) { const t = page.locator(".clip.title").last(); await t.click(); await sleep(300); }
+  check(await page.locator("#inspector #text-inspector #text-content").count() === 1 && await page.locator("#lib-panel #text-content").count() === 0, `${tag}: a text's style is in the inspector, not twice`);
+  await page.locator("#inspector-clear").click(); await sleep(200);
+  check(/Select a clip/.test(await page.locator("#inspector").innerText()), `${tag}: clearing the selection empties the inspector`);
   if (tag === "desktop") {
+    // Top bar: aspect ratio, quality, search tools.
+    await page.locator("#aspect-btn").click(); await sleep(200);
+    const shapes = await page.$$eval("#aspect-menu [data-aspect]", (bs) => bs.map((b) => b.dataset.aspect));
+    check(shapes.join(",") === "9:16,16:9,4:5,1:1", `${tag}: the aspect menu lists the shapes (${shapes.join(", ")})`);
+    const before = (await page.locator("#aspect-btn").innerText()).trim();
+    const pick = before === "9:16" ? "16:9" : "9:16";
+    await page.locator(`#aspect-menu [data-aspect="${pick}"]`).click(); await sleep(400);
+    check((await page.locator("#aspect-btn").innerText()).trim() === pick, `${tag}: picking ${pick} changes the edit's shape (${before} -> ${pick})`);
+    check(await page.locator("#undo").isEnabled(), `${tag}: undo is in the timeline's bar`);
+    await page.locator("#undo").click(); await sleep(400);
+    check((await page.locator("#aspect-btn").innerText()).trim() === before, `${tag}: undo brings the shape back`);
+    await page.locator("#quality-btn").click(); await sleep(200);
+    await page.locator('#quality-res [data-v="4k"]').click(); await sleep(300);
+    check(/^4K/.test((await page.locator("#quality-btn").innerText()).trim()), `${tag}: the quality menu sets 4K (${(await page.locator("#quality-btn").innerText()).trim()})`);
+    await page.mouse.click(700, 300); await sleep(100);
+    await page.locator("#tool-search").click(); await page.keyboard.type("comm"); await sleep(150);
+    check(await page.locator("#tool-search-menu .tb-found").count() >= 1, `${tag}: search tools finds Comments`);
+    await page.keyboard.press("Enter"); await sleep(300);
+    check(await page.locator("#tab-comments").getAttribute("aria-selected") === "true", `${tag}: Enter opens it`);
+    // The timeline's tools are in its bar.
+    check(await page.locator(".tl-bar #tool-select").count() === 1 && await page.locator(".tl-bar #tool-razor").count() === 1 && await page.locator(".tl-bar #snap").count() === 1, `${tag}: the timeline's tools sit in one bar above it`);
     await page.locator("#tab-audio").click(); await sleep(200);
     await page.locator("#timeline .cm").first().click(); await sleep(300);
-    check(await page.locator("#tab-comments").getAttribute("aria-selected") === "true" && await page.locator("#comment-list .cmt").count() > 0, `${tag}: a comment pin on the timeline opens Comments, even from a tool's page`);
-    check(/1/.test(await page.locator("#tab-comments .n").innerText()), `${tag}: the Comments tab counts the open comments`);
+    check(await page.locator("#tab-comments").getAttribute("aria-selected") === "true" && await page.locator("#comment-list .cmt").count() > 0, `${tag}: a comment pin on the timeline opens Comments`);
+    check(/1/.test(await page.locator("#tab-comments .n").innerText()), `${tag}: the Comments button counts the open comments`);
   }
   check(errors.length === 0, `${tag}: no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
   await page.close();

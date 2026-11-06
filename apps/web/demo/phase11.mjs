@@ -30,7 +30,7 @@ const email = page.locator('input[type="email"]').first();
 if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await sleep(800); }
 await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await sleep(1200);
 await page.locator(".clip.video").first().click(); await sleep(300);
-await page.locator("#tab-clip").click(); await page.locator("#frame-look").waitFor();
+await page.locator("#frame-look").waitFor();
 await page.locator("#flip-h").click(); await sleep(300);
 check(await page.locator("#flip-h").getAttribute("aria-pressed") === "true", "Flip ↔ on");
 await page.locator("#flip-v").click(); await sleep(300);

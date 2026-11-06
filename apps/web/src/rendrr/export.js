@@ -39,6 +39,20 @@ export function exportSummary(snap, video) {
   ].filter(Boolean).join(" · ");
 }
 
+/** The quality menu in the editor's top bar (like Edits' "4K 60" chip): resolution and frame rate, kept with the edit
+ *  (set_export), and the rest of the export settings one click away. */
+export function QualityMenu({ snap, video, doOp, onMore }) {
+  const ex = snap.timeline.export || {};
+  return html`<div class="col" style="gap:12px" id="quality-menu">
+    <div class="col" style="gap:6px"><span class="t-small muted">Resolution</span><${Seg} id="quality-res" value=${ex.resolution || "1080p"} options=${SIZES} onPick=${(v) => doOp({ op: "set_export", resolution: v })} /></div>
+    <div class="col" style="gap:6px"><span class="t-small muted">Frame rate</span><${Seg} id="quality-fps" value=${ex.fps ? String(ex.fps) : ""} options=${RATES} onPick=${(v) => doOp({ op: "set_export", fps: v ? Number(v) : null })} /></div>
+    <p class="t-small muted" id="quality-summary" style="margin:0">${exportSummary(snap, video)}</p>
+    <button class="dlink t-small" id="quality-more" style="justify-self:start" onClick=${onMore}>More export settings</button>
+  </div>`;
+}
+/** The quality chip's text: "1080p · 30". */
+export const qualityChip = (snap) => { const ex = snap.timeline.export || {}; return (ex.resolution === "4k" ? "4K" : ex.resolution || "1080p") + (ex.fps ? " · " + ex.fps : ""); };
+
 export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, reframing = false, plan = null, name = "edit" }) {
   const ex = snap.timeline.export || {};
   const hdrFootage = !!video?.hdr;

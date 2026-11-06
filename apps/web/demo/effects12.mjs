@@ -30,7 +30,7 @@ const email = page.locator('input[type="email"]').first();
 if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await sleep(800); }
 await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await sleep(1200);
 await page.locator(".clip.video").nth(1).click(); await sleep(300);
-await page.locator("#tab-clip").click(); await page.locator("#transition-type").waitFor();
+await page.locator("#transition-type").waitFor();
 const opts = await page.locator("#transition-type option").evaluateAll((os) => os.map((o) => o.textContent));
 for (const n of ["Push", "Wipe", "Iris round", "Cross zoom", "Film dissolve", "Clock wipe", "Barn doors", "Iris diamond"]) check(opts.includes(n), `the menu offers ${n}`);
 await page.locator("#transition-type").selectOption("wipe"); await sleep(300);
@@ -40,7 +40,7 @@ check(await page.locator("#transition-dir").inputValue() === "up", "wipe up");
 await page.locator("#transition-type").selectOption("iris"); await sleep(250);
 check(await page.locator("#transition-dir").count() === 0, "an iris has none");
 // The Color tab: the new effects.
-await page.locator("#tool-back").click(); await sleep(200);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 await page.locator("#tab-color").click(); await page.locator("#fx-add-glow").waitFor();
 for (const t of ["glow", "grain", "rgbsplit", "pin"]) { await page.locator("#fx-add-" + t).click(); await sleep(200); }
 const names = await page.locator("[data-effect] .t-small").evaluateAll((es) => es.map((e) => e.textContent));

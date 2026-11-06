@@ -44,7 +44,7 @@ check(shader.length === 0, "no shader errors");
 await page.locator("#skin-on").click(); await sleep(500);
 check((await page.locator("#skin-smooth").count()) === 0, "Off removes it");
 // One clip: select it on the timeline; its Color page has its own Skin section.
-await page.locator("#tool-back").click(); await page.locator(".clip.video").first().click(); await sleep(300);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await page.locator(".clip.video").first().click(); await sleep(300);
 await page.locator("#tab-color").click(); await page.locator("#skin-panel").waitFor();
 await page.locator("#skin-on").click(); await page.locator("#skin-smooth").waitFor({ timeout: 5000 });
 check(/^On 1 of \d+ clips|^Done before/.test(await page.locator("#skin-note").textContent()), "a clip gets its own retouch");

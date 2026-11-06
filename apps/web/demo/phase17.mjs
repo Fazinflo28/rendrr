@@ -39,8 +39,8 @@ await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.l
 // A text layer: Speed & motion has the anchor grid and motion blur.
 await page.locator("#tab-text").click(); await sleep(300);
 await page.locator("#add-text-title").click(); await sleep(500);
-await page.locator("#tool-back").click(); await sleep(200);
-await page.locator("#tab-clip").click(); await page.locator("#keys-panel").waitFor({ timeout: 3000 });
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
+await page.locator("#keys-panel").waitFor({ timeout: 3000 });
 check(await page.locator("#anchor-row").count() === 1, "a text layer has the anchor grid");
 check(await page.locator('[data-anchor="0.5,0.5"]').getAttribute("aria-checked") === "true", "centred text: its middle is lit (its alignment point)");
 check(await page.locator("#motion-blur").count() === 1, "and motion blur");
@@ -60,14 +60,14 @@ const back = await until(async () => { const b = await block(); return b && Math
 check(!!back, "its alignment point again: back where it turned before");
 
 // A b-roll card: a border, drawn in the player.
-await page.locator("#tool-back").click(); await sleep(200);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 const br = page.locator('.clip[data-clip="b1"]');
 await br.scrollIntoViewIfNeeded();
 // The playhead into the b-roll (a click on the timeline's top row at its middle), then the b-roll picked.
 const bb = await br.boundingBox(), tl = await page.locator("#timeline").boundingBox();
 await page.mouse.click(bb.x + bb.width / 2, tl.y + 6); await sleep(300);
 await br.click(); await sleep(300);
-await page.locator("#tab-clip").click(); await page.locator("#frame-look").waitFor({ timeout: 3000 });
+await page.locator("#frame-look").waitFor({ timeout: 3000 });
 await slide("crop-left", 20);
 await page.locator("#card-border").check(); await sleep(300);
 check(await page.locator("#card-border-width").count() === 1 && await page.locator("#card-border-color").count() === 1, "Border on: its colour and width");

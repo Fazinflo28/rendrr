@@ -29,7 +29,7 @@ const email = page.locator('input[type="email"]').first();
 if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await sleep(800); }
 await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await sleep(1200);
 await page.locator(".clip.video").first().click(); await sleep(300);
-await page.locator("#tab-clip").click(); await page.locator("#stabilize-panel").waitFor();
+await page.locator("#stabilize-panel").waitFor();
 check(!(await page.locator("#clip-stabilize").isChecked()) && (await page.locator("#clip-stabilize-smooth").count()) === 0, "a clip starts as filmed");
 await page.locator("#clip-stabilize").check(); await page.locator("#clip-stabilize-smooth").waitFor({ timeout: 4000 });
 check((await page.locator('[data-val="clip-stabilize-smooth"]').textContent()) === "50", "on: smoothness 50");

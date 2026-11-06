@@ -111,10 +111,10 @@ for (const [vp, w, h] of VIEWPORTS) {
     const b = page.locator("#tab-" + t);
     if (!(await b.count())) { report.push({ vp, label: "editor " + t, issues: ["no button for this tool"] }); continue; }
     await b.click().catch(() => {}); await look("editor " + t);
-    await page.locator("#tool-back").click().catch(() => {}); await sleep(200);
+    await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
   }
   await page.locator("#tab-comments").click().catch(() => {}); await look("editor comments");
-  await page.locator("#tab-edit").click().catch(() => {});
+  await page.locator("#tab-media").click({ timeout: 800 }).catch(() => {});
   for (const [id, label] of [["#render-final", "export window"], ["#samples-btn", "samples window"]]) {
     const b = page.locator(id).first();
     if (await b.count() && await b.isVisible()) { await b.click().catch(() => {}); await sleep(600); await look(label); await page.keyboard.press("Escape"); await sleep(300); }

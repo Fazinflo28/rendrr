@@ -29,7 +29,7 @@ const email = page.locator('input[type="email"]').first();
 if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await sleep(800); }
 await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await sleep(1200);
 await page.locator(".clip.video").nth(1).click(); await sleep(300);
-await page.locator("#tab-clip").click(); await page.locator("#transition-type").waitFor();
+await page.locator("#transition-type").waitFor();
 const label = await page.locator('#transition-type option[value="morph"]').textContent();
 check(label === "Morph Cut (jump cuts)", `the menu offers ${label}`);
 await page.locator("#transition-type").selectOption("morph"); await sleep(500);

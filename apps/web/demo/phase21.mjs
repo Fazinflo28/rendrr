@@ -37,14 +37,14 @@ await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.l
 
 // A V1 clip slowed to half speed: Stabilize says it smooths through the speed change.
 await page.locator(".clip.video").first().click(); await sleep(300);
-await page.locator("#tab-clip").click(); await page.locator("#speed-panel").waitFor({ timeout: 3000 });
+await page.locator("#speed-panel").waitFor({ timeout: 3000 });
 await page.locator("#clip-speed").fill("0.5").catch(async () => { await slide("clip-speed", 10, "ArrowLeft"); });
 await page.locator("#clip-speed").blur().catch(() => {}); await sleep(400);
 await page.locator("#clip-stabilize").check(); await sleep(400);
 check(await page.locator("#clip-stabilize").isChecked(), "Stabilize stays on for a clip at another speed");
 const n1 = (await page.locator("#stabilize-note").textContent()) || "";
 check(/through its speed changes/.test(n1), `the note says it is smoothed through the speed changes ("${n1.trim()}")`);
-await page.locator("#tool-back").click(); await sleep(200);
+await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 
 // The b-roll: Stabilize offered, from its own footage.
 const br = page.locator('.clip[data-clip="b1"]');
@@ -52,7 +52,7 @@ await br.scrollIntoViewIfNeeded();
 const bb = await br.boundingBox(), tl = await page.locator("#timeline").boundingBox();
 await page.mouse.click(bb.x + bb.width / 2, tl.y + 6); await sleep(300);
 await br.click(); await sleep(300);
-await page.locator("#tab-clip").click(); await page.locator("#frame-look").waitFor({ timeout: 3000 });
+await page.locator("#frame-look").waitFor({ timeout: 3000 });
 check(await page.locator("#stabilize-panel").count() === 1, "b-roll has the Stabilize control");
 await page.locator("#clip-stabilize").check(); await sleep(400);
 check(await page.locator("#clip-stabilize").isChecked() && await page.locator("#clip-stabilize-smooth").count() === 1, "on, with its smoothness");
