@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
@@ -35,8 +35,47 @@ export function filterThreads(graph?: string): number {
 /** FFmpeg failed because the container could not start another thread. */
 export const outOfThreads = (e: unknown) => /Resource temporarily unavailable|thread creation failed|EAGAIN/.test(`${String((e as { stderr?: string })?.stderr ?? "")} ${(e as Error)?.message ?? ""}`);
 
-/** onLine: each line the command writes to stderr (a Python script's "PROGRESS n"). */
-export type RunOpts = { signal?: AbortSignal; onProgress?: (seconds: number) => void; onLine?: (line: string) => void; cwd?: string; stdin?: "ignore" };
+/**
+ * onLine: each line the command writes to stderr (a Python script's "PROGRESS n").
+ * stallMs: a frozen FFmpeg is stopped. Frozen means its output time has not moved and it has used almost no CPU
+ * (under a fifth of a core) for this long: it is waiting on itself, not working slowly. It rejects with a Stalled
+ * error that says where it stood and what its threads were doing. Without /proc (a Mac), only the output time counts,
+ * over three times as long. checkMs: how often to look (tests use a short one).
+ */
+export type RunOpts = { signal?: AbortSignal; onProgress?: (seconds: number) => void; onLine?: (line: string) => void; cwd?: string; stdin?: "ignore"; stallMs?: number; checkMs?: number };
+
+/** FFmpeg froze (see RunOpts.stallMs): `at` is the output time it stood at, `threads` what each thread was doing. */
+export class Stalled extends Error {
+  stalled = true;
+  constructor(public at: number, public threads: string, public stderr: string) {
+    super(`FFmpeg froze at ${at.toFixed(2)} s of its output (no progress, CPU idle). Threads: ${threads}`);
+  }
+}
+export const stalled = (e: unknown): e is Stalled => !!(e as { stalled?: boolean } | null)?.stalled;
+
+/** CPU time a process has used (all its threads), in seconds; null without /proc. */
+function cpuSeconds(pid: number): number | null {
+  try {
+    const f = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const rest = f.slice(f.lastIndexOf(")") + 2).split(" "); // after "pid (comm) "
+    return (Number(rest[11]) + Number(rest[12])) / 100; // utime, stime in clock ticks (100 a second)
+  } catch { return null; }
+}
+
+/** What each thread of a process is doing, grouped: "fc0 S futex_wait_queue ×1, dec3:0:aac S futex… ×2". */
+export function threadStates(pid: number): string {
+  try {
+    const counts = new Map<string, number>();
+    for (const t of readdirSync(`/proc/${pid}/task`)) {
+      const base = `/proc/${pid}/task/${t}`;
+      const read = (n: string) => { try { return readFileSync(`${base}/${n}`, "utf8").trim(); } catch { return "?"; } };
+      const stat = read("stat"); const state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] || "?";
+      const key = `${read("comm")} ${state} ${read("wchan")}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return [...counts].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)).join(", ").slice(0, 1500) || "no threads";
+  } catch { return "unknown (no /proc)"; }
+}
 
 /** Runs a command; kills it when the job's signal aborts. Never logs file contents. */
 export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<{ stdout: string; stderr: string }> {
@@ -46,10 +85,29 @@ export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<{ 
     let stdout = "", stderr = "";
     const kill = () => { try { p.kill("SIGKILL"); } catch { /* gone */ } };
     opts.signal?.addEventListener("abort", kill, { once: true });
+    // ---- The freeze watchdog (opts.stallMs) ----
+    let outAt = -1, moved = Date.now(), froze: Stalled | null = null;
+    let lastCpu = p.pid ? cpuSeconds(p.pid) : null;
+    const every = opts.checkMs ?? 10_000;
+    const watch = opts.stallMs && p.pid ? setInterval(() => {
+      const cpu = cpuSeconds(p.pid!);
+      if (cpu != null && lastCpu != null && cpu - lastCpu >= 0.2 * (every / 1000)) moved = Date.now(); // working, if slowly
+      lastCpu = cpu;
+      const limit = cpu == null ? opts.stallMs! * 3 : opts.stallMs!;
+      if (Date.now() - moved > limit) {
+        froze = new Stalled(Math.max(0, outAt), threadStates(p.pid!), stderr.slice(-1600));
+        clearInterval(watch!);
+        kill();
+      }
+    }, every) : null;
     p.stdout.on("data", (d: Buffer) => {
       const s = d.toString();
       if (opts.onProgress) {
-        for (const m of s.matchAll(/out_time_(?:us|ms)=(\d+)/g)) opts.onProgress(Number(m[1]) / 1e6);
+        for (const m of s.matchAll(/out_time_(?:us|ms)=(\d+)/g)) {
+          const sec = Number(m[1]) / 1e6;
+          if (sec > outAt + 1e-6) { outAt = sec; moved = Date.now(); }
+          opts.onProgress(sec);
+        }
       } else if (stdout.length < 2_000_000) stdout += s;
     });
     let partial = "";
@@ -63,10 +121,12 @@ export function run(cmd: string, args: string[], opts: RunOpts = {}): Promise<{ 
         if (stderr.length < 200_000) stderr += parts.filter((l) => !l.startsWith("PROGRESS ")).join("\n") + (parts.length ? "\n" : "");
       } else if (stderr.length < 200_000) stderr += s;
     });
-    p.on("error", (e) => { opts.signal?.removeEventListener("abort", kill); reject(e); });
+    p.on("error", (e) => { if (watch) clearInterval(watch); opts.signal?.removeEventListener("abort", kill); reject(e); });
     p.on("close", (code) => {
+      if (watch) clearInterval(watch);
       opts.signal?.removeEventListener("abort", kill);
       if (opts.signal?.aborted) return reject(new JobError("Stopped."));
+      if (froze) return reject(froze);
       if (code === 0) resolve({ stdout, stderr });
       // The cause is usually at the start (the filter that failed) and the consequences at the end: keep both.
       else reject(Object.assign(new Error(`${cmd} exited with ${code}: ${stderr.length > 2400 ? `${stderr.slice(0, 1600)} … ${stderr.slice(-800)}` : stderr}`), { stderr }));

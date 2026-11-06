@@ -1,7 +1,7 @@
 import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
-import { bestResolution, formatFile, isBestQuality, lengthTolerance, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
+import { bestResolution, fmtClock, formatFile, isBestQuality, lengthTolerance, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { joinPieces, makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
 import { allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { COVER_SIZE, cpuBudget, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, windowBudget } from "../lib/ffmpeg";
+import { COVER_SIZE, cpuBudget, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, stalled, windowBudget } from "../lib/ffmpeg";
 import { cachedAsset, cachedCopy } from "../lib/assets";
 import { matchFacing } from "../lib/orient";
 import { closeIdleBrowsers, renderGraphicClip } from "../lib/graphics";
@@ -27,6 +27,20 @@ import { measureSound } from "../lib/sound";
 // The caption and text fonts (Phase 4): the same files the web app serves, so libass and the editor draw alike.
 // The worker image copies them to the same place in the repo layout; system fonts are the fallback (fontconfig).
 const FONTS_DIR = process.env.FONTS_DIR || fileURLToPath(new URL("../../../web/public/fonts", import.meta.url));
+
+/** How long FFmpeg may sit frozen (no progress, CPU idle) before it is stopped and that part made another way. */
+export const STALL_MS = Number(process.env.RENDER_STALL_MS || 60_000);
+
+/**
+ * Music shorter than `need` seconds, made into a WAV of `need` seconds (plus a little) by looping it in a small pass
+ * of its own; null when it is long enough already (the file is used as it is).
+ */
+export async function loopedMusic(src: string, need: number, out: string, signal?: AbortSignal): Promise<string | null> {
+  const len = (await probe(src, { signal })).seconds;
+  if (!(len > 0) || len >= need + 0.05) return null;
+  await run("ffmpeg", ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-stream_loop", "-1", "-i", src, "-t", (need + 0.5).toFixed(3), "-vn", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", out], { signal });
+  return out;
+}
 
 /** A final this heavy is made in pieces from the start (its one pass would run out of memory after many minutes). */
 export const piecesFirst = (kind: string, g: { inputs: number; scalers: number }) => kind === "final" && (g.inputs >= 24 || g.scalers >= 150);
@@ -313,6 +327,13 @@ export async function renderJob(ctx: Ctx) {
       if (!a.assetKey.startsWith(PREFIX.assets)) throw new JobError("This edit uses a sound that is not in the library. Remove it and try again.", "bad-audio", false);
       files.audio![a.clipId] = await cachedAsset(a.assetKey);
     }
+    // Music shorter than its part was looped by FFmpeg inside the edit's graph (-stream_loop); a heavy final froze
+    // where the loop came round. The loop is made here instead, in a small pass of its own, as plain PCM.
+    for (const a of plan.audio) {
+      if (a.kind !== "music" || !files.audio?.[a.clipId]) continue;
+      const looped = await loopedMusic(files.audio[a.clipId], a.end - a.start, join(ctx.dir, `music-${a.clipId}.wav`), signal);
+      if (looped) files.audio[a.clipId] = looped;
+    }
     if (plan.ass) await writeFile(files.assPath!, plan.ass);
     if (plan.assBehind) { files.assBehindPath = join(ctx.dir, "behind.ass"); await writeFile(files.assBehindPath, plan.assBehind); }
     // Phase 2b: text drawn from a mask: its mask and what is drawn round it, and the library video in its letters.
@@ -437,9 +458,11 @@ export async function renderJob(ctx: Ctx) {
     // pieces are joined (picture copied, sound encoded once). A piece killed again is made as two halves (down to 2 s).
     const killed = (e: unknown) => !signal.aborted && /exited with null/.test((e as Error)?.message || "");
     const canPiece = plan.model !== "A" && fmt !== "overlay" && fmt !== "audio" && fmt !== "wav";
+    // A piece that freezes (FFmpeg waiting on itself, CPU idle: see run's stallMs) is made again with one filter
+    // thread and one thread per decoder; frozen again, as two halves (down to 2 s), each the same way.
     const renderInPieces = async (why = "FFmpeg was killed (out of memory)") => {
       const FPS = plan.fps || 30, onGrid = (t: number) => Math.round(t * FPS) / FPS;
-      const queue = pieceRanges(plan);
+      const queue: { a: number; b: number; simple?: boolean; froze?: boolean }[] = pieceRanges(plan);
       const made: string[] = [];
       console.error(`[render] ${r.id}: ${why}: making it in ${queue.length} pieces`);
       for (let n = 0; queue.length; n++) {
@@ -447,19 +470,29 @@ export async function renderJob(ctx: Ctx) {
         const out = join(ctx.dir, `piece-${n}.mov`), gp = join(ctx.dir, `graph-piece-${n}.txt`);
         const sub = windowPlan(plan, pc.a, pc.b);
         const argsOf = (ft: number, decode = cpus * 2) => ffmpegArgs(sub, { ...files, output: out }, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, audioCodec: "pcm" });
-        const go = async (a: ReturnType<typeof argsOf>) => { await writeFile(gp, a.filterGraph); await run("ffmpeg", a.args.map((x) => (x === "__FILTER_SCRIPT__" ? gp : x)), { signal, onProgress: (sec) => onProgress(pc.a + Math.min(sec, pc.b - pc.a)) }); };
+        const go = async (a: ReturnType<typeof argsOf>) => { await writeFile(gp, a.filterGraph); await run("ffmpeg", a.args.map((x) => (x === "__FILTER_SCRIPT__" ? gp : x)), { signal, stallMs: STALL_MS, onProgress: (sec) => onProgress(pc.a + Math.min(sec, pc.b - pc.a)) }); };
         try {
-          try { await go(argsOf(filterThreads(argsOf(4).filterGraph))); }
-          catch (e) { if (signal.aborted || !outOfThreads(e)) throw e; await waitForThreads(150, 60_000, signal); await go(argsOf(1, 1)); }
+          if (pc.simple) await go(argsOf(1, 1));
+          else {
+            try { await go(argsOf(filterThreads(argsOf(4).filterGraph))); }
+            catch (e) { if (signal.aborted || !outOfThreads(e)) throw e; await waitForThreads(150, 60_000, signal); await go(argsOf(1, 1)); }
+          }
         } catch (e) {
-          if (killed(e) && pc.b - pc.a > 2 + 1e-6) {
+          const span = `${pc.a.toFixed(2)}-${pc.b.toFixed(2)} s`;
+          if (stalled(e)) {
+            console.error(`[render] ${r.id}: piece ${span} froze at ${(pc.a + e.at).toFixed(2)} s${pc.simple ? " (one thread each)" : ""}. Threads: ${e.threads}${e.stderr ? ` | stderr: ${e.stderr.slice(-600)}` : ""}`);
+            if (!pc.simple) { queue.unshift({ ...pc, simple: true, froze: true }); continue; }
+          }
+          if ((killed(e) || stalled(e)) && pc.b - pc.a > 2 + 1e-6) {
             const mid = onGrid((pc.a + pc.b) / 2);
-            console.error(`[render] ${r.id}: piece ${pc.a.toFixed(2)}-${pc.b.toFixed(2)} s killed too: making it as two halves`);
-            queue.unshift({ a: pc.a, b: mid }, { a: mid, b: pc.b });
+            console.error(`[render] ${r.id}: piece ${span} ${stalled(e) ? "froze" : "killed"} again: making it as two halves`);
+            queue.unshift({ a: pc.a, b: mid, simple: pc.simple }, { a: mid, b: pc.b, simple: pc.simple });
             continue;
           }
+          if (stalled(e)) throw new JobError(`The export froze at ${fmtClock(pc.a + e.at)} and could not get past it. Nothing was lost. Try again; if it freezes there again, tell us that time.`, "ffmpeg-frozen", true);
           throw e;
         }
+        if (pc.froze) console.log(`[render] ${r.id}: piece ${pc.a.toFixed(2)}-${pc.b.toFixed(2)} s made with one thread each after freezing`);
         made.push(out);
       }
       await joinPieces(ctx.dir, made, files.output, kind === "preview" ? "96k" : best ? "320k" : "192k", signal);
@@ -474,10 +507,15 @@ export async function renderJob(ctx: Ctx) {
       const room = heavy || (await waitForThreads(fit.need, 60_000, signal));
       try {
         if (heavy) await renderInPieces(`a heavy final (${fit.inputs} inputs, ${fit.scalers} scalers)`);
-        else await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress });
+        else await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS });
       } catch (e) {
         if (canPiece && killed(e)) await renderInPieces();
-        else {
+        else if (stalled(e)) {
+          // Frozen in one pass: made in pieces (each with its own freeze watch), or once more with one thread each.
+          console.error(`[render] ${r.id}: the one pass froze at ${e.at.toFixed(2)} s. Threads: ${e.threads}`);
+          if (canPiece) await renderInPieces("the one pass froze");
+          else await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS });
+        } else {
           // Out of threads (a container limit): once more with one filter thread, which needs far fewer, when there is room.
           if (signal.aborted || !outOfThreads(e)) throw e;
           console.error("[render] ffmpeg ran out of threads; waiting for room, then trying again with one filter thread and one per decoder");
@@ -488,6 +526,7 @@ export async function renderJob(ctx: Ctx) {
       }
     } catch (e) {
       if (signal.aborted) throw e;
+      if (e instanceof JobError && e.code === "ffmpeg-frozen") throw e;
       console.error("[render] ffmpeg failed:", (e as Error).message.slice(0, 2600));
       throw new JobError(`Render failed at '${steps[Math.min(endStep - 1, i)]}'. Nothing was lost. Try again.`, "ffmpeg", true);
     }

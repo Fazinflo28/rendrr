@@ -1123,3 +1123,17 @@ From before:
   approver's own Mac and needs the secret that made the challenge.
 - Drive connect in the app opens Google's consent in the browser; /drive-done there finishes it, the app polls status.
 - Tests: apps/api/test/desktop-login.test.ts (5), apps/web/demo/desktop-login.mjs (18 checks), desktop npm test (11).
+
+### Finals stuck at 78% (frozen FFmpeg)
+
+- A heavy final (43 inputs, 224 scalers, made in 9 pieces) sat at 78% for 30 minutes with the worker's CPU idle,
+  then hit the job limit; the retry froze at the same place. FFmpeg was waiting on itself, not working.
+- run() now has a freeze watch (stallMs): no output-time progress and under a fifth of a core of CPU for 60 s
+  (RENDER_STALL_MS) stops FFmpeg and reports where it stood and what each of its threads was doing (/proc names,
+  states, wait channels), for the logs.
+- A frozen piece is made again with one filter thread and one thread per decoder; frozen again, in halves down to
+  2 s; still frozen, the export stops with "The export froze at m:ss" instead of waiting out the limit. A frozen
+  one-pass export is made in pieces.
+- Music shorter than its part was looped by FFmpeg inside the edit's graph (-stream_loop), and the freeze came about
+  where a song would come round; the loop is now made first in a small pass of its own (a plain WAV).
+- Tests: apps/worker/test/stall.test.ts (7, including a real FFmpeg frozen on a pipe).
