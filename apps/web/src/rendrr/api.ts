@@ -3,6 +3,7 @@
 // Everything goes to the Rendrr API server; errors are plain-English Errors with `.friendly` and `.code`.
 import { filesFromDrop, folderOfFile, localJobs } from "./local";
 import { filesToAdd } from "./localPick";
+import { notOriginalMessage, sameOriginal } from "@rendrr/shared";
 import { BASE, DEV, NETWORK_MSG, clerk, del, demo, emptyIf, enc, fail, get, patch, post, readEvents, req, wait } from "./http";
 
 const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts", "Reading the frames"];
@@ -237,7 +238,7 @@ export const api: any = {
   hasLocalFile: (videoId: string) => localJobs.has(videoId),
   /** The original of local footage: held by this tab, else the file this browser remembers (Chrome asks to allow it),
    *  else a file picker. Call from a click. */
-  ensureLocalFile: (videoId: string, expectedName?: string) => localJobs.ensureFile(videoId, expectedName),
+  ensureLocalFile: (videoId: string) => localJobs.ensureFile(videoId),
   captureDrop: (dt: DataTransfer | null) => localJobs.capture(dt),
   /** A drop's files, a dropped folder's videos included (call inside the drop event). */
   filesFromDrop: (dt: DataTransfer | null) => filesFromDrop(dt),
@@ -367,16 +368,20 @@ export const api: any = {
     const p = await get(`/projects/${enc(projectId)}`);
     const v = p.video || {};
     // A file this browser only remembers (no File in this tab yet) is opened here, not given up on.
-    const f = file || localJobs.file(p.videoId) || (await localJobs.ensureFile(p.videoId, v.originalName));
+    const f = file || localJobs.file(p.videoId) || (await localJobs.ensureFile(p.videoId));
     if (!f) throw fail("Pick the original file to continue.", "need-original");
-    if (v.originalName && (f.name !== v.originalName || (v.originalSize && f.size !== v.originalSize))) {
-      throw fail("That is not the same file. We need '" + v.originalName + "'" + (v.originalSize ? " (" + (v.originalSize / 1e6).toFixed(0) + " MB)" : "") + ".");
+    // The same name and size; else a renamed or re-saved copy of the same video (its length matches).
+    const want = { originalName: v.originalName, originalSize: v.originalSize, seconds: v.seconds };
+    let seconds: number | null = null;
+    if (!sameOriginal({ name: f.name, size: f.size }, want).ok) {
+      seconds = await localJobs.length(f);
+      if (!sameOriginal({ name: f.name, size: f.size, seconds }, want).ok) throw fail(notOriginalMessage({ name: f.name, size: f.size, seconds }, want), "wrong-file");
     }
     // Keep the picked file in this tab: the next export uploads it without asking again.
     if (file) localJobs.hold(p.videoId, f);
     const steps = ["Uploading original"];
     onProgress?.({ step: 0, steps, percent: 0 });
-    const up = await post(`/projects/${enc(projectId)}/original`, { name: f.name, size: f.size });
+    const up = await post(`/projects/${enc(projectId)}/original`, { name: f.name, size: f.size, ...(seconds != null ? { seconds } : {}) });
     const parts = await localJobs.uploadParts(f, up.urls, up.partSize, (pct) => onProgress?.({ step: 0, steps, percent: Math.min(99, Math.round(pct)) }));
     const done = await post(`/projects/${enc(projectId)}/original/complete`, { uploadId: up.uploadId, parts });
     onProgress?.({ step: 1, steps, percent: 100 });

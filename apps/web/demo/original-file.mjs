@@ -1,7 +1,8 @@
 // Export final on footage from this computer: the original is asked for once, and the button always gets it.
 // 1. The browser remembers the file (a drop in Chrome): "Upload original and export" opens it and the final runs,
 //    with the Export window's choice (Best) kept.
-// 2. The browser can no longer open it: the window says so and offers "Pick the original file", which works.
+// 2. The browser can no longer open it: the window says so and offers "Pick the original file". A different video
+//    is refused, saying what was picked and what is needed; a renamed copy of the same length is taken.
 //
 // Runs on the demo build (node demo/build.mjs first) in Playwright's Chromium.
 //   node demo/original-file.mjs   (from apps/web)
@@ -62,16 +63,15 @@ await page.locator("#need-original").waitFor({ timeout: 5000 });
 await page.locator("#upload-original").click(); await sleep(400);
 check(/Pick the original file/.test((await page.locator("#original-error").textContent().catch(() => "")) || ""), "a file it cannot open: the window says to pick it");
 check(await page.locator("#pick-original").count() === 1, "and shows Pick the original file");
-// Picking a different file is refused by name; the right one goes through.
+// A different video (another length) is refused, saying what was picked and what is needed.
+await page.evaluate(() => { globalThis.__demoLengths = { "other.mp4": 31, "Gym promo FINAL.mov": 222.2 }; });
 await page.locator("#original-file").setInputFiles({ name: "other.mp4", mimeType: "video/mp4", buffer: Buffer.from("x") }); await sleep(400);
-check(/not the same file/.test((await page.locator("#original-error").textContent().catch(() => "")) || ""), "a different file is refused with its name");
-await page.evaluate(() => {
-  const i = document.getElementById("original-file");
-  const f = new File([""], "gym-promo-broll.mp4", { type: "video/mp4" }); Object.defineProperty(f, "size", { value: 610000000 });
-  const dt = new DataTransfer(); dt.items.add(f); i.files = dt.files; i.dispatchEvent(new Event("change", { bubbles: true }));
-});
+const refused = (await page.locator("#original-error").textContent().catch(() => "")) || "";
+check(/different video\. You picked 'other\.mp4' \(0 MB, 0:31\.0\); we need 'gym-promo-broll\.mp4' \(610 MB, 3:42\.0\)/.test(refused), `a different video is refused, saying both (${refused.trim()})`);
+// A renamed, re-saved copy of the same length (another name and size) is the original.
+await page.locator("#original-file").setInputFiles({ name: "Gym promo FINAL.mov", mimeType: "video/quicktime", buffer: Buffer.from("xyz") });
 await page.locator("#render-done").waitFor({ timeout: 20000 }).catch(() => {});
-check(await page.locator("#render-done").count() === 1, "the picked file makes the final");
+check(await page.locator("#render-done").count() === 1, "a renamed copy of the same length makes the final");
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close();
 console.log(fails.length ? `\n${fails.length} failed` : "\nall passed");

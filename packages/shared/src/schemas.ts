@@ -82,7 +82,7 @@ export const LocalCompleteInput = z.object({
   audioSize: z.number().int().min(1),
 });
 
-export const OriginalUploadInput = z.object({ name: z.string().min(1).max(300), size: z.number().int().min(1).max(200e9) });
+export const OriginalUploadInput = z.object({ name: z.string().min(1).max(300), size: z.number().int().min(1).max(200e9), seconds: z.number().positive().max(1e6).optional() });
 export const OriginalCompleteInput = z.object({ uploadId: z.string().min(1).max(400), parts: z.array(z.object({ PartNumber: z.number().int().min(1).max(10000), ETag: z.string().min(1).max(200) })).min(1).max(10000) });
 
 export const CreateReviewInput = z.object({

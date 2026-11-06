@@ -134,6 +134,43 @@ async function makePreview(file: File, onPct: (p: number) => void): Promise<{ pr
   });
 }
 
+// The length of a video file: the browser's own reading of it (only its header), else FFmpeg's report. Null if neither can.
+function browserLength(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const v = document.createElement("video");
+    const done = (d: number | null) => { clearTimeout(t); v.removeAttribute("src"); v.load(); URL.revokeObjectURL(url); resolve(d); };
+    const t = setTimeout(() => done(null), 15000);
+    v.preload = "metadata"; v.muted = true;
+    v.onloadedmetadata = () => done(Number.isFinite(v.duration) && v.duration > 0 ? v.duration : null);
+    v.onerror = () => done(null);
+    v.src = url;
+  });
+}
+function ffmpegLength(file: File): Promise<number | null> {
+  return exclusive(async () => {
+    const ff = await ffmpeg();
+    const dir = "/len" + Math.random().toString(36).slice(2, 7);
+    const log: string[] = [];
+    const onLog = ({ message }: { message: string }) => { log.push(message); };
+    await ff.createDir(dir);
+    await ff.mount("WORKERFS", { files: [file] }, dir);
+    ff.on("log", onLog);
+    try {
+      await ff.exec(["-hide_banner", "-i", `${dir}/${file.name}`]).catch(() => {});
+      const d = /Duration: (\d+:\d+:\d+(?:\.\d+)?)/.exec(log.join("\n"));
+      return d ? hms(d[1]) : null;
+    } finally {
+      ff.off("log", onLog);
+      await ff.unmount(dir).catch(() => {});
+      await ff.deleteDir(dir).catch(() => {});
+    }
+  }).catch(() => null);
+}
+export async function fileLength(file: File): Promise<number | null> {
+  return (await browserLength(file)) ?? (await ffmpegLength(file));
+}
+
 // ---------------- uploads ----------------
 function put(url: string, body: Blob, contentType: string | null, onLoaded: (n: number) => void): Promise<XMLHttpRequest> {
   return new Promise((resolve, reject) => {
@@ -237,6 +274,8 @@ export const localJobs = {
   },
   has: (videoId: string) => files.has(videoId) || handles.has(videoId),
   file: (videoId: string) => files.get(videoId) || null,
+  /** A video file's length in seconds (null when it can't be read). */
+  length: (file: File) => fileLength(file),
   running: () => Array.from(running),
   start(videoId: string) { if (files.has(videoId) && !running.has(videoId) && !queue.includes(videoId)) { queue.push(videoId); pump(); } },
   waiting: (videoId: string) => queue.includes(videoId),

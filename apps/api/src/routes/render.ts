@@ -1,6 +1,6 @@
 import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, drive, features, notFound, readRender, renderChannel, signGet, signPart } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { OriginalCompleteInput, OriginalUploadInput, PREFIX, renderTimeoutMs, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
+import { notOriginalMessage, OriginalCompleteInput, OriginalUploadInput, PREFIX, renderTimeoutMs, sameOriginal, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { getOwnedProject } from "../services/projects";
@@ -90,10 +90,9 @@ export default async function render(app: FastifyInstance) {
     const v = await prisma.video.findUniqueOrThrow({ where: { id: p.videoId } });
     const b = OriginalUploadInput.parse(req.body);
     if (v.source !== "local") throw new AppError("This footage lives in Google Drive. We fetch it from there.", 400);
-    const sizeOk = !v.originalSize || Number(v.originalSize) === b.size;
-    if (b.name !== v.originalName || !sizeOk) {
-      throw new AppError(`That is not the same file. We need '${v.originalName}'${v.originalSize ? ` (${(Number(v.originalSize) / 1e6).toFixed(0)} MB)` : ""}.`, 400, "wrong-file");
-    }
+    // The same name and size, or (a renamed or re-saved copy) the same length. The worker checks the length again.
+    const want = { originalName: v.originalName, originalSize: v.originalSize != null ? Number(v.originalSize) : null, seconds: v.seconds };
+    if (!sameOriginal(b, want).ok) throw new AppError(notOriginalMessage(b, want), 400, "wrong-file");
     const ext = (b.name.split(".").pop() || "mp4").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5) || "mp4";
     const key = `${PREFIX.tempRaw}${req.user!.id}/${p.id}-${Date.now()}.${ext}`;
     const uploadId = await createMultipart(key, "application/octet-stream");

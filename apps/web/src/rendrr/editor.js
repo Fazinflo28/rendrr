@@ -1165,7 +1165,7 @@ function EditorInner({ project, reload, ai, keep }) {
     // No file picked here: open the one this browser remembers (Chrome may ask to allow it), else a file picker.
     // Asked first, inside the click, so the browser lets it ask.
     if (!file) {
-      try { file = await api.ensureLocalFile(project.videoId, project.video?.originalName); }
+      try { file = await api.ensureLocalFile(project.videoId); }
       catch (e) { setRender((r) => ({ ...r, status: "original", hasFile: false, error: e.message })); return; }
     }
     setRender((r) => ({ ...r, status: "running", progress: { step: 0, steps: ["Uploading original"], percent: 0 } }));

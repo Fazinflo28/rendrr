@@ -1,7 +1,7 @@
 import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
-import { bestResolution, formatFile, isBestQuality, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
+import { bestResolution, formatFile, isBestQuality, lengthTolerance, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { joinPieces, makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
 import { allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
@@ -113,6 +113,16 @@ export async function renderJob(ctx: Ctx) {
     }
     const info = await probe(src, { signal });
     if (!info.hasVideo) throw new JobError("The footage file looks damaged. Try adding it again.", "damaged", false);
+    // The original the user gave may be renamed or re-saved; it must still be the same video, or the edit's times would
+    // land on other moments. A different one is deleted, so the next export asks for the file again.
+    if (tempOriginalIds.length && video.seconds && info.seconds && Math.abs(info.seconds - video.seconds) > lengthTolerance(video.seconds)) {
+      const origs = await prisma.tempOriginal.findMany({ where: { id: { in: tempOriginalIds } } });
+      for (const o of origs) await deleteObject(o.key).catch(() => {});
+      await prisma.tempOriginal.deleteMany({ where: { id: { in: tempOriginalIds } } });
+      tempOriginalIds = [];
+      const clock = (x: number) => `${Math.floor(x / 60)}:${(x % 60).toFixed(1).padStart(4, "0")}`;
+      throw new JobError(`The file you gave is ${clock(info.seconds)} long; the footage is ${clock(video.seconds)}, so it is a different video. Export final again and pick '${video.originalName || video.name}'.`, "wrong-file", false);
+    }
 
     // ---- Reading timeline ----
     await send(i, 0.2);

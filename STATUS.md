@@ -21,6 +21,14 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## The original file: a renamed or re-saved copy is accepted (6 November)
+
+- Picking the original still said "That is not the same file" for a file the user says is the right one. The check wanted the exact name and the exact size from when the video was added. A renamed copy, a re-saved one, or a name with a different hidden space failed, and the message did not say what was picked.
+- Now (`packages/shared/src/original.ts`, used by the web app and the API): names compare as people see them (case, Unicode form, no-break spaces). If the name or size still differs, the browser reads the picked file's length from its header (`fileLength` in `apps/web/src/rendrr/local.ts`; FFmpeg if the browser can't), and the same length (within 1 s or 0.5%) counts as the same video. The uncompressed file a compressed one came from is accepted too, and the final is made from it.
+- The worker checks the length again on the uploaded file itself before rendering. A different video stops with both lengths ("The file you gave is 0:07.0 long; the footage is 0:03.0 ...") and is deleted, so the next export asks again.
+- A refused file now says both sides: "You picked 'other.mp4' (9 MB, 0:31.0); we need '...' (1482 MB, 10:58.7)."
+- Tests: `packages/shared/test/original.test.ts`, `apps/api/test/original-file.test.ts` (the route takes a renamed copy of the same length, refuses another video), `apps/worker/test/original-length.test.ts` (a 7 s file for 3 s footage is refused and deleted; a renamed 3 s copy makes the final), `apps/web/demo/file-length.mjs` (the real length reader in Chromium), `apps/web/demo/original-file.mjs` (the editor flow).
+
 ## Export final with footage from this computer (5 November)
 
 - "Upload original and export" did nothing but say "Pick the original file to continue." The window showed that button whenever the browser remembered the file from a drop (Chrome keeps a handle to it), but the upload only looked for a file already open in the tab, which is gone after a reload. The picker button was hidden, so there was no way through.

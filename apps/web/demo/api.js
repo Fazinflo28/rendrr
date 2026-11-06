@@ -2,6 +2,7 @@
 // wired-up app calls that the design file did not have. Nothing leaves the browser.
 import { api } from "rendrr-fake-api";
 import { breakdownAsText, buildBreakdown } from "../../../packages/shared/src/breakdown.ts";
+import { notOriginalMessage, sameOriginal } from "../../../packages/shared/src/original.ts";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const playable = {}; // videoId -> blob URL of the file picked in this tab, so the editor can play it
@@ -47,6 +48,7 @@ function demoBreakdown(v) {
 const getReview = api.getReview;
 const renderFinal0 = api.renderFinal;
 const hasLocalFile0 = api.hasLocalFile;
+const uploadOriginal0 = api.uploadOriginalForExport;
 const listDriveFiles = api.listDriveFiles;
 // The design's fake Drive is flat; the demo nests it (folders in folders, Shared with me, a shared drive) like a real one.
 const DEMO_TREE = { root: ["fd1", "fd2", "fd3"], fd2: ["fdB"], fdB: ["fdC"], shared: ["fdS"] };
@@ -101,6 +103,20 @@ Object.assign(api, {
   // A file the browser remembers from a drop (globalThis.__demoRemembered[videoId]: a File, or "denied" when the
   // browser can no longer open it). The real app opens it in the click; this one hands it over the same way.
   hasLocalFile: (videoId) => hasLocalFile0(videoId) || !!globalThis.__demoRemembered?.[videoId],
+  // As the real app: the same name and size, else the same length (globalThis.__demoLengths[name]: a picked file's
+  // length, as the browser reads it). The design's fake then gets its own file (it checks name and size strictly).
+  uploadOriginalForExport: async (projectId, file, onProgress) => {
+    const v = (await getProject(projectId)).video || {};
+    const f = file || globalThis.__demoRemembered?.[v.id];
+    if (!f || f === "denied") throw Object.assign(new Error("Pick the original file to continue."), { code: "need-original" });
+    const want = { originalName: v.originalName, originalSize: v.originalSize, seconds: v.seconds };
+    if (!sameOriginal({ name: f.name, size: f.size }, want).ok) {
+      const seconds = globalThis.__demoLengths?.[f.name] ?? null;
+      if (!sameOriginal({ name: f.name, size: f.size, seconds }, want).ok) throw Object.assign(new Error(notOriginalMessage({ name: f.name, size: f.size, seconds }, want)), { code: "wrong-file" });
+    }
+    const own = new File([""], v.originalName); Object.defineProperty(own, "size", { value: v.originalSize });
+    return uploadOriginal0(projectId, own, onProgress);
+  },
   ensureLocalFile: async (videoId) => {
     const f = globalThis.__demoRemembered?.[videoId];
     if (f && f !== "denied") return f;
