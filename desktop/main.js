@@ -201,18 +201,29 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-// ---- Build check on GitHub: open the real app, see that it loaded and knows it is in the Mac app, then quit ----
+// ---- Build check on GitHub: open the real app, see that it loaded and knows it is in the Mac app, that its login
+// offers the browser (not Google), then quit ----
 function smokeTest(win) {
   const finish = (result) => { try { fs.writeFileSync(SMOKE_OUT, JSON.stringify(result, null, 2)); } catch { /* ignore */ } app.exit(result.ok ? 0 : 1); };
-  const timer = setTimeout(() => finish({ ok: false, error: "timed out loading " + START_URL }), 90000);
+  const timer = setTimeout(() => finish({ ok: false, error: "timed out loading " + START_URL }), 120000);
+  const js = (code) => win.webContents.executeJavaScript(code);
   win.webContents.once("did-finish-load", () => setTimeout(async () => {
-    clearTimeout(timer);
     try {
-      const page = await win.webContents.executeJavaScript(`({ url: location.href, title: document.title,
-        desktopClass: document.documentElement.classList.contains("desktop"), bridge: window.rendrrDesktop || null,
+      // Only plain values come back (the bridge's openInBrowser is a function, which cannot be copied out).
+      const page = await js(`({ url: location.href, title: document.title,
+        desktopClass: document.documentElement.classList.contains("desktop"),
+        bridge: window.rendrrDesktop ? { app: rendrrDesktop.app, version: rendrrDesktop.version, openInBrowser: typeof rendrrDesktop.openInBrowser } : null,
         ua: navigator.userAgent, icon: !!document.querySelector('link[rel~="icon"]') })`);
-      finish({ ok: linkKind(page.url) === "app" && page.desktopClass && !!page.bridge && !/Electron/.test(page.ua), version: app.getVersion(), ...page });
-    } catch (e) { finish({ ok: false, error: String(e) }); }
+      await win.webContents.loadURL(new URL("/login", START_URL).toString());
+      let login = null;
+      for (let i = 0; i < 30 && !login?.browserButton; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        login = await js(`({ browserButton: !!document.querySelector("#browser-login"), google: !!document.querySelector("#google") })`);
+      }
+      clearTimeout(timer);
+      const ok = linkKind(page.url) === "app" && page.desktopClass && page.bridge?.openInBrowser === "function" && !/Electron/.test(page.ua) && login?.browserButton && !login?.google;
+      finish({ ok, version: app.getVersion(), ...page, login, protocol: app.isDefaultProtocolClient("rendrr") });
+    } catch (e) { clearTimeout(timer); finish({ ok: false, error: String(e) }); }
   }, 4000));
 }
 
