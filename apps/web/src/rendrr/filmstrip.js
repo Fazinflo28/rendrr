@@ -1,7 +1,8 @@
 // Frames on the timeline's V1 clips, like Premiere's and CapCut's filmstrips: each clip shows its own footage, a frame
 // every tile, drawn in the browser from the preview copy the editor already plays (no server work, any video). Frames
 // are grabbed by one hidden video per source, in the order they are asked for, only for clips on screen, and kept
-// (by source and half second) for the session.
+// (by source, half second and turn) for the session. A clip turned in the edit (set_rotation) shows its frames turned
+// the same way, as it plays.
 import { useEffect, useRef, useState, html } from "./ui";
 
 const TILE_H = 54, TILE_W = 96; // what a frame is drawn at (the clip shows it scaled to its own height)
@@ -10,6 +11,7 @@ const grabbers = new Map(); // url -> { video, queue, busy }
 const waiters = new Map(); // url|key -> [resolve]
 
 const keyOf = (t) => Math.round(t * 2) / 2; // half-second steps: neighbouring tiles and zoom levels share frames
+const slot = (t, rot = 0) => `${keyOf(t)}@${rot || 0}`; // a frame's place in the cache: its time and its turn
 
 function grabberFor(url) {
   let g = grabbers.get(url);
@@ -36,19 +38,25 @@ async function pump(url) {
   while (g.queue.length) {
     const k = g.queue.shift();
     if (cache.get(url)?.has(k)) { settle(url, k, cache.get(url).get(k)); continue; }
+    const [at, rotS] = k.split("@"), t = Number(at), rot = Number(rotS) || 0;
     const data = await new Promise((resolve) => {
       const v = g.video, done = () => { v.removeEventListener("seeked", onSeek); clearTimeout(timer); };
       const onSeek = () => {
         done();
         try {
-          const c = g.canvas.getContext("2d"), vw = v.videoWidth || 16, vh = v.videoHeight || 9, s = Math.max(TILE_W / vw, TILE_H / vh);
-          c.drawImage(v, (TILE_W - vw * s) / 2, (TILE_H - vh * s) / 2, vw * s, vh * s);
+          // Turned as the clip is (clockwise), then cover-fitted to the tile.
+          const c = g.canvas.getContext("2d"), vw = v.videoWidth || 16, vh = v.videoHeight || 9, side = rot === 90 || rot === 270;
+          const s = Math.max(TILE_W / (side ? vh : vw), TILE_H / (side ? vw : vh));
+          c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, TILE_W, TILE_H);
+          c.translate(TILE_W / 2, TILE_H / 2); c.rotate((rot * Math.PI) / 180);
+          c.drawImage(v, (-vw * s) / 2, (-vh * s) / 2, vw * s, vh * s);
+          c.setTransform(1, 0, 0, 1, 0, 0);
           resolve(g.canvas.toDataURL("image/jpeg", 0.7));
         } catch { resolve(null); } // a source without CORS taints the canvas: no frames, the clip stays plain
       };
       const timer = setTimeout(() => { done(); resolve(null); }, 4000);
       v.addEventListener("seeked", onSeek);
-      const go = () => { try { v.currentTime = Math.min(Math.max(0, k), Math.max(0, (v.duration || k + 1) - 0.05)); } catch { done(); resolve(null); } };
+      const go = () => { try { v.currentTime = Math.min(Math.max(0, t), Math.max(0, (v.duration || t + 1) - 0.05)); } catch { done(); resolve(null); } };
       if (v.readyState >= 1) go(); else v.addEventListener("loadedmetadata", go, { once: true });
     });
     if (!cache.has(url)) cache.set(url, new Map());
@@ -58,9 +66,9 @@ async function pump(url) {
   g.busy = false;
 }
 
-/** The frame of `url` at `t` seconds (a data URL), or null when it cannot be drawn. */
-export function frameAt(url, t) {
-  const k = keyOf(t), have = cache.get(url)?.get(k);
+/** The frame of `url` at `t` seconds, turned `rot` degrees clockwise (a data URL), or null when it cannot be drawn. */
+export function frameAt(url, t, rot = 0) {
+  const k = slot(t, rot), have = cache.get(url)?.get(k);
   if (have) return Promise.resolve(have);
   return new Promise((resolve) => {
     const id = url + "|" + k;
@@ -71,7 +79,7 @@ export function frameAt(url, t) {
 }
 
 /** A V1 clip's frames: tiles across its width, each the footage at its place in the clip. Draws only once on screen. */
-export function Filmstrip({ url, from, to, width, height = 26 }) {
+export function Filmstrip({ url, from, to, width, height = 26, rotate = 0 }) {
   const ref = useRef(null);
   const [seen, setSeen] = useState(false);
   const [frames, setFrames] = useState({});
@@ -87,8 +95,8 @@ export function Filmstrip({ url, from, to, width, height = 26 }) {
   useEffect(() => {
     if (!seen || !n) return;
     let live = true;
-    for (const t of times) frameAt(url, t).then((d) => { if (live && d) setFrames((f) => (f[keyOf(t)] ? f : { ...f, [keyOf(t)]: d })); });
+    for (const t of times) frameAt(url, t, rotate).then((d) => { if (live && d) setFrames((f) => (f[slot(t, rotate)] ? f : { ...f, [slot(t, rotate)]: d })); });
     return () => { live = false; };
-  }, [seen, url, from, to, n]);
-  return html`<span class="strip" ref=${ref} aria-hidden="true">${times.map((t, i) => { const d = frames[keyOf(t)]; return html`<i key=${i} style=${{ width: tileW + "px", backgroundImage: d ? `url(${d})` : "none" }} />`; })}</span>`;
+  }, [seen, url, from, to, n, rotate]);
+  return html`<span class="strip" ref=${ref} aria-hidden="true" data-turn=${rotate || 0}>${times.map((t, i) => { const d = frames[slot(t, rotate)]; return html`<i key=${i} style=${{ width: tileW + "px", backgroundImage: d ? `url(${d})` : "none" }} />`; })}</span>`;
 }

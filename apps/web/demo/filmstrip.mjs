@@ -14,23 +14,27 @@ const web = resolve(here, "..");
 const tmp = mkdtempSync(join(tmpdir(), "filmstrip-"));
 const COLORS = [["red", [255, 0, 0]], ["lime", [0, 255, 0]], ["blue", [0, 0, 255]], ["yellow", [255, 255, 0]], ["white", [255, 255, 255]], ["magenta", [255, 0, 255]]];
 const inputs = COLORS.flatMap(([c]) => ["-f", "lavfi", "-i", `color=c=${c}:s=320x180:r=30:d=1`]);
+// A picture red on top and blue below, to see a clip turned 180° in the edit show its frames turned too.
+execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=320x180:r=30:d=3,drawbox=x=0:y=0:w=320:h=90:color=red:t=fill,format=yuv420p", "-c:v", "libvpx-vp9", "-b:v", "300k", join(tmp, "split.webm")]);
 execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", ...inputs, "-filter_complex", `${COLORS.map((_, i) => `[${i}:v]`).join("")}concat=n=${COLORS.length}:v=1:a=0,format=yuv420p`, "-c:v", "libvpx-vp9", "-b:v", "400k", "-g", "15", join(tmp, "src.webm")]);
 
 writeFileSync(join(tmp, "page.js"), `
 import { createElement as h } from "react";
 import { createRoot } from "react-dom/client";
 import { Filmstrip } from ${JSON.stringify(resolve(web, "src/rendrr/filmstrip.js"))};
-const url = window.__SRC;
+const url = window.__SRC, split = window.__SPLIT;
 // Three clips: 0.0-1.0 s (red), 2.0-4.0 s (blue then yellow), 4.0-6.0 s at a wider zoom (white, magenta).
 createRoot(document.getElementById("root")).render(h("div", null,
   h("div", { id: "c1", className: "clip video", style: { position: "relative", width: "46px", height: "26px" } }, h(Filmstrip, { url, from: 0, to: 1, width: 46 })),
   h("div", { id: "c2", className: "clip video", style: { position: "relative", width: "92px", height: "26px", marginTop: "8px" } }, h(Filmstrip, { url, from: 2, to: 4, width: 92 })),
-  h("div", { id: "c3", className: "clip video", style: { position: "relative", width: "92px", height: "26px", marginTop: "8px" } }, h(Filmstrip, { url, from: 4, to: 6, width: 92 }))));`);
+  h("div", { id: "c3", className: "clip video", style: { position: "relative", width: "92px", height: "26px", marginTop: "8px" } }, h(Filmstrip, { url, from: 4, to: 6, width: 92 })),
+  h("div", { id: "c4", className: "clip video", style: { position: "relative", width: "46px", height: "26px", marginTop: "8px" } }, h(Filmstrip, { url: split, from: 0, to: 1, width: 46 })),
+  h("div", { id: "c5", className: "clip video", style: { position: "relative", width: "46px", height: "26px", marginTop: "8px" } }, h(Filmstrip, { url: split, from: 0, to: 1, width: 46, rotate: 180 }))));`);
 await build({ entryPoints: [join(tmp, "page.js")], bundle: true, platform: "browser", format: "iife", outfile: join(tmp, "page.bundle.js"), nodePaths: [join(web, "node_modules")], define: { "process.env.NODE_ENV": '"production"' }, logLevel: "warning" });
 const css = readFileSync(join(web, "src/rendrr/styles.css"), "utf8");
 // The video from another origin with CORS (as the storage serves previews).
 const media = createServer((req, res) => {
-  const buf = readFileSync(join(tmp, "src.webm"));
+  const buf = readFileSync(join(tmp, req.url.startsWith("/split") ? "split.webm" : "src.webm"));
   const hd = { "content-type": "video/webm", "accept-ranges": "bytes", "access-control-allow-origin": "*" };
   const r = /bytes=(\d+)-(\d*)/.exec(req.headers.range || "");
   if (r) { const a = +r[1], b = r[2] ? +r[2] : buf.length - 1; res.writeHead(206, { ...hd, "content-range": `bytes ${a}-${b}/${buf.length}`, "content-length": b - a + 1 }); return res.end(buf.subarray(a, b + 1)); }
@@ -39,7 +43,7 @@ const media = createServer((req, res) => {
 const page0 = createServer((req, res) => {
   if (req.url === "/page.bundle.js") { res.setHeader("content-type", "text/javascript"); return res.end(readFileSync(join(tmp, "page.bundle.js"))); }
   res.setHeader("content-type", "text/html");
-  res.end(`<!doctype html><style>${css}\nbody{margin:20px;background:#111}</style><div id="root"></div><script>window.__SRC="http://127.0.0.1:${media.address().port}/src.webm"</script><script src="/page.bundle.js"></script>`);
+  res.end(`<!doctype html><style>${css}\nbody{margin:20px;background:#111}</style><div id="root"></div><script>window.__SRC="http://127.0.0.1:${media.address().port}/src.webm";window.__SPLIT="http://127.0.0.1:${media.address().port}/split.webm"</script><script src="/page.bundle.js"></script>`);
 }).listen(0, "localhost");
 await new Promise((r) => setTimeout(r, 200));
 
@@ -63,8 +67,26 @@ const tiles = await page.evaluate(async () => {
   }
   return out;
 });
+// The split picture: the top half's and bottom half's colour of each clip's tile.
+const halves = await page.evaluate(async () => {
+  const out = {};
+  for (const clip of ["c4", "c5"]) {
+    const i = document.querySelector(`#${clip} .strip i`), src = i?.style.backgroundImage.slice(5, -2);
+    if (!src) { out[clip] = null; continue; }
+    const img = new Image(); img.src = src; await img.decode();
+    const c = document.createElement("canvas"); c.width = 8; c.height = 8; const g = c.getContext("2d"); g.drawImage(img, 0, 0, 8, 8);
+    const d = g.getImageData(0, 0, 8, 8).data, at = (y) => { const k = (y * 8 + 4) * 4; return d[k] > d[k + 2] ? "red" : "blue"; };
+    out[clip] = `${at(1)} on top, ${at(6)} below`;
+  }
+  return out;
+});
 await page.screenshot({ path: join(tmp, "strip.png") });
 let fails = 0;
+for (const [clip, want2] of [["c4", "red on top, blue below"], ["c5", "blue on top, red below"]]) {
+  const ok = halves[clip] === want2;
+  console.log(`${ok ? "ok  " : "FAIL"} ${clip}${clip === "c5" ? " (turned 180° in the edit)" : ""}: ${halves[clip]}`);
+  if (!ok) fails++;
+}
 const want = { c1: ["red"], c2: ["blue", "yellow"], c3: ["white", "magenta"] };
 const near = (a, b) => a.every((v, k) => Math.abs(v - b[k]) < 40);
 for (const [clip, names] of Object.entries(want)) {

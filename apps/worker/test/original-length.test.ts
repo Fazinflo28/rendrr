@@ -16,7 +16,9 @@ const run6 = Math.random().toString(36).slice(2, 8);
 describe("the original of local footage", { skip: !db && "needs a database, Redis and storage" }, () => {
   let dir = "", userId = "", projectId = "", videoId = "";
   const SECONDS = 3;
-  const make = (name: string, d: number) => { const p = join(dir, name); execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", `testsrc=s=640x360:r=30:d=${d}`, "-f", "lavfi", "-i", `sine=d=${d}`, "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", p]); return p; };
+  const make = (name: string, d: number, vf = "null") => { const p = join(dir, name); execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", `testsrc2=s=640x360:r=30:d=${d}`, "-f", "lavfi", "-i", `sine=d=${d}`, "-vf", vf, "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest", p]); return p; };
+  // A small grey frame at t, to compare which way pictures face.
+  const grey = (file: string, t: number) => new Uint8Array(execFileSync("ffmpeg", ["-v", "error", "-ss", String(t), "-i", file, "-frames:v", "1", "-vf", "scale=48:48:flags=area,format=gray", "-f", "rawvideo", "-"]));
 
   before(async () => {
     dir = await mkdtemp(join(process.env.TMPDIR || tmpdir(), "orig-"));
@@ -68,6 +70,19 @@ describe("the original of local footage", { skip: !db && "needs a database, Redi
     assert.match(thrown?.message || "", /^The file you gave is 0:07\.0 long; the footage is 0:03\.0, so it is a different video\. Export final again and pick 'talk-compressed\.mp4'\.$/);
     assert.equal((thrown as { code?: string })?.code, "wrong-file");
     assert.equal(origLeft, 0, "the wrong file is deleted, so the next export asks again");
+  });
+
+  it("a copy stored upside down still makes a final that faces like the preview", { timeout: 240_000 }, async () => {
+    const { likeness } = await import("../src/lib/orient");
+    const { downloadFile } = await import("@rendrr/core");
+    const { thrown, render } = await finalWith(make("camera file upside down.mp4", SECONDS, "hflip,vflip"));
+    assert.equal(thrown, null, thrown?.message);
+    assert.equal(render.status, "done", render.error ?? "");
+    const out = join(dir, "final.mp4");
+    await downloadFile(render.outputKey!, out);
+    const like = likeness(grey(out, 1.5), grey(join(dir, "proxy.mp4"), 1.5));
+    console.log(`final vs preview copy at 1.5 s: likeness ${like.toFixed(2)}`);
+    assert.ok(like > 0.8, `the final faces like the preview copy (${like})`);
   });
 
   it("a renamed copy of the same length makes the final", { timeout: 240_000 }, async () => {

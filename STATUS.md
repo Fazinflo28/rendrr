@@ -21,6 +21,14 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Finals from another copy of the footage came out upside down (6 November)
+
+- A final came out upside down while the editor and the preview were upright. The edit was made looking at the preview copy, which the browser makes from the file first added (here a "-compressed" file stored upside down, so the edit turned it 180°). Since the original may now be a renamed or re-saved copy, the copy given for the final (likely the camera's own file) was stored the right way up, so the edit's 180° turn made the final upside down.
+- Checked first: the browser's FFmpeg (5.1, ffmpeg.wasm) and the worker's (7.1) agree on every orientation tag (rotations, flips, rotation with a flip), so tags were not the cause.
+- Fix (`apps/worker/src/lib/orient.ts`, used by the render job for local finals): before rendering, small grey frames of the original and of its preview copy at 4 times are compared in each of the 8 ways a picture can face. When another way clearly matches better than the file as it plays (here -0.93 against 1.00), the file's orientation tag is rewritten (its streams copied, no new encode) and checked again. A copy that already faces the same way is left alone. So the final always faces the way the editor showed.
+- The timeline's clip pictures now show a turned clip turned, as it plays (`filmstrip.js`).
+- Tests: `apps/worker/test/facing.test.ts` (upside down, sideways, mirrored, a wrong tag: fixed; the same way up, plain or through its tag: left alone), `apps/worker/test/original-length.test.ts` (a copy stored upside down makes a final that matches the preview copy, likeness 1.00), `apps/web/demo/filmstrip.mjs` (a clip turned 180° shows its frames turned).
+
 ## The original file: a renamed or re-saved copy is accepted (6 November)
 
 - Picking the original still said "That is not the same file" for a file the user says is the right one. The check wanted the exact name and the exact size from when the video was added. A renamed copy, a re-saved one, or a name with a different hidden space failed, and the message did not say what was picked.

@@ -14,6 +14,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { COVER_SIZE, cpuBudget, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, windowBudget } from "../lib/ffmpeg";
 import { cachedAsset, cachedCopy } from "../lib/assets";
+import { matchFacing } from "../lib/orient";
 import { closeIdleBrowsers, renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
 import { writeMoving } from "../lib/moving";
@@ -111,7 +112,7 @@ export async function renderJob(ctx: Ctx) {
       await downloadFile(orig.key, src);
       tempOriginalIds = [orig.id];
     }
-    const info = await probe(src, { signal });
+    let info = await probe(src, { signal });
     if (!info.hasVideo) throw new JobError("The footage file looks damaged. Try adding it again.", "damaged", false);
     // The original the user gave may be renamed or re-saved; it must still be the same video, or the edit's times would
     // land on other moments. A different one is deleted, so the next export asks for the file again.
@@ -122,6 +123,21 @@ export async function renderJob(ctx: Ctx) {
       tempOriginalIds = [];
       const clock = (x: number) => `${Math.floor(x / 60)}:${(x % 60).toFixed(1).padStart(4, "0")}`;
       throw new JobError(`The file you gave is ${clock(info.seconds)} long; the footage is ${clock(video.seconds)}, so it is a different video. Export final again and pick '${video.originalName || video.name}'.`, "wrong-file", false);
+    }
+    // ...and face the way its preview copy does (the edit was made looking at that), whatever its own tag says.
+    if (tempOriginalIds.length && video.proxyKey) {
+      const proxyPath = join(ctx.dir, "facing-proxy.mp4");
+      try {
+        await cachedCopy(video.proxyKey, proxyPath);
+        const f = await matchFacing(src, proxyPath, ctx.dir, signal);
+        if (f.changed) {
+          console.log(`[render] ${r.id}: the original was ${f.changed.say} from its preview copy (likeness ${f.before.toFixed(2)} -> ${f.after.toFixed(2)}); its orientation tag was set to match`);
+          info = await probe(src, { signal });
+        }
+      } catch (e) {
+        if ((e as Error).name === "AbortError" || signal?.aborted) throw e;
+        console.error(`[render] ${r.id}: could not compare the original's facing:`, (e as Error).message);
+      }
     }
 
     // ---- Reading timeline ----
