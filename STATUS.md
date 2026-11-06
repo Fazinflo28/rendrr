@@ -21,6 +21,12 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Drive picker: one import bar, not two (6 November)
+
+- Inside a Drive folder the picker showed two bars: "Bring in all of <folder> / Import this folder" and, under it, the bar for what was ticked ("1 folder selected / Import 1 folder"), each with its own "With its folders" box.
+- Now there is one bar at the bottom with one button: with nothing ticked inside a folder it is "Import this folder" (naming the folder); once videos or folders are ticked it is the ticked ones ("Import 1 folder", "Add 2 videos"). One "With its/their folders" box.
+- Test: `apps/web/demo/library-folders.mjs` (one bar, one button, one box, with and without ticks).
+
 ## The editor made clean and dark like Edits (6 November)
 
 - Rail icons redrawn in one plain outline style like the Edits app's (my own drawings: picture, music notes, "Aa", "CC", three rings for Color, a camera for Multicam, a page for Transcript, a bookmark, a sparkle, a speech bubble).

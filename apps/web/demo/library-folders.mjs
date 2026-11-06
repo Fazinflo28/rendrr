@@ -155,6 +155,7 @@ check(await page.locator("#drive-import-hint").isVisible() && !(await page.locat
 await page.locator('[data-folder-id="fd2"]').click();
 await page.locator("#drive-import-folder").waitFor();
 check((await page.locator("#drive-import-bar").innerText()).includes("Client footage"), "inside a Drive folder: Import this folder, naming it");
+check(await page.locator(".dfoot").count() === 1 && await page.locator("#drive-add").count() === 0, "with nothing ticked it is the only bar and button");
 await page.locator("#drive-import-folder").click();
 check(await until(async () => (await page.locator("#folder-title").count()) && (await page.locator("#folder-title").innerText()).toLowerCase().includes("client footage"), 6000), "the Library opens on the imported folder");
 check(await until(async () => (await page.locator(".lfcard", { hasText: "BFS Health" }).count()) === 1), "its Drive folder comes in as a folder inside it");
@@ -206,6 +207,10 @@ check(!(await page.locator("#drive-count").count()), "and unticks them again");
 await page.locator('[data-pick-folder="fd1"]').check(); await page.locator('[data-pick-folder="fd2"]').check(); await page.locator('[data-pick-folder="fd3"]').check();
 await page.locator('[data-folder-id="fd2"] b').click(); await until(async () => (await page.locator('[data-pick-folder="fdB"]').count()) === 1);
 check((await page.locator("#drive-crumbs").innerText()).includes("Client footage"), "a click on the folder's name still opens it");
+// Inside a folder with folders ticked: one bar, one button (no second "Import this folder" bar), one folders box.
+const one = async () => ({ bars: await page.locator(".dfoot").count(), buttons: await page.locator("#drive-import-folder, #drive-add").count(), boxes: await page.locator("#drive-import-subs, #drive-picked-subs").count() });
+const o1 = await one();
+check(o1.bars === 1 && o1.buttons === 1 && o1.boxes === 1 && await page.locator("#drive-add").count() === 1, `inside a folder with folders ticked: a single bar and button (${JSON.stringify(o1)})`);
 await page.locator('[data-pick-folder="fdB"]').check();
 // A video from somewhere else in the Drive (Shared with me) ticked too: the folders stay ticked.
 await page.locator('[data-place="shared"]').click(); await until(async () => (await page.locator('[data-folder-id="fdS"]').count()) === 1);

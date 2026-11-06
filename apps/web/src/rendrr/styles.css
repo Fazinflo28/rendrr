@@ -1414,3 +1414,4 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .editor .panel .pb > .col > .col:first-child, .editor .panel .pb > .col > :first-child { border-top: 0; padding-top: 2px; }
 .editor .panel .pb:not(.cmts) > .col { gap: 2px !important; }
 .editor .panel .card.flat { background: rgba(255,255,255,.03); box-shadow: none; }
+.dfoot-name { color: var(--ink); font-weight: 600; }
