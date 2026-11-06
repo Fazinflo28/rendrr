@@ -297,13 +297,14 @@ export const localJobs = {
     return file;
   },
   /** Multipart upload of an original, 3 parts at a time, with retries. Returns the parts for the complete call. */
-  async uploadParts(file: File, urls: string[], partSize: number, onPct: (pct: number) => void) {
+  async uploadParts(file: File, urls: string[], partSize: number, onPct: (pct: number) => void, signal?: AbortSignal) {
     const loaded = new Array(urls.length).fill(0);
     const parts: { PartNumber: number; ETag: string }[] = [];
     let next = 0;
     const report = () => onPct((loaded.reduce((a, b) => a + b, 0) / file.size) * 100);
     const worker = async () => {
       while (next < urls.length) {
+        if (signal?.aborted) throw fail("You stopped this export.", "stopped"); // no new part after Stop
         const i = next++;
         const blob = file.slice(i * partSize, Math.min(file.size, (i + 1) * partSize));
         let lastErr: unknown;

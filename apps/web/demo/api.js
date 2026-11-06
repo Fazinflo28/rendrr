@@ -60,6 +60,7 @@ const demoSamples = {};
 const clockT = (x) => { const d = Math.round(Math.max(0, x) * 10); return Math.floor(d / 600) + ":" + String(Math.floor((d % 600) / 10)).padStart(2, "0") + "." + (d % 10); };
 const sampleStill = (label, k) => "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="${["#2b3a55", "#3c2f4f", "#24463b", "#4a3a26"][k % 4]}"/><stop offset="1" stop-color="#111"/></linearGradient></defs><rect width="960" height="540" fill="url(#g)"/><text x="480" y="290" fill="#fff" font-family="Inter, sans-serif" font-size="56" text-anchor="middle">${label}</text></svg>`);
 const logout = api.logout;
+let demoRun = null; // the final being made (demo), so Stop export can end it
 let signedIn = false;
 const track = (fn) => async (...a) => { const r = await fn(...a); signedIn = true; return r; };
 
@@ -132,7 +133,22 @@ Object.assign(api, {
   },
   listSamples: async (projectId) => (demoSamples[projectId] || []).slice(0, 4),
   // The Export window's choice for this export (Best quality) is kept where the page's checks can read it.
-  renderFinal: async (projectId, onProgress, opts) => { globalThis.__lastRenderOpts = opts || {}; return renderFinal0(projectId, onProgress); },
+  // Each final has an id in its progress (the export window's Stop button uses it); stopRender ends it as "stopped".
+  renderFinal: async (projectId, onProgress, opts) => {
+    globalThis.__lastRenderOpts = opts || {};
+    const id = "rd" + Math.random().toString(36).slice(2, 8);
+    return new Promise((resolve, reject) => {
+      demoRun = { id, reject };
+      renderFinal0(projectId, (p) => { if (demoRun?.id === id) onProgress?.({ ...p, renderId: id }); })
+        .then((r) => { if (demoRun?.id === id) { demoRun = null; resolve(r); } }, (e) => { if (demoRun?.id === id) { demoRun = null; reject(e); } });
+    });
+  },
+  stopRender: async (renderId) => {
+    await wait(200);
+    if (demoRun?.id === renderId) { const r = demoRun; demoRun = null; r.reject(Object.assign(new Error("You stopped this export."), { friendly: true, code: "stopped" })); }
+    globalThis.__stopped = (globalThis.__stopped || 0) + 1;
+    return { stopped: true, status: "failed" };
+  },
   // A file the browser remembers from a drop (globalThis.__demoRemembered[videoId]: a File, or "denied" when the
   // browser can no longer open it). The real app opens it in the click; this one hands it over the same way.
   hasLocalFile: (videoId) => hasLocalFile0(videoId) || !!globalThis.__demoRemembered?.[videoId],

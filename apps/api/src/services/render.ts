@@ -1,5 +1,5 @@
 import { chapterProblems, chaptersText, type Chapter } from "@rendrr/shared";
-import { AppError, enqueue, publishRender, readRender, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
+import { AppError, enqueue, publishRender, queue, readRender, redis, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, qualityLabel, renderTimeoutMs } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
@@ -83,4 +83,29 @@ export async function renderStatus(r: Render) {
     error: r.error ?? base.error ?? undefined, code: r.errorCode ?? base.code ?? undefined,
     result: r.status === "done" ? (r.kind === "sample" ? { renderId: r.id, samples: await samplesView(r.userId, r.id) } : await renderResult(r)) : undefined,
   };
+}
+
+/** Redis channel the worker listens on: "render:<id>" stops that render's job where it stands (worker lib/job.ts). */
+export const STOP_CHANNEL = "rendrr:stop";
+
+/**
+ * "Stop export": a render still waiting leaves the queue; a running one is told to stop on the worker. Either way it
+ * ends now as failed with code "stopped" (the app closes its window on that), and the edit goes back to the status
+ * its finished renders give it. A render that already ended is left as it is.
+ */
+export async function stopRender(r: Render) {
+  if (r.status === "done" || r.status === "failed") return { stopped: false, status: r.status };
+  const job = await queue("render").getJob(r.id).catch(() => null);
+  if (job && ((await job.isWaiting().catch(() => false)) || (await job.isDelayed().catch(() => false)))) await job.remove().catch(() => {});
+  await redis().publish(STOP_CHANNEL, `render:${r.id}`);
+  const error = "You stopped this export.";
+  await prisma.render.update({ where: { id: r.id }, data: { status: "failed", error, errorCode: "stopped", finishedAt: new Date() } });
+  const p = await prisma.project.findUnique({ where: { id: r.projectId }, select: { id: true, status: true } });
+  if (p && p.status === "Rendering") {
+    const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done", kind: { not: "sample" } }, select: { kind: true } });
+    const status = done.some((x) => x.kind === "final") ? "Final ready" : done.length || r.kind === "final" ? "Preview ready" : "Draft";
+    await prisma.project.update({ where: { id: p.id }, data: { status } });
+  }
+  await publishRender(r.id, { status: "failed", step: 0, steps: (r.steps as string[]) || [], percent: 0, error, code: "stopped" });
+  return { stopped: true, status: "failed" };
 }

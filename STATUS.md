@@ -1143,3 +1143,14 @@ From before:
   sound is made once for the whole edit on its own (ffmpegArgs sound: "only", no picture read) and each part is
   picture only (sound: "none"); joinPieces puts the one sound track under the joined picture. Same frames and the
   same sound as the one-pass render (pieces-render.test.ts: correlation 1.0000, no gap at the joins).
+
+### Export window: the bar and Stop export
+
+- While exporting, the window shows only the bar (percent and time left beside it) and a Stop export button; the list
+  of steps and the explanation are gone.
+- Stop export is real: API POST /renders/:id/stop takes a waiting render out of the queue or tells the worker
+  (Redis "rendrr:stop", "render:<id>") to stop the running job where it stands (FFmpeg killed, no retry), marks the
+  render failed with code "stopped", puts the edit back to its status, and tells the app on the live channel; the
+  window closes with "Export stopped". While the original is still uploading, Stop ends the upload and throws the
+  half-sent upload away.
+- Tests: apps/api/test/stop-render.test.ts (3), apps/worker/test/stop-job.test.ts (3), apps/web/demo/export-stop.mjs.

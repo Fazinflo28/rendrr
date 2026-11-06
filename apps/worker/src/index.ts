@@ -24,7 +24,7 @@ import { proxyJob } from "./jobs/proxy";
 import { renderFailed, renderJob } from "./jobs/render";
 import { cpuBudget, filterThreads } from "./lib/ffmpeg";
 import { BROWSER_SLOTS, closeIdleBrowsers, GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
-import { activeJobs, guarded } from "./lib/job";
+import { activeJobs, guarded, STOP_CHANNEL, stopJob } from "./lib/job";
 import { makeWatchdog, stopStrays, threadReport, threadUse } from "./lib/threads";
 // Object tracking runs in the frames queue but takes longer than frames (up to a minute of footage, the tracker's own
 // 120 s limit inside it); the API waits 150 s for it.
@@ -62,6 +62,11 @@ const graphicLimit = async (job: Job) => {
 const styleRow = (job: Job) => prisma.styleFile.findUnique({ where: { id: (job.data as { styleFileId: string }).styleFileId }, select: { userId: true, videoId: true } });
 const styleLimit = async (job: Job) => { const r = await styleRow(job); const v = r?.videoId ? await prisma.video.findUnique({ where: { id: r.videoId }, select: { seconds: true } }) : null; return styleTimeoutMs(v?.seconds ?? 0); };
 const styleUser = async (job: Job) => (await styleRow(job))?.userId ?? null;
+
+// "Stop export" (API POST /renders/:id/stop): the job running that render here stops where it stands.
+const stops = newRedis();
+stops.subscribe(STOP_CHANNEL).catch((e) => console.error("[worker] could not listen for stops:", e));
+stops.on("message", (_ch, key: string) => { if (stopJob(String(key))) console.log(`[worker] stopping ${key}`); });
 
 const conc = (name: string, d: number) => Math.max(1, Math.floor(Number(process.env[`CONCURRENCY_${name.toUpperCase()}`]) || d));
 const workers = [

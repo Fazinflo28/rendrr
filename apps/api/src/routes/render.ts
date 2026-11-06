@@ -4,7 +4,7 @@ import { notOriginalMessage, OriginalCompleteInput, OriginalUploadInput, PREFIX,
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { getOwnedProject } from "../services/projects";
-import { renderResult, renderStatus, startRender } from "../services/render";
+import { renderResult, renderStatus, startRender, stopRender } from "../services/render";
 import { listen, openSse } from "../live";
 import { samplesView, startSamples } from "../services/samples";
 import { SampleRequestSchema } from "@rendrr/shared";
@@ -41,6 +41,9 @@ export default async function render(app: FastifyInstance) {
   }
 
   app.get("/renders/:id", async (req) => renderStatus(await ownedRender(req.user!.id, (req.params as { id: string }).id)));
+
+  // "Stop export" in the export window.
+  app.post("/renders/:id/stop", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => stopRender(await ownedRender(req.user!.id, (req.params as { id: string }).id)));
 
   // "Save to Google Drive" on a finished final: copies the file into the user's Drive.
   app.post("/renders/:id/save-to-drive", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req) => {

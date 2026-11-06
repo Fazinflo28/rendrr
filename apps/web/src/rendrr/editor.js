@@ -1174,6 +1174,8 @@ function EditorInner({ project, reload, ai, keep }) {
       if (kind === "preview") { setRender(null); toast("Preview rendered. The player now plays the file.", { icon: "check", tone: "brand" }); reload(); return; }
       setChat((c) => [...c, { id: "r" + Date.now(), role: "ai", ai: "Rendrr", text: "Final rendered.", workflow: result.steps || ["Encoded 1080p", "Cleaned up raw file"], at: Date.now() }]);
     } catch (e) {
+      // Stop export: the window just closes.
+      if (e.code === "stopped") { setRender(null); toast("Export stopped", { icon: "x" }); return; }
       // Local footage: full quality needs the original once. Ask for it, then run the final.
       if (e.code === "need-original") { setRender({ kind, opts, status: "original", hasFile: api.hasLocalFile(project.videoId), error: null, progress: { step: 0, steps: [], percent: 0 } }); return; }
       setRender((r) => ({ ...r, status: "error", code: e.code, error: e.message }));
@@ -1187,11 +1189,28 @@ function EditorInner({ project, reload, ai, keep }) {
       try { file = await api.ensureLocalFile(project.videoId); }
       catch (e) { setRender((r) => ({ ...r, status: "original", hasFile: false, error: e.message })); return; }
     }
-    setRender((r) => ({ ...r, status: "running", progress: { step: 0, steps: ["Uploading original"], percent: 0 } }));
-    try { await api.uploadOriginalForExport(project.id, file, (p) => setRender((r) => r && { ...r, progress: p })); }
-    catch (e) { setRender((r) => ({ ...r, status: "original", hasFile: api.hasLocalFile(project.videoId), error: e.message })); return; }
+    const upload = new AbortController();
+    setRender((r) => ({ ...r, status: "running", upload, progress: { step: 0, steps: ["Uploading original"], percent: 0 } }));
+    try { await api.uploadOriginalForExport(project.id, file, (p) => setRender((r) => r && { ...r, progress: p }), upload.signal); }
+    catch (e) {
+      if (e.code === "stopped") { setRender(null); toast("Export stopped", { icon: "x" }); return; }
+      setRender((r) => ({ ...r, status: "original", hasFile: api.hasLocalFile(project.videoId), error: e.message })); return;
+    }
     startRender("final", opts);
   };
+  // Stop export: the upload of the original stops here; a render on the server is stopped there (its window closes when
+  // the server says it stopped). Until then the button says it is stopping.
+  const stopExport = async () => {
+    const r = render;
+    if (!r || r.stopping) return;
+    setRender((x) => x && { ...x, stopping: true, stopSent: !!x.progress?.renderId });
+    if (r.upload && !r.progress?.renderId) { r.upload.abort(); return; }
+    if (!r.progress?.renderId) return; // not started on the server yet: it is stopped as soon as it has an id (below)
+    try { await api.stopRender(r.progress.renderId); }
+    catch (e) { setRender((x) => x && { ...x, stopping: false }); toast(e.message); }
+  };
+  // Stop pressed before the server gave the render an id: stop it the moment it has one.
+  useEffect(() => { if (render?.stopping && render.progress?.renderId && !render.stopSent) { setRender((x) => x && { ...x, stopSent: true }); api.stopRender(render.progress.renderId).catch(() => {}); } }, [render?.stopping, render?.progress?.renderId]);
   const reconnectDrive = async () => { try { await api.reconnectDriveFile(project.videoId, project.video?.driveFileId); toast("Drive file reconnected", { icon: "drive", tone: "brand" }); startRender("final"); } catch (e) { toast(e.message); } };
 
   // ---- transcript selection (drag over words) ----
@@ -1588,9 +1607,9 @@ function EditorInner({ project, reload, ai, keep }) {
     </div>
     </div>
 
-    ${render && html`<${Modal} title=${render.kind === "preview" ? "Exporting preview" : "Exporting final"} sub=${render.status === "running" && render.kind === "preview" ? "540p, everything burned in." : render.status === "running" ? (project.video?.source === "drive" ? `Full quality${render.progress.quality ? ` (${render.progress.quality})` : ""}. We fetch the raw file from your Drive, then delete it.` : `Full quality${render.progress.quality ? ` (${render.progress.quality})` : ""}. This one takes a little longer.`) : null} onClose=${render.status !== "running" ? () => setRender(null) : undefined}>
-      ${render.status === "running" && html`<div class="col" style="gap:16px"><div class="bar big"><i style=${{ width: render.progress.percent + "%" }} /></div><div class="row between"><span class="t-small muted" id="render-step">${render.progress.steps[render.progress.step] || "Starting…"}</span><span class="t-small mono muted"><span id="render-eta">${timeLeft(render.progress.etaSec)}</span> · ${render.progress.percent}%</span></div>
-        <div class="steps">${render.progress.steps.map((s, i) => html`<div key=${s} class=${"step" + (i < render.progress.step ? " done" : i === render.progress.step ? " now" : "")}><span class="ck">${i < render.progress.step && html`<${Icon} name="check" />`}</span>${s}</div>`)}</div></div>`}
+    ${render && html`<${Modal} title=${render.kind === "preview" ? "Exporting preview" : "Exporting final"} onClose=${render.status !== "running" ? () => setRender(null) : undefined}>
+      ${render.status === "running" && html`<div class="col export-run" id="export-run" style="gap:14px"><div class="bar big"><i style=${{ width: render.progress.percent + "%" }} /></div>
+        <div class="row between"><span class="t-small mono muted" id="render-eta">${render.stopping ? "Stopping…" : html`${render.progress.percent}% · ${timeLeft(render.progress.etaSec)}`}</span><${Btn} kind="secondary" size="sm" id="stop-export" disabled=${!!render.stopping} onClick=${stopExport}>${render.stopping ? "Stopping…" : "Stop export"}<//></div></div>`}
       ${render.status === "done" && html`<div class="state" style="padding:24px 0;box-shadow:none;background:none"><div class="ico"><${Icon} name="check" /></div><h3 class="t-heading" id="render-done">Final is ready</h3><p id="render-note">${render.result.note + " · " + (render.result.quality || "1080p") + " · " + render.result.size}</p>
         <div class="row"><${Btn} icon="laptop" id="download" onClick=${() => { if (render.result.downloadUrl) { window.open(render.result.downloadUrl, "_blank", "noopener"); toast("Saving " + (render.result.fileName || "the final") + " to this computer", { icon: "download", tone: "brand" }); } }}>Save to this computer<//><${Btn} kind="secondary" icon="drive" id="save-drive" onClick=${async () => { try { const r = await api.saveFinalToDrive(render.result.renderId); toast(r.message, { icon: "drive", tone: "brand" }); } catch (e) { toast(e.message); } }}>Save to Google Drive<//><${Btn} kind="ghost" onClick=${() => setRender(null)}>Close<//></div></div>`}
       ${render.status === "error" && html`<div class="state" role="alert" style="padding:24px 0;box-shadow:none;background:none"><div class="ico err"><${Icon} name="alert" /></div><h3 class="t-heading" id="render-error">${render.code === "drive" ? "Drive file out of reach" : "Render did not finish"}</h3><p>${render.error}</p><div class="row">${render.code === "drive" && html`<${Btn} id="render-reconnect" icon="drive" onClick=${reconnectDrive}>Reconnect<//>`}<${Btn} kind=${render.code === "drive" ? "secondary" : "primary"} id="render-retry" icon="refresh" onClick=${() => startRender(render.kind)}>Try again<//><${Btn} kind="ghost" onClick=${() => setRender(null)}>Close<//></div></div>`}

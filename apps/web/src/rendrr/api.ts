@@ -74,7 +74,9 @@ async function runRender(kind: "preview" | "final", projectId: string, onProgres
 async function followRender(started: any, label: string, minutes: number, onProgress?: (p: any) => void) {
   const id = started.renderId as string;
   const steps = started.steps || [];
-  onProgress?.({ step: 0, steps, percent: 0, etaSec: null, quality: started.quality });
+  // Every progress update carries the render's id: the export window's Stop button stops it with that.
+  const report = onProgress ? (p: any) => onProgress({ ...p, renderId: id }) : undefined;
+  report?.({ step: 0, steps, percent: 0, etaSec: null, quality: started.quality });
   let final: any = null;
   // Phase 7: as long as the server's own limit for this render (it fails loudly when that passes), plus a margin. A
   // long or 4K final can take far longer than the old fixed 17 minutes.
@@ -82,7 +84,7 @@ async function followRender(started: any, label: string, minutes: number, onProg
   // Live stream first; if it drops, fall back to polling until the render ends.
   try {
     await readEvents(`/renders/${enc(id)}/events`, (ev, data) => {
-      if (ev === "progress") onProgress?.({ step: data.step, steps: data.steps?.length ? data.steps : steps, percent: data.percent, etaSec: data.etaSec ?? null, quality: started.quality });
+      if (ev === "progress") report?.({ step: data.step, steps: data.steps?.length ? data.steps : steps, percent: data.percent, etaSec: data.etaSec ?? null, quality: started.quality });
       if (ev === "done" || ev === "failed") { final = data; return true; }
     });
   } catch { /* poll below */ }
@@ -91,12 +93,12 @@ async function followRender(started: any, label: string, minutes: number, onProg
     const s = await get(`/renders/${enc(id)}`).catch(() => null);
     if (!s) continue;
     if (s.status === "done" || s.status === "failed") final = s;
-    else onProgress?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent, etaSec: s.etaSec ?? null, quality: started.quality });
+    else report?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent, etaSec: s.etaSec ?? null, quality: started.quality });
   }
   if (!final) throw fail(label + " took too long. Try again.", "timeout");
   if (final.status === "failed") throw fail(final.error || "Render did not finish. Nothing was lost. Try again.", final.code);
   const st = final.steps?.length ? final.steps : steps;
-  onProgress?.({ step: st.length, steps: st, percent: 100 });
+  report?.({ step: st.length, steps: st, percent: 100 });
   return final.result;
 }
 
@@ -399,7 +401,7 @@ export const api: any = {
   },
   listSamples: async (projectId: string) => (await get(`/projects/${enc(projectId)}/samples`)).sets || [],
   // Local source only: the original is uploaded once for the export and deleted within 24h.
-  uploadOriginalForExport: async (projectId: string, file: File | null, onProgress?: (p: any) => void) => {
+  uploadOriginalForExport: async (projectId: string, file: File | null, onProgress?: (p: any) => void, signal?: AbortSignal) => {
     const p = await get(`/projects/${enc(projectId)}`);
     const v = p.video || {};
     // A file this browser only remembers (no File in this tab yet) is opened here, not given up on.
@@ -417,12 +419,21 @@ export const api: any = {
     const steps = ["Uploading original"];
     onProgress?.({ step: 0, steps, percent: 0 });
     const up = await post(`/projects/${enc(projectId)}/original`, { name: f.name, size: f.size, ...(seconds != null ? { seconds } : {}) });
-    const parts = await localJobs.uploadParts(f, up.urls, up.partSize, (pct) => onProgress?.({ step: 0, steps, percent: Math.min(99, Math.round(pct)) }));
+    let parts;
+    try { parts = await localJobs.uploadParts(f, up.urls, up.partSize, (pct) => onProgress?.({ step: 0, steps, percent: Math.min(99, Math.round(pct)) }), signal); }
+    catch (e: any) {
+      // Stopped (Stop export) or failed: the half-sent upload is thrown away on the storage too.
+      post(`/projects/${enc(projectId)}/original/abort`, { uploadId: up.uploadId }).catch(() => {});
+      if (signal?.aborted) throw fail("You stopped this export.", "stopped");
+      throw e;
+    }
     const done = await post(`/projects/${enc(projectId)}/original/complete`, { uploadId: up.uploadId, parts });
     onProgress?.({ step: 1, steps, percent: 100 });
     return done;
   },
   deleteAllFinals: () => post("/account/delete-finals"),
+  // "Stop export": the render ends at once (failed, code "stopped"); the export window closes on that.
+  stopRender: (renderId: string) => post(`/renders/${enc(renderId)}/stop`),
   saveFinalToDrive: (renderId: string) => post(`/renders/${enc(renderId)}/save-to-drive`),
 
   // ---- reviews ----
