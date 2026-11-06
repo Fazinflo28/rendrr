@@ -1415,3 +1415,12 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .editor .panel .pb:not(.cmts) > .col { gap: 2px !important; }
 .editor .panel .card.flat { background: rgba(255,255,255,.03); box-shadow: none; }
 .dfoot-name { color: var(--ink); font-weight: 600; }
+
+/* Mac app (desktop/): the window has no title bar, so its three window buttons sit in the top-left of the top bar.
+   The app adds html.desktop; the top bars leave room for the buttons and drag the window, their buttons stay clickable.
+   #root is zoomed to 80%, so 108px here is about 86 screen pixels: the buttons end at 70. */
+html.desktop .top, html.desktop .editor .ed-top { padding-left: 108px; -webkit-app-region: drag; }
+html.desktop .top *, html.desktop .editor .ed-top * { -webkit-app-region: no-drag; }
+html.desktop .top > .grow, html.desktop .editor .ed-top > .grow { -webkit-app-region: drag; }
+html.desktop.desktop-full .top, html.desktop.desktop-full .editor .ed-top { padding-left: 20px; }
+html.desktop body:not(:has(.top, .ed-top))::after { content: ""; position: fixed; left: 0; right: 0; top: 0; height: 32px; -webkit-app-region: drag; z-index: 1; }

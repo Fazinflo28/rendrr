@@ -3,14 +3,15 @@ import type { Metadata, Viewport } from "next";
 import ClientRoot from "./client-root";
 import "../rendrr/styles.css";
 
-export const metadata: Metadata = { title: "Rendrr" };
-export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover" };
+// The tab icon, Apple icon and manifest come from icon.svg, favicon.ico, apple-icon.png and manifest.ts in this folder.
+export const metadata: Metadata = { title: "Rendrr", applicationName: "Rendrr", appleWebApp: { title: "Rendrr", statusBarStyle: "black-translucent" } };
+export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", themeColor: "#0b0c0e" };
 
 // Every screen is the client app from ui/rendrr-ui.html. Each route file exists so the URL is real;
 // the client root picks the screen from the path, exactly like the original ROUTES table.
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />

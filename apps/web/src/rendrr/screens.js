@@ -6,7 +6,7 @@ import {
   Masonry, Dropdown, useNav, useApp,
 } from "./ui";
 import { api } from "./api";
-import { Wordmark } from "./logo";
+import { Mark, Wordmark } from "./logo";
 const IS_PROD = process.env.NODE_ENV === "production";
 
 /* ---------- login: a centred modal over Explore (Higgsfield layout: showcase left, form right) ---------- */
@@ -898,7 +898,7 @@ function ClientReviewPage({ token }) {
         ${pwErr && html`<p role="alert" class="t-small" style="padding-left:16px">${pwErr}</p>`}
         <${Btn} type="submit" disabled=${pwBusy}>${pwBusy ? "Checking…" : "Watch the video"}<//>
       </form></div>` : html`
-      <div class="rv-top"><div class="row" style="gap:16px">${r.showLogo && r.logo ? html`<img src=${r.logo} alt="Logo" style="height:36px;max-width:140px;object-fit:contain" />` : html`<div class="logo" style="padding:0;margin:0"><span class="mark" style="background:var(--ink);color:var(--bg)"><${Icon} name="logo" /></span>${r.showLogo ? r.brand : "Review"}</div>`}<span class="muted">${r.folder ? r.folder.name + " · " + r.items.length + (r.items.length === 1 ? " video" : " videos") : r.project.name}</span></div>
+      <div class="rv-top"><div class="row" style="gap:16px">${r.showLogo && r.logo ? html`<img src=${r.logo} alt="Logo" style="height:36px;max-width:140px;object-fit:contain" />` : html`<div class="logo" style="padding:0;margin:0"><span class="mark" style="background:#0b0c0e"><${Mark} size=${20} /></span>${r.showLogo ? r.brand : "Review"}</div>`}<span class="muted">${r.folder ? r.folder.name + " · " + r.items.length + (r.items.length === 1 ? " video" : " videos") : r.project.name}</span></div>
         <div class="row">${r.folder ? null : r.version > 5
           ? html`<select id="rv-version" class="input sm" aria-label="Version" value=${version} onChange=${(e) => setVer(Number(e.target.value))}>${Array.from({ length: r.version }, (_, i) => r.version - i).map((v) => html`<option key=${v} value=${v}>${"Version " + v + (v === r.version ? " (latest)" : "")}</option>`)}</select>`
           : html`<${Seg} size="sm" value=${version} options=${Array.from({ length: r.version }).map((_, i) => ({ value: i + 1, label: "v" + (i + 1) }))} onChange=${setVer} />`}${r.allowDownload && html`<${Btn} kind="secondary" size="sm" icon="download" onClick=${() => (clip?.download ? window.open(clip.download, "_blank", "noopener") : toast("This version is still rendering. Try again in a minute."))}>Download<//>`}${backBtn}</div></div>
