@@ -1,6 +1,6 @@
-import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, drive, features, notFound, readRender, renderChannel, signGet, signPart } from "@rendrr/core";
+import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, drive, features, finalType, notFound, planWithoutFiles, readRender, redis, renderChannel, renderFileKeys, signGet, signPart } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { notOriginalMessage, OriginalCompleteInput, OriginalUploadInput, PREFIX, renderTimeoutMs, sameOriginal, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
+import { notOriginalMessage, OriginalCompleteInput, OriginalUploadInput, PREFIX, renderLimitMs, sameOriginal, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { getOwnedProject } from "../services/projects";
@@ -16,16 +16,16 @@ export default async function render(app: FastifyInstance) {
     const kind = (req.body as { kind?: string })?.kind === "final" ? "final" : "preview";
     const r = await startRender(req.user!.id, (req.params as { id: string }).id, kind, { best: (req.body as { best?: unknown })?.best === true });
     // Phase 7: the server's time limit for this render, so the app waits as long as the server does (no less).
-    const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { video: { select: { seconds: true } } } });
-    return { renderId: r.id, kind, steps: r.steps, status: r.status, quality: r.quality, limitMs: renderTimeoutMs(kind, v?.video.seconds ?? 0, r.quality) };
+    const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { timeline: true, video: { select: { seconds: true } } } });
+    return { renderId: r.id, kind, steps: r.steps, status: r.status, quality: r.quality, limitMs: renderLimitMs(kind, v?.video.seconds ?? 0, r.quality, v?.timeline) };
   });
 
   // Samples: a few frames and short clips of the edit, drawn as the export draws them (the editor's Samples window).
   app.post("/projects/:id/samples", async (req) => {
     const body = SampleRequestSchema.parse(req.body ?? {});
     const r = await startSamples(req.user!.id, (req.params as { id: string }).id, body);
-    const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { video: { select: { seconds: true } } } });
-    return { renderId: r.id, kind: "sample", steps: r.steps, status: r.status, quality: r.quality, limitMs: renderTimeoutMs("preview", v?.video.seconds ?? 0, r.quality) };
+    const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { timeline: true, video: { select: { seconds: true } } } });
+    return { renderId: r.id, kind: "sample", steps: r.steps, status: r.status, quality: r.quality, limitMs: renderLimitMs("preview", v?.video.seconds ?? 0, r.quality, v?.timeline) };
   });
   // The edit's latest sets of samples (the user's and Claude's), newest first.
   app.get("/projects/:id/samples", async (req) => {
@@ -53,19 +53,29 @@ export default async function render(app: FastifyInstance) {
     if (!features().drive) throw new AppError("Saving to Google Drive is not switched on yet (the server needs Google keys). Use Save to this computer for now.", 409, "drive-off");
     const conn = await prisma.driveConnection.findUnique({ where: { userId } });
     if (!conn || conn.stub) throw new AppError("Connect Google Drive first (Library > Add footage > Google Drive), then save again.", 409, "drive");
-    const res = await renderResult(r);
-    const f = await drive.uploadToDrive(userId, res.fileName, { url: await signGet(r.outputKey, 3600), size: Number(r.sizeBytes), type: ({ gif: "image/gif", m4a: "audio/mp4", wav: "audio/wav", mov: "video/quicktime" } as Record<string, string>)[res.ext] ?? "video/mp4" });
-    return { ok: true, fileId: f.id, link: f.webViewLink ?? null, message: `Saved to your Google Drive as "${res.fileName}".` };
+    // One copy at a time per final: a retry while the first is still uploading (the page timed out) is refused,
+    // instead of a second copy landing in Drive.
+    const lock = `drive-web-save:${r.id}`;
+    if (!(await redis().set(lock, "1", "EX", 30 * 60, "NX"))) throw new AppError("This final is already being saved to your Google Drive. It shows up there in a moment.", 409, "drive-busy");
+    try {
+      const res = await renderResult(r);
+      const { type } = finalType(r.outputKey);
+      const f = await drive.uploadToDrive(userId, res.fileName, { url: await signGet(r.outputKey, 6 * 3600), size: Number(r.sizeBytes), type });
+      return { ok: true, fileId: f.id, link: f.webViewLink ?? null, message: `Saved to your Google Drive as "${res.fileName}".` };
+    } finally { await redis().del(lock).catch(() => {}); }
   });
 
   // Live progress: { step, steps, percent, etaSec } exactly as the render modal expects, then done or failed.
   app.get("/renders/:id/events", async (req, reply) => {
     const r = await ownedRender(req.user!.id, (req.params as { id: string }).id);
     const s = openSse(req, reply);
+    // A failed read here closes the stream (the page asks again) instead of leaving a rejected promise behind.
     const finish = async () => {
-      const fresh = await prisma.render.findUniqueOrThrow({ where: { id: r.id } });
-      const st = await renderStatus(fresh);
-      s.send(st.status === "done" ? "done" : "failed", st);
+      try {
+        const fresh = await prisma.render.findUniqueOrThrow({ where: { id: r.id } });
+        const st = await renderStatus(fresh);
+        s.send(st.status === "done" ? "done" : "failed", st);
+      } catch (e) { req.log.warn({ msg: (e as Error).message, renderId: r.id }, "render stream finish failed"); }
       s.close();
     };
     if (r.status === "done" || r.status === "failed") return finish();
@@ -129,8 +139,9 @@ export default async function render(app: FastifyInstance) {
   app.post("/account/delete-finals", async (req) => {
     const userId = req.user!.id;
     const finals = await prisma.render.findMany({ where: { userId, kind: "final", outputKey: { not: null } } });
-    await deleteObjects(finals.flatMap((r) => [r.outputKey, ...((r.framesKeys as string[]) || [])]));
-    await prisma.render.updateMany({ where: { id: { in: finals.map((r) => r.id) } }, data: { outputKey: null, framesKeys: [], sizeBytes: 0 } });
+    // The captions and chapters files go too (they hold the transcript).
+    await deleteObjects(finals.flatMap(renderFileKeys));
+    for (const r of finals) await prisma.render.update({ where: { id: r.id }, data: { outputKey: null, framesKeys: [], sizeBytes: 0, plan: (planWithoutFiles(r.plan) ?? undefined) as never } });
     const ps = await prisma.project.findMany({ where: { userId, status: "Final ready" } });
     await prisma.project.updateMany({ where: { id: { in: ps.map((p) => p.id) } }, data: { status: "Preview ready" } });
     return { ok: true, deleted: finals.length };

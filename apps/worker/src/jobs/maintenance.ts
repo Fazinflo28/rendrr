@@ -1,6 +1,6 @@
-import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix } from "@rendrr/core";
+import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix, planWithoutFiles, renderFileKeys } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { DAY_MS, matteAllowanceMs, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderTimeoutMs, TEMP_ORIGINAL_HOURS, type Breakdown } from "@rendrr/shared";
+import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderLimitMs, TEMP_ORIGINAL_HOURS, type Breakdown } from "@rendrr/shared";
 import { ensureAssets } from "../lib/assets";
 import type { Ctx } from "../lib/job";
 import { framesPrefix, queueMissingBreakdowns } from "./breakdown";
@@ -59,8 +59,8 @@ export async function cleanup() {
 
   const oldPreviews = await prisma.render.findMany({ where: { kind: "preview", outputKey: { not: null }, createdAt: { lt: new Date(now.getTime() - PREVIEW_RETENTION_DAYS * DAY_MS) } } });
   for (const r of oldPreviews) {
-    await deleteObjects([r.outputKey, ...((r.framesKeys as string[]) || [])]);
-    await prisma.render.update({ where: { id: r.id }, data: { outputKey: null, framesKeys: [], sizeBytes: 0 } });
+    await deleteObjects(renderFileKeys(r));
+    await prisma.render.update({ where: { id: r.id }, data: { outputKey: null, framesKeys: [], sizeBytes: 0, plan: (planWithoutFiles(r.plan) ?? undefined) as never } });
     out.previewRenders++;
   }
 
@@ -74,16 +74,27 @@ export async function cleanup() {
     out.previewRenders++;
   }
 
-  // Stuck work. A running render is judged against its own limit (it grows with the footage); a queued one only
-  // after six hours, since it may simply be waiting behind others.
+  Object.assign(out, await sweepStuck(now));
+  out.breakdownsQueued = await queueMissingBreakdowns().catch(() => 0); // ready videos whose breakdown failed
+  return out;
+}
+
+
+/**
+ * Stuck work, every ten minutes (and in the daily cleanup). A running render is judged against its own limit (the
+ * same renderLimitMs the worker gives it, plus a margin); a queued one only after six hours, since it may simply wait
+ * behind others. Edits left on "Rendering" with nothing rendering go back to what their renders say. Footage, a
+ * reference being measured and a graphic being recorded that stopped fail with a way to try again.
+ */
+export async function sweepStuck(now = new Date()) {
+  const out = { stuckRenders: 0, stuckVideos: 0, stuckStyles: 0, stuckGraphics: 0 };
   const hourAgo = new Date(now.getTime() - 3600_000);
   const active = await prisma.render.findMany({ where: { status: { in: ["queued", "running"] } }, select: { id: true, kind: true, quality: true, status: true, createdAt: true, startedAt: true, project: { select: { timeline: true, video: { select: { seconds: true } } } } } });
   const dead = active.filter((r) => r.status === "running"
-    ? now.getTime() - (r.startedAt ?? r.createdAt).getTime() > renderTimeoutMs(r.kind === "final" ? "final" : "preview", r.project.video.seconds, r.quality) + matteAllowanceMs(r.project.timeline) + 15 * 60_000
+    ? now.getTime() - (r.startedAt ?? r.createdAt).getTime() > renderLimitMs(r.kind === "final" ? "final" : "preview", r.project.video.seconds, r.quality, r.project.timeline) + 15 * 60_000
     : now.getTime() - r.createdAt.getTime() > 6 * 3600_000);
-  if (dead.length) await prisma.render.updateMany({ where: { id: { in: dead.map((r) => r.id) } }, data: { status: "failed", error: "Render did not finish. Nothing was lost. Try again.", finishedAt: now } });
+  if (dead.length) await prisma.render.updateMany({ where: { id: { in: dead.map((r) => r.id) }, status: { in: ["queued", "running"] } }, data: { status: "failed", error: "Render did not finish. Nothing was lost. Try again.", finishedAt: now } });
   out.stuckRenders = dead.length;
-  // Edits left on "Rendering" with nothing rendering: back to what their finished renders say.
   for (const p of await prisma.project.findMany({ where: { status: "Rendering", updatedAt: { lt: hourAgo } }, select: { id: true } })) {
     if (await prisma.render.count({ where: { projectId: p.id, status: { in: ["queued", "running"] } } })) continue;
     const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done", kind: { not: "sample" } }, select: { kind: true } });
@@ -98,13 +109,17 @@ export async function cleanup() {
     await prisma.video.update({ where: { id: v.id }, data: browserSide ? { status: "paused" } : { status: "failed", error: "Processing stopped before it finished. Press Retry." } });
     out.stuckVideos++;
   }
-  out.breakdownsQueued = await queueMissingBreakdowns().catch(() => 0); // ready videos whose breakdown failed
+  // A reference still "measuring" after three hours, a graphic still recording after two: failed, so asking again
+  // starts it again (each otherwise answers "still working" for ever).
+  out.stuckStyles = (await prisma.styleFile.updateMany({ where: { status: "measuring", updatedAt: { lt: new Date(now.getTime() - 3 * 3600_000) } }, data: { status: "failed", error: "Measuring stopped before it finished. Ask again." } })).count;
+  out.stuckGraphics = (await prisma.graphic.updateMany({ where: { status: { in: ["queued", "rendering"] }, changedAt: { lt: new Date(now.getTime() - 2 * 3600_000) } }, data: { status: "failed", error: "The recording stopped before it finished. Try it again." } })).count;
   return out;
 }
 
 export async function maintenanceJob(ctx: Ctx) {
   const task = (ctx.job.data as { task?: string }).task;
   if (task === "ensure-assets") return ensureAssets();
+  if (task === "stuck") { const r = await sweepStuck(); if (Object.values(r).some(Boolean)) console.log("[maintenance] stuck", JSON.stringify(r)); return r; }
   const r = await cleanup();
   console.log("[maintenance] cleanup", JSON.stringify(r));
   return r;

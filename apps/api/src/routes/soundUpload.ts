@@ -1,13 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import { createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import { AppError } from "@rendrr/core";
 import { SOUND_MAX_BYTES } from "@rendrr/shared";
 import { keepSound, soundOut, uploadFor, usedUpload } from "../services/sounds";
+import { saveBody } from "../services/uploadBody";
 import { footageText, keepFootage, sniff, waitForFootage } from "../services/footage";
 import { open } from "node:fs/promises";
 
@@ -26,11 +25,9 @@ export default async function soundUpload(app: FastifyInstance) {
     const dir = await mkdtemp(join(tmpdir(), "sound-up-"));
     try {
       const path = join(dir, "src");
-      let n = 0;
       const body = req.body as Readable | undefined;
       if (!body || typeof (body as Readable).pipe !== "function") throw new AppError("Send the audio file itself as the body: curl -T file.mp3 '<link>'.", 400, "bad-audio");
-      body.on("data", (c: Buffer) => { n += c.length; });
-      await pipeline(body, createWriteStream(path));
+      const n = await saveBody(body, path, SOUND_MAX_BYTES, { length: req.headers["content-length"], tooBig: "That file is over 500 MB, the most an upload link takes.", code: "too-big" });
       if (!n) throw new AppError("Nothing came with the upload. Send the file as the body: curl -T file.mp3 '<link>'.", 400, "bad-audio");
       // A video or a picture sent to an audio link (an AI whose tool list is older than add_footage, given a file in the
       // chat): it goes into the library as footage. ?kind=footage says so; a picture, or a video file's name, is enough.

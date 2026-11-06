@@ -1,14 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import { AppError } from "@rendrr/core";
 import { FOOTAGE_UPLOAD_MAX_BYTES } from "@rendrr/shared";
 import { footageText, footageUploadFor, isAudioHead, keepFootage, usedFootageUpload, waitForFootage } from "../services/footage";
 import { keepSound, soundOut } from "../services/sounds";
+import { saveBody } from "../services/uploadBody";
 import { open } from "node:fs/promises";
 
 // The one-time links add_footage upload gives: the AI's code workspace sends a video or a picture here (no login: the
@@ -17,7 +16,7 @@ import { open } from "node:fs/promises";
 export default async function footageUpload(app: FastifyInstance) {
   app.removeAllContentTypeParsers();
   app.addContentTypeParser("*", { bodyLimit: FOOTAGE_UPLOAD_MAX_BYTES + 1024 }, (_req, payload, done) => done(null, payload));
-  const handler = async (req: { params: unknown; query: unknown; body: unknown }) => {
+  const handler = async (req: { params: unknown; query: unknown; body: unknown; headers: Record<string, unknown> }) => {
     const { token } = req.params as { token: string };
     const u = await footageUploadFor(token);
     const q = req.query as { name?: unknown; filename?: unknown };
@@ -26,11 +25,9 @@ export default async function footageUpload(app: FastifyInstance) {
     const dir = await mkdtemp(join(tmpdir(), "footage-up-"));
     try {
       const path = join(dir, "src");
-      let n = 0;
       const body = req.body as Readable | undefined;
       if (!body || typeof body.pipe !== "function") throw new AppError("Send the file itself as the body: curl -T file.mp4 '<link>'.", 400, "bad-footage");
-      body.on("data", (c: Buffer) => { n += c.length; });
-      await pipeline(body, createWriteStream(path));
+      const n = await saveBody(body, path, FOOTAGE_UPLOAD_MAX_BYTES, { length: req.headers["content-length"], tooBig: "That file is over 2 GB, the most an upload link takes.", code: "too-big" });
       if (!n) throw new AppError("Nothing came with the upload. Send the file as the body: curl -T file.mp4 '<link>'.", 400, "bad-footage");
       // Music or a voice sent here: kept as the user's audio instead (add_music{soundId} puts it under the edit).
       const fh = await open(path, "r"); const head = Buffer.alloc(16);

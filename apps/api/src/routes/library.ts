@@ -1,8 +1,9 @@
 import { AppError, deleteObjects, deletePrefix, drive, enqueue, env, features, headObject, notFound, redis, signGet, signPut, type ProxyJob, type AnalyzeJob, encrypt } from "@rendrr/core";
 import { prisma, type Video } from "@rendrr/db";
-import { breakdownAsText, DAY_MS, DriveAddInput, DriveFolderImportInput, LIBRARY_FOLDER_MAX_DEPTH, FolderProjectInput, LibraryFolderInput, LibraryFolderPatchInput, MoveVideosInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
+import { breakdownAsText, BUSY_STATUSES, DAY_MS, DriveAddInput, DriveFolderImportInput, LIBRARY_FOLDER_MAX_DEPTH, FolderProjectInput, LibraryFolderInput, LibraryFolderPatchInput, MoveVideosInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { isWebOrigin } from "../origins";
 import { authenticate } from "../auth";
 import { projectOut, videoOut } from "../serialize";
 import { purgeProjectFiles } from "../services/projects";
@@ -41,10 +42,16 @@ const readState = (s: string) => {
   if (sig !== stateSig(`${u}.${n}.${o}`) || Date.now() - parseInt(n, 36) > 15 * 60_000) return null;
   return { userId: u, origin: Buffer.from(o, "base64url").toString("utf8") };
 };
+// Where the consent reports back: the calling page only when it is one of the web app's own addresses (else anyone
+// could start a consent with their own page as the origin and have a victim's Google code sent there).
 const webOrigin = (req: { headers: Record<string, unknown> }) => {
-  const o = String(req.headers.origin || env().PUBLIC_WEB_URL || "").replace(/\/$/, "");
-  return /^https?:\/\/[a-z0-9.:-]+$/i.test(o) ? o : "";
+  const o = String(req.headers.origin || "").replace(/\/$/, "");
+  if (o && isWebOrigin(o)) return o;
+  const own = String(env().PUBLIC_WEB_URL || "").replace(/\/$/, "");
+  return /^https?:\/\/[a-z0-9.:-]+$/i.test(own) ? own : "";
 };
+
+export { webOrigin as driveWebOrigin };
 
 export default async function library(app: FastifyInstance) {
   // Google redirects the popup here after consent. This page does not finish the connection itself: it hands the
@@ -154,12 +161,15 @@ export default async function library(app: FastifyInstance) {
     a.post("/videos/:id/retry", async (req) => {
       const v = await ownedVideo(req.user!.id, (req.params as { id: string }).id);
       // Rendrr has the raw (Drive, a sample, footage brought in from the chat): the preview is made again from it.
+      // Only from a state no job is working on: a double click, or Retry while it is already being made, would run the
+      // job twice (two previews on the same files, two paid transcriptions). The status change is the claim.
+      const idle = { id: v.id, status: { notIn: BUSY_STATUSES } };
       if (v.source === "drive" || v.sample || (v.source === "upload" && v.sourceKey)) {
-        await prisma.video.update({ where: { id: v.id }, data: { status: v.sample ? "previewing" : "linking", progress: 0, step: null, error: null } });
-        await enqueue<ProxyJob>("proxy", { videoId: v.id });
+        const won = await prisma.video.updateMany({ where: idle, data: { status: v.sample ? "previewing" : "linking", progress: 0, step: null, error: null } });
+        if (won.count) await enqueue<ProxyJob>("proxy", { videoId: v.id });
       } else if (v.proxyKey && v.audioKey) {
-        await prisma.video.update({ where: { id: v.id }, data: { status: "processing", step: 0, error: null } });
-        await enqueue<AnalyzeJob>("analyze", { videoId: v.id });
+        const won = await prisma.video.updateMany({ where: idle, data: { status: "processing", step: 0, error: null } });
+        if (won.count) await enqueue<AnalyzeJob>("analyze", { videoId: v.id });
       } else {
         await prisma.video.update({ where: { id: v.id }, data: { status: "previewing", progress: 0, error: null } });
       }
@@ -310,9 +320,10 @@ export default async function library(app: FastifyInstance) {
     a.post("/videos/:id/rebuild", async (req) => {
       const v = await ownedVideo(req.user!.id, (req.params as { id: string }).id);
       if (v.source === "drive" || v.sample || (v.source === "upload" && v.sourceKey)) {
-        const u = await prisma.video.update({ where: { id: v.id }, data: { status: v.sample ? "previewing" : "preview", progress: 0, error: null } });
-        await enqueue<ProxyJob>("proxy", { videoId: v.id });
-        return videoOut(u);
+        // Once: a second press while the preview is being made again joins it.
+        const won = await prisma.video.updateMany({ where: { id: v.id, status: { notIn: BUSY_STATUSES } }, data: { status: v.sample ? "previewing" : "preview", progress: 0, error: null } });
+        if (won.count) await enqueue<ProxyJob>("proxy", { videoId: v.id });
+        return videoOut(await prisma.video.findUniqueOrThrow({ where: { id: v.id } }));
       }
       return videoOut(await prisma.video.update({ where: { id: v.id }, data: { status: "previewing", progress: 0, error: null } }));
     });

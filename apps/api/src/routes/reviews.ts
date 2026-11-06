@@ -1,4 +1,4 @@
-import { AppError, checkPassword, env, hashPassword, notFound, sealLatestVersion, signGet, token as newToken } from "@rendrr/core";
+import { AppError, checkPassword, env, hashPassword, notFound, redis, sealLatestVersion, signGet, token as newToken } from "@rendrr/core";
 import { prisma, type Project, type Review, type ReviewComment } from "@rendrr/db";
 import { CreateReviewInput, DEFAULT_STYLE_ID, PublishInput, REVIEW_SIGNED_URL_SECONDS, RequestChangesInput, ReviewCommentInput, ReviewPasswordInput, fmtShortDate, outputDuration, allWords, type ReferenceRef, type Timeline, type Transcript, type V2Clip } from "@rendrr/shared";
 import { createHmac } from "node:crypto";
@@ -87,12 +87,25 @@ async function setStatus(r: Review, status: string) {
   await prisma.project.updateMany({ where, data: { status } });
 }
 
-/** A review needs something to watch: render a preview for any version that has none. */
-async function ensureRendered(userId: string, projects: Project[], version?: number) {
+/**
+ * A review needs something to watch: render a preview for any version that has none. From the public page (anyone
+ * with the link, polling every few seconds) a version whose preview failed in the last half hour is not tried again,
+ * and one review starts at most 3 renders an hour (a waiting or running render is joined, never doubled).
+ */
+async function ensureRendered(userId: string, projects: Project[], version?: number, publicReviewId?: string) {
   for (const p of projects) {
     const v = version ?? p.currentVersion;
     const done = (await latestRender(p.id, "final", v)) || (await latestRender(p.id, "preview", v));
-    if (!done) await startRender(userId, p.id, "preview", { version: v }).catch(() => {});
+    if (done) continue;
+    if (publicReviewId) {
+      const busy = await prisma.render.count({ where: { projectId: p.id, version: v, kind: "preview", OR: [{ status: { in: ["queued", "running"] } }, { status: "failed", finishedAt: { gt: new Date(Date.now() - 30 * 60_000) } }] } });
+      if (busy) continue;
+      const key = `review-renders:${publicReviewId}`;
+      const n = await redis().incr(key);
+      if (n === 1) await redis().expire(key, 3600);
+      if (n > 3) continue;
+    }
+    await startRender(userId, p.id, "preview", { version: v }).catch(() => {});
   }
 }
 
@@ -156,7 +169,7 @@ export default async function reviews(app: FastifyInstance) {
       if (!unlocked(req, r)) throw new AppError("This review is locked.", 401, "locked");
       const ctx = await reviewContext(r);
       const v = Number((req.query as { v?: string }).v);
-      if (ctx.project && Number.isInteger(v) && v >= 1 && v <= r.version) await ensureRendered(r.userId, [ctx.project], v);
+      if (ctx.project && Number.isInteger(v) && v >= 1 && v <= r.version) await ensureRendered(r.userId, [ctx.project], v, r.token);
       return reviewMedia(r, ctx.project ? [ctx.project] : ctx.items);
     });
     // Password guesses: 10 a minute per address (the rest of the review page allows 90).

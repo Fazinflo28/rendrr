@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { ensureBucketCors, env, internalSecrets, redis, safeEqual, toFriendly } from "@rendrr/core";
+import { isWebOrigin, webOrigins } from "./origins";
 import { DRIVE_SWEEP_AGE_MS, syncStaleDriveFolders } from "./services/driveLibrary";
 import { prisma } from "@rendrr/db";
 import Fastify from "fastify";
@@ -39,12 +40,11 @@ export async function buildServer() {
     try { done(null, JSON.parse(text)); } catch { done(Object.assign(new Error("Bad JSON"), { statusCode: 400 }), undefined); }
   });
 
-  const origins = new Set([e.PUBLIC_WEB_URL, ...(e.WEB_ORIGINS || "").split(",")].map((s) => s.trim().replace(/\/$/, "")).filter(Boolean));
+  const origins = webOrigins();
   await app.register(cors, {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      const ok = origins.has(origin) || /^http:\/\/localhost:\d+$/.test(origin) || /^https:\/\/rendrr[a-z0-9-]*\.vercel\.app$/.test(origin);
-      cb(null, ok);
+      cb(null, isWebOrigin(origin, origins));
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["authorization", "content-type", "x-review-key"],
@@ -124,6 +124,8 @@ export async function buildServer() {
 
 if (process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.js")) {
   const app = await buildServer();
+  // One stray rejected promise (a background refresh, a closed stream) is logged, never a crash for every user.
+  process.on("unhandledRejection", (e) => app.log.error({ msg: (e as Error)?.message || String(e), stack: (e as Error)?.stack }, "unhandled rejection"));
   const port = Number(process.env.PORT || 4000);
   // Railway's private network is IPv6; fall back to IPv4 where IPv6 is missing.
   await app.listen({ port, host: process.env.HOST || "::" }).catch(async (err: { code?: string }) => {

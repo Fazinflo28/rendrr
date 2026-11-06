@@ -54,7 +54,7 @@ export async function deepJob(ctx: Ctx) {
     const spent = (Date.now() - started) / 1000;
     await writeDeepProgress(v.id, { step: STEP_NAME[step], percent: overall, etaSec: overall >= 3 ? Math.round((spent / overall) * (100 - overall)) : null });
   };
-  const onLine = (step: Step) => { let last = -1; return (line: string) => { const m = /^PROGRESS (\d+)/.exec(line); if (m && Number(m[1]) !== last) { last = Number(m[1]); void report(step, last); } }; };
+  const onLine = (step: Step) => { let last = -1; return (line: string) => { const m = /^PROGRESS (\d+)/.exec(line); if (m && Number(m[1]) !== last) { last = Number(m[1]); void report(step, last).catch(() => {}); } }; };
 
   try {
     await report("sound", 0);

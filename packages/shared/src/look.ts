@@ -7,7 +7,7 @@
 //   key      FFmpeg's colorkey and despill formulas, which the player's shader repeats.
 //   match    shot matching from measured pixels: three-point curves per channel and a saturation ratio.
 import { z } from "zod";
-import { matteTimeoutMs, PREFIX } from "./constants";
+import { matteTimeoutMs, PREFIX, renderTimeoutMs } from "./constants";
 
 const unit = z.number().min(0).max(1);
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "a colour like #00FF00");
@@ -405,6 +405,15 @@ export function layerAllowanceMs(timeline: unknown, kind: "preview" | "final"): 
   const v1Sources = new Set(list("v1").map((c) => c?.sourceVideoId ?? "")).size;
   const layers = list("v2").filter((c) => c?.kind !== "zoom").length + list("v3").filter((c) => c?.kind !== "caption").length + list("a2").length + list("a3").length + Math.max(0, v1Sources - 1);
   return layers * (kind === "final" ? 20_000 : 5_000);
+}
+
+/**
+ * The one limit for a render, used everywhere it matters: the worker's job limit, the app's wait, the API's "join the
+ * render already running" window and the stuck-work sweep. The footage's length and quality, plus the matte and the
+ * layers the edit has, plus a minute.
+ */
+export function renderLimitMs(kind: "preview" | "final", sourceSeconds: number, quality: string | null | undefined, timeline: unknown): number {
+  return renderTimeoutMs(kind, sourceSeconds, quality) + matteAllowanceMs(timeline) + layerAllowanceMs(timeline, kind) + 60_000;
 }
 
 /** Everything Phase 6 adds to a drawn clip (V1, b-roll). */

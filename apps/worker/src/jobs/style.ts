@@ -25,7 +25,8 @@ export async function styleJob(ctx: Ctx) {
   if (!v.proxyKey || v.status !== "ready") throw new JobError(`"${v.name}" has no preview copy yet (it is ${v.status}).`, "not-ready", false);
   const started = Date.now();
   let last = -1;
-  const report = async (pct: number) => { if (pct !== last) { last = pct; await prisma.styleFile.update({ where: { id: sf.id }, data: { progress: Math.min(99, pct) }, select: { id: true } }); } };
+  // Progress is best effort: a failed write must not become a rejected promise nobody waits for.
+  const report = async (pct: number) => { if (pct !== last) { last = pct; await prisma.styleFile.update({ where: { id: sf.id }, data: { progress: Math.min(99, pct) }, select: { id: true } }).catch(() => {}); } };
 
   const proxy = join(ctx.dir, "ref.mp4");
   await downloadFile(v.proxyKey, proxy);

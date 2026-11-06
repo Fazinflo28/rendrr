@@ -8,6 +8,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { MCP_RATE_LIMIT_PER_MIN } from "@rendrr/shared";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { buildServer, type Who } from "./build";
+import { ICON_FILES, ICON_LINKS, iconBytes } from "./icons";
 import { useKnownProtocolVersion } from "./protocol";
 import { internalSecret } from "./secret";
 
@@ -44,6 +45,10 @@ async function who(req: Request): Promise<Who> {
 // ---------------- HTTP ----------------
 const app = express();
 app.set("trust proxy", true);
+// The Rendrr mark (before the login middleware): AI chats show it next to "Using Rendrr", and favicon fetchers find it.
+for (const [path, f] of Object.entries(ICON_FILES)) {
+  app.get(path, (_req, res) => { res.set({ "Content-Type": f.type, "Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*" }).send(iconBytes(f.file)); });
+}
 app.use(express.json({ limit: "8mb" })); // a create_graphic call carries up to 1 MB of code; a comment from the app up to 4 pictures
 app.use(clerkMiddleware());
 
@@ -54,7 +59,7 @@ app.get("/.well-known/oauth-authorization-server", authServerMetadataHandlerCler
 app.get("/health", (_req, res) => { res.json({ ok: true, service: "rendrr-mcp", api: API.replace(/\/\/.*@/, "//") }); });
 app.get("/", (req, res) => {
   const url = `${req.protocol}://${req.get("host")}/mcp`;
-  res.type("text/html").send(`<!doctype html><meta charset=utf8><title>Rendrr MCP</title><body style="font:15px system-ui;padding:40px;max-width:640px;line-height:1.6"><h1>Rendrr for Claude and ChatGPT</h1><p>Add this URL as a custom connector:</p><pre style="background:#f4f4f5;padding:12px;border-radius:8px">${url}</pre><p>Claude Code: <code>claude mcp add --transport http rendrr ${url}</code></p>${WEB ? `<p><a href="${WEB}/connect">Open Rendrr</a></p>` : ""}`);
+  res.type("text/html").send(`<!doctype html><meta charset=utf8><title>Rendrr</title>${ICON_LINKS}<meta property="og:image" content="${req.protocol}://${req.get("host")}/icon.png"><body style="font:15px system-ui;padding:40px;max-width:640px;line-height:1.6"><img src="/icon-192.png" width="56" height="56" alt="Rendrr" style="border-radius:12px"><h1>Rendrr for Claude and ChatGPT</h1><p>Add this URL as a custom connector:</p><pre style="background:#f4f4f5;padding:12px;border-radius:8px">${url}</pre><p>Claude Code: <code>claude mcp add --transport http rendrr ${url}</code></p>${WEB ? `<p><a href="${WEB}/connect">Open Rendrr</a></p>` : ""}`);
 });
 
 // Per user: 120 tool calls a minute.
@@ -99,7 +104,7 @@ app.post("/mcp", requireAuth, rateLimit, async (req, res) => {
   try {
     const w = await who(req);
     if (!w.clerkId) { res.status(401).json({ error: "Unauthorized" }); return; }
-    const server = buildServer(w);
+    const server = buildServer(w, `${req.protocol}://${req.get("host")}`);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     const body = req.body as { method?: string } | { method?: string }[] | undefined;
     const method = Array.isArray(body) ? body.map((m) => m?.method).join(",") : body?.method || "?";

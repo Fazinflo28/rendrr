@@ -1,6 +1,6 @@
 import { env, newRedis, queue, type GraphicJob, type MaintenanceJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { deepTimeoutMs, layerAllowanceMs, matteAllowanceMs, matteTimeoutMs, processTimeoutMs, QUEUES, renderTimeoutMs, styleTimeoutMs } from "@rendrr/shared";
+import { deepTimeoutMs, matteTimeoutMs, processTimeoutMs, QUEUES, renderLimitMs, styleTimeoutMs } from "@rendrr/shared";
 import { Worker, type Job } from "bullmq";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -24,7 +24,7 @@ import { proxyJob } from "./jobs/proxy";
 import { renderFailed, renderJob } from "./jobs/render";
 import { cpuBudget, filterThreads } from "./lib/ffmpeg";
 import { BROWSER_SLOTS, closeIdleBrowsers, GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
-import { activeJobs, guarded, STOP_CHANNEL, stopJob } from "./lib/job";
+import { activeJobs, failStalled, guarded, STOP_CHANNEL, stopJob } from "./lib/job";
 import { makeWatchdog, stopStrays, threadReport, threadUse } from "./lib/threads";
 // Object tracking runs in the frames queue but takes longer than frames (up to a minute of footage, the tracker's own
 // 120 s limit inside it); the API waits 150 s for it.
@@ -49,8 +49,7 @@ const videoLimit = async (job: Job) => processTimeoutMs((await prisma.video.find
 const deepLimit = async (job: Job) => deepTimeoutMs((await prisma.video.findUnique({ where: { id: (job.data as { videoId: string }).videoId }, select: { seconds: true } }))?.seconds ?? 0);
 const renderLimit = async (job: Job) => {
   const r = await prisma.render.findUnique({ where: { id: (job.data as { renderId: string }).renderId }, select: { kind: true, quality: true, project: { select: { timeline: true, video: { select: { seconds: true } } } } } });
-  const kind = r?.kind === "preview" ? "preview" : "final";
-  return renderTimeoutMs(kind, r?.project.video.seconds ?? 0, r?.quality) + matteAllowanceMs(r?.project.timeline) + layerAllowanceMs(r?.project.timeline, kind) + 60_000;
+  return renderLimitMs(r?.kind === "preview" ? "preview" : "final", r?.project.video.seconds ?? 0, r?.quality, r?.project.timeline);
 };
 // A custom graphic's limit grows with its length and size (see recordLimitMs).
 const graphicLimit = async (job: Job) => {
@@ -89,7 +88,17 @@ const workers = [
   new Worker(QUEUES.matte.name, guarded("matte", matteTimeoutMs(1), "Cutting out the person", matteJob, async () => {}), { connection: newRedis(), concurrency: conc("matte", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.maintenance.name, guarded("maintenance", QUEUES.maintenance.timeoutMs, "Cleanup", maintenanceJob, async () => {}), { connection: newRedis(), concurrency: 1, lockDuration: 120_000 }),
 ];
-for (const w of workers) w.on("error", (e) => console.error(`[${w.name}] worker error:`, e.message));
+for (const w of workers) {
+  w.on("error", (e) => console.error(`[${w.name}] worker error:`, e.message));
+  // A job BullMQ gave up on because its worker died twice (a deploy, a crash) never reached its own failure handling:
+  // record it now, so nothing waits on "running" for hours.
+  w.on("failed", (job, err) => { if (job) void failStalled(w.name, job, err).catch((e) => console.error(`[${w.name}] stalled job not recorded:`, e)); });
+}
+// A rejected promise nobody waits on is logged, not a crash of every job running here.
+process.on("unhandledRejection", (e) => console.error("[worker] unhandled rejection:", e));
+
+// Stuck work is looked for every ten minutes (not only in the daily cleanup).
+await queue("maintenance").upsertJobScheduler("stuck-sweep", { every: 10 * 60_000 }, { name: "maintenance", data: { task: "stuck" } satisfies MaintenanceJob });
 
 // Daily cleanup at 03:15 UTC, plus built-in media check on every start.
 await queue("maintenance").upsertJobScheduler("daily-cleanup", { pattern: "15 3 * * *" }, { name: "maintenance", data: { task: "cleanup" } satisfies MaintenanceJob });

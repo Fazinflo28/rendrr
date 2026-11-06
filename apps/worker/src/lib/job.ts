@@ -34,7 +34,20 @@ export function stopJob(key: string): boolean {
  * and a log row for start / finish / fail with the duration. Friendly errors that retrying cannot fix
  * stop the retries.
  */
+// Each queue's failure handling and name, so a job BullMQ fails on its own (it stalled twice: the worker died) is
+// recorded the same way (failStalled).
+const failures = new Map<string, { onFinalFail: (job: Job, message: string, code?: string) => Promise<unknown>; what: string }>();
+/** BullMQ failed this job without running it to the end (it stalled: its worker died): record the failure. */
+export async function failStalled(queue: string, job: Job, err: Error | undefined) {
+  if (!/stalled/i.test(err?.message || "")) return false;
+  const f = failures.get(queue);
+  if (!f) return false;
+  await f.onFinalFail(job, `${f.what} stopped when the server restarted. Nothing was lost. Try again.`, "stalled");
+  return true;
+}
+
 export function guarded<T>(queue: string, timeoutMs: number | ((job: Job) => Promise<number>), what: string, fn: (ctx: Ctx) => Promise<T>, onFinalFail: (job: Job, message: string, code?: string) => Promise<void>, userIdOf?: (job: Job) => Promise<string | null>) {
+  failures.set(queue, { onFinalFail, what });
   return async (job: Job): Promise<T> => {
     const started = Date.now();
     const ac = new AbortController();
@@ -90,5 +103,5 @@ export function guarded<T>(queue: string, timeoutMs: number | ((job: Job) => Pro
 
 export function throttle<T extends unknown[]>(fn: (...a: T) => unknown, ms: number) {
   let last = 0;
-  return (...a: T) => { const now = Date.now(); if (now - last >= ms) { last = now; void fn(...a); } };
+  return (...a: T) => { const now = Date.now(); if (now - last >= ms) { last = now; void Promise.resolve().then(() => fn(...a)).catch(() => {}); } };
 }

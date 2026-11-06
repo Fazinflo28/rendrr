@@ -88,10 +88,13 @@ async function followRender(started: any, label: string, minutes: number, onProg
       if (ev === "done" || ev === "failed") { final = data; return true; }
     });
   } catch { /* poll below */ }
-  while (!final && Date.now() < deadline) {
+  let wait0 = deadline;
+  while (!final && Date.now() < wait0) {
     await wait(2000);
     const s = await get(`/renders/${enc(id)}`).catch(() => null);
     if (!s) continue;
+    // Still waiting its turn behind other renders: its own limit starts when it starts, so the app keeps waiting.
+    if (s.status === "queued") wait0 = Math.max(wait0, Date.now() + (Number(started.limitMs) || minutes * 60_000));
     if (s.status === "done" || s.status === "failed") final = s;
     else report?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent, etaSec: s.etaSec ?? null, quality: started.quality });
   }

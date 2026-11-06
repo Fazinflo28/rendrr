@@ -1,7 +1,7 @@
 import { chapterProblems, chaptersText, type Chapter } from "@rendrr/shared";
 import { AppError, enqueue, publishRender, queue, readRender, redis, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
-import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, qualityLabel, renderTimeoutMs } from "@rendrr/shared";
+import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, qualityLabel } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
 import { samplesView } from "./samples";
 
@@ -30,17 +30,23 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   const version = opts.version ?? (await sealLatestVersion(projectId));
   const exists = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   if (!exists) throw new AppError(`Version ${version} does not exist.`, 400);
-  // Asking again while the same version is already rendering joins that render.
-  const running = await prisma.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, ...(kind === "final" ? { quality: best ? { contains: "best" } : { not: { contains: "best" } } } : {}), createdAt: { gt: new Date(Date.now() - renderTimeoutMs(kind, video.seconds) - 60_000) } } });
-  if (running) return running;
-
   const steps = stepsFor(kind, video.source, video.sample);
   // Phase 7: the final's quality from its version's export settings (its time limit follows it); HDR is learnt by the
   // worker from the original and added then.
   const ex = (exists.timeline as unknown as { timeline?: { export?: { resolution?: string; codec?: string } } })?.timeline?.export;
   const resolution = best && (ex?.resolution === "4k" || bestResolution(p.aspect, video.width, video.height) === "4k") ? "4k" : best ? "1080p" : ex?.resolution;
   const quality = kind === "final" ? qualityLabel({ resolution, codec: ex?.codec, hdr: !!video.hdr && ((ex as { hdr?: string })?.hdr ?? "keep") === "keep", best }) : "540p";
-  const r = await prisma.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality, by: opts.by ?? "user" } });
+  // Asking again while the same version is already waiting or rendering joins that render, however long it has been
+  // going (the stuck-work sweep ends one that died). One request at a time per edit and kind: two quick clicks, or a
+  // click and the AI's render at once, make one render, not two.
+  const made = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"render:" + projectId + ":" + kind}))`;
+    const running = await tx.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, ...(kind === "final" ? { quality: best ? { contains: "best" } : { not: { contains: "best" } } } : {}) }, orderBy: { createdAt: "desc" } });
+    if (running) return { r: running, joined: true };
+    return { r: await tx.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality, by: opts.by ?? "user" } }), joined: false };
+  });
+  if (made.joined) return made.r;
+  const r = made.r;
   // Review states (In review, Changes requested, Approved) stay put while rendering; the render has its own progress.
   // A finished final still moves the edit to "Final ready", as in the UI.
   const reviewState = ["In review", "Changes requested", "Approved"].includes(p.status);
@@ -54,7 +60,10 @@ export async function renderResult(r: Render) {
   const project = await prisma.project.findUnique({ where: { id: r.projectId } });
   const video = project ? await prisma.video.findUnique({ where: { id: project.videoId } }) : null;
   // Phase 12: the file's own extension (a GIF, sound only, ProRes with alpha) and its captions and chapters.
-  const ext = (r.outputKey?.match(/\.(\w+)$/)?.[1] ?? "mp4").toLowerCase();
+  // Before the file exists (render_final with driveFolder names the Drive copy at once), the edit's export format says it.
+  const fmt = (project?.timeline as { export?: { format?: string } } | null)?.export?.format;
+  const planned = ({ gif: "gif", audio: "m4a", wav: "wav", overlay: "mov" } as Record<string, string>)[fmt || ""] || "mp4";
+  const ext = (r.outputKey?.match(/\.(\w+)$/)?.[1] ?? (r.kind === "final" ? planned : "mp4")).toLowerCase();
   const stem = `${(project?.name || "rendrr").replace(/[^\w\- ]+/g, "").trim() || "rendrr"} ${r.kind === "final" ? "final" : "preview"} v${r.version}`;
   const fileName = `${stem}.${ext}`;
   const url = r.outputKey ? await signGet(r.outputKey, 6 * 3600) : null;
@@ -97,9 +106,11 @@ export async function stopRender(r: Render) {
   if (r.status === "done" || r.status === "failed") return { stopped: false, status: r.status };
   const job = await queue("render").getJob(r.id).catch(() => null);
   if (job && ((await job.isWaiting().catch(() => false)) || (await job.isDelayed().catch(() => false)))) await job.remove().catch(() => {});
-  await redis().publish(STOP_CHANNEL, `render:${r.id}`);
   const error = "You stopped this export.";
-  await prisma.render.update({ where: { id: r.id }, data: { status: "failed", error, errorCode: "stopped", finishedAt: new Date() } });
+  // Only while it is still waiting or running: one that finished a moment ago stays finished.
+  const hit = await prisma.render.updateMany({ where: { id: r.id, status: { in: ["queued", "running"] } }, data: { status: "failed", error, errorCode: "stopped", finishedAt: new Date() } });
+  if (!hit.count) return { stopped: false, status: (await prisma.render.findUnique({ where: { id: r.id }, select: { status: true } }))?.status ?? r.status };
+  await redis().publish(STOP_CHANNEL, `render:${r.id}`);
   const p = await prisma.project.findUnique({ where: { id: r.projectId }, select: { id: true, status: true } });
   if (p && p.status === "Rendering") {
     const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done", kind: { not: "sample" } }, select: { kind: true } });

@@ -178,3 +178,16 @@ export async function ensureBucketCors(origins: string[]) {
     AllowedOrigins: origins, AllowedMethods: ["GET", "PUT", "HEAD"], AllowedHeaders: ["*"], ExposeHeaders: ["ETag", "Content-Length", "Content-Range"], MaxAgeSeconds: 3600,
   }] } }));
 }
+
+/** Every stored file of a render: the video, its frames and its side files (captions .srt/.vtt, chapters), so a
+ *  delete takes them all. The side files sit on the render's plan as { files: { name: key } }. */
+export function renderFileKeys(r: { outputKey?: string | null; framesKeys?: unknown; plan?: unknown }): string[] {
+  const side = (r.plan as { files?: Record<string, unknown> } | null)?.files;
+  return [r.outputKey, ...(((r.framesKeys as string[]) || [])), ...(side ? Object.values(side) : [])].filter((k): k is string => typeof k === "string" && !!k);
+}
+/** The plan without its side files, for a render whose files were deleted. */
+export function planWithoutFiles(plan: unknown): Record<string, unknown> | null {
+  if (!plan || typeof plan !== "object") return null;
+  const { files: _files, ...rest } = plan as Record<string, unknown>;
+  return rest;
+}

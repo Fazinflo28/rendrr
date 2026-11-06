@@ -1,4 +1,4 @@
-import { AppError, drive, driveSaveOf, features, queueDriveSave, setDriveSave, type DriveSave } from "@rendrr/core";
+import { AppError, drive, driveSaveOf, features, queueDriveSave, setDriveSave, withExt, type DriveSave } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { renderResult } from "./render";
 
@@ -22,10 +22,12 @@ export async function driveTarget(userId: string, folder: string | undefined, cr
   return t;
 }
 
-/** "Cold Outreaching final v19.mp4" by default; a name the user gave keeps .mp4 at its end. */
+/** "Cold Outreaching final v19.mp4" by default; a name the user gave gets the final's extension (the worker sets the
+ *  real one from the file when it saves: a GIF or sound-only final is not an .mp4). */
 export const fileNameFor = (given: string | undefined, fallback: string) => {
   const n = (given || "").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
-  return n ? (/\.mp4$/i.test(n) ? n : `${n}.mp4`) : fallback;
+  const ext = fallback.match(/\.(\w+)$/)?.[1] || "mp4";
+  return n ? withExt(n, ext) : fallback;
 };
 
 /** Asks for the copy: now when the final is done, else when it finishes. */

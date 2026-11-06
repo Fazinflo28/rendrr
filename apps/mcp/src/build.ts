@@ -2,6 +2,7 @@
 // Rendrr app in the chat (an MCP App: open_projects shows it, its own tools are hidden from the AI).
 import { createHash } from "node:crypto";
 import { internalSecret } from "./secret";
+import { serverIcons } from "./icons";
 import { readFileSync } from "node:fs";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { APP_MIME_TYPE, APP_RESOURCE_URI, APP_TOOLS, EDITING_SKILL, HOW_TO_EDIT, MCP_INSTRUCTIONS, MCP_TOOLS, type ToolDef } from "@rendrr/shared";
@@ -65,8 +66,10 @@ function metaOf(def: ToolDef): Record<string, unknown> | undefined {
   return undefined;
 }
 
-export function buildServer(w: Who) {
-  const server = new McpServer({ name: "rendrr", version: "1.0.0", title: "Rendrr" }, { instructions: MCP_INSTRUCTIONS });
+export function buildServer(w: Who, base = process.env.PUBLIC_MCP_URL || "") {
+  // icons: the Rendrr mark the AI chat shows next to "Using Rendrr" (MCP 2025-11-25 server info).
+  const site = (process.env.PUBLIC_WEB_URL || "https://rendrr.live").replace(/\/$/, "");
+  const server = new McpServer({ name: "rendrr", version: "1.0.0", title: "Rendrr", description: "Video editing for AI: you decide the edit, Rendrr applies and renders it.", websiteUrl: site, ...(base ? { icons: serverIcons(base.replace(/\/mcp\/?$/, "")) } : {}) }, { instructions: MCP_INSTRUCTIONS });
 
   for (const def of [...MCP_TOOLS, ...APP_TOOLS]) {
     server.registerTool(def.name, {

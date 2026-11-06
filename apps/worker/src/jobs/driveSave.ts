@@ -1,4 +1,4 @@
-import { drive, driveSaveOf, setDriveSave, signGet, type DriveSaveJob } from "@rendrr/core";
+import { drive, driveSaveOf, finalType, setDriveSave, signGet, withExt, type DriveSaveJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { JobError } from "../lib/ffmpeg";
 import type { Ctx } from "../lib/job";
@@ -14,13 +14,16 @@ export async function driveSaveJob(ctx: Ctx): Promise<{ fileId: string }> {
   if (!r || !d) throw new JobError("That final is gone.", "gone", false);
   if (r.status !== "done" || !r.outputKey) throw new JobError("The final is not ready yet.", "not-ready", false);
   if (d.state === "saved") return { fileId: d.fileId! };
-  await setDriveSave(r.id, { ...d, state: "saving", percent: 0, at: Date.now() });
+  // The file's own type and extension: a GIF, sound only or a ProRes overlay is saved as what it is, not as an .mp4.
+  const { ext, type } = finalType(r.outputKey);
+  const name = withExt(d.name, ext);
+  await setDriveSave(r.id, { ...d, name, state: "saving", percent: 0, at: Date.now() });
   let shown = 0;
-  const f = await drive.uploadToDrive(r.userId, d.name, { url: await signGet(r.outputKey, 6 * 3600), size: Number(r.sizeBytes), type: "video/mp4" }, { id: d.folderId, path: d.path, driveId: d.driveId, made: [] }, (p) => {
+  const f = await drive.uploadToDrive(r.userId, name, { url: await signGet(r.outputKey, 6 * 3600), size: Number(r.sizeBytes), type }, { id: d.folderId, path: d.path, driveId: d.driveId, made: [] }, (p) => {
     const pct = Math.floor(p * 100);
-    if (pct - shown >= 5 && pct < 100) { shown = pct; void setDriveSave(r.id, { ...d, state: "saving", percent: pct, at: Date.now() }).catch(() => {}); }
+    if (pct - shown >= 5 && pct < 100) { shown = pct; void setDriveSave(r.id, { ...d, name, state: "saving", percent: pct, at: Date.now() }).catch(() => {}); }
   });
-  await setDriveSave(r.id, { ...d, state: "saved", percent: 100, fileId: f.id, link: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`, error: undefined, code: undefined, at: Date.now() });
+  await setDriveSave(r.id, { ...d, name, state: "saved", percent: 100, fileId: f.id, link: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`, error: undefined, code: undefined, at: Date.now() });
   return { fileId: f.id };
 }
 

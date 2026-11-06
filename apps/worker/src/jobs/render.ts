@@ -1,9 +1,9 @@
 import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
-import { bestResolution, fmtClock, formatFile, isBestQuality, lengthTolerance, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
+import { bestResolution, fmtClock, formatFile, isBestQuality, lengthTolerance, renderLimitMs, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { joinPieces, makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
-import { allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, renderTimeoutMs, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
@@ -48,7 +48,9 @@ export const piecesFirst = (kind: string, g: { inputs: number; scalers: number }
 export async function renderJob(ctx: Ctx) {
   const { renderId } = ctx.job.data as RenderJob;
   const r = await prisma.render.findUnique({ where: { id: renderId } });
-  if (!r || r.status === "done") return;
+  // Only a render still waiting or running is made: one stopped, failed by the cleanup or already done is left alone
+  // (a job BullMQ puts back after a worker died must not bring a stopped export back to life).
+  if (!r || (r.status !== "queued" && r.status !== "running")) return;
   const project = await prisma.project.findUniqueOrThrow({ where: { id: r.projectId } });
   const video = await prisma.video.findUniqueOrThrow({ where: { id: project.videoId }, include: { analysis: true } });
   const version = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId: project.id, v: r.version } } });
@@ -65,7 +67,8 @@ export async function renderJob(ctx: Ctx) {
   const ac = new AbortController();
   ctx.signal.addEventListener("abort", () => ac.abort(), { once: true });
   let previewTimedOut = false;
-  const previewLimit = renderTimeoutMs("preview", video.seconds);
+  // The preview's own limit includes what its layers add (the same renderLimitMs as the job's, less the job's margin).
+  const previewLimit = renderLimitMs("preview", video.seconds, r.quality, project.timeline) - 60_000;
   const armPreview = (ms: number) => (kind !== "final" ? setTimeout(() => { previewTimedOut = true; ac.abort(); }, ms) : null);
   let pt = armPreview(previewLimit);
   const signal = ac.signal;
@@ -92,7 +95,8 @@ export async function renderJob(ctx: Ctx) {
   };
   const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)), etaSec: etaSec() });
   const sendThrottled = throttle(send, 400);
-  await prisma.render.update({ where: { id: r.id }, data: { status: "running", startedAt: new Date(), error: null, errorCode: null } });
+  const claimed = await prisma.render.updateMany({ where: { id: r.id, status: { in: ["queued", "running"] } }, data: { status: "running", startedAt: new Date(), error: null, errorCode: null } });
+  if (!claimed.count) return;
   let i = 0;
   await send(0, 0);
 
@@ -415,7 +419,8 @@ export async function renderJob(ctx: Ctx) {
       i = steps.length - 1;
       await send(i, 0.5);
       const seconds = Math.round(items.reduce((acc, it) => acc + (it.kind === "clip" ? it.end! - it.at : 0), 0) * 1000) / 1000;
-      await prisma.render.update({ where: { id: r.id }, data: {
+      if (signal.aborted) { await deleteObjects(keys).catch(() => {}); throw new JobError("Stopped."); }
+      await prisma.render.updateMany({ where: { id: r.id, status: "running" }, data: {
         status: "done", outputKey: null, sizeBytes: BigInt(bytes), seconds, framesKeys: keys, finishedAt: new Date(), quality: "540p",
         plan: { samples: { items: noted(items), done: noted(done), width: plan.width, height: plan.height }, operations: plan.operations, outputSeconds: plan.outputSeconds, mix: mixLoudness } as unknown as Prisma.InputJsonValue,
       } });
@@ -645,16 +650,28 @@ export async function renderJob(ctx: Ctx) {
     // An edit from scratch (only its blank canvas on V1) has no words to hear again.
     const wordless = video.kind === "canvas" && plan.sources.every((id) => id === video.id);
     const heard: HeardTranscript | null = kind === "preview" && outInfo.hasAudio && !wordless ? { status: transcriber() ? "queued" : "off", seconds: outInfo.seconds } : null;
-    // Final: the original is deleted straight away (the daily cleanup is only the safety net).
-    if (kind === "final" && tempOriginalIds.length) {
-      const origs = await prisma.tempOriginal.findMany({ where: { id: { in: tempOriginalIds } } });
-      for (const o of origs) await deleteObject(o.key).catch(() => {});
-      await prisma.tempOriginal.deleteMany({ where: { id: { in: tempOriginalIds } } });
-    }
-    await prisma.render.update({ where: { id: r.id }, data: {
+    // Stopped (or failed by the cleanup) while it finished: only a render still running becomes done. Otherwise what
+    // it made is removed and nothing else changes (no "Final ready", no Drive copy, the original kept).
+    if (signal.aborted) throw new JobError("Stopped.");
+    const won = await prisma.render.updateMany({ where: { id: r.id, status: "running" }, data: {
       status: "done", outputKey: outKey, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
       quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr, best }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}) } as unknown as Prisma.InputJsonValue,
     } });
+    if (!won.count) {
+      await deleteObjects([outKey, ...framesKeys, ...Object.values(sideKeys)]).catch(() => {});
+      console.log(`[render] ${r.id}: it was stopped as it finished; what it made was removed`);
+      return { stopped: true };
+    }
+    // Final: the original is deleted straight away, unless another final of this edit still waits for it (two finals
+    // asked for back to back); the daily cleanup is the safety net.
+    if (kind === "final" && tempOriginalIds.length) {
+      const others = await prisma.render.count({ where: { projectId: project.id, kind: "final", status: { in: ["queued", "running"] }, id: { not: r.id } } });
+      if (!others) {
+        const origs = await prisma.tempOriginal.findMany({ where: { id: { in: tempOriginalIds } } });
+        for (const o of origs) await deleteObject(o.key).catch(() => {});
+        await prisma.tempOriginal.deleteMany({ where: { id: { in: tempOriginalIds } } });
+      }
+    }
     // Engine Part 3: the preview's sound is transcribed again after it is ready (it never holds the render up).
     if (heard?.status === "queued") await enqueue<HeardJob>("heard", { renderId: r.id }, { jobId: `heard-${r.id}` }).catch((e) => console.error("[render] heard not queued:", (e as Error).message));
     const fresh = await prisma.project.findUniqueOrThrow({ where: { id: project.id } });

@@ -15,7 +15,7 @@ const run = Math.random().toString(36).slice(2, 8);
 const FOLDER = "application/vnd.google-apps.folder";
 
 // The stand-in Google: a small Drive, upload sessions with byte ranges.
-type Item = { id: string; name: string; mimeType: string; parents: string[]; driveId?: string; locked?: boolean; bytes?: Buffer };
+type Item = { id: string; name: string; mimeType: string; parents: string[]; driveId?: string; locked?: boolean; bytes?: Buffer; type?: string };
 const id = (s: string) => (s + "0".repeat(25)).slice(0, 25);
 const items: Item[] = [
   { id: id("1Clients"), name: "Clients", mimeType: FOLDER, parents: ["root"] },
@@ -28,7 +28,7 @@ const items: Item[] = [
   { id: id("0ATeam"), name: "Team", mimeType: FOLDER, parents: [], driveId: id("0ATeam") },
   { id: id("1Deliv"), name: "Deliveries", mimeType: FOLDER, parents: [id("0ATeam")], driveId: id("0ATeam") },
 ];
-const sessions = new Map<string, { name: string; parent: string; size: number; got: Buffer[]; received: number }>();
+const sessions = new Map<string, { name: string; parent: string; size: number; got: Buffer[]; received: number; type: string }>();
 let failNextChunk = 0, chunks = 0, nextId = 1;
 const body = (req: IncomingMessage) => new Promise<Buffer>((ok) => { const b: Buffer[] = []; req.on("data", (c) => b.push(c)); req.on("end", () => ok(Buffer.concat(b))); });
 const google = createServer(async (req, res) => {
@@ -68,7 +68,7 @@ const google = createServer(async (req, res) => {
     if (parent !== "root" && !p) return json(404, {});
     if (p?.locked) return json(403, { error: { errors: [{ reason: "appNotAuthorizedToFile" }] } });
     const sid = randomBytes(6).toString("hex");
-    sessions.set(sid, { name: b.name, parent, size: Number(req.headers["x-upload-content-length"]), got: [], received: 0 });
+    sessions.set(sid, { name: b.name, parent, size: Number(req.headers["x-upload-content-length"]), got: [], received: 0, type: String(req.headers["x-upload-content-type"] || "") });
     return json(200, {}, { location: `${base}/upload/session/${sid}` });
   }
   if (url.pathname.startsWith("/upload/session/")) {
@@ -85,7 +85,7 @@ const google = createServer(async (req, res) => {
     if (failNextChunk > 0 && chunks === failNextChunk) { failNextChunk = 0; return json(503, {}); }
     s.got.push(raw); s.received += raw.length;
     if (s.received < s.size) return json(308, {}, range(s.received));
-    const f: Item = { id: id(`1File${nextId++}`), name: s.name, mimeType: "video/mp4", parents: [s.parent], bytes: Buffer.concat(s.got) };
+    const f: Item = { id: id(`1File${nextId++}`), name: s.name, mimeType: "video/mp4", parents: [s.parent], bytes: Buffer.concat(s.got), type: s.type };
     items.push(f);
     return json(200, { id: f.id, name: f.name, webViewLink: `https://drive.google.com/file/d/${f.id}/view` });
   }
@@ -205,6 +205,34 @@ describe("save a final into Google Drive", { skip: !ready && "needs a database, 
     await tool("save_to_drive", { projectId, version: 4, folder: "Clients" });
     await renderFailed(r4.id, "Render failed at 'Cutting clips'. Nothing was lost. Try again.");
     assert.match((await tool("get_render", { renderId: r4.id })).text, /Saving to Google Drive › Clients failed: The final did not finish, so nothing was saved to Google Drive\./);
+  });
+
+  it("a GIF final is saved as a .gif of type image/gif, even when the name given ends in .mp4", async () => {
+    const key = `renders/test-drive-${run}-gif.gif`;
+    await putObject(key, file, "image/gif");
+    await prisma.render.create({ data: { projectId, userId, kind: "final", version: 5, status: "done", steps: [], quality: "1080p", outputKey: key, sizeBytes: BigInt(file.length), seconds: 12, finishedAt: new Date() } });
+    const out = await tool("save_to_drive", { projectId, version: 5, folder: "Clients/BFS Health/Finals", fileName: "Teaser.mp4" });
+    assert.match(out.text, /Saved to Google Drive › Clients\/BFS Health\/Finals\/Teaser\.gif: https:/, out.text);
+    const f = saved().pop()!;
+    assert.equal(f.name, "Teaser.gif");
+    assert.equal(f.type, "image/gif");
+  });
+
+  it("asking again for the same folder while a copy is running joins it; another folder starts a new copy", async () => {
+    const r = await final(6);
+    const target = { folderId: id("1Finals"), path: "Clients/BFS Health/Finals", name: `Launch ${run} final v6.mp4` };
+    await prisma.render.update({ where: { id: r.id }, data: { driveSave: { ...target, state: "saving", percent: 40, at: Date.now() } } });
+    const before = saved().length;
+    await queueDriveSave(r.id, { ...target, state: "waiting", at: Date.now() });
+    const still = driveSaveOf(await prisma.render.findUniqueOrThrow({ where: { id: r.id } }))!;
+    assert.equal(still.state, "saving");
+    assert.equal(still.percent, 40, "the running copy is left as it is");
+    await new Promise((ok) => setTimeout(ok, 600));
+    assert.equal(saved().length, before, "no second copy");
+    // A different folder is a new copy.
+    await queueDriveSave(r.id, { folderId: id("1Unique"), path: "Clients/BFS Health/Unique Folder", name: target.name, state: "waiting", at: Date.now() });
+    for (let i = 0; i < 50 && driveSaveOf(await prisma.render.findUniqueOrThrow({ where: { id: r.id } }))?.state !== "saved"; i++) await new Promise((ok) => setTimeout(ok, 200));
+    assert.deepEqual(saved().pop()!.parents, [id("1Unique")]);
   });
 
   it("without Drive connected, says how to connect it", async () => {
