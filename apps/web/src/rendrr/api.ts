@@ -122,8 +122,9 @@ export const api: any = {
     if (!d?.openInBrowser) throw fail("Download the latest Rendrr app to log in with your browser, or log in with email.", "desktop-old");
     let challenge = "";
     try { challenge = await newChallenge(); } catch { throw fail("We could not start the login. Try again.", "desktop-login"); }
-    d.openInBrowser(window.location.origin + "/desktop-login?c=" + challenge);
-    return { challenge };
+    const link = window.location.origin + "/desktop-login?c=" + challenge;
+    d.openInBrowser(link);
+    return { challenge, link };
   },
   approveDesktopLogin: (challenge: string) => post("/auth/desktop/approve", { challenge }),
   finishDesktopLogin: async (grant: string) => {

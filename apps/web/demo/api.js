@@ -74,10 +74,11 @@ Object.assign(api, {
   desktopApp,
   startBrowserLogin: async () => {
     const d = desktopApp();
-    if (!d?.openInBrowser) throw friendly("Download the latest Rendrr app to log in with your browser, or log in with email.");
+    if (!d?.openInBrowser) throw Object.assign(friendly("Download the latest Rendrr app to log in with your browser, or log in with email."), { code: "desktop-old" });
     const challenge = await newChallenge();
-    d.openInBrowser(window.location.origin + "/desktop-login?c=" + challenge);
-    return { challenge };
+    const link = window.location.origin + "/desktop-login?c=" + challenge;
+    d.openInBrowser(link);
+    return { challenge, link };
   },
   approveDesktopLogin: async (challenge) => {
     await wait(150);

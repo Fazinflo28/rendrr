@@ -31,9 +31,12 @@ function openAuthLink(url) {
   w.show(); w.focus(); app.focus({ steal: true });
 }
 app.on("open-url", (e, url) => { e.preventDefault(); openAuthLink(url); });
+const browserOpened = []; // the build check records instead of opening a browser
 ipcMain.on("rendrr:open-browser", (e, url) => {
   // Only Rendrr's own pages may ask, and only for Rendrr or sign-in pages.
-  if (linkKind(e.senderFrame?.url || "") === "app" && browserMayOpen(url)) shell.openExternal(url);
+  if (linkKind(e.senderFrame?.url || "") !== "app" || !browserMayOpen(url)) return;
+  if (SMOKE_OUT) browserOpened.push(url);
+  else shell.openExternal(url).catch(() => {});
 });
 
 // ---- Windows ----
@@ -220,9 +223,13 @@ function smokeTest(win) {
         await new Promise((r) => setTimeout(r, 1000));
         login = await js(`({ browserButton: !!document.querySelector("#browser-login"), google: !!document.querySelector("#google") })`);
       }
+      // Click "Log in with your browser": the app must be asked to open the Allow page in the browser.
+      await js(`document.querySelector("#browser-login")?.click()`);
+      for (let i = 0; i < 10 && !browserOpened.length; i++) await new Promise((r) => setTimeout(r, 500));
       clearTimeout(timer);
-      const ok = linkKind(page.url) === "app" && page.desktopClass && page.bridge?.openInBrowser === "function" && !/Electron/.test(page.ua) && login?.browserButton && !login?.google;
-      finish({ ok, version: app.getVersion(), ...page, login, protocol: app.isDefaultProtocolClient("rendrr") });
+      const opens = /^https:\/\/[^/]+\/desktop-login\?c=[A-Za-z0-9_-]{43}$/.test(browserOpened[0] || "");
+      const ok = linkKind(page.url) === "app" && page.desktopClass && page.bridge?.openInBrowser === "function" && !/Electron/.test(page.ua) && login?.browserButton && !login?.google && opens;
+      finish({ ok, version: app.getVersion(), ...page, login, browserOpened, protocol: app.isDefaultProtocolClient("rendrr") });
     } catch (e) { clearTimeout(timer); finish({ ok: false, error: String(e) }); }
   }, 4000));
 }

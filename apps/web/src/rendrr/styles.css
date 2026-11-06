@@ -1433,3 +1433,7 @@ html.desktop body:not(:has(.top, .ed-top))::after { content: ""; position: fixed
 .dl-card p b { color: var(--ink); }
 .dl-row { display: flex; gap: 10px; justify-content: center; margin-top: 8px; }
 .dl-note { font-size: 13px; color: var(--muted) !important; margin-top: 6px !important; }
+/* Under "Log in with your browser" in the Mac app (screens.js LoginPage). */
+.bl-note { font-size: 13px; line-height: 19px; text-align: center; color: var(--ink-dim); margin: -2px 0 0; }
+.bl-note a { color: var(--accent); }
+.bl-note.bad { color: var(--ink); background: rgba(255,255,255,.05); border-radius: 10px; padding: 10px 12px; margin: 0; }

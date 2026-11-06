@@ -20,8 +20,9 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
   const [code, setCode] = useState(""); const [newPw, setNewPw] = useState("");
   const sq = useAsync(() => api.listStyles(), []);
   // In the Mac app Google refuses to sign in, so the app logs in through the browser (api.startBrowserLogin).
-  const inApp = !!api.desktopApp(); const [waiting, setWaiting] = useState(false);
-  const browserLogin = async () => { setErr(null); try { await api.startBrowserLogin(); setWaiting(true); } catch (e) { setErr(e.message); } };
+  // Its answer shows right under the button: waiting (with the link to copy if no browser opened), too old an app, or an error.
+  const inApp = !!api.desktopApp(); const [bl, setBl] = useState(null); const toast = useToast();
+  const browserLogin = async () => { setErr(null); setBl(null); try { setBl({ link: (await api.startBrowserLogin()).link }); } catch (e) { setBl(e.code === "desktop-old" ? { old: true } : { error: e.message }); } };
   useEffect(() => { const k = (e) => e.key === "Escape" && onClose?.(); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
   useEffect(() => { const t = setInterval(() => setSlide((i) => (i + 1) % SHOWCASE.length), 4000); return () => clearInterval(t); }, []);
   // Reset is two steps with Clerk: the emailed code, then the code with a new password (which also logs you in).
@@ -46,7 +47,9 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
         ${mode !== "reset" && html`
           ${mode === "signup" && html`<div class="hpromo"><${Icon} name="spark" size="16" /> Sign up with work email and get 3 free renders</div>`}
           ${inApp ? html`<${Btn} kind="secondary" type="button" icon="globe" id="browser-login" disabled=${busy} onClick=${browserLogin}>Log in with your browser<//>
-            ${waiting && html`<p class="t-small muted" id="browser-login-wait" style="text-align:center;margin:-2px 0 0">Click <b>Allow</b> in your browser. Rendrr logs in here by itself.</p>`}`
+            ${bl?.link && html`<p class="bl-note" id="browser-login-wait">Click <b>Allow</b> in your browser. Rendrr logs in here by itself.<br />Browser did not open? <a href="#" id="browser-login-copy" onClick=${(e) => { e.preventDefault(); copyText(bl.link, toast); }}>Copy the link</a> and paste it into your browser.</p>`}
+            ${bl?.old && html`<p class="bl-note bad" role="alert" id="browser-login-old">This Rendrr app is too old to log in with your browser. <a href="https://github.com/Fazinflo28/rendrr/releases/latest" target="_blank" rel="noopener noreferrer">Download the new app</a>, drag it into Applications and choose Replace. Or log in with email below.</p>`}
+            ${bl?.error && html`<p class="bl-note bad" role="alert" id="browser-login-error">${bl.error}</p>`}`
             : social("Continue with Google", "google")}
           <div class="or">or</div>`}
         ${mode === "signup" && html`<${Field} label="Name" id="name"><input id="name" class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Ronnii K" /><//>`}

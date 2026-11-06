@@ -34,6 +34,18 @@ await plain.goto(base + "/login"); await plain.locator("#email").waitFor();
 check(await plain.locator("#google").count() === 1 && await plain.locator("#browser-login").count() === 0, "in a browser the login offers Google, as before");
 await plain.close();
 
+// ---- In the first Mac app (0.1.1, no openInBrowser): it says so right under the button ----
+const oldApp = await ctx.newPage(); watch(oldApp);
+await oldApp.addInitScript(() => { window.rendrrDesktop = Object.freeze({ app: "mac", platform: "darwin", version: "0.1.1" }); });
+await oldApp.goto(base + "/login"); await oldApp.locator("#email").waitFor();
+await oldApp.locator("#browser-login").click();
+const oldNote = oldApp.locator("#browser-login-old");
+check(await until(oldApp, () => oldNote.isVisible()), "an app too old to open the browser says so");
+const nb = await oldNote.boundingBox(), bb = await oldApp.locator("#browser-login").boundingBox();
+check(nb && bb && nb.y > bb.y && nb.y - (bb.y + bb.height) < 40, "right under the button, where it is seen");
+check(/releases\/latest/.test(await oldNote.locator("a").getAttribute("href")), "with a link to the new app");
+await oldApp.close();
+
 // ---- In the Mac app: the browser instead of Google ----
 const app = await ctx.newPage(); watch(app);
 await app.addInitScript(() => { window.rendrrDesktop = Object.freeze({ app: "mac", platform: "darwin", version: "0.1.2", openInBrowser: (u) => window.__openInBrowser(u) }); });
@@ -44,6 +56,7 @@ check(await until(app, async () => opened.length === 1), "Log in with your brows
 const url = new URL(opened[0] || base);
 check(url.pathname === "/desktop-login" && /^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get("c") || ""), `on the Allow page with a challenge (${url.pathname})`);
 check(await app.locator("#browser-login-wait").isVisible(), "the app says to click Allow in the browser");
+check(await app.locator("#browser-login-copy").isVisible(), "and offers the link to copy if no browser opened");
 const verifier = await app.evaluate(() => JSON.parse(localStorage.getItem("rendrr:desktop-login")).v);
 check(/^[A-Za-z0-9_-]{43}$/.test(verifier) && (await app.evaluate((v) => globalThis.__desktopLogin.s256(v), verifier)) === url.searchParams.get("c"), "the challenge is the S256 of the app's secret, which stays in the app");
 check(await app.evaluate(() => globalThis.__desktopLogin.s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")) === "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "S256 in the page matches RFC 7636 (and the API)");
