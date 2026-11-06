@@ -26,7 +26,7 @@ for (const [w, h, tag] of [[1440, 1000, "desktop"], [390, 844, "phone"]]) {
   await page.evaluate(() => globalThis.__rendrrNav.go("/projects/f2")); await page.waitForTimeout(800);
   await page.locator("#new-edit").click(); await page.waitForTimeout(400);
   const modal = page.locator(".modal").first();
-  check((await modal.innerText()).includes("Tick one video"), `${tag}: from footage by default`);
+  check(await modal.locator("#np-videos").count() > 0 && !(await modal.locator("#np-scratch-note").count()), `${tag}: from footage by default`);
   await modal.getByRole("tab", { name: "From scratch" }).click(); await page.waitForTimeout(300);
   check(!(await modal.innerText()).includes("Tick one video"), `${tag}: from scratch hides the footage list`);
   check(await page.locator("input#np-seconds").count() === 1 && await page.locator("input#np-color").count() === 1 && await modal.getByRole("tab", { name: "4:5" }).count() === 1, `${tag}: length, shape and colour`);
