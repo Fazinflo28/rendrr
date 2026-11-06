@@ -19,6 +19,9 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(null); const [sent, setSent] = useState(false); const [slide, setSlide] = useState(0);
   const [code, setCode] = useState(""); const [newPw, setNewPw] = useState("");
   const sq = useAsync(() => api.listStyles(), []);
+  // In the Mac app Google refuses to sign in, so the app logs in through the browser (api.startBrowserLogin).
+  const inApp = !!api.desktopApp(); const [waiting, setWaiting] = useState(false);
+  const browserLogin = async () => { setErr(null); try { await api.startBrowserLogin(); setWaiting(true); } catch (e) { setErr(e.message); } };
   useEffect(() => { const k = (e) => e.key === "Escape" && onClose?.(); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
   useEffect(() => { const t = setInterval(() => setSlide((i) => (i + 1) % SHOWCASE.length), 4000); return () => clearInterval(t); }, []);
   // Reset is two steps with Clerk: the emailed code, then the code with a new password (which also logs you in).
@@ -42,7 +45,9 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
         <p class="muted" style="text-align:center;margin-bottom:6px">${mode === "login" ? html`Log in and keep editing. New here? <a href="#" onClick=${(e) => { e.preventDefault(); setMode("signup"); setErr(null); }}>Sign up</a>.` : mode === "signup" ? html`Sign up and edit for free. <a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); }}>Back to log in</a>` : html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); setSent(false); }}>Back to log in</a>`}</p>
         ${mode !== "reset" && html`
           ${mode === "signup" && html`<div class="hpromo"><${Icon} name="spark" size="16" /> Sign up with work email and get 3 free renders</div>`}
-          ${social("Continue with Google", "google")}
+          ${inApp ? html`<${Btn} kind="secondary" type="button" icon="globe" id="browser-login" disabled=${busy} onClick=${browserLogin}>Log in with your browser<//>
+            ${waiting && html`<p class="t-small muted" id="browser-login-wait" style="text-align:center;margin:-2px 0 0">Click <b>Allow</b> in your browser. Rendrr logs in here by itself.</p>`}`
+            : social("Continue with Google", "google")}
           <div class="or">or</div>`}
         ${mode === "signup" && html`<${Field} label="Name" id="name"><input id="name" class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Ronnii K" /><//>`}
         <${Field} label="Work email" id="email"><input id="email" class="input" type="email" value=${email} onInput=${(e) => setEmail(e.target.value)} placeholder="name@company.com" autocomplete="email" /><//>

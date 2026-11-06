@@ -8,8 +8,12 @@ What the app adds:
   Cmd+1 Projects, Cmd+2 Library, Cmd+, Settings, Cmd+[ / Cmd+] back and forward).
 - No title bar: the window buttons sit in Rendrr's top bar (the web app adds room for them when `html.desktop` is set).
 - Finals and other files save straight to ~/Downloads, with progress on the Dock icon.
-- Google sign-in and Google Drive connect stay in the app; links to other sites open in the default browser
-  (rules in `links.js`, tested by `npm test`).
+- Login through the browser: Google refuses to sign in inside apps, so "Log in with your browser" opens Rendrr in the
+  default browser, where the person (already logged in there) clicks Allow; the browser hands a one-time grant back
+  through `rendrr://auth?grant=…` and the app trades it, with a secret only it holds, for a login
+  (web: `src/rendrr/desktopLogin.ts`, `/desktop-login`; API: `services/desktopLogin.ts`). Google Drive consent opens in
+  the browser too, and the app sees the connection appear.
+- Links to other sites open in the default browser (rules in `links.js`, tested by `npm test`).
 - Uploads keep full speed while the window is hidden.
 - A calm offline page that reconnects by itself.
 

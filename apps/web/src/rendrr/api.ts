@@ -5,6 +5,7 @@ import { filesFromDrop, folderOfFile, localJobs } from "./local";
 import { filesToAdd } from "./localPick";
 import { notOriginalMessage, sameOriginal } from "@rendrr/shared";
 import { BASE, DEV, NETWORK_MSG, clerk, del, demo, emptyIf, enc, fail, get, patch, post, readEvents, req, wait } from "./http";
+import { desktopApp, forgetVerifier, newChallenge, savedVerifier } from "./desktopLogin";
 
 const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts", "Reading the frames"];
 const DRIVE_STEPS = ["Linking", "Making preview", ...PROC_STEPS];
@@ -114,6 +115,24 @@ export const api: any = {
     const { ticket } = await post("/auth/signup", { name, email, password }, { auth: false });
     return finishSignIn(ticket);
   },
+  // Inside the Mac app: null in a browser. openInBrowser is there from app 0.1.2 on.
+  desktopApp,
+  startBrowserLogin: async () => {
+    const d = desktopApp();
+    if (!d?.openInBrowser) throw fail("Download the latest Rendrr app to log in with your browser, or log in with email.", "desktop-old");
+    let challenge = "";
+    try { challenge = await newChallenge(); } catch { throw fail("We could not start the login. Try again.", "desktop-login"); }
+    d.openInBrowser(window.location.origin + "/desktop-login?c=" + challenge);
+    return { challenge };
+  },
+  approveDesktopLogin: (challenge: string) => post("/auth/desktop/approve", { challenge }),
+  finishDesktopLogin: async (grant: string) => {
+    const verifier = savedVerifier();
+    if (!verifier) throw fail("This login was started too long ago or in another app. Click 'Log in with your browser' again.", "desktop-login");
+    const { ticket } = await post("/auth/desktop/redeem", { grant, verifier }, { auth: false });
+    forgetVerifier();
+    return finishSignIn(ticket);
+  },
   loginWithGoogle: async () => {
     const c = await clerk();
     try {
@@ -186,6 +205,21 @@ export const api: any = {
     // Real Google consent in a popup; the API's callback page tells us when it is done.
     // The popup hands the Google code back here and we finish with our own login (see /drive/complete).
     // Without a popup the whole tab goes to Google and comes back to /drive-done, which finishes it.
+    // In the Mac app Google consent happens in the browser (Google refuses app windows); /drive-done there finishes
+    // it with the browser's login, and this window sees the connection appear.
+    const d = desktopApp();
+    if (d?.openInBrowser) {
+      const before = JSON.stringify(await api.getDriveStatus().catch(() => null));
+      d.openInBrowser(r.authUrl);
+      for (const end = Date.now() + 5 * 60_000; Date.now() < end; ) {
+        await wait(2500);
+        const s = await api.getDriveStatus().catch(() => null);
+        if (s?.connected && JSON.stringify(s) !== before) return s;
+      }
+      const s = await api.getDriveStatus();
+      if (!s.connected) throw fail("Google Drive was not connected. Finish in your browser, then try again.", "drive");
+      return s;
+    }
     const w = window.open(r.authUrl, "rendrr-drive", "width=520,height=680");
     if (!w) { window.location.href = r.authUrl; return new Promise(() => {}); }
     const apiOrigin = new URL(BASE).origin;

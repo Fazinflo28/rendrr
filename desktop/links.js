@@ -70,4 +70,15 @@ function fitBounds(saved, displays) {
   return onScreen ? { x, y, width, height } : { width, height };
 }
 
-module.exports = { START_URL, APP_HOSTS, AUTH_HOSTS, isDownload, linkKind, cleanUserAgent, uniquePath, fitBounds };
+// The browser hands a login back with rendrr://auth?grant=<32 characters> (web app /desktop-login). Anything else: null.
+function authGrant(url) {
+  const u = parse(url);
+  if (!u || u.protocol !== "rendrr:" || u.hostname !== "auth") return null;
+  const g = u.searchParams.get("grant") || "";
+  return /^[A-Za-z0-9_-]{32}$/.test(g) ? g : null;
+}
+
+// What the web app may open in the default browser: Rendrr pages (the login Allow page) and sign-in pages (Drive).
+const browserMayOpen = (url) => ["app", "auth"].includes(linkKind(url));
+
+module.exports = { START_URL, APP_HOSTS, AUTH_HOSTS, isDownload, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen };

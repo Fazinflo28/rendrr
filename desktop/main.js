@@ -1,11 +1,11 @@
 // Rendrr for Mac. A native window on the Rendrr web app (app.rendrr.live): the editor is the web app itself, so every
 // UI change on the site shows up here on the next launch or reload, with no new download.
-// The app adds: a Dock icon, Mac menus and shortcuts, files saved straight to Downloads, sign-in that stays in the
-// window, links to other sites in the default browser, an offline page, and full speed while the window is hidden.
-const { app, BrowserWindow, Menu, Notification, screen, session, shell } = require("electron");
+// The app adds: a Dock icon, Mac menus and shortcuts, files saved straight to Downloads, login through the browser,
+// links to other sites in the default browser, an offline page, and full speed while the window is hidden.
+const { app, BrowserWindow, Menu, Notification, ipcMain, screen, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds } = require("./links");
+const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen } = require("./links");
 
 const DARK = "#0b0c0e";
 const SMOKE_OUT = process.env.RENDRR_SMOKE_OUT; // set by the build check on GitHub: load the app, report, quit
@@ -15,6 +15,26 @@ app.setName("Rendrr");
 app.userAgentFallback = cleanUserAgent(app.userAgentFallback);
 
 if (!SMOKE_OUT && !app.requestSingleInstanceLock()) app.quit();
+
+// ---- Log in through the browser: the Allow page hands the login back with rendrr://auth?grant=… ----
+app.setAsDefaultProtocolClient("rendrr");
+let pendingLink = null; // a link that opened the app before it was ready
+function openAuthLink(url) {
+  const grant = authGrant(url);
+  if (!grant) return;
+  const target = new URL("/desktop-login?grant=" + encodeURIComponent(grant), START_URL).toString();
+  if (!app.isReady()) { pendingLink = target; return; }
+  const w = BrowserWindow.getAllWindows().find((x) => !x.isDestroyed() && linkKind(x.webContents.getURL()) !== "auth");
+  if (!w) { createWindow(target); return; }
+  if (w.isMinimized()) w.restore();
+  w.webContents.loadURL(target);
+  w.show(); w.focus(); app.focus({ steal: true });
+}
+app.on("open-url", (e, url) => { e.preventDefault(); openAuthLink(url); });
+ipcMain.on("rendrr:open-browser", (e, url) => {
+  // Only Rendrr's own pages may ask, and only for Rendrr or sign-in pages.
+  if (linkKind(e.senderFrame?.url || "") === "app" && browserMayOpen(url)) shell.openExternal(url);
+});
 
 // ---- Windows ----
 const boundsFile = () => path.join(app.getPath("userData"), "window.json");
@@ -202,7 +222,8 @@ app.whenReady().then(() => {
   watchDownloads(session.defaultSession);
   session.defaultSession.setPermissionRequestHandler((wc, _perm, done, details) => done(allowFor(details.requestingUrl || wc.getURL())));
   session.defaultSession.setPermissionCheckHandler((wc, _perm, origin) => allowFor(origin || wc?.getURL()));
-  const win = createWindow();
+  const win = createWindow(pendingLink || START_URL);
+  pendingLink = null;
   if (SMOKE_OUT) smokeTest(win);
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

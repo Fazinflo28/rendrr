@@ -23,6 +23,7 @@
     "directories": { "output": "dist", "buildResources": "build" },
     "files": ["main.js", "preload.js", "links.js", "offline.html", "package.json"],
     "artifactName": "Rendrr-${version}-${arch}.${ext}",
+    "protocols": [{ "name": "Rendrr", "schemes": ["rendrr"] }],
     "mac": {
       "category": "public.app-category.video",
       "icon": "build/icon.png",

@@ -4,6 +4,7 @@ import { fmtShortDate, LoginInput, LogoInput, PlanInput, PLANS, PREFIX, ProfileP
 import type { FastifyInstance } from "fastify";
 import { authenticate, clerk, forgetUser } from "../auth";
 import { userOut } from "../serialize";
+import { approveDesktopLogin, redeemDesktopLogin } from "../services/desktopLogin";
 import { createLinkCode, listLogins, unlinkLogin } from "../services/logins";
 
 const TOOLS: [string, string][] = [
@@ -60,6 +61,12 @@ export default async function account(app: FastifyInstance) {
       }
       const t = await clerk().signInTokens.createSignInToken({ userId: u.id, expiresInSeconds: 120 });
       return { ticket: t.token };
+    });
+    // The Mac app logs in through the browser (services/desktopLogin.ts): it trades the grant the browser approved,
+    // with its own secret, for a one-time sign-in ticket.
+    pub.post("/auth/desktop/redeem", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req) => {
+      const { grant, verifier } = (req.body || {}) as { grant?: unknown; verifier?: unknown };
+      return redeemDesktopLogin(grant, verifier, async (userId) => (await clerk().signInTokens.createSignInToken({ userId, expiresInSeconds: 120 })).token);
     });
   });
 
@@ -187,6 +194,11 @@ export default async function account(app: FastifyInstance) {
     // ---------------- logins (several logins, one account) ----------------
     a.get("/account/logins", async (req) => ({ logins: await listLogins(req.user!.id), current: req.loginId }));
     a.post("/account/link-code", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req) => createLinkCode(req.user!.id));
+    // In the browser, logged in: "Allow" logs the Mac app in to this same login (see /auth/desktop/redeem).
+    a.post("/auth/desktop/approve", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req) => {
+      if (!req.loginId || req.ai) throw new AppError("Log in to Rendrr in your browser first.", 401, "desktop-login");
+      return approveDesktopLogin(req.loginId, ((req.body || {}) as { challenge?: unknown }).challenge);
+    });
     a.delete("/account/logins/:clerkId", async (req) => {
       await unlinkLogin(req.user!.id, (req.params as { clerkId: string }).clerkId);
       return { logins: await listLogins(req.user!.id), current: req.loginId };

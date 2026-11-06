@@ -1112,3 +1112,14 @@ From before:
   it loads Rendrr, then publishes a Release `mac-v0.1.<build>`. Signed ad hoc (no Apple Developer account yet).
 - Not yet: rendering on the Mac. Exports still render on the servers. That is the next part (a job API the app can
   pull renders from, plus FFmpeg in the app).
+
+### Mac app login through the browser
+
+- Google blocks sign-in inside apps ("This browser or app may not be secure"). In the Mac app the login shows
+  "Log in with your browser" instead of Google: it opens app.rendrr.live/desktop-login?c=<challenge> in the default
+  browser; there, logged in, Allow makes a 5-minute one-time grant (API POST /auth/desktop/approve) and hands it back
+  with rendrr://auth?grant=…; the app opens /desktop-login?grant=… and trades grant + its secret (PKCE S256) for a Clerk
+  sign-in ticket (POST /auth/desktop/redeem). A link someone else made is useless to them: the grant goes to the
+  approver's own Mac and needs the secret that made the challenge.
+- Drive connect in the app opens Google's consent in the browser; /drive-done there finishes it, the app polls status.
+- Tests: apps/api/test/desktop-login.test.ts (5), apps/web/demo/desktop-login.mjs (18 checks), desktop npm test (11).

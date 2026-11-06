@@ -5,7 +5,9 @@
 //   /editor/:id  /review/:token  /connect  /usage  /billing  /settings
 //   Login is a modal over Explore (Higgsfield-style): browse free, act after logging in. /login opens that modal.
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, useNav } from "./ui";
+import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, useNav, useApp } from "./ui";
+import { Mark } from "./logo";
+import { appLink, isChallenge } from "./desktopLogin";
 import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, UsagePage, BillingPage, SettingsPage, Shell } from "./screens";
 import { EditorPage } from "./editor";
 import { api } from "./api";
@@ -25,6 +27,7 @@ const ROUTES = [
   [/^\/settings$/, () => html`<${SettingsPage} />`],
   [/^\/sso-callback$/, () => null, { bare: true }], // Clerk finishes Google sign-in here (src/app/sso-callback)
   [/^\/drive-done$/, () => html`<${DriveDone} />`, { bare: true }],
+  [/^\/desktop-login$/, () => html`<${DesktopLogin} />`, { bare: true }],
 ];
 
 // Any other address: say so instead of quietly showing Explore.
@@ -33,6 +36,47 @@ function NotFound() {
   return html`<div class="page"><${EmptyState} icon="search" title="That page does not exist" text="The link may be old or mistyped." action=${html`<${Btn} onClick=${() => go("/explore")}>Go to Explore<//>`} /></div>`;
 }
 const NOT_FOUND = [/^/, () => html`<${NotFound} />`, { pub: true }];
+
+// Log the Mac app in through the browser (api.startBrowserLogin). Two halves on one page:
+//  ?c=<challenge>  in the browser: the logged-in person allows it, and the page hands a grant to the app (rendrr://).
+//  ?grant=<grant>  in the app (it opens this page with the grant): trade it for a login, then go to Projects.
+function DesktopLogin() {
+  const { user, setUser, auth, openLogin } = useApp(); const { go } = useNav();
+  const q = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const c = q.get("c") || "", grant = q.get("grant") || "";
+  const [state, setState] = useState(grant ? "finishing" : "ask"); // ask | allowing | done | cancelled | error | finishing
+  const [msg, setMsg] = useState(""); const [openLink, setOpenLink] = useState("");
+  useEffect(() => {
+    if (!grant) return;
+    (async () => {
+      try { const u = await api.finishDesktopLogin(grant); setUser(u); go("/projects"); }
+      catch (e) { setState("error"); setMsg(e.message); }
+    })();
+  }, []);
+  const allow = async () => {
+    setState("allowing");
+    try {
+      const r = await api.approveDesktopLogin(c);
+      const link = appLink(r.grant);
+      setOpenLink(link); setState("done");
+      window.location.href = link;
+    } catch (e) { setState("error"); setMsg(e.message); }
+  };
+  const card = (body) => html`<div class="dl-wrap"><div class="dl-card" id="desktop-login"><${Mark} size=${44} />${body}</div></div>`;
+  if (grant) return card(state === "error"
+    ? html`<h1>Not logged in</h1><p>${msg}</p><div class="dl-row"><${Btn} id="dl-again" onClick=${() => go("/login")}>Try again<//></div>`
+    : html`<h1>Logging you in…</h1><p>One moment.</p>`);
+  if (!isChallenge(c)) return card(html`<h1>This link is not right</h1><p>Open the Rendrr app and click <b>Log in with your browser</b> again.</p>`);
+  if (!user) return card(auth === "checking" ? html`<h1>One moment…</h1>`
+    : html`<h1>Log in to the Rendrr app</h1><p>First log in to Rendrr in this browser. Then you can allow the app.</p><div class="dl-row"><${Btn} id="dl-login" onClick=${() => openLogin()}>Log in<//></div>`);
+  if (state === "done") return card(html`<h1>You're logged in</h1><p>Go back to the Rendrr app. If it did not open, click below.</p><div class="dl-row"><a class="btn" id="dl-open" href=${openLink}>Open Rendrr<//></div><p class="dl-note">You can close this tab.</p>`);
+  if (state === "cancelled") return card(html`<h1>Cancelled</h1><p>The app was not logged in. You can close this tab.</p>`);
+  if (state === "error") return card(html`<h1>That did not work</h1><p>${msg}</p><p class="dl-note">Open the Rendrr app and click <b>Log in with your browser</b> again.</p>`);
+  return card(html`<h1>Log in to the Rendrr app?</h1>
+    <p>You are logged in as <b>${user.email || user.name}</b>. Allow the Rendrr app on this Mac to log in to the same account.</p>
+    <div class="dl-row"><${Btn} id="dl-allow" disabled=${state === "allowing"} onClick=${allow}>${state === "allowing" ? "One moment…" : "Allow"}<//><${Btn} kind="secondary" id="dl-cancel" onClick=${() => setState("cancelled")}>Cancel<//></div>
+    <p class="dl-note">Only click Allow if you just clicked <b>Log in with your browser</b> in the Rendrr app.</p>`);
+}
 
 // Google Drive consent without a popup comes back here; finish it with this browser's own login.
 function DriveDone() {
@@ -145,7 +189,7 @@ function App() {
   useEffect(() => { if (pathname === "/login" && auth === "out") setLogin({ after: null, mode: "login" }); }, [pathname, auth]);
   const requireUser = useCallback((fn) => { if (user) fn(); else setLogin({ after: () => setTimeout(fn, 0), mode: "login" }); }, [user]);
   const page = guarded ? (auth === "checking" ? null : html`<${HomePage} />`) : match[1](m);
-  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addFromDrive, importDriveFolder, importDriveFolders, theme, setTheme, addOpen, openAdd: (kind, folder) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage", folder: folder && folder.id ? folder : null })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser };
+  const ctx = { user, setUser, usage, refreshUsage, uploads, startUpload, addFromDrive, importDriveFolder, importDriveFolders, theme, setTheme, addOpen, openAdd: (kind, folder) => requireUser(() => setAddOpen({ kind: typeof kind === "string" ? kind : "footage", folder: folder && folder.id ? folder : null })), closeAdd: () => setAddOpen(false), openLogin, closeLogin, requireUser, auth };
   // Closing the login on a private page goes back to Explore.
   const onCloseLogin = () => { const leave = login?.leave; setLogin(null); if (leave || pathname === "/login") go("/explore"); };
   return html`<${NavCtx.Provider} value=${{ route, go }}><${AppCtx.Provider} value=${ctx}>

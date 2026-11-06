@@ -2,7 +2,7 @@
 //   npm test   (from desktop/)
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { linkKind, isDownload, cleanUserAgent, uniquePath, fitBounds } = require("../links");
+const { linkKind, isDownload, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen } = require("../links");
 
 test("Rendrr pages stay in the app", () => {
   for (const u of ["https://app.rendrr.live/projects", "https://app.rendrr.live/editor/p1?x=1", "https://api.rendrr.live/drive/callback?code=1", "https://api-production-2428.up.railway.app/drive/callback", "https://clerk.rendrr.live/v1/oauth_callback", "http://localhost:3000/login"])
@@ -60,4 +60,18 @@ test("the window opens where it was, unless that screen is gone", () => {
   assert.deepEqual(fitBounds({ x: 2600, y: 60, width: 1200, height: 800 }, screens), { width: 1200, height: 800 });
   assert.equal(fitBounds(null, screens), null);
   assert.equal(fitBounds({ width: 0, height: 10 }, screens), null);
+});
+
+test("the browser hands the login back only with a well-formed rendrr://auth link", () => {
+  const g = "AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+  assert.equal(authGrant("rendrr://auth?grant=" + g), g);
+  assert.equal(authGrant("rendrr://auth/?grant=" + g), g);
+  for (const u of ["rendrr://auth?grant=short", "rendrr://other?grant=" + g, "https://auth?grant=" + g, "rendrr://auth?grant=" + g + "x", "rendrr://auth?grant=" + g.slice(0, 31) + "/", "rendrr://auth", "nonsense", ""])
+    assert.equal(authGrant(u), null, u);
+});
+
+test("the web app may open only Rendrr and sign-in pages in the browser", () => {
+  assert.equal(browserMayOpen("https://app.rendrr.live/desktop-login?c=abc"), true);
+  assert.equal(browserMayOpen("https://accounts.google.com/o/oauth2/v2/auth?client_id=x"), true);
+  for (const u of ["https://evil.example.com/", "file:///etc/hosts", "javascript:alert(1)", "rendrr://auth?grant=x", "smb://server/share"]) assert.equal(browserMayOpen(u), false, u);
 });

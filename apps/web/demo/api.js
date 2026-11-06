@@ -3,6 +3,7 @@
 import { api } from "rendrr-fake-api";
 import { breakdownAsText, buildBreakdown } from "../../../packages/shared/src/breakdown.ts";
 import { notOriginalMessage, sameOriginal } from "../../../packages/shared/src/original.ts";
+import { desktopApp, forgetVerifier, newChallenge, s256, savedVerifier } from "../src/rendrr/desktopLogin.ts";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const playable = {}; // videoId -> blob URL of the file picked in this tab, so the editor can play it
@@ -62,7 +63,38 @@ const logout = api.logout;
 let signedIn = false;
 const track = (fn) => async (...a) => { const r = await fn(...a); signedIn = true; return r; };
 
+// Mac app login through the browser. The fake server's grants live in localStorage, so the "browser" tab and the
+// "app" tab of a test share them, like the real API's Redis.
+const demoGrants = () => { try { return JSON.parse(localStorage.getItem("demo:desktop-grants") || "{}"); } catch { return {}; } };
+const keepGrants = (g) => localStorage.setItem("demo:desktop-grants", JSON.stringify(g));
+const friendly = (msg) => Object.assign(new Error(msg), { friendly: true });
+globalThis.__desktopLogin = { s256, approve: (c) => api.approveDesktopLogin(c) };
+
 Object.assign(api, {
+  desktopApp,
+  startBrowserLogin: async () => {
+    const d = desktopApp();
+    if (!d?.openInBrowser) throw friendly("Download the latest Rendrr app to log in with your browser, or log in with email.");
+    const challenge = await newChallenge();
+    d.openInBrowser(window.location.origin + "/desktop-login?c=" + challenge);
+    return { challenge };
+  },
+  approveDesktopLogin: async (challenge) => {
+    await wait(150);
+    if (!signedIn) throw friendly("Log in to Rendrr in your browser first.");
+    const grant = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[b % 64]).join("");
+    keepGrants({ ...demoGrants(), [grant]: challenge });
+    return { grant, expiresInMinutes: 5 };
+  },
+  finishDesktopLogin: async (grant) => {
+    await wait(150);
+    const v = savedVerifier();
+    if (!v) throw friendly("This login was started too long ago or in another app. Click 'Log in with your browser' again.");
+    const g = demoGrants(); const c = g[grant]; delete g[grant]; keepGrants(g);
+    if (!c || (await s256(v)) !== c) throw friendly("This login has expired or was already used. Start again from the Rendrr app.");
+    forgetVerifier();
+    return track(api.login)("you@example.com", "x");
+  },
   login: track(api.login), signup: track(api.signup), loginWithGoogle: track(api.loginWithGoogle),
   logout: async () => { signedIn = false; return logout(); },
   hasSession: async () => signedIn,

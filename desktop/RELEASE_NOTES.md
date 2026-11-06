@@ -9,6 +9,8 @@ Rendrr for Mac. The app opens the Rendrr editor in its own window, so every Rend
 2. Open Rendrr from Applications. The first time, macOS says it cannot check the app (it is not from the App Store yet). Click **Done**.
 3. Open **System Settings > Privacy & Security**, scroll down, click **Open Anyway** next to Rendrr, then **Open**. You only do this once.
    (Or in Terminal: `xattr -cr /Applications/Rendrr.app`, then open it.)
-4. Log in as usual.
+4. Click **Log in with your browser**. Your browser opens Rendrr (log in there if you are not already) and asks to allow the app: click **Allow**, then **Open Rendrr** if your browser asks. The app logs in by itself.
+
+Updating from an older Rendrr app: drag the new one into Applications and choose Replace.
 
 Finals you save go straight to your Downloads folder. Links to other sites open in your browser.
