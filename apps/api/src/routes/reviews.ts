@@ -212,7 +212,8 @@ export default async function reviews(app: FastifyInstance) {
     a.addHook("preHandler", authenticate);
 
     a.get("/reviews", async (req) => {
-      const rs = await prisma.review.findMany({ where: { userId: req.user!.id }, include: { comments: true }, orderBy: { createdAt: "desc" } });
+      // The newest 200 share links (each is signed and counted below; an old account's full history is not needed here).
+      const rs = await prisma.review.findMany({ where: { userId: req.user!.id }, include: { comments: true }, orderBy: { createdAt: "desc" }, take: 200 });
       return Promise.all(rs.map(async (r) => reviewOut(r, await reviewContext(r))));
     });
     a.post("/reviews", async (req) => createReviewLink(req.user!.id, req.body));

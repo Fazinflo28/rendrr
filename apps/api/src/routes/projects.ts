@@ -11,7 +11,7 @@ import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
 import { projectChat } from "../services/aiChat";
 import { editorMarks } from "../services/marks";
-import { createFolder, createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference } from "../services/projects";
+import { createFolder, createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference, stylesById } from "../services/projects";
 import { addNote, deleteComment, editNote } from "../services/commentMedia";
 
 /** A picture of each edit for its card: a frame of its latest render (the edit as it looks), else its footage's
@@ -54,7 +54,7 @@ export default async function projects(app: FastifyInstance) {
     const f = await prisma.folder.findUnique({ where: { id: (req.params as { id: string }).id } });
     if (!f || f.userId !== userId) throw notFound("That project folder is gone.");
     const ps = await prisma.project.findMany({ where: { folderId: f.id, deletedAt: null }, orderBy: { updatedAt: "desc" } });
-    const styles = new Map((await prisma.style.findMany()).map((s) => [s.id, s]));
+    const styles = await stylesById(ps.map((p) => p.styleId));
     const reviews = await prisma.review.findMany({ where: { OR: [{ folderId: f.id }, { projectId: { in: ps.map((p) => p.id) } }] }, include: { comments: { select: { projectId: true } } }, orderBy: { createdAt: "desc" } });
     const thumbs = await editThumbs(ps);
     return {

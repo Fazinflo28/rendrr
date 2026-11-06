@@ -119,9 +119,15 @@ export async function createProject(userId: string, input: { videoId?: string; v
   return p;
 }
 
+/** The styles these ids name, by id (only those: never every user's styles). */
+export async function stylesById(ids: (string | null | undefined)[]) {
+  const want = [...new Set(ids.filter((x): x is string => !!x))];
+  return new Map((want.length ? await prisma.style.findMany({ where: { id: { in: want } } }) : []).map((s) => [s.id, s]));
+}
+
 export async function listProjects(userId: string) {
   const ps = await prisma.project.findMany({ where: { userId, deletedAt: null }, orderBy: { updatedAt: "desc" }, include: { video: true, folder: true } });
-  const styles = new Map((await prisma.style.findMany()).map((s) => [s.id, s]));
+  const styles = await stylesById(ps.map((p) => p.styleId));
   return Promise.all(ps.map(async (p) => ({ ...projectOut(p), style: p.styleId && styles.get(p.styleId) ? styleOut(styles.get(p.styleId)!) : undefined, video: await videoOut(p.video), folder: folderOut(p.folder) })));
 }
 
