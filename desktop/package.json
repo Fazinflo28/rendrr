@@ -1,0 +1,46 @@
+{
+  "name": "rendrr-desktop",
+  "productName": "Rendrr",
+  "version": "0.1.0",
+  "description": "Rendrr for Mac: edit videos with Claude.",
+  "main": "main.js",
+  "private": true,
+  "author": "Rendrr",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/links.test.js",
+    "dist:mac": "electron-builder --mac dmg --arm64 --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.9.3",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "live.rendrr.mac",
+    "productName": "Rendrr",
+    "copyright": "Rendrr",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "links.js", "offline.html", "package.json"],
+    "artifactName": "Rendrr-${version}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.video",
+      "icon": "build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "notarize": false,
+      "darkModeSupport": true,
+      "minimumSystemVersion": "12.0"
+    },
+    "dmg": {
+      "title": "Rendrr",
+      "iconSize": 112,
+      "window": { "width": 540, "height": 380 },
+      "contents": [
+        { "x": 140, "y": 180 },
+        { "x": 400, "y": 180, "type": "link", "path": "/Applications" }
+      ]
+    }
+  }
+}

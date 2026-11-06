@@ -1099,3 +1099,16 @@ From before:
 - Very heavily cut long edits (thousands of cuts on footage over 10 minutes) render slowly; normal edits (a few hundred cuts) are fine.
 - The original design has no button to delete footage or to remove a profile photo, so there is none.
 - A style found through the search box opens the Styles page, not that style.
+
+## Rendrr for Mac (v1) and the logo icons
+
+- Web app icons: the lime Rendrr mark on the dark square is the tab icon (icon.svg, favicon.ico), the Apple icon and
+  the home-screen icons (manifest.ts); the review page shows it too. Test: apps/web/demo/brand-desktop.mjs.
+- desktop/: an Electron app that opens app.rendrr.live in a window with no title bar (the web app makes room for the
+  window buttons when html.desktop is set), Mac menus and shortcuts, downloads straight to ~/Downloads, Google and
+  Drive sign-in inside the app, other links in the browser, an offline page, full speed when hidden. Link rules in
+  desktop/links.js, tested with `npm test` (9 tests).
+- .github/workflows/desktop-mac.yml builds Apple Silicon and Intel .dmg files on a GitHub Mac, opens the app and checks
+  it loads Rendrr, then publishes a Release `mac-v0.1.<build>`. Signed ad hoc (no Apple Developer account yet).
+- Not yet: rendering on the Mac. Exports still render on the servers. That is the next part (a job API the app can
+  pull renders from, plus FFmpeg in the app).

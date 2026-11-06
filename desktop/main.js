@@ -1,0 +1,211 @@
+// Rendrr for Mac. A native window on the Rendrr web app (app.rendrr.live): the editor is the web app itself, so every
+// UI change on the site shows up here on the next launch or reload, with no new download.
+// The app adds: a Dock icon, Mac menus and shortcuts, files saved straight to Downloads, sign-in that stays in the
+// window, links to other sites in the default browser, an offline page, and full speed while the window is hidden.
+const { app, BrowserWindow, Menu, Notification, screen, session, shell } = require("electron");
+const fs = require("node:fs");
+const path = require("node:path");
+const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds } = require("./links");
+
+const DARK = "#0b0c0e";
+const SMOKE_OUT = process.env.RENDRR_SMOKE_OUT; // set by the build check on GitHub: load the app, report, quit
+
+app.setName("Rendrr");
+// Google refuses to sign in apps whose user agent says "Electron"; to Google this is plain Chrome.
+app.userAgentFallback = cleanUserAgent(app.userAgentFallback);
+
+if (!SMOKE_OUT && !app.requestSingleInstanceLock()) app.quit();
+
+// ---- Windows ----
+const boundsFile = () => path.join(app.getPath("userData"), "window.json");
+const readBounds = () => { try { return JSON.parse(fs.readFileSync(boundsFile(), "utf8")); } catch { return null; } };
+function saveBounds(win) {
+  if (win.isDestroyed() || win.isFullScreen()) return;
+  try { fs.writeFileSync(boundsFile(), JSON.stringify({ ...win.getNormalBounds(), maximized: win.isMaximized() })); } catch { /* not important */ }
+}
+
+const appWindowOptions = (extra = {}) => ({
+  width: 1440, height: 900, minWidth: 1024, minHeight: 640,
+  title: "Rendrr",
+  titleBarStyle: "hiddenInset",
+  trafficLightPosition: { x: 18, y: 17 },
+  backgroundColor: DARK,
+  webPreferences: {
+    preload: path.join(__dirname, "preload.js"),
+    contextIsolation: true,
+    sandbox: true,
+    nodeIntegration: false,
+    spellcheck: true,
+    // Uploads and the browser-side proxy keep going at full speed while the window is hidden or minimised.
+    backgroundThrottling: false,
+    additionalArguments: ["--rendrr-version=" + app.getVersion()],
+  },
+  ...extra,
+});
+
+// Google and Drive sign-in popups: a small plain window that closes itself when done.
+const popupOptions = (parent) => ({
+  width: 520, height: 680, parent, modal: false, title: "Sign in", backgroundColor: "#ffffff",
+  webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
+});
+
+function createWindow(url = START_URL) {
+  const saved = readBounds();
+  const place = fitBounds(saved, screen.getAllDisplays().map((d) => d.workArea));
+  const win = new BrowserWindow(appWindowOptions({ ...(place || {}), show: false }));
+  if (saved?.maximized) win.maximize();
+  win.once("ready-to-show", () => win.show());
+  win.on("close", () => saveBounds(win));
+  watchAppWindow(win);
+  win.loadURL(url);
+  return win;
+}
+
+function watchAppWindow(win) {
+  const wc = win.webContents;
+  // The web app moves its top bar out of the way of the window buttons, except in full screen where they hide.
+  const sendFull = () => !wc.isDestroyed() && wc.send("rendrr:fullscreen", win.isFullScreen());
+  win.on("enter-full-screen", sendFull);
+  win.on("leave-full-screen", sendFull);
+  wc.on("did-finish-load", sendFull);
+  // No internet, or the site is down: a calm page that tries again by itself.
+  wc.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {
+    if (!isMainFrame || code === -3 || linkKind(url) !== "app") return; // -3: a newer navigation replaced it
+    wc.loadFile(path.join(__dirname, "offline.html"), { query: { u: url, why: desc || "" } });
+  });
+}
+
+const openOutside = (url) => { if (/^(https?|mailto|tel):/i.test(url)) shell.openExternal(url); };
+
+// Every page in the app (windows, popups) follows the same link rules (links.js).
+app.on("web-contents-created", (_e, wc) => {
+  wc.setWindowOpenHandler(({ url, frameName }) => {
+    const kind = linkKind(url);
+    if (kind === "file") { wc.downloadURL(url); return { action: "deny" }; }
+    const parent = BrowserWindow.fromWebContents(wc);
+    if (kind === "auth" || frameName === "rendrr-drive") return { action: "allow", overrideBrowserWindowOptions: popupOptions(parent) };
+    if (kind === "app") return { action: "allow", overrideBrowserWindowOptions: appWindowOptions() };
+    if (kind === "web") openOutside(url);
+    return { action: "deny" };
+  });
+  wc.on("did-create-window", (child, d) => { if (linkKind(d.url) === "app" && d.frameName !== "rendrr-drive") watchAppWindow(child); });
+  wc.on("will-navigate", (e, url) => {
+    const to = linkKind(url);
+    if (to === "file") { e.preventDefault(); wc.downloadURL(url); return; }
+    // Sign-in can pass through other sites (a company's own login page), so only a link clicked inside Rendrr
+    // itself leaves the app for the browser.
+    if (to === "web" && linkKind(wc.getURL()) === "app") { e.preventDefault(); openOutside(url); }
+  });
+  wc.on("context-menu", (_e, p) => {
+    const items = [];
+    if (p.isEditable) {
+      for (const s of (p.dictionarySuggestions || []).slice(0, 4)) items.push({ label: s, click: () => wc.replaceMisspelling(s) });
+      if (items.length) items.push({ type: "separator" });
+      items.push({ role: "undo" }, { role: "redo" }, { type: "separator" }, { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" });
+    } else if (p.selectionText && p.selectionText.trim()) items.push({ role: "copy" });
+    if (p.linkURL && /^https?:/.test(p.linkURL)) {
+      if (items.length) items.push({ type: "separator" });
+      items.push({ label: "Open Link in Browser", click: () => openOutside(p.linkURL) }, { label: "Copy Link", click: () => require("electron").clipboard.writeText(p.linkURL) });
+    }
+    if (p.mediaType === "image" && p.srcURL && /^https?:/.test(p.srcURL)) {
+      if (items.length) items.push({ type: "separator" });
+      items.push({ label: "Copy Image", click: () => wc.copyImageAt(p.x, p.y) }, { label: "Save Image to Downloads", click: () => wc.downloadURL(p.srcURL) });
+    }
+    if (items.length) Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(wc) || undefined });
+  });
+});
+
+// ---- Downloads: straight to ~/Downloads, progress on the Dock icon, a bounce on the Downloads stack when done ----
+const downloads = new Set();
+function showProgress() {
+  let got = 0, total = 0;
+  for (const d of downloads) { got += d.getReceivedBytes(); total += d.getTotalBytes(); }
+  const value = downloads.size ? (total > 0 ? got / total : 2) : -1; // 2 = still starting (no size yet)
+  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setProgressBar(value);
+}
+function notify(title, body, onClick) {
+  if (!Notification.isSupported()) return;
+  const n = new Notification({ title, body, silent: true });
+  if (onClick) n.on("click", onClick);
+  n.show();
+}
+function watchDownloads(ses) {
+  ses.on("will-download", (_e, item) => {
+    const target = uniquePath(app.getPath("downloads"), item.getFilename(), fs.existsSync, path.sep);
+    item.setSavePath(target);
+    downloads.add(item);
+    item.on("updated", showProgress);
+    item.once("done", (_d, state) => {
+      downloads.delete(item);
+      showProgress();
+      if (state === "completed") {
+        if (app.dock) app.dock.downloadFinished(target);
+        notify("Saved to Downloads", path.basename(target), () => shell.showItemInFolder(target));
+      } else if (state === "interrupted") notify("Download stopped", path.basename(target) + " did not finish. Try again.");
+    });
+  });
+}
+
+// Rendrr and sign-in pages may use the clipboard, notifications, full screen and files you pick; other sites may not.
+function allowFor(url) { const k = linkKind(url || ""); return k === "app" || k === "auth"; }
+
+// ---- Menus (the Edit menu is what makes Cmd+C / Cmd+V work in text boxes on a Mac) ----
+function focused() { return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null; }
+function go(p) {
+  const w = focused();
+  if (!w) return createWindow(new URL(p, START_URL).toString());
+  w.webContents.loadURL(new URL(p, START_URL).toString());
+}
+function buildMenu() {
+  const template = [
+    { label: "Rendrr", submenu: [{ role: "about" }, { type: "separator" }, { role: "services" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, { role: "quit" }] },
+    { label: "File", submenu: [
+      { label: "New Window", accelerator: "CmdOrCtrl+N", click: () => createWindow() },
+      { label: "Open in Browser", click: () => { const w = focused(); if (w) openOutside(w.webContents.getURL()); } },
+      { type: "separator" },
+      { role: "close" },
+    ] },
+    { role: "editMenu" },
+    { label: "View", submenu: [{ role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" }, { type: "separator" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }] },
+    { label: "Go", submenu: [
+      { label: "Back", accelerator: "CmdOrCtrl+[", click: () => { const h = focused()?.webContents.navigationHistory; if (h?.canGoBack()) h.goBack(); } },
+      { label: "Forward", accelerator: "CmdOrCtrl+]", click: () => { const h = focused()?.webContents.navigationHistory; if (h?.canGoForward()) h.goForward(); } },
+      { type: "separator" },
+      { label: "Projects", accelerator: "CmdOrCtrl+1", click: () => go("/projects") },
+      { label: "Library", accelerator: "CmdOrCtrl+2", click: () => go("/library") },
+      { label: "Settings", accelerator: "CmdOrCtrl+,", click: () => go("/settings") },
+    ] },
+    { role: "windowMenu" },
+    { role: "help", submenu: [{ label: "Rendrr Website", click: () => openOutside("https://rendrr.live") }] },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// ---- Build check on GitHub: open the real app, see that it loaded and knows it is in the Mac app, then quit ----
+function smokeTest(win) {
+  const finish = (result) => { try { fs.writeFileSync(SMOKE_OUT, JSON.stringify(result, null, 2)); } catch { /* ignore */ } app.exit(result.ok ? 0 : 1); };
+  const timer = setTimeout(() => finish({ ok: false, error: "timed out loading " + START_URL }), 90000);
+  win.webContents.once("did-finish-load", () => setTimeout(async () => {
+    clearTimeout(timer);
+    try {
+      const page = await win.webContents.executeJavaScript(`({ url: location.href, title: document.title,
+        desktopClass: document.documentElement.classList.contains("desktop"), bridge: window.rendrrDesktop || null,
+        ua: navigator.userAgent, icon: !!document.querySelector('link[rel~="icon"]') })`);
+      finish({ ok: linkKind(page.url) === "app" && page.desktopClass && !!page.bridge && !/Electron/.test(page.ua), version: app.getVersion(), ...page });
+    } catch (e) { finish({ ok: false, error: String(e) }); }
+  }, 4000));
+}
+
+app.whenReady().then(() => {
+  app.setAboutPanelOptions({ applicationName: "Rendrr", applicationVersion: app.getVersion(), copyright: "Edit videos with Claude." });
+  buildMenu();
+  watchDownloads(session.defaultSession);
+  session.defaultSession.setPermissionRequestHandler((wc, _perm, done, details) => done(allowFor(details.requestingUrl || wc.getURL())));
+  session.defaultSession.setPermissionCheckHandler((wc, _perm, origin) => allowFor(origin || wc?.getURL()));
+  const win = createWindow();
+  if (SMOKE_OUT) smokeTest(win);
+  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+app.on("second-instance", () => { const w = focused(); if (w) { if (w.isMinimized()) w.restore(); w.focus(); } });
+app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

@@ -1,0 +1,82 @@
+# Builds Rendrr for Mac (desktop/) on a Mac, checks it opens and loads Rendrr, and publishes the installers
+# (Apple Silicon and Intel .dmg) as a GitHub Release. Runs when desktop/ changes, or by hand.
+name: Mac app
+
+on:
+  push:
+    branches: [claude/rendrr-backend-mcp-1vbkgg, main]
+    paths: ["desktop/**", ".github/workflows/desktop-mac.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mac-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Test the link rules
+        run: npm test
+
+      - name: Set the version (0.1.<build number>)
+        run: npm version "0.1.${{ github.run_number }}" --no-git-tag-version
+
+      - name: Build the Apple Silicon and Intel apps
+        run: npx electron-builder --mac dmg --arm64 --x64 --publish never
+
+      - name: Check the apps
+        run: |
+          codesign --verify --deep --strict --verbose=2 dist/mac-arm64/Rendrr.app
+          codesign -dv dist/mac-arm64/Rendrr.app 2>&1 | grep -E "Identifier|Format|Signature"
+          echo "Apple Silicon: $(lipo -archs dist/mac-arm64/Rendrr.app/Contents/MacOS/Rendrr)"
+          echo "Intel: $(lipo -archs dist/mac/Rendrr.app/Contents/MacOS/Rendrr)"
+
+      - name: Open the app and load Rendrr
+        run: |
+          OUT="$RUNNER_TEMP/smoke.json"
+          ( sleep 150; pkill -f "Rendrr.app/Contents/MacOS/Rendrr" ) &
+          RENDRR_SMOKE_OUT="$OUT" dist/mac-arm64/Rendrr.app/Contents/MacOS/Rendrr || true
+          cat "$OUT"
+          node -e "const r = require(process.argv[1]); if (!r.ok) { console.error('The app did not load Rendrr properly'); process.exit(1); }" "$OUT"
+
+      - name: Name the installers
+        run: |
+          V=$(node -p "require('./package.json').version")
+          mkdir -p out
+          cp "dist/Rendrr-$V-arm64.dmg" out/Rendrr-Mac-AppleSilicon.dmg
+          cp "dist/Rendrr-$V-x64.dmg" out/Rendrr-Mac-Intel.dmg
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rendrr-Mac
+          path: desktop/out/*.dmg
+          retention-days: 30
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          V=$(node -p "require('./package.json').version")
+          gh release create "mac-v$V" out/Rendrr-Mac-AppleSilicon.dmg out/Rendrr-Mac-Intel.dmg \
+            --target "$GITHUB_SHA" --title "Rendrr for Mac $V" --notes-file RELEASE_NOTES.md --latest
