@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { probe, run, Stalled, stalled } from "../src/lib/ffmpeg";
-import { loopedMusic } from "../src/jobs/render";
+import { frozenAt, loopedMusic } from "../src/jobs/render";
 
 const node = (code: string) => ["-e", code];
 
@@ -57,6 +57,16 @@ describe("the freeze watch", () => {
       assert.ok(err.at > 0.5 && err.at <= 2.01, `it stood at the end of what it got (${err.at} s)`);
       assert.match(err.threads, /ffmpeg/i, "its threads: " + err.threads);
     } finally { writer.kill("SIGKILL"); }
+  });
+});
+
+describe("a frozen export says where it froze", () => {
+  it("names the time, and the sound or transparent pass when that is what froze", () => {
+    const pic = frozenAt(75.4);
+    assert.equal(pic.code, "ffmpeg-frozen");
+    assert.match(pic.message, /^The export froze at 1:15 and could not get past it\./);
+    assert.match(frozenAt(3, "sound").message, /^The export's sound froze at 0:03/);
+    assert.match(frozenAt(3, "transparent").message, /^The export's transparent pass froze at 0:03/);
   });
 });
 

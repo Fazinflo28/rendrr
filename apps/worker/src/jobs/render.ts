@@ -30,6 +30,10 @@ const FONTS_DIR = process.env.FONTS_DIR || fileURLToPath(new URL("../../../web/p
 
 /** How long FFmpeg may sit frozen (no progress, CPU idle) before it is stopped and that part made another way. */
 export const STALL_MS = Number(process.env.RENDER_STALL_MS || 60_000);
+/** The message for an export that froze at a moment and could not get past it (the picture, its sound, or the
+ *  white pass of a transparent file). */
+export const frozenAt = (at: number, what: "picture" | "sound" | "transparent" = "picture") =>
+  new JobError(`The export${what === "sound" ? "'s sound" : what === "transparent" ? "'s transparent pass" : ""} froze at ${fmtClock(at)} and could not get past it. Nothing was lost. Try again; if it freezes there again, tell us that time.`, "ffmpeg-frozen", true);
 
 /**
  * Music shorter than `need` seconds, made into a WAV of `need` seconds (plus a little) by looping it in a small pass
@@ -476,7 +480,17 @@ export async function renderJob(ctx: Ctx) {
       const soundPath = join(ctx.dir, "sound.wav"), soundGraph = join(ctx.dir, "graph-sound.txt");
       const sa = ffmpegArgs(plan, { ...files, output: soundPath }, sourceInfo, { threads: 2, inputThreads: cpus * 2, loudnessGainDb: mixLoudness?.gainDb, sound: "only" });
       await writeFile(soundGraph, sa.filterGraph);
-      await run("ffmpeg", sa.args.map((x) => (x === "__FILTER_SCRIPT__" ? soundGraph : x)), { signal, stallMs: STALL_MS, onProgress: () => {} });
+      const soundRun = (a: typeof sa) => run("ffmpeg", a.args.map((x) => (x === "__FILTER_SCRIPT__" ? soundGraph : x)), { signal, stallMs: STALL_MS, onProgress: () => {} });
+      try { await soundRun(sa); }
+      catch (e) {
+        if (!stalled(e)) throw e;
+        // The sound froze: once more with one thread each, then the time it froze at, as for the picture.
+        console.error(`[render] ${r.id}: the sound pass froze at ${e.at.toFixed(2)} s. Threads: ${e.threads}`);
+        const one = ffmpegArgs(plan, { ...files, output: soundPath }, sourceInfo, { threads: 1, inputThreads: 1, loudnessGainDb: mixLoudness?.gainDb, sound: "only" });
+        await writeFile(soundGraph, one.filterGraph);
+        try { await soundRun(one); }
+        catch (e2) { if (stalled(e2)) throw frozenAt(e2.at, "sound"); throw e2; }
+      }
       for (let n = 0; queue.length; n++) {
         const pc = queue.shift()!;
         const out = join(ctx.dir, `piece-${n}.mov`), gp = join(ctx.dir, `graph-piece-${n}.txt`);
@@ -501,7 +515,7 @@ export async function renderJob(ctx: Ctx) {
             queue.unshift({ a: pc.a, b: mid, simple: pc.simple }, { a: mid, b: pc.b, simple: pc.simple });
             continue;
           }
-          if (stalled(e)) throw new JobError(`The export froze at ${fmtClock(pc.a + e.at)} and could not get past it. Nothing was lost. Try again; if it freezes there again, tell us that time.`, "ffmpeg-frozen", true);
+          if (stalled(e)) throw frozenAt(pc.a + e.at);
           throw e;
         }
         if (pc.froze) console.log(`[render] ${r.id}: piece ${pc.a.toFixed(2)}-${pc.b.toFixed(2)} s made with one thread each after freezing`);
@@ -526,14 +540,21 @@ export async function renderJob(ctx: Ctx) {
           // Frozen in one pass: made in pieces (each with its own freeze watch), or once more with one thread each.
           console.error(`[render] ${r.id}: the one pass froze at ${e.at.toFixed(2)} s. Threads: ${e.threads}`);
           if (canPiece) await renderInPieces("the one pass froze");
-          else await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS });
+          else {
+            try { await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS }); }
+            catch (e2) { if (stalled(e2)) throw frozenAt(e2.at); throw e2; }
+          }
         } else {
           // Out of threads (a container limit): once more with one filter thread, which needs far fewer, when there is room.
           if (signal.aborted || !outOfThreads(e)) throw e;
           console.error("[render] ffmpeg ran out of threads; waiting for room, then trying again with one filter thread and one per decoder");
           await waitForThreads(150, 60_000, signal);
-          try { await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress }); }
-          catch (e2) { if (canPiece && killed(e2)) await renderInPieces(); else throw e2; }
+          try { await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS }); }
+          catch (e2) {
+            if (canPiece && (killed(e2) || stalled(e2))) await renderInPieces(stalled(e2) ? "the one-thread pass froze" : undefined);
+            else if (stalled(e2)) throw frozenAt(e2.at);
+            else throw e2;
+          }
         }
       }
     } catch (e) {
@@ -550,7 +571,7 @@ export async function renderJob(ctx: Ctx) {
         const w = argsFor(filterThreads(argsFor(4, cpus * 2, "white").filterGraph), cpus * 2, "white");
         const wPath = join(ctx.dir, "graph-w.txt");
         await writeFile(wPath, w.filterGraph);
-        await run("ffmpeg", w.args.map((x) => (x === "__FILTER_SCRIPT__" ? wPath : x)), { signal });
+        await run("ffmpeg", w.args.map((x) => (x === "__FILTER_SCRIPT__" ? wPath : x)), { signal, stallMs: STALL_MS });
         files.output = join(ctx.dir, "out.mov");
         await mergeOverlay(black, join(ctx.dir, "out-w.mkv"), files.output, signal);
       } else if (fmt === "gif") {
@@ -560,6 +581,7 @@ export async function renderJob(ctx: Ctx) {
       }
     } catch (e) {
       if (signal.aborted) throw e;
+      if (stalled(e)) throw frozenAt(e.at, "transparent");
       console.error("[render] making the deliverable failed:", (e as Error).message.slice(0, 1600));
       throw new JobError(`Making the ${fmt === "gif" ? "GIF" : "transparent file"} failed. Nothing was lost. Try again, or export MP4.`, "ffmpeg", true);
     }

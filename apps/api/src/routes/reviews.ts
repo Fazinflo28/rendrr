@@ -183,7 +183,8 @@ export default async function reviews(app: FastifyInstance) {
       const r = await publicReview((req.params as { token: string }).token);
       if (!unlocked(req, r)) throw new AppError("This review is locked.", 401, "locked");
       const b = ReviewCommentInput.parse(req.body);
-      const projectId = (req.body as { projectId?: string }).projectId;
+      const raw = (req.body as { projectId?: unknown }).projectId;
+      const projectId = typeof raw === "string" && raw.length <= 64 ? raw : undefined; // anything else: the review's own edit
       const valid = projectId && (r.projectId === projectId || (r.folderId && (await prisma.project.count({ where: { id: projectId, folderId: r.folderId } }))));
       const c = await prisma.reviewComment.create({ data: { reviewToken: r.token, projectId: valid ? projectId! : r.projectId, time: Math.round(b.time * 100) / 100, text: b.text, author: "Client" } });
       return commentOut(c);
@@ -261,14 +262,17 @@ export default async function reviews(app: FastifyInstance) {
       const id = (req.params as { id: string }).id;
       const g = await prisma.galleryItem.findUnique({ where: { id } });
       if (!g) throw notFound("That video is not in the gallery any more.");
-      const existing = await prisma.galleryLike.findUnique({ where: { galleryItemId_userId: { galleryItemId: id, userId: me } } });
-      const u = await prisma.$transaction(async (tx) => {
-        if (existing) await tx.galleryLike.delete({ where: { galleryItemId_userId: { galleryItemId: id, userId: me } } });
-        else await tx.galleryLike.create({ data: { galleryItemId: id, userId: me } });
-        return tx.galleryItem.update({ where: { id }, data: { likes: { increment: existing ? -1 : 1 } } });
+      // A toggle that a double click cannot break: the like is added only if it is not there (and taken away only if
+      // it is), and the count moves only by what changed.
+      const key = { galleryItemId_userId: { galleryItemId: id, userId: me } };
+      const { u, liked } = await prisma.$transaction(async (tx) => {
+        const gone = await tx.galleryLike.deleteMany({ where: { galleryItemId: id, userId: me } });
+        if (gone.count) return { u: await tx.galleryItem.update({ where: { id }, data: { likes: { decrement: gone.count } } }), liked: false };
+        const made = await tx.galleryLike.createMany({ data: [{ galleryItemId: id, userId: me }], skipDuplicates: true });
+        return { u: made.count ? await tx.galleryItem.update({ where: { id }, data: { likes: { increment: 1 } } }) : await tx.galleryItem.findUniqueOrThrow({ where: { id } }), liked: !!made.count || !!(await tx.galleryLike.findUnique({ where: key })) };
       });
       const style = await prisma.style.findUnique({ where: { id: u.styleId } });
-      return galleryOut(u, me, !existing, style || undefined);
+      return galleryOut(u, me, liked, style || undefined);
     });
 
     a.post("/gallery/:id/recreate", async (req) => {

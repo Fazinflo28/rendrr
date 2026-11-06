@@ -122,7 +122,12 @@ export default async function render(app: FastifyInstance) {
     const b = OriginalCompleteInput.parse(req.body);
     const t = await prisma.tempOriginal.findFirst({ where: { projectId: p.id, uploadId: b.uploadId } });
     if (!t) throw notFound("That upload expired. Pick the file again.");
-    await completeMultipart(t.key, b.uploadId, b.parts);
+    // Parts S3 does not recognise (a wrong ETag, a part that never arrived): say so, so the app sends the file again.
+    await completeMultipart(t.key, b.uploadId, b.parts).catch((e: Error & { name?: string; Code?: string }) => {
+      const code = e.name || e.Code || "";
+      if (/InvalidPart|InvalidPartOrder|NoSuchUpload|EntityTooSmall/.test(code)) throw new AppError("The upload did not arrive whole. Pick the file again.", 400, "upload-incomplete");
+      throw e;
+    });
     const deletesAt = new Date(Date.now() + TEMP_ORIGINAL_HOURS * 3600_000);
     await prisma.tempOriginal.update({ where: { id: t.id }, data: { completed: true, expiresAt: deletesAt } });
     return { ok: true, deletesAt: deletesAt.getTime() };

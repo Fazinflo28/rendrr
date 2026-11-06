@@ -27,6 +27,11 @@ describe("fonts", async () => {
   it("refuses urls into Rendrr's own network, and plain http", async () => {
     for (const ip of ["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd12::1", "fe80::1", "::ffff:10.0.0.1"]) assert.ok(privateAddress(ip), ip);
     for (const ip of ["8.8.8.8", "151.101.1.1", "2606:4700::1111"]) assert.ok(!privateAddress(ip), ip);
+    // IPv6 spellings that carry a private IPv4 address inside (the hex form is what URL parsing gives).
+    for (const ip of ["::ffff:7f00:1", "0:0:0:0:0:ffff:7f00:1", "::ffff:a9fe:a9fe", "::7f00:1", "::127.0.0.1", "64:ff9b::a00:1", "2002:7f00:1::", "0000:0000::0001", "fec0::1", "ff02::1", "not-an-ip"]) assert.ok(privateAddress(ip), ip);
+    for (const ip of ["::ffff:808:808", "::ffff:8.8.8.8", "2002:808:808::1", "64:ff9b::808:808"]) assert.ok(!privateAddress(ip), ip);
+    await assert.rejects(fetchFont("https://[::ffff:127.0.0.1]/f.ttf"), /not on the public internet/);
+    await assert.rejects(fetchFont("https://[::ffff:7f00:1]/f.ttf"), /not on the public internet/);
     await assert.rejects(fetchFont("http://example.com/f.ttf"), /must start with https/);
     await assert.rejects(fetchFont("https://127.0.0.1/f.ttf"), /not on the public internet/);
     await assert.rejects(fetchFont("https://localhost/f.ttf"), /not on the public internet/);

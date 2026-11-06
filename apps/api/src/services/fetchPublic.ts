@@ -3,15 +3,46 @@ import { createWriteStream } from "node:fs";
 import { isIP } from "node:net";
 import { AppError } from "@rendrr/core";
 
-/** Loopback, private, link-local and other non-public addresses (a url the AI sends must not reach Rendrr's own network). */
-export function privateAddress(ip: string): boolean {
-  const v4 = ip.startsWith("::ffff:") ? ip.slice(7) : ip;
-  if (isIP(v4) === 4) {
-    const [a, b] = v4.split(".").map(Number);
-    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b < 128) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || a >= 224;
+/** An IPv6 address as its 8 groups (null when it is not one). "::ffff:127.0.0.1" and "::ffff:7f00:1" both work. */
+function v6Groups(ip: string): number[] | null {
+  let x = ip.toLowerCase().split("%")[0];
+  const tail = /(\d+\.\d+\.\d+\.\d+)$/.exec(x);
+  if (tail) {
+    if (isIP(tail[1]) !== 4) return null;
+    const [a, b, c, d] = tail[1].split(".").map(Number);
+    x = x.slice(0, -tail[1].length) + ((a << 8) | b).toString(16) + ":" + ((c << 8) | d).toString(16);
   }
-  const x = ip.toLowerCase();
-  return x === "::" || x === "::1" || /^f[cd]/.test(x) || /^fe[89ab]/.test(x) || x.startsWith("ff");
+  const halves = x.split("::");
+  if (halves.length > 2) return null;
+  const part = (h: string) => (h ? h.split(":") : []);
+  const head = part(halves[0]), rest = halves.length === 2 ? part(halves[1]) : [];
+  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const all = [...head, ...Array(fill).fill("0"), ...rest];
+  if (all.length !== 8 || all.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
+  return all.map((g) => parseInt(g, 16));
+}
+
+function privateV4(v4: string): boolean {
+  const [a, b] = v4.split(".").map(Number);
+  return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b < 128) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+}
+
+/** Loopback, private, link-local and other non-public addresses (a url the AI sends must not reach Rendrr's own network).
+ *  IPv6 forms that carry an IPv4 address inside (mapped, compatible, NAT64, 6to4), in any spelling, are checked by it. */
+export function privateAddress(ip: string): boolean {
+  if (isIP(ip) === 4) return privateV4(ip);
+  const g = v6Groups(ip);
+  if (!g) return true; // not an address we can read: refused
+  const v4At = (i: number) => `${g[i] >> 8}.${g[i] & 255}.${g[i + 1] >> 8}.${g[i + 1] & 255}`;
+  const zeros = (n: number) => g.slice(0, n).every((x) => x === 0);
+  if (zeros(8)) return true; // ::
+  if (zeros(7) && g[7] === 1) return true; // ::1
+  if (zeros(5) && g[5] === 0xffff) return privateV4(v4At(6)); // ::ffff:a.b.c.d
+  if (zeros(6)) return privateV4(v4At(6)); // ::a.b.c.d (old IPv4-compatible)
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return privateV4(v4At(6)); // NAT64
+  if (g[0] === 0x2002) return privateV4(v4At(1)); // 6to4
+  return (g[0] & 0xfe00) === 0xfc00 || (g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0 || (g[0] & 0xff00) === 0xff00;
 }
 
 /** The answer of a public https url after its redirects: every hop's address checked. */

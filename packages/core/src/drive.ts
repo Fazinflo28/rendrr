@@ -49,15 +49,19 @@ export async function exchangeCode(code: string) {
   if (j.id_token) { try { email = JSON.parse(Buffer.from(j.id_token.split(".")[1], "base64url").toString()).email || ""; } catch { /* ignore */ } }
   return { refreshToken: j.refresh_token, accessToken: j.access_token, scope: j.scope || SCOPES.join(" "), email };
 }
+// Access tokens per connection: the key holds the stored refresh token, so reconnecting Drive (another Google account,
+// more access) or disconnecting it is seen at once by the API and the worker, not when the old token runs out.
 const tokenCache = new Map<string, { token: string; until: number }>();
 export async function accessTokenFor(userId: string): Promise<string> {
-  const c = tokenCache.get(userId);
-  if (c && c.until > Date.now() + 60_000) return c.token;
   const conn = await prisma.driveConnection.findUnique({ where: { userId } });
   if (!conn || conn.stub) throw new AppError("Connect Google Drive first.", 400, "drive");
+  const key = `${userId}:${conn.refreshToken}`;
+  const c = tokenCache.get(key);
+  if (c && c.until > Date.now() + 60_000) return c.token;
   try {
     const j = await tokenRequest({ refresh_token: decrypt(conn.refreshToken), client_id: env().GOOGLE_CLIENT_ID!, client_secret: env().GOOGLE_CLIENT_SECRET!, grant_type: "refresh_token" });
-    tokenCache.set(userId, { token: j.access_token, until: Date.now() + Number(j.expires_in || 3000) * 1000 });
+    for (const k of tokenCache.keys()) if (k.startsWith(`${userId}:`)) tokenCache.delete(k);
+    tokenCache.set(key, { token: j.access_token, until: Date.now() + Number(j.expires_in || 3000) * 1000 });
     return j.access_token;
   } catch {
     throw new AppError("Google Drive access expired. Connect Google Drive again in Settings.", 400, "drive");
