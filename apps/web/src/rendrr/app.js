@@ -6,7 +6,7 @@
 //   Login is a modal over Explore (Higgsfield-style): browse free, act after logging in. /login opens that modal.
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, useNav, useApp, forgetPages } from "./ui";
-import { Mark } from "./logo";
+import { AppIcon, Mark } from "./logo";
 import { appLink, isChallenge } from "./desktopLogin";
 import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, UsagePage, BillingPage, SettingsPage, Shell } from "./screens";
 import { EditorPage } from "./editor";
@@ -62,7 +62,7 @@ function DesktopLogin() {
       window.location.href = link;
     } catch (e) { setState("error"); setMsg(e.message); }
   };
-  const card = (body) => html`<div class="dl-wrap"><div class="dl-card" id="desktop-login"><${Mark} size=${44} />${body}</div></div>`;
+  const card = (body) => html`<div class="dl-wrap"><div class="dl-card" id="desktop-login"><${AppIcon} size=${56} />${body}</div></div>`;
   if (grant) return card(state === "error"
     ? html`<h1>Not logged in</h1><p>${msg}</p><div class="dl-row"><${Btn} id="dl-again" onClick=${() => go("/login")}>Try again<//></div>`
     : html`<h1>Logging you in…</h1><p>One moment.</p>`);
@@ -93,7 +93,7 @@ function DriveDone() {
       } catch (e) { setMsg(e.message || "Google Drive was not connected. Try again."); }
     })();
   }, []);
-  return html`<div style="font:15px system-ui;padding:40px"><p>${msg}</p></div>`;
+  return html`<div class="dl-wrap"><div class="dl-card" id="drive-done"><${AppIcon} size=${56} /><p>${msg}</p></div></div>`;
 }
 
 function App() {

@@ -163,7 +163,10 @@ button.chip.neutral:hover { color: var(--ink); background: var(--raised-strong);
 .side .plan { padding: var(--s4); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow-card); display: flex; flex-direction: column; align-items: flex-start; }
 .top { display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s8) 0 20px; background: var(--panel); border-bottom: 1px solid var(--hair); min-width: 0; }
 .top .logo { margin: 0; padding: 0 4px 0 2px; flex: none; margin-right: 6px; color: var(--ink); }
-.wordmark { display: block; flex: none; color: var(--ink); }
+/* The app icon (logo.js AppIcon): the lime mark on the dark rounded square, a hairline so it reads on dark panels. */
+.appicon { display: block; flex: none; border-radius: 20%; box-shadow: 0 0 0 1px var(--hair-strong); }
+.top .logo { border-radius: 9px; }
+.top .logo:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .topnav { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); padding-right: 28px; }
 .topnav::-webkit-scrollbar { display: none; }
 .topnav .nav, .top .nav.icon { width: auto; height: 28px; padding: 4px 8px; border-radius: var(--r-sm); font-size: 14px; line-height: 20px; font-weight: 500; color: var(--ink-dim); white-space: nowrap; flex: none; }
@@ -912,7 +915,7 @@ a { color: var(--accent-ink); }
   .shell { grid-template-rows: auto 1fr; }
   .top { flex-wrap: wrap; row-gap: 0; padding: 8px var(--gutter-r) 0 var(--gutter-l); }
   .top .logo { margin-right: 2px; }
-  .top .logo .wordmark { height: 16px; width: 74px; }
+  .top .logo .appicon { width: 26px; height: 26px; }
   .topnav { order: 10; flex: 1 1 100%; margin: 6px calc(-1 * var(--gutter-r)) 0 calc(-1 * var(--gutter-l)); padding: 0 32px 8px var(--gutter-l); }
   .topnav .nav { height: 34px; font-size: 14px; }
   .page-head .t-title { font-size: 24px; line-height: 30px; }

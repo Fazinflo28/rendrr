@@ -49,6 +49,7 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
   check(m.on === 1, `${tag}: one card is picked`);
   check(!m.version, `${tag}: no version switch (each video shows its newest version)`);
   check(/\d+ videos?/.test(m.head), `${tag}: the header says the project and how many videos (${m.head})`);
+  check(await page.locator(".rv-top svg.appicon").count() === 1, `${tag}: the header shows the Rendrr app icon`);
   check(m.thumbH >= 100, `${tag}: the cards show a picture area (${m.thumbH} px tall)`);
   check(m.scrollW <= m.W && m.wide.length === 0, `${tag}: nothing wider than the screen (${m.wide.join(", ") || "ok"})`);
   // Pick the second video: it is the one picked and the one playing.

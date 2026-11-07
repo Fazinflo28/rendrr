@@ -66,6 +66,7 @@ const tab = await ctx.newPage(); watch(tab);
 await tab.goto(url.toString());
 await tab.locator("#dl-login").waitFor();
 check(/Log in to the Rendrr app/.test(await tab.locator("#desktop-login").innerText()), "logged out in the browser: it asks to log in first");
+check(await tab.locator("#desktop-login svg.appicon").count() === 1, "the page shows the Rendrr app icon");
 await tab.locator("#dl-login").click();
 await tab.locator("#email").fill("you@example.com"); await tab.locator("#password").fill("x"); await tab.locator("#submit").click();
 await tab.locator("#dl-allow").waitFor();

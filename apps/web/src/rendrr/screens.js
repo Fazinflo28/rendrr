@@ -6,7 +6,7 @@ import {
   Masonry, MasonrySkeleton, MoreMenu, Dropdown, useNav, useApp,
 } from "./ui";
 import { api } from "./api";
-import { Mark, Wordmark } from "./logo";
+import { AppIcon } from "./logo";
 const IS_PROD = process.env.NODE_ENV === "production";
 
 /* ---------- login: a centred modal over Explore (Higgsfield layout: showcase left, form right) ---------- */
@@ -41,7 +41,7 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
       </div>
       <form class="hform" onSubmit=${submit} novalidate>
         <${Btn} kind="quiet" icon="x" id="login-close" aria-label="Close" type="button" onClick=${onClose} style="position:absolute;top:14px;right:14px;width:36px" />
-        <div class="logo" style="padding:0;margin:0 auto 8px;justify-content:center"><${Wordmark} height=${30} /></div>
+        <div class="logo" style="padding:0;margin:0 auto 8px;justify-content:center"><${AppIcon} size=${56} /></div>
         <h1 class="t-title" style="text-align:center;font-size:28px;line-height:34px">${title}</h1>
         <p class="muted" style="text-align:center;margin-bottom:6px">${mode === "login" ? html`Log in and keep editing. New here? <a href="#" onClick=${(e) => { e.preventDefault(); setMode("signup"); setErr(null); }}>Sign up</a>.` : mode === "signup" ? html`Sign up and edit for free. <a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); }}>Back to log in</a>` : html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); setSent(false); }}>Back to log in</a>`}</p>
         ${mode !== "reset" && html`
@@ -81,7 +81,7 @@ function Shell({ children }) {
   const isOn = (p) => (p === "/explore" ? route === "/explore" || route === "/home" : route.startsWith(p));
   return html`<div class=${"shell" + (looksIn ? " in" : "")}>
     <header class="top">
-      <button class="logo" aria-label="Rendrr home" title="Rendrr" onClick=${() => go("/explore")}><${Wordmark} height=${20} /></button>
+      <button class="logo" aria-label="Rendrr home" title="Rendrr" onClick=${() => go("/explore")}><${AppIcon} size=${36} /></button>
       <nav class="topnav" aria-label="Main">
         ${TOP.map(([p, l]) => html`<button key=${p} class=${"nav" + (isOn(p) ? " on" : "")} data-tip=${l} onClick=${() => go(p)}>${l}</button>`)}
         <span class="navsep" aria-hidden="true" />
@@ -916,7 +916,7 @@ function ClientReviewPage({ token }) {
         ${pwErr && html`<p role="alert" class="t-small" style="padding-left:16px">${pwErr}</p>`}
         <${Btn} type="submit" disabled=${pwBusy}>${pwBusy ? "Checking…" : "Watch the video"}<//>
       </form></div>` : html`
-      <div class="rv-top"><div class="row" style="gap:16px">${r.showLogo && r.logo ? html`<img src=${r.logo} alt="Logo" style="height:36px;max-width:140px;object-fit:contain" />` : html`<div class="logo" style="padding:0;margin:0"><span class="mark" style="background:#0b0c0e"><${Mark} size=${20} /></span>${r.showLogo ? r.brand : "Review"}</div>`}<span class="muted">${r.folder ? r.folder.name + " · " + r.items.length + (r.items.length === 1 ? " video" : " videos") : r.project.name}</span></div>
+      <div class="rv-top"><div class="row" style="gap:16px">${r.showLogo && r.logo ? html`<img src=${r.logo} alt="Logo" style="height:36px;max-width:140px;object-fit:contain" />` : html`<div class="logo" style="padding:0;margin:0"><${AppIcon} size=${34} />${r.showLogo ? r.brand : "Review"}</div>`}<span class="muted">${r.folder ? r.folder.name + " · " + r.items.length + (r.items.length === 1 ? " video" : " videos") : r.project.name}</span></div>
         <div class="row">${r.folder || r.version < 2 ? null : r.version > 5
           ? html`<select id="rv-version" class="input sm" aria-label="Version" value=${version} onChange=${(e) => setVer(Number(e.target.value))}>${Array.from({ length: r.version }, (_, i) => r.version - i).map((v) => html`<option key=${v} value=${v}>${"Version " + v + (v === r.version ? " (latest)" : "")}</option>`)}</select>`
           : html`<${Seg} size="sm" value=${version} options=${Array.from({ length: r.version }).map((_, i) => ({ value: i + 1, label: "v" + (i + 1) }))} onChange=${setVer} />`}${r.allowDownload && html`<${Btn} kind="secondary" size="sm" icon="download" onClick=${() => (clip?.download ? window.open(clip.download, "_blank", "noopener") : toast("This version is still rendering. Try again in a minute."))}>Download<//>`}${backBtn}</div></div>

@@ -1104,6 +1104,9 @@ From before:
 
 - Web app icons: the lime Rendrr mark on the dark square is the tab icon (icon.svg, favicon.ico), the Apple icon and
   the home-screen icons (manifest.ts); the review page shows it too. Test: apps/web/demo/brand-desktop.mjs.
+- The app icon alone, no word, like Higgsfield's (logo.js AppIcon, the same drawing as icon.svg): the top bar (36 px,
+  26 on phones), the login window, the Mac app's browser-login page, the Google Drive connected page and the review
+  page header. The wordmark is gone. Tests: brand-desktop.mjs, desktop-login.mjs, review-folder.mjs.
 - desktop/: an Electron app that opens app.rendrr.live in a window with no title bar (the web app makes room for the
   window buttons when html.desktop is set), Mac menus and shortcuts, downloads straight to ~/Downloads, Google and
   Drive sign-in inside the app, other links in the browser, an offline page, full speed when hidden. Link rules in

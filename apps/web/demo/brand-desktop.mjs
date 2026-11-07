@@ -46,8 +46,20 @@ const region = (sel) => page.locator(sel).first().evaluate((e) => getComputedSty
 const left = (sel) => page.locator(sel).first().evaluate((e) => e.getBoundingClientRect().left);
 await page.evaluate(() => globalThis.__rendrrNav.go("/projects")); await page.waitForTimeout(500);
 const email = page.locator('input[type="email"]').first();
-if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await page.waitForTimeout(800); }
+if (await email.count()) {
+  // The login window shows the app icon, not the word.
+  const li = await page.locator(".hform .logo svg.appicon").first().evaluate((e) => ({ w: e.getAttribute("width") + "px", label: e.getAttribute("aria-label") })).catch(() => null);
+  check(li && li.w === "56px" && li.label === "Rendrr", `the login window shows the Rendrr app icon (${li ? li.w : "none"})`);
+  await page.screenshot({ path: join(here, "dist", "brand-login.png"), clip: { x: 0, y: 0, width: 1280, height: 400 } }); await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await page.waitForTimeout(800); }
 await page.evaluate(() => globalThis.__rendrrNav.go("/projects")); await page.locator("header.top").waitFor(); await page.waitForTimeout(300);
+// The top bar: the app icon alone (the lime mark on the dark square), like Higgsfield's; no wordmark.
+const icon = await page.locator("header.top .logo svg.appicon").evaluate((e) => ({ w: e.getAttribute("width") + "px", h: e.getAttribute("height") + "px", rect: e.querySelector("rect")?.getAttribute("fill"), mark: e.querySelector("path")?.getAttribute("fill") })).catch(() => null);
+check(icon && icon.w === "36px" && icon.h === "36px" && icon.rect === "#0b0c0e" && icon.mark === "#bde815", "the top bar shows the app icon: lime mark on the dark square (36 px, about 29 on screen at the app's 80%)");
+check((await page.locator("header.top .logo").innerText()).trim() === "" && !(await page.locator(".wordmark").count()), "no word next to it");
+await page.screenshot({ path: join(here, "dist", "brand-top.png"), clip: { x: 0, y: 0, width: 1280, height: 70 } });
+await page.setViewportSize({ width: 390, height: 800 }); await page.waitForTimeout(200);
+check(await page.locator("header.top .logo svg.appicon").evaluate((e) => e.getBoundingClientRect().width) === 26, "on a phone the icon is 26 px");
+await page.setViewportSize({ width: 1280, height: 800 }); await page.waitForTimeout(200);
 const plainLeft = await left("header.top .logo");
 check(plainLeft < 60, `in a browser the logo stays at the left (${Math.round(plainLeft)}px)`);
 check((await region("header.top")) !== "drag", "in a browser nothing drags");
