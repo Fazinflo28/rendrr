@@ -248,7 +248,7 @@ export default async function reviews(app: FastifyInstance) {
       } });
       await prisma.reference.create({ data: { id: g.id, userId: me.id, name: g.title, recipe } }).catch(() => {});
       // The real video: the edit's export copied to the item now, or a preview started if it has none yet.
-      const ready = await prepareGalleryMedia(g, me.id);
+      const ready = await prepareGalleryMedia(g);
       const style = await prisma.style.findUnique({ where: { id: g.styleId } });
       return galleryOut(ready, me.id, false, style || undefined, await galleryMedia(ready));
     });

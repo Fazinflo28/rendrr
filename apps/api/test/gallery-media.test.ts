@@ -1,6 +1,7 @@
 // A published video plays its real export in the gallery: publishing copies the edit's best export (and a still)
 // to the gallery item, so the gallery serves the same bytes; an edit with no export yet takes it when the gallery is
-// next loaded after its render is done; removing the video deletes its copy. Needs a database, Redis and storage.
+// next loaded after its render is done; one published before it was ever rendered gets a preview started when the
+// gallery is loaded (once); removing the video deletes its copy. Needs a database, Redis and storage.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, before, describe, it } from "node:test";
@@ -12,10 +13,12 @@ const run = Math.random().toString(36).slice(2, 8);
 
 describe("gallery plays the real video", { skip: !ready && "needs a database, Redis and storage" }, async () => {
   const { prisma } = await import("@rendrr/db");
-  const { deletePrefix, headObject, putObject, redis } = await import("@rendrr/core");
+  const { deletePrefix, headObject, putObject, queue, redis } = await import("@rendrr/core");
   const { buildServer } = await import("../src/server");
+  const { previewGate } = await import("../src/tools");
+  const { DEFAULT_STYLE_ID } = await import("@rendrr/shared");
   let app: Awaited<ReturnType<typeof buildServer>>;
-  let userId = "", withExport = "", without = "", videoId = "";
+  let userId = "", withExport = "", without = "", videoId = "", never = "", neverItem = "";
   const clerkId = `gm_${run}`;
   const headers = () => ({ "x-internal-secret": process.env.INTERNAL_API_SECRET!, "x-rendrr-clerk-id": clerkId });
   const clip = randomBytes(300_000), still = randomBytes(20_000);
@@ -29,6 +32,11 @@ describe("gallery plays the real video", { skip: !ready && "needs a database, Re
     videoId = (await prisma.video.create({ data: { userId, name: "Talk", source: "local", status: "ready", seconds: 30 } })).id;
     const mk = (name: string) => prisma.project.create({ data: { userId, folderId: folder.id, videoId, name, timeline, currentVersion: 2, aspect: "9:16" } });
     withExport = (await mk(`With ${run}`)).id; without = (await mk(`Without ${run}`)).id;
+    // An edit on footage with a preview copy, published before the gallery copied exports, and never rendered.
+    const v2 = await prisma.video.create({ data: { userId, name: "Talk 2", source: "local", status: "ready", seconds: 30, proxyKey: `previews/test-gm-${run}/proxy.mp4` } });
+    never = (await prisma.project.create({ data: { userId, folderId: folder.id, videoId: v2.id, name: `Never ${run}`, timeline, currentVersion: 1, aspect: "9:16" } })).id;
+    await prisma.projectVersion.create({ data: { projectId: never, v: 1, note: "Start", timeline: { timeline, name: `Never ${run}`, aspect: "9:16" }, createdBy: "user" } });
+    neverItem = (await prisma.galleryItem.create({ data: { userId, projectId: never, author: "Ana", title: "Old", styleId: DEFAULT_STYLE_ID, ori: "9:16", platforms: [] } })).id;
     await putObject(`previews/test-gm-${run}/a.mp4`, clip, "video/mp4");
     await putObject(`previews/test-gm-${run}/a-0.jpg`, still, "image/jpeg");
     await putObject(`previews/test-gm-${run}/old.mp4`, randomBytes(1000), "video/mp4");
@@ -37,6 +45,8 @@ describe("gallery plays the real video", { skip: !ready && "needs a database, Re
     await prisma.render.create({ data: { projectId: withExport, userId, kind: "preview", version: 2, status: "done", steps: [], outputKey: `previews/test-gm-${run}/a.mp4`, framesKeys: [`previews/test-gm-${run}/a-0.jpg`], seconds: 12, finishedAt: new Date() } });
   });
   after(async () => {
+    for (const j of await queue("render").getJobs(["waiting", "delayed", "prioritized"])) if (await prisma.render.findFirst({ where: { id: (j.data as { renderId: string }).renderId, userId } })) await j.remove().catch(() => {});
+    await redis().del(`gallery-export:${neverItem}`).catch(() => {});
     const items = await prisma.galleryItem.findMany({ where: { userId } });
     await prisma.galleryItem.deleteMany({ where: { userId } });
     for (const g of items) await deletePrefix(`gallery/${g.id}`).catch(() => {});
@@ -81,5 +91,21 @@ describe("gallery plays the real video", { skip: !ready && "needs a database, Re
     const now = list.json().find((x: { id: string }) => x.id === g.id);
     assert.ok(now?.video, "the gallery took the new export");
     assert.ok(Buffer.from(await (await fetch(now.video)).arrayBuffer()).equals(clip));
+  });
+
+  it("an edit published before it was ever rendered gets one preview started when the gallery is loaded", async () => {
+    const load = () => app.inject({ method: "GET", url: "/gallery", headers: headers() });
+    const first = await load();
+    assert.equal(first.statusCode, 200, first.body);
+    assert.equal(first.json().find((x: { id: string }) => x.id === neverItem)?.video, null, "nothing to play yet");
+    const started = await prisma.render.findMany({ where: { projectId: never } });
+    assert.equal(started.length, 1, "one preview started");
+    assert.equal(started[0].kind, "preview");
+    assert.equal(started[0].by, "gallery");
+    assert.equal(await previewGate(never), null, "it does not stop the AI's next preview of the edit");
+    // It failed: loading again does not start another one at once.
+    await prisma.render.updateMany({ where: { projectId: never }, data: { status: "failed" } });
+    await load();
+    assert.equal(await prisma.render.count({ where: { projectId: never } }), 1, "not retried on every load");
   });
 });

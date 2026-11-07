@@ -337,7 +337,7 @@ model Render {
   user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   kind       String    // preview | final
   version    Int
-  by         String    @default("user") // who asked: user | claude | chatgpt
+  by         String    @default("user") // who asked: user | claude | chatgpt | gallery (a published edit with nothing to play)
   status     String    @default("queued") // queued | running | done | failed
   steps      Json      @default("[]")
   step       Int       @default(0)

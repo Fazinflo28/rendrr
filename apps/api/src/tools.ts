@@ -424,10 +424,11 @@ export const PREVIEW_GAP_MS = 45 * 60_000;
 /**
  * One preview per change: when the AI already rendered a preview of this edit for the current request (in the last
  * PREVIEW_GAP_MS, and the user has left no feedback since: no comment, no change of theirs in the editor), the answer
- * why it is not rendered again; null when it may render.
+ * why it is not rendered again; null when it may render. Only the AI's own previews count: one the user asked for, or
+ * one the gallery made for a published edit, does not.
  */
 export async function previewGate(projectId: string): Promise<string | null> {
-  const prev = await prisma.render.findFirst({ where: { projectId, kind: "preview", by: { not: "user" }, status: { in: ["queued", "running", "done"] }, createdAt: { gt: new Date(Date.now() - PREVIEW_GAP_MS) } }, orderBy: { createdAt: "desc" } });
+  const prev = await prisma.render.findFirst({ where: { projectId, kind: "preview", by: { notIn: ["user", "gallery"] }, status: { in: ["queued", "running", "done"] }, createdAt: { gt: new Date(Date.now() - PREVIEW_GAP_MS) } }, orderBy: { createdAt: "desc" } });
   if (!prev) return null;
   const since = prev.createdAt;
   const [notes, client, mine] = await Promise.all([
