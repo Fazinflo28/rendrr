@@ -1283,7 +1283,11 @@ From before:
   the black "R" saved for rendrr.live (the web app's icon from 25 Oct to 6 Nov) and changes to the lime mark when it
   next reads the site (rendrr.live forwards to app.rendrr.live, whose favicon.ico has 16, 32 and 48 px). Asking for
   indexing of rendrr.live in Google Search Console makes that sooner. The user must re-add the connector with the
-  new address for any of this to apply.
+  new address for any of this to apply (done 7 Nov: Claude shows the "R" now).
+  To help Google: the web app has robots.txt and sitemap.xml (app/robots.ts, app/sitemap.ts: public pages open,
+  private ones closed) and names a 192 px PNG icon. Test: apps/web/demo/seo-files.mjs (npx tsx). In Search Console
+  (only the owner can): add the Domain property rendrr.live (TXT at GoDaddy), submit
+  https://app.rendrr.live/sitemap.xml, and Request indexing for https://app.rendrr.live/ and https://rendrr.live/.
 - open_projects opens whatever the AI gives it: an edit's id or name, a project (folder) by id or name (folderId too),
   and an id that names nothing shows the list with a line saying so, instead of failing (Claude had passed a
   project's id and the call showed "Failed"). Tests: apps/api/test/claude-app.test.ts, apps/mcp/test/app-browser.mjs.
