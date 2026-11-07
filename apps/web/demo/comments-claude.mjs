@@ -27,7 +27,7 @@ await page.evaluate(() => globalThis.__rendrrNav.go("/library")); await sleep(50
 const email = page.locator('input[type="email"]').first();
 if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await sleep(800); }
 await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await sleep(1200);
-await page.locator("#tab-comments").click(); await sleep(300);
+await page.locator("#side-comments").click(); await sleep(300);
 
 const note = page.locator('[data-comment="cm_claude"]');
 check((await note.count()) === 1, "the note from Claude is in the Comments tab");

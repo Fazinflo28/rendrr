@@ -7,9 +7,9 @@ import { api } from "./api";
 
 const byName = (a, b) => a.name.localeCompare(b.name);
 
-/** The monitor: the reference (a reference video plays here; a style is named) or, when one is picked in the bin, that
- *  video (Source), with Insert and Append. */
-export function SourceMonitor({ reference, refs, styles, onReference, source, onCloseSource, onInsert, onAppend }) {
+/** The monitor: the reference (a reference video or a gallery video plays here; a style is named) or, when one is
+ *  picked in the bin, that video (Source), with Insert and Append. The reference is picked in the Reference tab. */
+export function SourceMonitor({ reference, source, onCloseSource, onInsert, onAppend }) {
   const showing = source ? { id: source.id, name: source.name } : reference?.kind === "video" ? { id: reference.id, name: reference.name } : null;
   const [url, setUrl] = useState(null); const [err, setErr] = useState(null);
   useEffect(() => {
@@ -17,13 +17,14 @@ export function SourceMonitor({ reference, refs, styles, onReference, source, on
     if (showing) api.getVideo(showing.id).then((v) => { if (live) { setUrl(v.proxyUrl || null); if (!v.proxyUrl) setErr(v.status === "expired" ? "Its preview copy expired." : "Its preview copy is not ready yet."); } }).catch((e) => live && setErr(e.message));
     return () => { live = false; };
   }, [showing?.id]);
-  const key = reference ? reference.kind + ":" + reference.id : "";
-  const pick = (k) => {
-    if (!k) return onReference(null);
-    const [kind, id] = [k.slice(0, k.indexOf(":")), k.slice(k.indexOf(":") + 1)];
-    const it = kind === "style" ? styles.find((s) => s.id === id) : refs.find((v) => v.id === id);
-    onReference(it ? { kind, id, name: it.name } : null);
-  };
+  // A gallery video (Recreate): its published video plays here.
+  const recipe = !source && reference?.kind === "recipe" ? reference : null;
+  const [gal, setGal] = useState(null);
+  useEffect(() => {
+    let live = true; setGal(null);
+    if (recipe) api.listGallery().then((list) => { if (live) setGal((Array.isArray(list) ? list : []).find((g) => g.id === recipe.id) || false); }).catch(() => live && setGal(false));
+    return () => { live = false; };
+  }, [recipe?.id]);
   return html`<section class="mon" id="source-monitor" aria-label=${source ? "Source monitor" : "Reference monitor"}>
     <header class="mon-head"><div class="mon-tabs" role="tablist">
         <button role="tab" aria-selected=${!source} class=${!source ? "on" : ""} onClick=${() => source && onCloseSource()}>Reference</button>
@@ -31,20 +32,17 @@ export function SourceMonitor({ reference, refs, styles, onReference, source, on
       ${source && html`<button class="tool icon" aria-label="Back to the reference" title="Back to the reference" onClick=${onCloseSource}><${Icon} name="x" size="14" /></button>`}</header>
     <div class="mon-screen">${showing
       ? url ? html`<video key=${url} src=${url} controls playsInline preload="metadata" id=${source ? "source-video" : "reference-video"} />` : html`<div class="mon-empty"><span class="t-small muted">${err || "Loading…"}</span></div>`
+      : recipe ? (gal?.video ? html`<video key=${gal.video} src=${gal.video} poster=${gal.poster || undefined} controls playsInline preload="metadata" id="reference-video" />`
+        : gal === null ? html`<div class="mon-empty"><span class="t-small muted">Loading…</span></div>`
+        : html`<div class="mon-empty" id="reference-recipe"><${Icon} name="globe" size="22" /><b class="t-label">${recipe.name}</b></div>`)
       : reference?.kind === "style" ? html`<div class="mon-empty"><${Icon} name="styles" size="22" /><b class="t-label">Style: ${reference.name}</b></div>`
       : html`<div class="mon-empty" title="A video your AI copies the style of. It is never applied to the edit."><${Icon} name="film" size="22" /><span class="t-small muted">No reference</span></div>`}</div>
-    ${source ? html`<div class="mon-foot row" style="gap:6px"><${Btn} size="xs" icon="plus" id="source-insert" onClick=${() => onInsert(source)}>Insert at playhead<//><${Btn} kind="quiet" size="xs" id="source-append" onClick=${() => onAppend(source)}>Add at the end<//></div>`
-      : html`<div class="mon-foot"><select id="reference-pick" class="input sm" aria-label="Reference" value=${key} onChange=${(e) => pick(e.target.value)}>
-          <option value="">No reference</option>
-          ${refs.length > 0 && html`<optgroup label="Reference videos">${refs.map((v) => html`<option key=${v.id} value=${"video:" + v.id}>${v.name}</option>`)}</optgroup>`}
-          ${styles.length > 0 && html`<optgroup label="Styles">${styles.map((s) => html`<option key=${s.id} value=${"style:" + s.id}>${s.name}</option>`)}</optgroup>`}
-          ${reference && !(reference.kind === "style" ? styles : refs).some((x) => x.id === reference.id) && html`<option value=${key}>${reference.name}</option>`}
-        </select></div>`}
+    ${source && html`<div class="mon-foot row" style="gap:6px"><${Btn} size="xs" icon="plus" id="source-insert" onClick=${() => onInsert(source)}>Insert at playhead<//><${Btn} kind="quiet" size="xs" id="source-append" onClick=${() => onAppend(source)}>Add at the end<//></div>`}
   </section>`;
 }
 
 /** The project bin: every video the edit uses or keeps (add_media), the library to add from, Import for new footage. */
-export function MediaBin({ library, used, bin, mainId, onPreview, onAppend, onAddToBin, onRemoveFromBin, onImport, previewing }) {
+export function MediaBin({ library, used, bin, mainId, onPreview, onAppend, onAddToBin, onRemoveFromBin, onImport, onAddClips, previewing }) {
   const [adding, setAdding] = useState(false); const [q, setQ] = useState("");
   const all = library || [];
   const ids = useMemo(() => Array.from(new Set([mainId, ...used, ...bin])), [mainId, used, bin]);
@@ -66,12 +64,12 @@ export function MediaBin({ library, used, bin, mainId, onPreview, onAppend, onAd
           <button class="tool icon xs" aria-label=${"Add " + v.name + " at the end of the edit"} title="Add at the end of the edit" onClick=${() => onAppend(v)}><${Icon} name="plus" size="13" /></button>
           ${!inEdit && bin.includes(v.id) && html`<button class="tool icon xs" aria-label=${"Take " + v.name + " out of the project"} title="Take out of the project" onClick=${() => onRemoveFromBin(v)}><${Icon} name="x" size="13" /></button>`}</div>
       </div>`; })}</div>
+    ${onAddClips && html`<div class="bin-foot"><button class="bin-add-clips" id="bin-add-clips" onClick=${onAddClips}><${Icon} name="plus" size="18" />Add clips</button></div>`}
   </section>`;
 }
 
-/** The library, once (the bin and the monitor's picker read it). */
+/** The library, once (the bin reads it). */
 export function useLibrary(deps = []) {
   const q = useAsync(() => api.listVideos().catch(() => []), deps);
-  const styles = useAsync(() => api.listStyles().catch(() => []), []);
-  return { library: q.data || null, reload: q.reload, refs: (q.data || []).filter((v) => v.kind === "reference" && v.status !== "expired").sort(byName), styles: styles.data || [] };
+  return { library: q.data || null, reload: q.reload };
 }

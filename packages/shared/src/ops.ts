@@ -2091,8 +2091,8 @@ export function summarizeTimeline(snap: Snapshot, tr: Transcript, maxPerTrack = 
   return lines.join("\n");
 }
 
-/** A clip's Phase 6 look in a few words: "grade, key, 2 masks, blur". */
-function lookTags(c: Clip & ClipLook): string {
+/** A clip's Phase 6 look in a few words: "grade, key, 2 masks, blur" (the editor's fx badge reads it too). */
+export function lookTags(c: Clip & ClipLook): string {
   const t = [c.grade ? "grade" : "", c.key ? "key" : "", c.masks?.length ? `${c.masks.length} ${c.masks.length === 1 ? "mask" : "masks"}` : "", ...(c.effects ?? []).map((e) => e.type), skinActive(c.skin) ? "skin" : "", c.subject ? "no background" : "", hasCard((c as { cardLook?: CardLook }).cardLook) ? "card" : ""].filter(Boolean);
   return t.length ? `look: ${t.join(", ")}` : "";
 }

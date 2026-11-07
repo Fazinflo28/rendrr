@@ -306,6 +306,8 @@ function usePlayback(duration, { cuts = [], clock = null, seq = false } = {}) {
   }, [duration]);
   const attach = useCallback((el) => { ref.current.video = el; }, []);
   const attachGate = useCallback((fn) => { ref.current.gate = fn; }, []);
+  // A trim that makes the edit shorter than the playhead's place brings the playhead back to the new end.
+  useEffect(() => { if (duration > 0 && ref.current.time > duration) seek(duration); }, [duration, seek]);
   return { time, playing, setPlaying, seek, attach, attachGate, toSource, toggle: () => setPlaying((p) => (ref.current.time >= duration - 0.01 ? (seek(0), true) : !p)) };
 }
 const QUALITIES = ["Auto", "720p", "480p"];
@@ -368,7 +370,7 @@ function Player({ pb, duration, caption, captionDrawn = false, captionLook = "cl
   const pickQuality = (q) => { setQMenu(false); if (q === quality) return; setSwitching(true); setQuality(q); setTimeout(() => setSwitching(false), 650); };
   const takeSnapshot = (e) => { e?.stopPropagation(); pb.setPlaying(false); try { let url; const shown = media ? document.querySelector("video[data-on='1']") : null; try { url = shown ? drawVideoFrame(shown, { caption, captionLook, zoom, aspect }) : src && videoRef.current ? drawVideoFrame(videoRef.current, { caption, captionLook, zoom, aspect }) : null; } catch { url = null; } url ||= drawFrame({ aspect, time: pb.time, caption, captionLook, zoom }); setSnap({ url, time: pb.time }); onSnapshot?.({ url, time: pb.time }); } catch (err) { toast("Could not take a snapshot: " + err.message); } };
   const copySnap = async () => { try { const blob = await (await fetch(snap.url)).blob(); await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); toast("Snapshot copied", { icon: "check", tone: "brand" }); } catch { toast("Copy is blocked here. Right click the image to save it.", { ms: 4000 }); } };
-  const pct = duration ? (pb.time / duration) * 100 : 0;
+  const pct = duration ? Math.min(100, Math.max(0, (pb.time / duration) * 100)) : 0; // never past the bar's ends
   const scrubRef = useRef();
   const seekFromEvent = (e) => { const r = scrubRef.current.getBoundingClientRect(); pb.seek(((e.clientX - r.left) / r.width) * duration); };
   const onScrubDown = (e) => { seekFromEvent(e); const mv = (ev) => seekFromEvent(ev); const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); }; window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up); };
@@ -391,7 +393,7 @@ function Player({ pb, duration, caption, captionDrawn = false, captionLook = "cl
       <span class="mono t-small" style="min-width:40px">${fmtTime(pb.time)}</span>
       <div class="scrub" ref=${scrubRef} onPointerDown=${onScrubDown} role="slider" aria-label="Seek" aria-valuenow=${Math.round(pb.time)} aria-valuemax=${duration}>
         <div class="track" /><div class="fill" style=${{ width: pct + "%" }} />
-        ${marks.map((m) => html`<div key=${m.id} class="mark" title=${m.text} style=${{ left: (m.time / duration) * 100 + "%" }} onPointerDown=${(e) => { e.stopPropagation(); onMark?.(m); }} />`)}
+        ${marks.map((m) => html`<div key=${m.id} class="mark" title=${m.text} style=${{ left: Math.min(100, (m.time / duration) * 100) + "%" }} onPointerDown=${(e) => { e.stopPropagation(); onMark?.(m); }} />`)}
         <div class="knob" style=${{ left: pct + "%" }} />
       </div>
       <span class="mono t-small muted" style="min-width:40px">${fmtTime(duration)}</span>

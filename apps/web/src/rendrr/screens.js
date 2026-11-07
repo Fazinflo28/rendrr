@@ -254,63 +254,6 @@ function DeleteVideoModal({ video, videos, onClose, onDeleted }) {
     footer=${html`<${Btn} kind="ghost" onClick=${finish} disabled=${busy}>${inUse && gone.current ? "Keep those" : "Cancel"}<//><${Btn} id="confirm-delete-video" icon="trash" disabled=${busy} onClick=${go_}>${busy ? "Deleting…" : inUse ? (one ? "Delete the video and its edits" : `Delete ${inUse.length === 1 ? "it" : "them"} and the edits`) : one ? "Delete" : `Delete ${vids(list.length)}`}<//>`} />`;
 }
 
-/* ---------- Recreate: pick footage (Drive or computer) > pick a project > straight into the editor ---------- */
-function RecreateModal({ g, onClose }) {
-  const { go } = useNav(); const toast = useToast();
-  const [step, setStep] = useState("source"); const [tab, setTab] = useState("drive"); const [video, setVideo] = useState(null); const [busy, setBusy] = useState(false); const [over, setOver] = useState(false);
-  const [folder, setFolder] = useState(""); const [newName, setNewName] = useState(""); const fileRef = useRef();
-  useEffect(() => { api.getDriveStatus().then((s) => { if (!s.connected && s.available === false) setTab("local"); }).catch(() => {}); }, []);
-  const fq = useAsync(() => (step === "project" ? api.listFoldersLite() : Promise.resolve(null)), [step]);
-  useEffect(() => { if (fq.data?.length && !folder) setFolder(fq.data[0].id); }, [fq.data]);
-  const alive = useRef(true); useEffect(() => () => { alive.current = false; }, []);
-  const madeFolder = useRef(null); const [wait, setWait] = useState(null);
-  const picked = (v) => { setVideo(v); setStep("project"); window.dispatchEvent(new Event("rendrr:library")); };
-  // An edit needs ready footage (transcript, silences): wait here while it is prepared, then open the editor.
-  const whenReady = async () => {
-    for (;;) {
-      const v = await api.getVideo(video.id);
-      if (v.status === "ready") return v;
-      if (["failed", "missing", "expired"].includes(v.status)) throw new Error(v.error || '"' + v.name + '" could not be prepared. Pick another video.');
-      if (!alive.current) throw new Error("stopped");
-      setWait(v.stepName || "Preparing your footage");
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-  };
-  const fromDrive = async (ids) => { const out = await api.addFromDrive(ids.slice(0, 1)); picked(out[0]); };
-  const fromFiles = async (files) => { if (!files?.length) return; setBusy(true); try { const out = await api.addFromComputer([files[0]]); picked(out[0]); } catch (e) { toast(e.message, { icon: "alert" }); } finally { setBusy(false); } };
-  const create = async () => {
-    setBusy(true);
-    try { let fid = folder; if (fid === "new") fid = madeFolder.current || (madeFolder.current = (await api.createFolder(newName)).id);
-      await whenReady(); setWait(null);
-      const p = await api.createProject({ videoId: video.id, reference: { kind: "recipe", id: g.id }, folderId: fid, name: "Recreate: " + g.title });
-      api.countRecreate(g.id); toast("Project created. Opening the editor.", { icon: "spark", tone: "brand" }); onClose(); go("/editor/" + p.id);
-    } catch (e) { if (alive.current) { toast(e.message); setBusy(false); setWait(null); } }
-  };
-  return html`<${Modal} title="Recreate this video" sub="Your footage starts raw. This video is attached as a reference: your AI reads it and makes the edit." onClose=${onClose} wide>
-    <div class="steps-row"><span class=${"stp" + (step === "source" ? " on" : " done")}>1. Footage</span><span class="stp-sep" /><span class=${"stp" + (step === "project" ? " on" : "")}>2. Project</span></div>
-    ${step === "source" ? html`
-      <div class="srcpick">
-        <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="rc-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Add from Google Drive</b><span class="t-small muted">Pick a video from your Drive</span></span><span class="tag accent">Recommended</span></button>
-        <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="rc-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>From your computer</b><span class="t-small muted">Pick a file or drag and drop</span></span></button>
-      </div>
-      ${tab === "drive" ? html`<${DrivePicker} single addLabel="Use this video" onAdd=${fromDrive} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
-        <input type="file" accept="video/*" ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) fromFiles(Array.from(fs)); e.target.value = ""; }} />
-        <div class=${"drop" + (over ? " over" : "")} id="rc-drop" style="padding:36px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); const fs = e.dataTransfer.files; if (fs?.length) fromFiles(Array.from(fs)); }}>
-          <div class="ico"><${Icon} name="laptop" /></div><b class="t-heading">Drop a video here</b><p class="muted t-small">Files stay on your computer. We make a light preview in your browser.</p>
-          <div class="row"><${Btn} disabled=${busy} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>${busy ? "Preparing…" : "Choose a file"}<//></div></div>
-        </div>`}`
-    : html`
-      <div class="card flat row" style="gap:12px"><${Icon} name=${video.source === "drive" ? "drive" : "laptop"} size="18" /><div class="grow"><b class="t-label">${video.name}</b><p class="t-small muted">${video.source === "drive" ? "Linked from Google Drive" : "From your computer"} · ${wait ? wait + ". The editor opens when it is ready." : "preview is being made in the background"}</p></div><${Btn} kind="ghost" size="xs" onClick=${() => setStep("source")}>Change<//></div>
-      <div class="col" style="gap:8px"><span class="t-label">Which project should this go into?</span>
-        <${Async} q=${fq} skeleton=${html`<${Skeleton} rows=${3} card=${false} />`} whenEmpty=${null}>${(fs) => html`<div class="plist" id="rc-folders">
-          ${(fs || []).map((f) => html`<label key=${f.id} class=${"prow" + (folder === f.id ? " on" : "")}><input type="radio" name="rcf" value=${f.id} checked=${folder === f.id} onChange=${() => setFolder(f.id)} /><${Icon} name="projects" size="16" /><span class="grow">${f.name}</span></label>`)}
-          <label class=${"prow" + (folder === "new" ? " on" : "")}><input type="radio" name="rcf" value="new" checked=${folder === "new"} onChange=${() => setFolder("new")} /><${Icon} name="plus" size="16" /><span class="grow">New project</span></label>
-          ${folder === "new" && html`<input id="rc-newname" class="input" placeholder="Project name, like a client or a campaign" value=${newName} onInput=${(e) => setNewName(e.target.value)} autoFocus />`}
-        </div>`}<//></div>
-      <div class="row" style="justify-content:flex-end;gap:8px"><${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="rc-create" icon="spark" disabled=${busy || !folder || (folder === "new" && !newName.trim())} onClick=${create}>${busy ? (wait ? "Waiting for footage…" : "Creating…") : "Create and open editor"}<//></div>`}
-  <//>`;
-}
-
 /* ---------- /library ---------- */
 const BUSY = ["linking", "preview", "previewing", "uploading", "processing"];
 const ATTN = ["failed", "missing", "expired", "paused"];
@@ -593,8 +536,8 @@ function VideoOrderPicker({ videos, value, onChange, id = "np-videos" }) {
   const move = (i, d) => { const j = i + d; if (j < 0 || j >= value.length) return; const n = [...value]; [n[i], n[j]] = [n[j], n[i]]; onChange(n); };
   const total = value.reduce((a, vid) => a + (byId(vid)?.seconds || 0), 0);
   return html`<div class="col" style="gap:8px">
-    <div class="plist" id=${id}>${videos.length === 0 ? html`<p class="t-small muted" style="padding:8px 10px">No ready footage yet. Add videos in the Library first.</p>`
-      : videos.map((v) => { const n = value.indexOf(v.id); return html`<label key=${v.id} class=${"prow" + (n >= 0 ? " on" : "")} data-video=${v.id}><input type="checkbox" checked=${n >= 0} onChange=${() => toggle(v.id)} /><span class=${"vnum" + (n >= 0 ? " on" : "")} aria-hidden="true">${n >= 0 ? n + 1 : ""}</span><span class="grow vname">${v.name}</span><span class="t-small muted">${fmtLen(v.seconds || 0)}</span></label>`; })}</div>
+    <div class="plist" id=${id}>${videos.length === 0 ? html`<p class="t-small muted" style="padding:8px 10px">No footage yet.</p>`
+      : videos.map((v) => { const n = value.indexOf(v.id); return html`<label key=${v.id} class=${"prow" + (n >= 0 ? " on" : "")} data-video=${v.id}><input type="checkbox" checked=${n >= 0} onChange=${() => toggle(v.id)} /><span class=${"vnum" + (n >= 0 ? " on" : "")} aria-hidden="true">${n >= 0 ? n + 1 : ""}</span><span class="grow vname">${v.name}</span><span class="t-small muted">${v.status && v.status !== "ready" ? "Preparing…" : fmtLen(v.seconds || 0)}</span></label>`; })}</div>
     ${value.length > 1 && html`<div class="vorder" id=${id + "-order"}>
       <div class="row between"><span class="t-label">Order in the edit</span><span class="t-small muted">${value.length} videos · ${fmtLen(total)}</span></div>
       ${value.map((vid, i) => html`<div key=${vid} class="vorow" data-order=${vid}><span class="vnum on">${i + 1}</span><span class="grow vname">${byId(vid)?.name || vid}</span>
@@ -605,23 +548,67 @@ function VideoOrderPicker({ videos, value, onChange, id = "np-videos" }) {
   </div>`;
 }
 
-function NewProjectModal({ onClose, onCreated, styleId, folderId, videoIds: initialIds = [], defaultName = "", title = "New edit", sub }) {
+function NewProjectModal({ onClose, onCreated, styleId, folderId, videoIds: initialIds = [], defaultName = "", title = "New edit", sub, reference: initialRef = null }) {
+  const toast = useToast();
   const vq = useAsync(() => api.listVideos(), []); const fq = useAsync(() => api.listFoldersLite(), []);
-  const [videoIds, setVideoIds] = useState(initialIds); const [reference, setReference] = useState(styleId ? { kind: "style", id: styleId, name: "" } : null); const [name, setName] = useState(defaultName); const [folder, setFolder] = useState(folderId || ""); const [busy, setBusy] = useState(false); const [err, setErr] = useState(null);
+  const [videoIds, setVideoIds] = useState(initialIds); const [reference, setReference] = useState(initialRef || (styleId ? { kind: "style", id: styleId, name: "" } : null)); const [name, setName] = useState(defaultName); const [folder, setFolder] = useState(folderId || ""); const [busy, setBusy] = useState(false); const [err, setErr] = useState(null);
+  // New footage added from this window (Drive or this computer): picked at once, used once it is prepared.
+  const [adding, setAdding] = useState(""); const [added, setAdded] = useState([]); const [wait, setWait] = useState(null); const fileRef = useRef();
+  const alive = useRef(true); useEffect(() => () => { alive.current = false; }, []);
   const ready = (vq.data || []).filter((v) => v.status === "ready" && v.kind !== "reference");
+  const shown = [...ready, ...added.filter((x) => !ready.some((v) => v.id === x.id))];
+  const picked = (vs) => { setAdded((a) => [...a, ...vs]); setVideoIds((ids) => [...ids, ...vs.map((v) => v.id).filter((id) => !ids.includes(id))]); setAdding(""); window.dispatchEvent(new Event("rendrr:library")); };
+  const fromDrive = async (ids) => { try { picked(await api.addFromDrive(ids.slice(0, 1))); } catch (e) { toast(e.message, { icon: "alert" }); } };
+  const fromFiles = async (files) => { if (!files?.length) return; setBusy(true); try { picked(await api.addFromComputer([files[0]])); } catch (e) { toast(e.message, { icon: "alert" }); } finally { setBusy(false); } };
+  // An edit needs its footage prepared (transcript, silences): wait here for new footage, then create.
+  const whenReady = async (ids) => {
+    for (const vid of ids) {
+      if (ready.some((v) => v.id === vid)) continue;
+      for (;;) {
+        const v = await api.getVideo(vid);
+        if (v.status === "ready") break;
+        if (["failed", "missing", "expired"].includes(v.status)) throw new Error(v.error || '"' + v.name + '" could not be prepared. Pick another video.');
+        if (!alive.current) throw new Error("stopped");
+        setWait(v.stepName || "Preparing your footage");
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    setWait(null);
+  };
   // From scratch: no footage, a blank canvas (a solid colour) to build on with graphics, text and music, like a
   // composition in After Effects.
   const [mode, setMode] = useState("footage"); const [secs, setSecs] = useState(30); const [shape, setShape] = useState("16:9"); const [color, setColor] = useState("#0B0B10");
   const scratch = mode === "scratch";
-  const create = async () => { setBusy(true); setErr(null); try { const p = await api.createProject(scratch ? { blank: { seconds: Math.max(1, Math.min(3600, Number(secs) || 30)), color }, aspect: shape, reference, name, folderId: folder || fq.data?.[0]?.id } : { videoIds, reference, name, folderId: folder || fq.data?.[0]?.id }); onCreated(p); } catch (e) { setErr(e.message); setBusy(false); } };
-  return html`<${Modal} title=${title} sub=${scratch ? null : sub} onClose=${onClose} footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="create-project" disabled=${busy || (!scratch && !videoIds.length)} onClick=${create}>${busy ? "Creating…" : scratch ? "Create blank edit" : videoIds.length > 1 ? "Create edit from " + videoIds.length + " videos" : "Create edit"}<//>`}>
+  const create = async () => {
+    setBusy(true); setErr(null);
+    try {
+      if (!scratch) await whenReady(videoIds);
+      const p = await api.createProject(scratch ? { blank: { seconds: Math.max(1, Math.min(3600, Number(secs) || 30)), color }, aspect: shape, reference, name, folderId: folder || fq.data?.[0]?.id } : { videoIds, reference, name, folderId: folder || fq.data?.[0]?.id });
+      onCreated(p);
+    } catch (e) { if (alive.current) { setErr(e.message === "stopped" ? null : e.message); setBusy(false); setWait(null); } }
+  };
+  const addRow = adding ? html`<div class="col" id="np-add" style="gap:10px">
+      <div class="row between"><b class="t-label">Add footage</b><${Btn} kind="ghost" size="xs" onClick=${() => setAdding("")}>Cancel<//></div>
+      <div class="srcpick">
+        <button class=${"srcopt" + (adding === "drive" ? " on" : "")} id="np-add-drive" onClick=${() => setAdding("drive")}><${Icon} name="drive" size="20" /><span><b>Google Drive</b></span></button>
+        <button class=${"srcopt" + (adding === "local" ? " on" : "")} id="np-add-local" onClick=${() => setAdding("local")}><${Icon} name="laptop" size="20" /><span><b>This computer</b></span></button>
+      </div>
+      ${adding === "drive" ? html`<${DrivePicker} single addLabel="Use this video" onAdd=${fromDrive} onLocal=${() => setAdding("local")} />` : html`
+        <input type="file" accept="video/*" ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) fromFiles(Array.from(fs)); e.target.value = ""; }} />
+        <div class="drop" id="np-drop" style="padding:28px 20px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => e.preventDefault()} onDrop=${(e) => { e.preventDefault(); const fs = e.dataTransfer.files; if (fs?.length) fromFiles(Array.from(fs)); }}>
+          <div class="ico"><${Icon} name="laptop" /></div><b class="t-heading">Drop a video here</b>
+          <div class="row"><${Btn} disabled=${busy} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>${busy ? "Preparing…" : "Choose a file"}<//></div></div>`}
+    </div>` : html`<${Btn} kind="secondary" size="sm" icon="plus" id="np-add-footage" onClick=${() => setAdding("drive")}>Add footage<//>`;
+  const label = busy ? (wait ? "Waiting for footage…" : "Creating…") : scratch ? "Create blank edit" : videoIds.length > 1 ? "Create edit from " + videoIds.length + " videos" : "Create edit";
+  return html`<${Modal} title=${title} sub=${scratch ? null : sub} onClose=${onClose} wide=${!!adding} footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="create-project" disabled=${busy || (!scratch && !videoIds.length)} onClick=${create}>${label}<//>`}>
     <div class="row" style="gap:8px"><${Seg} size="sm" id="np-mode" value=${mode} options=${[{ value: "footage", label: "From footage" }, { value: "scratch", label: "From scratch" }]} onChange=${setMode} /></div>
     ${scratch ? html`<p class="t-small muted" id="np-scratch-note">A blank canvas your AI builds the video on.</p>
       <div class="row wrap" style="gap:12px">
         <${Field} label="Length (seconds)" id="np-seconds"><input id="np-seconds" class="input" type="number" min="1" max="3600" step="1" value=${secs} onInput=${(e) => setSecs(e.target.value)} style="width:120px" /><//>
         <${Field} label="Shape" id="np-shape"><${Seg} size="sm" id="np-shape" value=${shape} options=${["16:9", "9:16", "1:1", "4:5"].map((v) => ({ value: v, label: v }))} onChange=${setShape} /><//>
         <${Field} label="Background" id="np-color"><input id="np-color" type="color" value=${color} onInput=${(e) => setColor(e.target.value.toUpperCase())} aria-label="Background colour" style="width:48px;height:36px;padding:0;border:none;background:none" /><//>
-      </div>` : html`<${Field} label="Footage" id="np-videos"><${Async} q=${vq} skeleton=${html`<${Skeleton} rows=${3} card=${false} />`} whenEmpty=${html`<p class="t-small muted">No footage yet. Add videos in the Library first.</p>`}>${() => html`<${VideoOrderPicker} videos=${ready} value=${videoIds} onChange=${setVideoIds} />`}<//><//>`}
+      </div>` : html`<${Field} label="Footage" id="np-videos"><div class="col" style="gap:10px"><${Async} q=${vq} skeleton=${html`<${Skeleton} rows=${3} card=${false} />`}>${() => html`<${VideoOrderPicker} videos=${shown} value=${videoIds} onChange=${setVideoIds} />`}<//>${addRow}
+        ${wait && html`<p class="t-small muted" id="np-wait">${wait}. The editor opens when it is ready.</p>`}</div><//>`}
     <${Field} label="Reference (optional)" id="np-reference"><${ReferencePicker} id="np-reference" value=${reference} onChange=${setReference} /><//>
     <${Field} label="Project folder" id="np-folder"><select id="np-folder" class="input" value=${folder || fq.data?.[0]?.id || ""} onChange=${(e) => setFolder(e.target.value)}>${(fq.data || []).map((f) => html`<option key=${f.id} value=${f.id}>${f.name}</option>`)}</select><//>
     <${Field} label="Name (optional)" id="np-name"><input id="np-name" class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder=${scratch ? "SaaS launch video" : "Podcast highlights"} /><//>
@@ -834,7 +821,8 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
       <${GalleryVideo} g=${open} big />
       ${!open.allowRecreate && html`<p class="t-small muted">The creator turned off recreate for this video.</p>`}
     <//>`}
-    ${recreate && html`<${RecreateModal} g=${recreate} onClose=${() => setRecreate(null)} />`}
+    ${recreate && html`<${NewProjectModal} title="Recreate this video" sub="Pick your footage. Your AI follows this video." reference=${{ kind: "recipe", id: recreate.id, name: recreate.title }} defaultName=${"Recreate: " + recreate.title} onClose=${() => setRecreate(null)}
+      onCreated=${(p) => { api.countRecreate(recreate.id); setRecreate(null); toast("Edit created. Opening the editor.", { icon: "check", tone: "brand" }); go("/editor/" + p.id); }} />`}
     ${publish && html`<${PublishModal} plats=${plats} onClose=${() => setPublish(false)} onPublished=${(g) => { q.setData((d) => [g, ...(d || [])]); setPublish(false); setMine(true); }} />`}
   </div>`;
 }

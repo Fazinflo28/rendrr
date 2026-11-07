@@ -2,7 +2,7 @@
 // Ported from ui/rendrr-ui.html (editor script). Changes: real footage in the player, live reload when an AI
 // edits, autosave conflicts, real undo/restore, the rendered preview plays in the player, real downloads.
 // Phase 2: the edit is a sequence (clips of any video, in any order, J/L cuts) with Premiere's tools.
-import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, MoreMenu, usePlayback, Player, turnedVideoStyle, fitVideoStyle, Art, useNav, useApp } from "./ui";
+import { useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtAgo, initials, Icon, Btn, Toggle, Chip, useToast, Modal, useAsync, Async, MoreMenu, usePlayback, Player, turnedVideoStyle, fitVideoStyle, Art, Thumb, useNav, useApp } from "./ui";
 
 // Web addresses in a comment as links (they open in a new tab); the rest stays text.
 function linkified(text) {
@@ -16,7 +16,7 @@ function linkified(text) {
   out.push((text || "").slice(last));
   return out;
 }
-import { StyleArt, CreateLinkModal, ReferencePicker, VideoOrderPicker } from "./screens";
+import { CreateLinkModal } from "./screens";
 import { api } from "./api";
 import { OpColor, OpSlider } from "./controls";
 import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./color";
@@ -27,7 +27,7 @@ import { SamplesWindow } from "./samples";
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
-import { ASPECT_RATIO, BLEND_MODES, adjustCss, areaAt, objectBoxAt, hashOf, maskPicture, rateOf, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { ASPECT_RATIO, BLEND_MODES, lookTags, adjustCss, areaAt, objectBoxAt, hashOf, maskPicture, rateOf, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 import { applyLiveFx, resumeLiveAudio } from "./liveAudio";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
@@ -44,25 +44,8 @@ const TRACKS = [["v3", "V3"], ["v2", "V2"], ["v1", "V1"], ["a1", "A1"], ["a2", "
 /** Timeline zoom in pixels a second: down to the whole edit, up to the 10 ms frames of the waveform (6 px each). */
 const ZMIN = 4, ZMAX = 600;
 /** Each track's height in pixels (the dialogue is taller: its waveform). */
-const TRACK_H = { a1: 56, a2: 40, a3: 34 };
-const TRACK_HINT = { v1: "Main cut", v2: "B-roll, effects", v3: "Titles", a1: "Dialogue", a2: "Music", a3: "Sound FX" };
-// The style, broken down like a recipe. Keys muted, values plain, nested with two spaces.
-const styleCode = (st, S) => [
-  "style: " + st.name,
-  "type: " + st.type,
-  "shape: " + (S?.aspect || st.ori[0]),
-  "cuts:",
-  "  pace: " + st.cutPace,
-  "zooms: " + st.zoomRules,
-  "captions:",
-  "  look: " + (S?.captionLook || st.captionLook),
-  "  rule: " + st.captionRule,
-  "  on: " + (S?.captionsOn === false ? "false" : "true"),
-  "music: " + st.musicVibe,
-  "export:",
-  "  shapes: " + st.ori.join(", "),
-  "  best_on: " + st.platforms.join(", "),
-].join("\n");
+const TRACK_H = { a1: 56, a2: 40, a3: 34, vo: 40 };
+const TRACK_HINT = { v1: "Main cut", v2: "B-roll, effects", v3: "Titles", a1: "Dialogue", a2: "Music", a3: "Sound FX", bg: "Behind the picture", vo: "Your sound file, in place of the clips' own" };
 // Premiere's tools and keys.
 const TOOL_ICON = { select: "select", razor: "razor", ripple: "ripple", roll: "roll", slip: "slip", slide: "slide" };
 const TOOLS = [["select", "V", "Select", "Click to select, drag a clip to reorder it, drag an edge to trim"], ["razor", "C", "Razor", "Click a clip to split it there"], ["ripple", "B", "Ripple", "Drag an edge: the clip gets longer or shorter and the edit closes up"], ["roll", "N", "Rolling", "Drag a cut: one clip gets longer, the next shorter"], ["slip", "Y", "Slip", "Drag a clip: same place and length, other footage"], ["slide", "U", "Slide", "Drag a clip between its neighbours"]];
@@ -111,10 +94,9 @@ async function readCommentImage(file) {
 // The editor is laid out like Instagram Edits' desktop app: a rail of tools on the left, each opening its tool in the
 // panel beside it (Media first; X closes it); the player in the middle; the inspector on the right, with the settings
 // of what is selected on the timeline; the timeline across the bottom, its tools in one bar above it.
-// Rail: key, label, icon. The second group is Rendrr's own: the reference your AI reads, what it did, comments.
+// Rail: key, label, icon. Comments and what your AI did are in the right panel.
 const RAIL = [["media", "Media", "rMedia"], ["audio", "Audio", "rAudio"], ["text", "Text", "rText"], ["captions", "Captions", "rCaptions"], ["color", "Color", "rColor"], ["multicam", "Multicam", "rMulticam"], ["transcript", "Transcript", "rTranscript"]];
-const RAIL_AI = [["style", "Reference", "rReference"], ["ai", "Your AI", "rAI"], ["comments", "Comments", "rComments"]];
-const PANEL_TOOLS = Object.fromEntries([...RAIL, ...RAIL_AI].map(([k, l, ic]) => [k, [l, ic]]));
+const PANEL_TOOLS = Object.fromEntries(RAIL.map(([k, l, ic]) => [k, [l, ic]]));
 // A tab remembered from the old layout opens Media (the clip's settings are in the inspector now).
 const railTab = (t) => (t === null ? null : PANEL_TOOLS[t] ? t : "media");
 const ASPECT_NAMES = { "9:16": "Reels, TikTok, Shorts", "16:9": "YouTube, broadcast", "4:5": "Instagram feed", "1:1": "Square" };
@@ -890,11 +872,14 @@ function AddClipModal({ main, at, onAdd, onClose }) {
   const [from, setFrom] = useState(0); const [to, setTo] = useState(main.seconds || 5); const [where, setWhere] = useState("end");
   const ok = mode === "whole" ? ids.length > 0 : to - from >= 0.1 && from >= 0 && to <= (v.seconds || 0) + 0.05;
   const go_ = () => onAdd({ items: mode === "whole" ? ids.map((id) => { const x = list.find((y) => y.id === id); return { video: x, from: 0, to: r2(x.seconds || 0) }; }) : [{ video: v, from: r2(from), to: r2(to) }], at: where === "playhead" ? at : undefined });
-  return html`<${Modal} title="Add videos" sub="Whole videos, in the order they play (a video filmed in parts), or a part of one. They go into the sequence and the edit makes room." onClose=${onClose}
+  return html`<${Modal} title="Add clips" sub="Pick them in the order they play." onClose=${onClose} wide
     footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="add-clip-go" icon="plus" disabled=${!ok} onClick=${go_}>${mode === "whole" && ids.length > 1 ? "Add " + ids.length + " videos" : mode === "whole" ? "Add video" : "Add clip"}<//>`}>
     <div class="col" style="gap:12px" id="add-clip-form">
       <div class="row" style="gap:12px">${[["whole", "Whole videos"], ["part", "A part of a video"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-mode" data-mode=${k} checked=${mode === k} onChange=${() => setMode(k)} />${l}</label>`)}</div>
-      ${mode === "whole" ? html`<${VideoOrderPicker} id="add-videos" videos=${list.map((x) => (x.id === main.id ? { ...x, name: x.name + " (this edit's footage)" } : x))} value=${ids} onChange=${setIds} />`
+      ${mode === "whole" ? html`<div class="clip-grid" id="add-videos">${q.status === "loading" ? Array.from({ length: 6 }).map((_, i) => html`<div key=${i} class="clip-card clip-sk" aria-busy="true"><div class="clip-thumb skeleton" /><div class="skeleton sk-line" style="width:70%" /></div>`)
+        : list.map((x) => { const n = ids.indexOf(x.id); return html`<button key=${x.id} type="button" class=${"clip-card" + (n >= 0 ? " on" : "")} data-video=${x.id} aria-pressed=${n >= 0} title=${x.name} onClick=${() => setIds(n >= 0 ? ids.filter((i) => i !== x.id) : [...ids, x.id])}>
+          <div class="clip-thumb"><${Thumb} src=${x.thumb} art=${x.art} /><span class="clip-len">${fmtTime(x.seconds || 0)}</span>${n >= 0 && html`<span class="clip-num">${n + 1}</span>`}${x.id === main.id && html`<span class="badge-in">This edit</span>`}</div>
+          <span class="clip-name ell">${x.name}</span></button>`; })}</div>`
       : html`<label class="t-small" style="display:grid;gap:4px">Video<select class="input sm" id="add-clip-video" value=${vid} onChange=${(e) => { setVid(e.target.value); const nv = list.find((x) => x.id === e.target.value); if (nv) { setFrom(0); setTo(nv.seconds || 5); } }}>${list.map((x) => html`<option key=${x.id} value=${x.id}>${x.id === main.id ? x.name + " (this edit's footage)" : x.name} · ${fmtTime(x.seconds || 0)}</option>`)}</select></label>
       <div class="row" style="gap:8px"><label class="t-small grow" style="display:grid;gap:4px">From (s)<input class="input sm" id="add-clip-from" type="number" min="0" step="0.1" value=${from} onInput=${(e) => setFrom(+e.target.value)} /></label><label class="t-small grow" style="display:grid;gap:4px">To (s)<input class="input sm" id="add-clip-to" type="number" min="0" step="0.1" value=${to} onInput=${(e) => setTo(+e.target.value)} /></label></div>
       ${!ok && html`<p class="t-small muted" role="alert">Pick a part at least 0.1 s long inside the video (${fmtTime(v.seconds || 0)}).</p>`}`}
@@ -924,7 +909,6 @@ function EditorPage({ id }) {
 
 function EditorInner({ project, reload, ai, keep }) {
   const { go } = useNav(); const toast = useToast(); const { refreshUsage } = useApp();
-  const sq = useAsync(() => api.listStyles(), []);
   // Every word needs an end time for the plan (stored transcripts have them; the UI demo's do not).
   const transcript = useMemo(() => {
     const all = project.transcript.flatMap((l) => l.words); let i = 0;
@@ -942,6 +926,8 @@ function EditorInner({ project, reload, ai, keep }) {
   const tlOf = (s) => ({ ...tl, cut: s.cut, tracks: s.tracks, captionsOn: s.captionsOn, captionLook: s.captionLook, captionText: s.captionText, captionStyle: s.captionStyle, audio: s.audio, export: s.export, media: s.media, voice: s.voice ?? null, background: s.background ?? undefined, multicam: s.multicam ?? undefined });
   const timeline = useMemo(() => tlOf(S), [S]);
   const lay = useMemo(() => layoutTimeline(timeline, words), [timeline, words]);
+  // What the timeline shows on a track: V3 without the caption lines (captions are set in the Captions panel).
+  const onTrack = (k) => (k === "v3" ? lay.tracks.v3.filter((c) => c.kind !== "caption") : lay.tracks[k]);
   const view = useMemo(() => sequenceView(lay, words), [lay, words]);
   const main = view.mainVideoId;
   // The other videos on V1: sent with the project, plus any added here (their preview copy is fetched then).
@@ -958,6 +944,9 @@ function EditorInner({ project, reload, ai, keep }) {
   const media = useMemo(() => ({ broll: { ...(project.brollMedia || {}), ...insideMedia }, graphicClips: project.graphicClipMedia || {}, audio: project.audioMedia || {} }), [project, insideMedia]);
   const urls = useMemo(() => ({ ...Object.fromEntries(Object.entries(others).map(([id, v]) => [id, v.url || null])), [main]: project.video?.proxyUrl || null }), [others, main, project]);
   const [sel, setSel] = useState(null); // {track,id}
+  // The right panel's tab: comments (first), what your AI did, or the selected clip's settings.
+  const [side, setSide] = useState("comments");
+  const [voiceAt, setVoiceAt] = useState(null); // the voice clip's start while it is dragged
   const [wsel, setWsel] = useState(null); // {a,b} word indexes
   // rtab: the tool open in the left panel (null: closed by its X).
   const [rtab, setRtabNow] = useState(railTab(keep.current.tab)); const setRtab = (t) => { const k = railTab(t); keep.current.tab = k; setRtabNow(k); }; const [verMenu, setVerMenu] = useState(false);
@@ -984,17 +973,14 @@ function EditorInner({ project, reload, ai, keep }) {
   const [saved, setSaved] = useState("Saved");
   const [status, setStatus] = useState(project.status);
   const cutSet = useMemo(() => new Set(S.cut), [S.cut]);
-  const style = (sq.data || []).find((s) => s.id === S.styleId) || project.style; // only a style the AI applied
-  // The reference the user attached for their AI: stored with the edit, never applied to it.
-  const [reference, setReference] = useState(project.reference || null);
-  const attach = async (r) => {
-    const before = reference; setReference(r);
-    try { await api.updateProject(project.id, { reference: r ? { kind: r.kind, id: r.id } : null }); toast(r ? "Attached for your AI to read" : "Reference taken off", { icon: "check", tone: "brand" }); }
-    catch (e) { setReference(before); toast(e.message); }
-  };
-  // The left column: the library (bin and reference picker), the bin video playing in the monitor.
+  // The reference the user attached for their AI (when the edit was made, or by the AI): never applied to the edit.
+  const reference = project.reference || null;
+  // The left column: the library (bin), the reference or a bin video playing in the monitor.
   const lib = useLibrary([project.id]); const [source, setSource] = useState(null); const { openAdd } = useApp();
   const usedIds = useMemo(() => Array.from(new Set([...S.tracks.v1.map((c) => c.sourceVideoId).filter(Boolean), ...S.tracks.v2.filter((b) => b.kind === "broll" && b.videoId).map((b) => b.videoId)])).filter((x) => x !== project.videoId), [S.tracks]);
+  // The style the AI applied (its caption rules shape the captions).
+  const sq = useAsync(() => api.listStyles(), []);
+  const style = (sq.data || []).find((x) => x.id === S.styleId) || project.style;
   const captionRules = useMemo(() => { const r = StyleRulesSchema.safeParse(style?.rules); return r.success ? r.data.captions : undefined; }, [style]);
   // Phase 6: the user's LUTs, and the numbers of the ones this edit's grades use (the plan needs them, as the render).
   const lutQ = useAsync(() => api.listLuts().catch(() => []), []);
@@ -1063,7 +1049,11 @@ function EditorInner({ project, reload, ai, keep }) {
     if (!target) { toast("Move the playhead inside a clip to split it"); return; }
     doOp({ op: "split_clip", track: isV1(target.track) ? "v1" : target.track, clipId: target.id, at: r2(t), edit: true });
   };
-  const removeSel = () => { if (!sel) return; if (doOp({ op: "delete_clip", track: sel.track, clipId: sel.id })) setSel(null); };
+  const removeSel = () => {
+    if (!sel) return;
+    const op = sel.track === "vo" ? { op: "set_voice", soundId: null } : sel.track === "bg" ? { op: "set_background", none: true } : { op: "delete_clip", track: sel.track, clipId: sel.id };
+    if (doOp(op)) setSel(null);
+  };
   const [frameOpen, setFrameOpen] = useState(false); const frameBase = useRef(null);
   const selClip = sel ? lay.tracks[sel.track]?.find((c) => c.id === sel.id) : null;
   const selV1 = sel && isV1(sel.track) ? lay.tracks.v1.find((c) => c.id === sel.id) : null;
@@ -1236,7 +1226,7 @@ function EditorInner({ project, reload, ai, keep }) {
   const snapT = (t, skip = []) => {
     if (!snapOn) return t;
     let best = t, bd = 8 / zoom;
-    for (const p of [0, dur, pb.time, ...TRACKS.flatMap(([k]) => lay.tracks[k].flatMap((c) => [c.start, c.end]))]) {
+    for (const p of [0, dur, pb.time, ...TRACKS.flatMap(([k]) => onTrack(k).flatMap((c) => [c.start, c.end]))]) {
       if (skip.some((x) => Math.abs(x - p) < 1e-6)) continue;
       const d = Math.abs(p - t); if (d < bd) { best = p; bd = d; }
     }
@@ -1301,6 +1291,24 @@ function EditorInner({ project, reload, ai, keep }) {
   const canvasW = Math.max(900, px(dur) + 40);
   const tickStep = zoom < 8 ? 30 : zoom < 14 ? 10 : zoom < 30 ? 5 : zoom < 60 ? 2 : zoom < 150 ? 1 : zoom < 400 ? 0.5 : 0.2;
   const ticks = []; for (let k = 0; k * tickStep <= dur; k++) ticks.push(r2(k * tickStep));
+  // Layers that are not clips of a track, shown like Premiere's: what is behind V1 (a row under it) and your own sound
+  // file in place of the clips' sound (a row under the dialogue). Each can be selected and changed.
+  const bgClip = S.background ? { id: "background", start: 0, end: dur, label: "Background: " + (S.background.videoId ? (others[S.background.videoId]?.name || "a video") : S.background.color ? S.background.color : S.background.blur != null ? "the picture blurred" : S.background.gradient ? "gradient" : S.background.pattern ? S.background.pattern.kind : "black") } : null;
+  const voiceSound = S.voice ? (project.sounds || {})[S.voice.soundId] : null;
+  const voiceStart = voiceAt ?? (S.voice?.start || 0);
+  const voiceClip = S.voice ? { id: "voice", start: voiceStart, end: r2(voiceStart + (voiceSound?.seconds || S.voice.editSeconds || dur)), label: "Voice: " + (voiceSound?.name || "your sound file") + (S.voice.gainDb ? " · " + dB(S.voice.gainDb) : "") } : null;
+  const rows = [...TRACKS.slice(0, 3), ...(bgClip ? [["bg", "BG"]] : []), TRACKS[3], ...(voiceClip ? [["vo", "VO"]] : []), ...TRACKS.slice(4)];
+  const layerOf = (k) => (k === "bg" ? (bgClip ? [bgClip] : []) : k === "vo" ? (voiceClip ? [voiceClip] : []) : onTrack(k));
+  // Drag the voice clip to move where it starts; click to select it.
+  const voiceDown = (e) => {
+    e.stopPropagation(); setSel({ track: "vo", id: "voice" });
+    const x0 = e.clientX, s0 = S.voice.start || 0; let to = s0;
+    const move = (ev) => { to = Math.max(0, r2(s0 + (ev.clientX - x0) / zoom)); setVoiceAt(to); };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); setVoiceAt(null); if (Math.abs(to - s0) > 0.01) doOp({ op: "set_voice", soundId: S.voice.soundId, start: to, ...(S.voice.gainDb != null ? { gainDb: S.voice.gainDb } : {}) }); };
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  };
+  // The effects on a clip (grade, masks, key, blur…): an fx badge, as in Premiere; it opens the Color panel.
+  const fxOf = (k, c) => (k === "v1" || (k === "v2" && c.kind === "broll") ? [lookTags(c).replace(/^look: /, ""), c.stabilize ? "stabilize" : ""].filter(Boolean).join(", ") : "");
   const v1ById = useMemo(() => new Map(lay.tracks.v1.map((c) => [c.id, c])), [lay]);
   const clipText = (k, c) => {
     if (k === "v1") { const vn = c.sourceVideoId !== main ? others[c.sourceVideoId]?.name || "Other video" : ""; const sp = c.freeze ? " · freeze" : c.ramp?.length ? " · ramp" : (c.speed && c.speed !== 1 ? ` · ${c.speed}x` : "") + (c.reverse ? " · reversed" : ""); const ang = c.angle && S.multicam?.angles?.find((a) => a.videoId === c.angle); const an = ang ? " · " + (ang.name || others[ang.videoId]?.name || "Angle") : ""; return (vn && vn !== c.label ? vn + " · " : "") + (c.label || vn) + an + (c.rotate ? ` ↻${c.rotate}°` : "") + sp; }
@@ -1333,10 +1341,10 @@ function EditorInner({ project, reload, ai, keep }) {
   const soundStart = !soundSel ? 0 : isV1(sel.track) ? lay.tracks.a1.find((x) => x.id === soundSel.id)?.start ?? 0 : soundSel.start;
 
   const { chat, setChat } = ai;
-  useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, rtab]);
-  useEffect(() => { const el = document.getElementById("comment-list"); if (el) el.scrollTop = el.scrollHeight; }, [comments.length, rtab]);
+  useEffect(() => { const el = document.getElementById("ai-thread"); if (el) el.scrollTop = el.scrollHeight; }, [chat, side]);
+  useEffect(() => { const el = document.getElementById("comment-list"); if (el) el.scrollTop = el.scrollHeight; }, [comments.length, side]);
   // What each tool in the Edit list has going on, in a word or two.
-  const toolHint = { transcript: S.cut.length ? `${S.cut.length} cut` : "", clip: sel ? sel.track.toUpperCase() + " clip" : "", captions: S.captionsOn ? "On" : "Off", audio: S.voice ? "Your voice file" : "", multicam: S.multicam?.angles?.length ? `${S.multicam.angles.length + 1} cameras` : "", style: reference ? "Attached" : "", ai: chat.length ? String(chat.length) : "", comments: comments.some((c) => !c.resolved) ? `${comments.filter((c) => !c.resolved).length} open` : "" };
+  const toolHint = { transcript: S.cut.length ? `${S.cut.length} cut` : "", clip: sel ? sel.track.toUpperCase() + " clip" : "", captions: S.captionsOn ? "On" : "Off", audio: S.voice ? "Your voice file" : "", multicam: S.multicam?.angles?.length ? `${S.multicam.angles.length + 1} cameras` : "" };
   const [draft, setDraft] = useState(""); const [posting, setPosting] = useState(false);
   // The composer (as Higgsfield's): the moment, a drawing on the picture, emoji, pictures, a round send button.
   const [cDraw, setCDraw] = useState(false), [cStrokes, setCStrokes] = useState([]), [cPen, setCPen] = useState(PENS[0]), [cImgs, setCImgs] = useState([]), [cEmoji, setCEmoji] = useState(false);
@@ -1404,16 +1412,21 @@ function EditorInner({ project, reload, ai, keep }) {
   const inkOverlay = ink && !pb.playing && Math.abs(pb.time - ink.time) < 0.06 ? html`<svg class="cmt-ink" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Drawing from a comment">${ink.strokes.map((st, i) => html`<polyline key=${i} points=${st.p.reduce((a, v, k) => (k % 2 ? a + "," + v : a + (k ? " " : "") + v), "")} fill="none" stroke=${st.c} stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />`)}</svg>` : null;
 
   // The inspector (right): the settings of what is selected on the timeline.
-  const insp = !sel || (!selClip && !selV1) ? { kind: null, title: "Inspector", icon: "edit" }
+  const insp = sel?.track === "vo" && S.voice ? { kind: "voice", title: "Your sound file", icon: "wave" }
+    : sel?.track === "bg" && S.background ? { kind: "background", title: "Background", icon: "image" }
+    : !sel || (!selClip && !selV1) ? { kind: null, title: "Inspector", icon: "edit" }
     : isV1(sel.track) ? { kind: "clip", title: selV1?.label || "Clip", icon: "film" }
     : sel.track === "v2" ? (selClip?.kind === "broll" ? { kind: "broll", title: selClip.label || "B-roll", icon: "film" } : { kind: "other", title: selClip?.label || "Effect", icon: "zap" })
     : sel.track === "v3" ? (selClip?.kind === "text" ? { kind: "text", title: "Text", icon: "type" } : selClip?.kind === "graphic" ? { kind: "graphic", title: selClip.label || "Graphic", icon: "layers" } : selClip?.kind === "adjust" ? { kind: "adjust", title: "Adjustment layer", icon: "drop" } : { kind: "other", title: selClip?.label || "Title", icon: "type" })
     : { kind: "sound", title: selClip?.label || (sel.track === "a2" ? "Music" : "Sound effect"), icon: "wave" };
+  useEffect(() => { if (insp.kind) setSide("clip"); else setSide((t) => (t === "clip" ? "comments" : t)); }, [sel?.track, sel?.id, !!insp.kind]);
   // Search tools (top bar): every panel, the inspector's groups and the editor's actions, by name.
   const selAtPlayhead = () => { const c = lay.tracks.v1.find((x) => pb.time >= x.start && pb.time < x.end) || lay.tracks.v1[0]; if (c) setSel({ track: "v1", id: c.id }); };
   const later = (f) => () => setTimeout(f, 0);
   const allTools = [
-    ...[...RAIL, ...RAIL_AI].map(([k, l, ic]) => ({ label: l, icon: ic, where: "Panel", run: () => setRtab(k) })),
+    ...RAIL.map(([k, l, ic]) => ({ label: l, icon: ic, where: "Panel", run: () => setRtab(k) })),
+    { label: "Comments", icon: "rComments", where: "Right panel", run: () => setSide("comments") },
+    { label: "Your AI", icon: "rAI", where: "Right panel", run: () => setSide("ai") },
     { label: "Speed, motion and transitions", icon: "gauge", where: "Inspector", run: selAtPlayhead },
     { label: "Clip sound: level and fades", icon: "wave", where: "Inspector", run: selAtPlayhead },
     { label: "Split at the playhead", icon: "scissors", where: "⌘K", run: split },
@@ -1462,14 +1475,14 @@ function EditorInner({ project, reload, ai, keep }) {
     <div class="ed-body">
       <div class=${"ed-work" + (rtab ? "" : " lib-closed")}>
         <nav class="ed-rail" id="edit-tools" role="tablist" aria-label="Tools" aria-orientation="vertical">
-          ${[RAIL, RAIL_AI].map((group, gi) => html`<div key=${gi} class="rail-group">${group.map(([k, l, ic]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} aria-label=${l} title=${l + (toolHint[k] ? " · " + toolHint[k] : "")} class=${"rail-btn" + (rtab === k ? " on" : "")} onClick=${() => setRtab(k)}><${Icon} name=${ic} size="19" /><span class="rail-l">${l}</span>${k === "comments" && comments.some((c) => !c.resolved) ? html`<span class="n">${comments.filter((c) => !c.resolved).length}</span>` : ""}</button>`)}</div>`)}
+          ${[RAIL].map((group, gi) => html`<div key=${gi} class="rail-group">${group.map(([k, l, ic]) => html`<button key=${k} role="tab" id=${"tab-" + k} aria-selected=${rtab === k} aria-label=${l} title=${l + (toolHint[k] ? " · " + toolHint[k] : "")} class=${"rail-btn" + (rtab === k ? " on" : "")} onClick=${() => setRtab(k)}><${Icon} name=${ic} size="19" /><span class="rail-l">${l}</span></button>`)}</div>`)}
         </nav>
         ${rtab && html`<section class="panel ed-lib" id="lib-panel" aria-label=${PANEL_TOOLS[rtab][0]}>
           <div class="rp-head" id="tool-head"><span class="rp-ico"><${Icon} name=${PANEL_TOOLS[rtab][1]} size="15" /></span><b class="grow">${PANEL_TOOLS[rtab][0]}</b><button class="rp-back" id="tool-back" aria-label="Close" title="Close" onClick=${() => setRtab(null)}><${Icon} name="x" size="14" /></button></div>
           ${rtab === "media" && html`<div class="pb lib-media" id="media-panel">
-          <${SourceMonitor} reference=${reference} refs=${lib.refs} styles=${sq.data || []} onReference=${attach} source=${source} onCloseSource=${() => setSource(null)}
+          <${SourceMonitor} reference=${reference} source=${source} onCloseSource=${() => setSource(null)}
             onInsert=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }], at: pb.time })} onAppend=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }] })} />
-          <${MediaBin} library=${lib.library} used=${usedIds} bin=${S.media || []} mainId=${project.videoId} previewing=${source?.id} onPreview=${(v) => setSource(v)}
+          <${MediaBin} onAddClips=${() => setAddOpen(true)} library=${lib.library} used=${usedIds} bin=${S.media || []} mainId=${project.videoId} previewing=${source?.id} onPreview=${(v) => setSource(v)}
             onAppend=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }] })} onAddToBin=${(v) => doOp({ op: "add_media", videoIds: [v.id] })} onRemoveFromBin=${(v) => doOp({ op: "remove_media", videoIds: [v.id] })}
             onImport=${() => openAdd("footage")} />
           </div>`}
@@ -1478,7 +1491,29 @@ function EditorInner({ project, reload, ai, keep }) {
             ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
             ${selWords().length > 0 && html`<div class="selpop" id="cut-pop"><span class="t-small">${selWords().length} ${selWords().length === 1 ? "word" : "words"}</span><${Btn} size="xs" icon="scissors" id="cut-selected" onClick=${() => { cutWords(selWords()); setWsel(null); }}>Remove from video<//><${Btn} kind="quiet" size="xs" icon="play" aria-label="Play selection" onClick=${() => { const ids = selWords(); const w = words.find((x) => x.id === ids[0]); if (w) { pb.seek(wordAt(w)); pb.setPlaying(true); } }} /><${Btn} kind="quiet" size="xs" icon="x" aria-label="Clear selection" onClick=${() => setWsel(null)} /></div>`}
           </div>`}
-          ${rtab === "ai" && html`<div class="pb cmts" style="padding-top:12px">
+          ${rtab === "multicam" && html`<${MulticamTab} projectId=${project.id} timeline=${timeline} lay=${lay} view=${view} main=${main} mainName=${project.video?.name} library=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} at=${pb.time} playing=${pb.playing} urls=${urls} doOp=${doOp} addVideo=${addVideo} toast=${toast} />`}
+          ${rtab === "color" && html`<${ColorTab} footAt=${clipFoot} boxDraft=${boxDraft} setBoxDraft=${setBoxDraft} clip=${colorClip} track=${sel?.track} projectId=${project.id} mainVideo=${main} aspect=${S.aspect} clips=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")]} lutList=${lutQ.data || []} reloadLuts=${() => lutQ.reload()} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mode=${colorMode} setMode=${setColorMode} draft=${pathDraft} setDraft=${setPathDraft} toast=${toast} mattes=${mattes} adjust=${{ clips: lay.tracks.v3.filter((c) => c.kind === "adjust"), sel: sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "adjust") || null : null, at: pb.time, dur, select: (id) => setSel(id ? { track: "v3", id } : null) }} />`}
+          ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} here=${Math.max(0, Math.min(soundLen, pb.time - soundStart))} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} voice=${S.voice ? { ...S.voice, name: (project.sounds || {})[S.voice.soundId]?.name } : null} part="edit" />`}
+          ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} videos=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} objects=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")].flatMap((c) => (c.objects || []).map((o) => ({ clipId: c.id, clipName: c.label || c.id, id: o.id, label: o.label })))} part="text" />`}
+          ${rtab === "captions" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} videos=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} objects=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")].flatMap((c) => (c.objects || []).map((o) => ({ clipId: c.id, clipName: c.label || c.id, id: o.id, label: o.label })))} part="captions" />`}
+        </section>`}
+        <div class="center">
+          ${viewVer && viewVer !== project.versions.length && html`<div class="ver-banner"><span>Viewing V${viewVer} of ${S.name} (read only)</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" onClick=${async () => { try { await api.restoreVersion(project.id, viewVer); toast("V" + viewVer + " restored as a new version"); setViewVer(null); reload(); } catch (e) { toast(e.message); } }}>Restore this version<//><${Btn} kind="ghost" size="xs" id="back-latest" onClick=${() => setViewVer(null)}>Back to latest<//></div></div>`}
+          ${!viewVer && !watch && !sideDismissed && sideways.length > 0 && html`<div class="ver-banner" id="sideways"><span>${sideways.length === 1 && sideways[0].vid === main ? "This footage looks" : "Some footage looks"} filmed sideways: faces are upright when it is turned ${sideways[0].turn}° clockwise.</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="turn-upright" onClick=${() => { const ok = sideways.every((x) => doOp({ op: "set_rotation", degrees: x.turn, clipIds: x.clips.map((c) => c.id) }, false)); if (ok) toast("Turned upright", { icon: "refresh" }); }}>Turn it upright<//><${Btn} kind="ghost" size="xs" onClick=${() => setSideDismissed(true)}>Keep as is<//></div></div>`}
+          ${watch && html`<div class="ver-banner"><span>Watching the rendered preview (V${watch.version || project.version})</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="back-editing" onClick=${() => { wpb.setPlaying(false); setWatch(null); }}>Back to editing<//></div></div>`}
+          <div style="flex:1;min-height:0;display:flex;justify-content:center">${watch
+            ? html`<${Player} tools key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
+            : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
+            : fresh ? html`<${Player} tools key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${drawOverlay || inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setSide("comments"); }} />`
+            : html`<${Player} tools key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} mattes=${mattes} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} onBox=${(b) => { setColorMode(null); setBoxDraft(b); }} />` : null}${drawOverlay || inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setSide("comments"); }} />`}</div>
+        </div>
+        <aside class="panel ed-insp" id="inspector" aria-label="Comments, your AI and the selected clip">
+          <div class="side-tabs" role="tablist" aria-label="Right panel">
+            <button role="tab" id="side-comments" aria-selected=${side === "comments"} class=${side === "comments" ? "on" : ""} onClick=${() => setSide("comments")}><${Icon} name="rComments" size="15" />Comments${comments.some((c) => !c.resolved) ? html`<span class="n">${comments.filter((c) => !c.resolved).length}</span>` : ""}</button>
+            <button role="tab" id="side-ai" aria-selected=${side === "ai"} class=${side === "ai" ? "on" : ""} onClick=${() => setSide("ai")}><${Icon} name="rAI" size="15" />Your AI</button>
+            ${insp.kind && html`<button role="tab" id="side-clip" aria-selected=${side === "clip"} class=${side === "clip" ? "on" : ""} onClick=${() => setSide("clip")} title=${insp.title}><${Icon} name=${insp.icon} size="15" /><span class="ell">${insp.title}</span></button>`}
+          </div>
+          ${side === "ai" && html`<div class="pb cmts" id="ai-panel" style="padding-top:12px">
             <div class="col" style="gap:10px;flex:1;min-height:0;overflow:auto" id="ai-thread">
               ${chat.length === 0 ? html`<div class="state" style="padding:28px 16px;box-shadow:none;background:var(--raised)"><div class="ico"><${Icon} name="spark" /></div><b class="t-label">What your AI did shows here</b><p class="t-small">When Claude or ChatGPT edits this video through the connector, every step and its notes to you appear here.</p></div>`
               : chat.map((m) => html`<div key=${m.id} class=${"msg " + m.role} data-msg=${m.id}>
@@ -1490,7 +1525,7 @@ function EditorInner({ project, reload, ai, keep }) {
             </div>
             <p class="t-small muted" style="margin:0">Ask for changes in Claude or ChatGPT. This page only shows what they did.</p>
           </div>`}
-          ${rtab === "comments" && html`<div class="pb cmts" id="comments-panel">
+          ${side === "comments" && html`<div class="pb cmts" id="comments-panel">
             <div class="cm-head"><div class="seg sm" role="tablist" aria-label="Which comments">${[["open", "Open", comments.filter((c) => !c.resolved).length], ["all", "All", comments.length], ["done", "Done", comments.filter((c) => c.resolved).length]].map(([k, l, n]) => html`<button key=${k} role="tab" aria-selected=${cFilter === k} class=${cFilter === k ? "on" : ""} id=${"cm-filter-" + k} onClick=${() => setCFilter(k)}>${l} <span class="muted">${n}</span></button>`)}</div></div>
             <div class="col cm-list" id="comment-list">
               ${comments.length === 0 ? html`<div class="cm-empty" id="comments-empty"><span class="cm-empty-ico"><${Icon} name="comment" size="22" /></span><b>No comments yet</b><p class="t-small muted">Pause where something should change and leave a note: write, draw on the picture or add a picture. Clients can comment too, from a review link.</p></div>`
@@ -1529,40 +1564,24 @@ function EditorInner({ project, reload, ai, keep }) {
               </div>
             </form>
           </div>`}
-          ${rtab === "multicam" && html`<${MulticamTab} projectId=${project.id} timeline=${timeline} lay=${lay} view=${view} main=${main} mainName=${project.video?.name} library=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} at=${pb.time} playing=${pb.playing} urls=${urls} doOp=${doOp} addVideo=${addVideo} toast=${toast} />`}
-          ${rtab === "color" && html`<${ColorTab} footAt=${clipFoot} boxDraft=${boxDraft} setBoxDraft=${setBoxDraft} clip=${colorClip} track=${sel?.track} projectId=${project.id} mainVideo=${main} aspect=${S.aspect} clips=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")]} lutList=${lutQ.data || []} reloadLuts=${() => lutQ.reload()} timeline=${timeline} doOp=${doOp} H=${H} liveOp=${liveOp} mode=${colorMode} setMode=${setColorMode} draft=${pathDraft} setDraft=${setPathDraft} toast=${toast} mattes=${mattes} adjust=${{ clips: lay.tracks.v3.filter((c) => c.kind === "adjust"), sel: sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "adjust") || null : null, at: pb.time, dur, select: (id) => setSel(id ? { track: "v3", id } : null) }} />`}
-          ${rtab === "audio" && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} here=${Math.max(0, Math.min(soundLen, pb.time - soundStart))} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} voice=${S.voice ? { ...S.voice, name: (project.sounds || {})[S.voice.soundId]?.name } : null} part="edit" />`}
-          ${rtab === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} videos=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} objects=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")].flatMap((c) => (c.objects || []).map((o) => ({ clipId: c.id, clipName: c.label || c.id, id: o.id, label: o.label })))} part="text" />`}
-          ${rtab === "captions" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} videos=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} objects=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")].flatMap((c) => (c.objects || []).map((o) => ({ clipId: c.id, clipName: c.label || c.id, id: o.id, label: o.label })))} part="captions" />`}
-          ${rtab === "style" && html`<div class="pb" style="padding-top:16px"><div class="col" style="gap:16px">
-            <div class="col" style="gap:8px"><b class="t-label">Reference</b><p class="t-small muted">Attached for your AI to read. Nothing from it is applied to the edit.</p>
-              <${ReferencePicker} id="edit-reference" value=${reference} onChange=${attach} /></div>
-            ${style ? html`<div class="col" style="gap:12px"><b class="t-label">Style your AI applied</b>
-              <${StyleArt} s=${style} />
-              <pre class="code" id="style-code">${styleCode(style, S).split("\n").map((ln, i) => { const m = ln.match(/^(\s*)([a-z_]+):(.*)$/); return html`<div key=${i}>${m ? html`${m[1]}<span class="k">${m[2]}:</span>${m[3]}` : ln}</div>`; })}</pre>
-            </div>` : html`<p class="t-small muted" id="no-style">No style applied. The edit is your raw footage plus the changes you and your AI make.</p>`}
-          </div></div>`}
-        </section>`}
-        <div class="center">
-          ${viewVer && viewVer !== project.versions.length && html`<div class="ver-banner"><span>Viewing V${viewVer} of ${S.name} (read only)</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" onClick=${async () => { try { await api.restoreVersion(project.id, viewVer); toast("V" + viewVer + " restored as a new version"); setViewVer(null); reload(); } catch (e) { toast(e.message); } }}>Restore this version<//><${Btn} kind="ghost" size="xs" id="back-latest" onClick=${() => setViewVer(null)}>Back to latest<//></div></div>`}
-          ${!viewVer && !watch && !sideDismissed && sideways.length > 0 && html`<div class="ver-banner" id="sideways"><span>${sideways.length === 1 && sideways[0].vid === main ? "This footage looks" : "Some footage looks"} filmed sideways: faces are upright when it is turned ${sideways[0].turn}° clockwise.</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="turn-upright" onClick=${() => { const ok = sideways.every((x) => doOp({ op: "set_rotation", degrees: x.turn, clipIds: x.clips.map((c) => c.id) }, false)); if (ok) toast("Turned upright", { icon: "refresh" }); }}>Turn it upright<//><${Btn} kind="ghost" size="xs" onClick=${() => setSideDismissed(true)}>Keep as is<//></div></div>`}
-          ${watch && html`<div class="ver-banner"><span>Watching the rendered preview (V${watch.version || project.version})</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="back-editing" onClick=${() => { wpb.setPlaying(false); setWatch(null); }}>Back to editing<//></div></div>`}
-          <div style="flex:1;min-height:0;display:flex;justify-content:center">${watch
-            ? html`<${Player} tools key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
-            : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
-            : fresh ? html`<${Player} tools key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${drawOverlay || inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`
-            : html`<${Player} tools key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} mattes=${mattes} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} onBox=${(b) => { setColorMode(null); setBoxDraft(b); }} />` : null}${drawOverlay || inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setRtab("comments"); }} />`}</div>
-        </div>
-        <aside class="panel ed-insp" id="inspector" aria-label="Inspector">
-          ${insp.kind && html`<div class="rp-head" id="inspector-head"><span class="rp-ico"><${Icon} name=${insp.icon} size="15" /></span><b class="grow ell">${insp.title}</b>${sel && html`<button class="rp-back" id="inspector-clear" aria-label="Clear the selection" title="Clear the selection" onClick=${() => setSel(null)}><${Icon} name="x" size="14" /></button>`}</div>`}
-          <div class="insp-body">
-          ${!insp.kind && html`<div class="insp-empty" id="inspector-empty"><span>Select a clip</span></div>`}
+          ${side === "clip" && insp.kind && html`<div class="rp-head" id="inspector-head"><span class="rp-ico"><${Icon} name=${insp.icon} size="15" /></span><b class="grow ell">${insp.title}</b>${sel && html`<button class="rp-back" id="inspector-clear" aria-label="Clear the selection" title="Clear the selection" onClick=${() => setSel(null)}><${Icon} name="x" size="14" /></button>`}</div>`}
+          ${side === "clip" && insp.kind && html`<div class="insp-body">
           ${insp.kind === "text" && html`<${TextTab} timeline=${timeline} aspect=${S.aspect} captionRules=${captionRules} textClips=${lay.tracks.v3.filter((c) => c.kind === "text")} selText=${sel?.track === "v3" ? lay.tracks.v3.find((c) => c.id === sel.id && c.kind === "text") : null} onSelect=${(id) => setSel({ track: "v3", id })} at=${pb.time} dur=${dur} doOp=${doOp} H=${H} liveOp=${liveOp} videos=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} objects=${[...lay.tracks.v1, ...lay.tracks.v2.filter((b) => b.kind === "broll")].flatMap((c) => (c.objects || []).map((o) => ({ clipId: c.id, clipName: c.label || c.id, id: o.id, label: o.label })))} part="selected" />`}
           ${(insp.kind === "clip" || insp.kind === "broll" || insp.kind === "text" || insp.kind === "graphic" || insp.kind === "adjust") && html`<${ClipTab} clip=${sel && isV1(sel.track) ? selV1 : selClip} track=${sel?.track} plan=${plan} first=${!!selV1 && lay.tracks.v1.find((c) => c.end - c.start > 0.01)?.id === selV1.id} at=${pb.time} srcAt=${(id, t) => view.editToSource(id, t)} onSeek=${(t) => pb.seek(t)} doOp=${doOp} H=${H} liveOp=${liveOp} />`}
           ${insp.kind === "adjust" && html`<div class="pb" style="padding-top:0"><${Btn} kind="secondary" size="sm" icon="drop" id="inspector-open-color" onClick=${() => setRtab("color")}>Open Color<//></div>`}
           ${(insp.kind === "clip" || insp.kind === "sound") && html`<${AudioTab} a=${audioSettings(timeline)} clip=${soundSel} track=${sel?.track} len=${soundLen} here=${Math.max(0, Math.min(soundLen, pb.time - soundStart))} planned=${soundSel ? planAudio.get(soundSel.id) : null} doOp=${doOp} H=${H} liveOp=${liveOp} part="clip" />`}
+          ${insp.kind === "voice" && html`<div class="pb" id="voice-inspector" style="padding-top:16px"><div class="col" style="gap:12px">
+            <p class="t-small muted">"${voiceSound?.name || "Your sound file"}" plays in place of every clip's own sound. Drag it on the timeline to move it.</p>
+            <${OpSlider} id="voice-gain" label="Level" value=${S.voice.gainDb ?? 0} min=${-30} max=${12} step=${0.5} show=${(x) => dB(x)} opFor=${(x) => ({ op: "set_voice", soundId: S.voice.soundId, start: S.voice.start || 0, gainDb: x })} H=${H} liveOp=${liveOp} />
+            <label class="t-small" style="display:grid;gap:4px">Starts at (seconds of the edit)<input class="input sm" id="voice-start" type="number" min="0" step="0.1" value=${S.voice.start || 0} onChange=${(e) => doOp({ op: "set_voice", soundId: S.voice.soundId, start: Math.max(0, +e.target.value || 0), ...(S.voice.gainDb != null ? { gainDb: S.voice.gainDb } : {}) })} /></label>
+            <${Btn} kind="secondary" size="sm" id="voice-off" icon="x" onClick=${() => { if (doOp({ op: "set_voice", soundId: null })) setSel(null); }}>Use the clips' own sound<//>
+          </div></div>`}
+          ${insp.kind === "background" && html`<div class="pb" id="background-inspector" style="padding-top:16px"><div class="col" style="gap:12px">
+            <p class="t-small muted">${bgClip?.label}. It shows where the picture is smaller, cropped, keyed or has its background removed.</p>
+            <div class="row" style="gap:8px"><${Btn} kind="secondary" size="sm" id="background-edit" icon="drop" onClick=${() => setRtab("color")}>Change it in Color<//><${Btn} kind="ghost" size="sm" id="background-off" onClick=${removeSel}>Remove<//></div>
+          </div></div>`}
           ${insp.kind === "other" && html`<p class="t-small muted pb" style="padding-top:16px">${selClip?.label || "This clip"}: drag it on the timeline to move it, or its edges to trim it.</p>`}
-          </div>
+          </div>`}
         </aside>
       </div>
       <div class="tl">
@@ -1592,19 +1611,21 @@ function EditorInner({ project, reload, ai, keep }) {
         <div class="zoom"><button class="tool icon" aria-label="Zoom out" onClick=${() => setZoom((z) => Math.max(ZMIN, Math.round(z / 1.4)))}><${Icon} name="more" size="14" /></button><input id="tl-zoom" type="range" min="0" max="1000" value=${Math.round((1000 * Math.log(zoom / ZMIN)) / Math.log(ZMAX / ZMIN))} onInput=${(e) => setZoom(Math.round(ZMIN * Math.pow(ZMAX / ZMIN, +e.target.value / 1000)))} aria-label="Timeline zoom" /><button class="tool icon" aria-label="Zoom in" onClick=${() => setZoom((z) => Math.min(ZMAX, Math.round(z * 1.4)))}><${Icon} name="plus" size="14" /></button><button class="tool" id="zoom-fit" title="Zoom to fit (Shift Z)" onClick=${fit}>Fit</button></div>
       </div>
       <div class="tl-body">
-        <div class="tl-labels">${TRACKS.map(([k, l]) => html`<div key=${k} class=${k[0]} style=${TRACK_H[k] ? { height: TRACK_H[k] + "px" } : null} title=${TRACK_HINT[k]}><b>${l}</b></div>`)}</div>
+        <div class="tl-labels">${rows.map(([k, l]) => html`<div key=${k} class=${k[0]} style=${TRACK_H[k] ? { height: TRACK_H[k] + "px" } : null} title=${TRACK_HINT[k]}><b>${l}</b></div>`)}</div>
         <div class="tl-scroll"><div class=${"tl-canvas tool-" + tool} ref=${canvasRef} style=${{ width: canvasW }} id="timeline">
           <div class="ruler" onPointerDown=${scrubTimeline}>${ticks.map((t) => html`<span key=${t} style=${{ left: px(t) }}>${tickStep < 1 ? fmtTime(t, true) : fmtTime(t)}</span>`)}${zoom >= 8 ? Array.from({ length: Math.floor(dur) + 1 }).map((_, t) => html`<i key=${"m" + t} class="mt" style=${{ left: px(t) }} />`) : null}
             ${showMarks && marks.filter((m) => m.end > m.start + 0.05).map((m) => html`<i key=${"r" + m.id} class="tl-mrange" style=${{ left: px(m.start), width: Math.max(2, (m.end - m.start) * zoom), background: MARK_COLORS[m.source === "ai" ? "custom" : m.kind] }} />`)}
             ${showMarks && marks.map((m) => html`<i key=${"p" + m.id} class="tl-mark" data-kind=${m.kind} title=${markNote(m)} style=${{ left: px(m.start) - 3, "--mk": MARK_COLORS[m.source === "ai" ? "custom" : m.kind] }} onPointerDown=${(e) => { e.stopPropagation(); pb.seek(m.start); }} />`)}
-            ${comments.filter((c) => c.time > 0 && !c.resolved).map((c) => html`<div key=${c.id} class="cm" title=${c.text} onPointerDown=${(e) => { e.stopPropagation(); pb.seek(c.time); setRtab("comments"); }} style=${{ left: px(c.time) }} />`)}</div>
-          ${TRACKS.map(([k]) => html`<div key=${k} class=${"track " + k[0] + " " + k + (k === "v1" ? " v1main" : "")} style=${TRACK_H[k] ? { height: TRACK_H[k] + "px" } : null} onPointerDown=${(e) => { setSel(null); scrubTimeline(e); }}>
-            ${k[0] === "a" && waveParts[k].length > 0 && html`<${WaveLayer} parts=${waveParts[k]} peaks=${peaks} zoom=${zoom} pad=${PAD} canvasRef=${canvasRef} height=${(TRACK_H[k] || 34) - 1} />`}
-            ${lay.tracks[k].map((c) => { const gone = c.end - c.start < 0.01; const other = k === "v1" && c.sourceVideoId !== main;
-              return html`<div key=${c.id} class=${"clip " + (k === "v1" ? "video" : k[0] === "a" ? "audio" : c.kind === "zoom" ? "fx" : c.kind === "adjust" ? "adjust" : "title") + (isOn(k, c) ? " on" : "") + (gone ? " gone" : "") + (other ? " other" : "") + (c.audioMuted ? " muted" : "")} data-clip=${c.id} data-track=${k}
+            ${comments.filter((c) => c.time > 0 && !c.resolved).map((c) => html`<div key=${c.id} class="cm" title=${c.text} onPointerDown=${(e) => { e.stopPropagation(); pb.seek(c.time); setSide("comments"); }} style=${{ left: px(c.time) }} />`)}</div>
+          ${rows.map(([k]) => html`<div key=${k} class=${"track " + (k === "vo" ? "a" : k === "bg" ? "v" : k[0]) + " " + k + (k === "v1" ? " v1main" : "")} style=${TRACK_H[k] ? { height: TRACK_H[k] + "px" } : null} onPointerDown=${(e) => { setSel(null); scrubTimeline(e); }}>
+            ${k[0] === "a" && waveParts[k]?.length > 0 && html`<${WaveLayer} parts=${waveParts[k]} peaks=${peaks} zoom=${zoom} pad=${PAD} canvasRef=${canvasRef} height=${(TRACK_H[k] || 34) - 1} />`}
+            ${k === "vo" && voiceClip && html`<div class=${"clip audio voice" + (isOn("vo", voiceClip) ? " on" : "")} data-clip="voice" data-track="vo" title=${voiceClip.label + " · drag to move it"} style=${{ left: px(voiceClip.start), width: Math.max(8, (voiceClip.end - voiceClip.start) * zoom) }} onPointerDown=${voiceDown}><span class="cl">${voiceClip.label}</span></div>`}
+            ${k === "bg" && bgClip && html`<div class=${"clip title bg" + (isOn("bg", bgClip) ? " on" : "")} data-clip="background" data-track="bg" title=${bgClip.label} style=${{ left: px(0), width: Math.max(8, dur * zoom) }} onPointerDown=${(e) => { e.stopPropagation(); setSel({ track: "bg", id: "background" }); }}><span class="cl">${bgClip.label}</span></div>`}
+            ${(k === "vo" || k === "bg" ? [] : onTrack(k)).map((c) => { const gone = c.end - c.start < 0.01; const other = k === "v1" && c.sourceVideoId !== main; const fx = !gone && fxOf(k, c);
+              return html`<div key=${c.id} class=${"clip " + (k === "v1" ? "video" : k[0] === "a" ? "audio" : c.kind === "zoom" ? "fx" : c.kind === "adjust" ? "adjust" : "title") + (isOn(k, c) ? " on" : "") + (gone ? " gone" : "") + (other ? " other" : "") + (c.audioMuted || (k === "a1" && S.voice) ? " muted" : "")} data-clip=${c.id} data-track=${k}
                 title=${gone ? "Not in the edit: its footage is cut" : k === "a1" ? "Its V1 clip's dialogue. Alt-drag an edge for a J or L cut." : k === "v1" ? `${clipText(k, c)} · footage ${c.sourceIn.toFixed(2)}-${c.sourceOut.toFixed(2)}s` : c.label}
                 style=${{ left: px(c.start), width: Math.max(gone ? 4 : 8, (c.end - c.start) * zoom) }}
-                onPointerDown=${clipDown(k, c)}>${k === "v1" && !gone && html`<${Filmstrip} url=${urls[c.sourceVideoId || main]} from=${c.sourceIn} to=${c.sourceOut} width=${(c.end - c.start) * zoom} rotate=${c.rotate || 0} />`}${fadesOf(k, c)}${marksOf(k, c)}<span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span><span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
+                onPointerDown=${clipDown(k, c)}>${k === "v1" && !gone && html`<${Filmstrip} url=${urls[c.sourceVideoId || main]} from=${c.sourceIn} to=${c.sourceOut} width=${(c.end - c.start) * zoom} rotate=${c.rotate || 0} />`}${fadesOf(k, c)}${marksOf(k, c)}<span class="h l" onPointerDown=${edgeDown(k, c, "l")} /><span class="cl">${clipText(k, c)}</span>${fx && (c.end - c.start) * zoom > 44 && html`<button class="fxb" data-fx=${c.id} title=${"Effects: " + fx + " (opens Color)"} aria-label=${"Effects on this clip: " + fx} onPointerDown=${(e) => { e.stopPropagation(); setSel({ track: k, id: c.id }); setRtab("color"); }}>fx</button>`}<span class="h r" onPointerDown=${edgeDown(k, c, "r")} /></div>`; })}
             ${k === "v1" && drop != null && html`<div class="tl-drop" id="drop-marker" style=${{ left: px(drop) - 1 }} />`}
           </div>`)}
           <div class="playhead" id="playhead" style=${{ left: px(pb.time) - 1 }}><i /></div>

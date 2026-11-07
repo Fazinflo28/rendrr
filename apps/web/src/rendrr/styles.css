@@ -856,10 +856,6 @@ a { color: var(--accent-ink); }
 .dd .btn { gap: 6px; }
 .dd-menu { top: 42px; min-width: 200px; }
 .dd-menu.left { left: 0; right: auto; }
-.steps-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-.stp { font-size: 12px; font-weight: 500; color: var(--muted); padding: 4px 10px; border-radius: 999px; background: var(--raised); }
-.stp.on { background: var(--accent); color: var(--on-accent); } .stp.done { color: var(--ink); }
-.stp-sep { width: 24px; height: 1px; background: var(--hair-strong); }
 .plist { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; }
 .prow { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: var(--r-sm); cursor: pointer; }
 .prow:hover { background: var(--raised); } .prow.on { background: var(--accent-soft); }
@@ -1127,7 +1123,7 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .bin-thumb { position: relative; aspect-ratio: 16 / 10; border-radius: var(--r-sm); overflow: hidden; background: var(--raised); box-shadow: inset 0 0 0 1px var(--hair); display: block; width: 100%; }
 .bin-thumb.sm { width: 56px; flex: none; aspect-ratio: 16 / 10; }
 .bin-thumb .len { position: absolute; right: 4px; bottom: 4px; font-size: 10px; line-height: 14px; padding: 0 5px; border-radius: 4px; background: rgba(0,0,0,.6); color: #fff; font-variant-numeric: tabular-nums; }
-.bin-thumb .badge-in { position: absolute; left: 4px; top: 4px; font-size: 9.5px; line-height: 14px; padding: 0 5px; border-radius: 4px; background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.bin-thumb .badge-in, .clip-thumb .badge-in { position: absolute; left: 4px; top: 4px; font-size: 9.5px; line-height: 14px; padding: 0 5px; border-radius: 4px; background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .bin-item.on .bin-thumb { box-shadow: 0 0 0 2px var(--accent); }
 .bin-item:hover .bin-thumb { box-shadow: inset 0 0 0 1px var(--hair-strong), 0 0 0 1px var(--hair-strong); }
 .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
@@ -1401,6 +1397,41 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .editor .tl-acts .tbar-sep { background: rgba(255,255,255,.12); }
 .editor .tl-labels { background: transparent; border-right: 0; }
 .editor .tl-labels div b { background: transparent; color: var(--ed-dim); }
+/* The timeline is one black: no grey fill on the V1 and sound rows. */
+.editor .track.a, .editor .track.v1main { background: transparent; }
+/* The right panel: Comments (first), Your AI, and the selected clip's settings, as tabs. */
+.side-tabs { display: flex; align-items: center; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex: none; min-width: 0; }
+.side-tabs button { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 8px; font-size: 12px; font-weight: 600; color: var(--ink-dim); white-space: nowrap; min-width: 0; flex: none; transition: background-color .15s, color .15s; }
+.side-tabs button:hover { color: var(--ink); background: var(--raised); }
+.side-tabs button.on { color: var(--ink); background: var(--raised); box-shadow: inset 0 0 0 1px var(--hair-strong); }
+.side-tabs button .n { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: #111; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
+.side-tabs #side-clip { flex: 0 1 auto; max-width: 150px; overflow: hidden; }
+.editor .side-tabs { border-bottom-color: var(--ed-line); }
+.ed-insp > .pb.cmts { flex: 1; height: auto; min-height: 0; padding-top: 12px; }
+/* Layers that are not track clips (your sound file, the background) and the fx badge on clips with effects. */
+/* More rows than fit (a background, your sound file): the tracks scroll down, their names with them. */
+.editor .tl-body { overflow-y: auto; overflow-x: hidden; align-items: start; }
+.editor .tl-body > .tl-scroll { min-height: 100%; }
+.editor .tl-body .tl-canvas { height: auto; min-height: 100%; }
+.tl-canvas .clip.voice { background: color-mix(in srgb, #46a758 35%, var(--raised)); box-shadow: inset 0 0 0 1px rgba(70, 167, 88, .7); cursor: grab; }
+.tl-canvas .clip.bg { background: repeating-linear-gradient(135deg, rgba(255,255,255,.06) 0 6px, transparent 6px 12px), var(--raised); cursor: pointer; }
+.tl-canvas .clip .fxb { position: absolute; right: 8px; top: 3px; height: 15px; padding: 0 5px; border-radius: 4px; background: #c084fc; color: #14051f; font-size: 10px; font-weight: 800; font-style: italic; line-height: 15px; z-index: 4; cursor: pointer; border: 0; }
+.tl-canvas .clip .fxb:hover { filter: brightness(1.1); }
+/* The bin's big Add clips button, and the big window it opens: the library as pictures, numbered in play order. */
+.bin-foot { padding: 10px; border-top: 1px solid var(--line); flex: none; }
+.bin-add-clips { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 48px; border-radius: 12px; background: var(--accent); color: var(--on-accent, #111); font-size: 15px; font-weight: 700; transition: filter .15s; }
+.bin-add-clips:hover { filter: brightness(1.08); }
+.modal.wide:has(.clip-grid) { width: min(1100px, calc(100vw - 48px)); min-height: min(720px, calc(100vh - 48px)); }
+.clip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; max-height: calc(100vh - 360px); min-height: 240px; overflow: auto; padding: 2px; align-content: start; }
+.clip-card { display: flex; flex-direction: column; gap: 6px; text-align: left; min-width: 0; color: var(--ink); border-radius: 12px; padding: 0; background: none; cursor: pointer; }
+.clip-thumb { position: relative; aspect-ratio: 16 / 10; border-radius: 12px; overflow: hidden; background: var(--raised); box-shadow: 0 0 0 1px var(--hair-strong); transition: box-shadow .15s; }
+.clip-card:hover .clip-thumb { box-shadow: 0 0 0 2px var(--hair-strong); }
+.clip-card.on .clip-thumb { box-shadow: 0 0 0 3px var(--accent); }
+.clip-len { position: absolute; right: 6px; bottom: 6px; padding: 2px 6px; border-radius: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; font-variant-numeric: tabular-nums; }
+.clip-num { position: absolute; left: 8px; top: 8px; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #111; font-size: 12px; font-weight: 700; display: grid; place-items: center; }
+.clip-thumb .badge-in { left: auto; right: 6px; top: 6px; }
+.clip-name { font-size: 13px; font-weight: 500; padding: 0 2px; }
+@media (max-width: 1023px) { .clip-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; } .modal.wide:has(.clip-grid) { min-height: 0; } }
 @media (max-width: 1023px) {
   .editor .ed-top { height: auto; flex: none; padding-top: 10px; padding-bottom: 10px; }
   .editor .ed-body { padding: 0 var(--gutter-r) calc(24px + env(safe-area-inset-bottom, 0px)) var(--gutter-l); gap: 0; }

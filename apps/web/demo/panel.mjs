@@ -21,7 +21,7 @@ const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromi
 const fails = [];
 const check = (ok, what) => { console.log(`${ok ? "ok  " : "FAIL"} ${what}`); if (!ok) fails.push(what); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const RAIL = ["Media", "Audio", "Text", "Captions", "Color", "Multicam", "Transcript"], RAIL_AI = ["Reference", "Your AI", "Comments"];
+const RAIL = ["Media", "Audio", "Text", "Captions", "Color", "Multicam", "Transcript"];
 
 async function open(width, height) {
   const page = await browser.newPage({ viewport: { width, height } });
@@ -44,13 +44,15 @@ const overflow = (page, sel) => page.evaluate((sel) => {
 for (const [tag, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
   const { page, errors } = await open(w, h);
   const groups = await page.$$eval("#edit-tools .rail-group", (gs) => gs.map((g) => [...g.querySelectorAll(".rail-l")].map((x) => x.textContent.trim())));
-  check(groups.length === 2 && groups[0].join("|") === RAIL.join("|") && groups[1].join("|") === RAIL_AI.join("|"), `${tag}: the rail has the tools in two groups (${groups.map((g) => g.join(", ")).join(" / ")})`);
+  check(groups.length === 1 && groups[0].join("|") === RAIL.join("|"), `${tag}: the rail has the tools only (${groups.map((g) => g.join(", ")).join(" / ")})`);
+  check(await page.locator("#side-comments").getAttribute("aria-selected") === "true" && await page.locator("#inspector #comments-panel").count() === 1, `${tag}: the right panel opens on Comments`);
+  check(await page.locator("#side-ai").count() === 1, `${tag}: Your AI is a tab of the right panel`);
   check((await page.locator("#tool-head b").innerText()).trim() === "Media" && await page.locator("#tab-media").getAttribute("aria-selected") === "true", `${tag}: it opens on Media`);
   if (tag === "phone") {
     const tops = await page.$$eval("#edit-tools .rail-btn", (bs) => [...new Set(bs.map((b) => Math.round(b.getBoundingClientRect().top)))]);
     check(tops.length === 1, `${tag}: the rail is one row that scrolls (${tops.length} rows)`);
   }
-  for (const label of [...RAIL, ...RAIL_AI]) {
+  for (const label of RAIL) {
     const k = await page.locator(`#edit-tools .rail-btn[aria-label="${label}"]`).getAttribute("id");
     if ((await page.locator("#" + k).getAttribute("aria-selected")) !== "true") await page.locator("#" + k).click();
     await sleep(250);
@@ -74,10 +76,10 @@ for (const [tag, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
     await page.locator("#tool-back").click(); await sleep(200);
   }
   // Inspector: nothing selected, a clip, a text.
-  check((await page.locator("#inspector").innerText()).trim() === "Select a clip", `${tag}: with nothing selected the inspector only says "Select a clip"`);
-  check((await overflow(page, "#inspector")).length === 0, `${tag}: the empty inspector fits`);
+  check(await page.locator("#side-clip").count() === 0, `${tag}: with nothing selected there is no clip tab`);
+  check((await overflow(page, "#inspector")).length === 0, `${tag}: the comments fit the right panel`);
   await page.locator(".clip.video").nth(1).click(); await sleep(300);
-  check(await page.locator("#inspector #clip-panel").count() === 1 && await page.locator("#inspector #audio-inspector").count() === 1, `${tag}: a clip shows its speed, motion and sound in the inspector`);
+  check(await page.locator("#side-clip").getAttribute("aria-selected") === "true" && await page.locator("#inspector #clip-panel").count() === 1 && await page.locator("#inspector #audio-inspector").count() === 1, `${tag}: selecting a clip opens its speed, motion and sound in the right panel`);
   const wideI = await overflow(page, "#inspector");
   check(wideI.length === 0, `${tag}: the clip's settings fit the inspector${wideI.length ? " (" + wideI.join(", ") + ")" : ""}`);
   await page.locator("#tab-text").click(); await sleep(200);
@@ -86,7 +88,7 @@ for (const [tag, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
   if (!textSel) { const t = page.locator(".clip.title").last(); await t.click(); await sleep(300); }
   check(await page.locator("#inspector #text-inspector #text-content").count() === 1 && await page.locator("#lib-panel #text-content").count() === 0, `${tag}: a text's style is in the inspector, not twice`);
   await page.locator("#inspector-clear").click(); await sleep(200);
-  check(/Select a clip/.test(await page.locator("#inspector").innerText()), `${tag}: clearing the selection empties the inspector`);
+  check(await page.locator("#side-comments").getAttribute("aria-selected") === "true" && await page.locator("#side-clip").count() === 0, `${tag}: clearing the selection goes back to Comments`);
   if (tag === "desktop") {
     // Top bar: aspect ratio, quality, search tools.
     await page.locator("#aspect-btn").click(); await sleep(200);
@@ -103,16 +105,17 @@ for (const [tag, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
     await page.locator('#quality-res [data-v="4k"]').click(); await sleep(300);
     check(/^4K/.test((await page.locator("#quality-btn").innerText()).trim()), `${tag}: the quality menu sets 4K (${(await page.locator("#quality-btn").innerText()).trim()})`);
     await page.mouse.click(700, 300); await sleep(100);
+    await page.locator("#side-ai").click(); await sleep(150);
     await page.locator("#tool-search").click(); await page.keyboard.type("comm"); await sleep(150);
     check(await page.locator("#tool-search-menu .tb-found").count() >= 1, `${tag}: search tools finds Comments`);
     await page.keyboard.press("Enter"); await sleep(300);
-    check(await page.locator("#tab-comments").getAttribute("aria-selected") === "true", `${tag}: Enter opens it`);
+    check(await page.locator("#side-comments").getAttribute("aria-selected") === "true", `${tag}: Enter opens it`);
     // The timeline's tools are in its bar.
     check(await page.locator(".tl-bar #tool-select").count() === 1 && await page.locator(".tl-bar #tool-razor").count() === 1 && await page.locator(".tl-bar #snap").count() === 1, `${tag}: the timeline's tools sit in one bar above it`);
-    await page.locator("#tab-audio").click(); await sleep(200);
+    await page.locator("#side-ai").click(); await sleep(200);
     await page.locator("#timeline .cm").first().click(); await sleep(300);
-    check(await page.locator("#tab-comments").getAttribute("aria-selected") === "true" && await page.locator("#comment-list .cmt").count() > 0, `${tag}: a comment pin on the timeline opens Comments`);
-    check(/1/.test(await page.locator("#tab-comments .n").innerText()), `${tag}: the Comments button counts the open comments`);
+    check(await page.locator("#side-comments").getAttribute("aria-selected") === "true" && await page.locator("#comment-list .cmt").count() > 0, `${tag}: a comment pin on the timeline opens Comments`);
+    check(/1/.test(await page.locator("#side-comments .n").innerText()), `${tag}: the Comments tab counts the open comments`);
   }
   check(errors.length === 0, `${tag}: no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
   await page.close();

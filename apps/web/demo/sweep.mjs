@@ -21,7 +21,7 @@ const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromi
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const VIEWPORTS = [["desktop", 1440, 900], ["laptop", 1280, 720], ["phone", 390, 844]];
 const PAGES = ["/explore", "/styles", "/library", "/projects", "/connect", "/usage", "/billing", "/settings", "/review/demo"];
-const TOOLS = ["transcript", "clip", "text", "audio", "color", "multicam", "style", "ai"];
+const TOOLS = ["transcript", "clip", "text", "audio", "color", "multicam"];
 const report = [];
 
 /** What is wrong on the page as it stands (run in the page). */
@@ -113,7 +113,8 @@ for (const [vp, w, h] of VIEWPORTS) {
     await b.click().catch(() => {}); await look("editor " + t);
     await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
   }
-  await page.locator("#tab-comments").click().catch(() => {}); await look("editor comments");
+  await page.locator("#side-comments").click().catch(() => {}); await look("editor comments");
+  await page.locator("#side-ai").click().catch(() => {}); await look("editor your AI");
   await page.locator("#tab-media").click({ timeout: 800 }).catch(() => {});
   for (const [id, label] of [["#render-final", "export window"], ["#samples-btn", "samples window"]]) {
     if (id === "#samples-btn") { await page.locator("#editor-more").click().catch(() => {}); await sleep(200); }

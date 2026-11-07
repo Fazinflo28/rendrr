@@ -60,10 +60,11 @@ check(/\/editor\//.test(await page.evaluate(() => location.pathname + location.h
 // 3. The editor's Add videos: several whole videos, in order, at the end.
 const before = await page.locator(".track-v1 .clip, [data-track='v1'] .clip").count().catch(() => 0);
 await page.locator("#add-clip").click(); await page.locator("#add-videos").waitFor();
-const rows = page.locator("#add-videos .prow");
+const rows = page.locator("#add-videos .clip-card:not(.clip-sk)");
 await rows.nth(2).waitFor();
-check((await rows.count()) >= 3, `Add videos lists the ready videos (${await rows.count()})`);
-await rows.nth(1).locator("input").check(); await rows.nth(2).locator("input").check();
+check((await rows.count()) >= 3, `Add clips shows the ready videos as pictures (${await rows.count()})`);
+await rows.nth(1).click(); await rows.nth(2).click();
+check((await rows.nth(1).locator(".clip-num").innerText()) === "1" && (await rows.nth(2).locator(".clip-num").innerText()) === "2", "they are numbered in the order picked");
 check((await page.locator("#add-clip-go").textContent()).includes("Add 2 videos"), "the button says Add 2 videos");
 await page.locator("#add-clip-go").click(); await page.waitForTimeout(1200);
 const toasts = await page.locator(".toast").allTextContents().catch(() => []);

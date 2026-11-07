@@ -1231,3 +1231,24 @@ From before:
   It does not count toward the AI's one-preview rule. Checked live: "IMG_7692 edit" now plays its own 33.6 s video.
 - The tile shows the still and plays muted while the pointer is on it; the window plays it with sound and controls.
 - Tests: apps/api/test/gallery-media.test.ts (3), apps/web/demo/gallery-video.mjs.
+
+### Recreate, a simpler editor, and Claude's layers on the timeline
+
+- Recreate (Explore) opens the New edit window with the gallery video already set as the reference and the name
+  filled in. Pick footage from the Library or add new footage right there (Drive or this computer); the edit waits
+  for new footage to be prepared, then the editor opens. The old two-step Recreate window is gone.
+- The editor's monitor plays a gallery video reference. The reference dropdown under it and the Reference panel are
+  gone (the reference is set when the edit is made, or by your AI).
+- The right panel has tabs: Comments (open first), Your AI, and the selected clip's settings. Selecting a clip opens
+  its settings; clearing the selection goes back to Comments. The left rail has the tools only.
+- The Media panel's Project bin has a big Add clips button; it opens a big window with the Library as pictures,
+  numbered in the order they play (the timeline's + opens the same window).
+- The timeline: caption lines are no longer drawn on V3; every row is one black; a trim that makes the edit shorter
+  brings the playhead back inside it, so the player's bar never runs past its edge.
+- Layers your AI adds that are not track clips now show and can be changed, as in Premiere: your own sound file
+  (set_voice) on a VO row under the dialogue (which shows muted), draggable, with its level, start and "Use the
+  clips' own sound" in the right panel; the background behind V1 on a BG row (Change it in Color, Remove); and an
+  fx badge on clips with effects (grade, masks, key, blur, no background, skin, stabilize) that opens Color. More
+  rows than fit scroll, names with them.
+- Tests: apps/web/demo/recreate.mjs, demo/layers.mjs (new); panel, comments-claude, comments-compose, multi-video,
+  sweep updated.

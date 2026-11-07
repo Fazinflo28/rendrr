@@ -39,14 +39,14 @@ for (const [vp, w, h] of [["desktop", 1440, 900], ["phone", 390, 844]]) {
   if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await sleep(800); }
   // An edit with no comments: the empty state sits in the middle of the list.
   await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p1")); await page.locator("#timeline").waitFor({ timeout: 8000 }).catch(() => {}); await sleep(1000);
-  await page.locator("#tab-comments").click(); await sleep(300);
+  await page.locator("#side-comments").click(); await sleep(300);
   if (await page.locator("#comments-empty").count()) {
     const c = await page.evaluate(() => { const e = document.querySelector("#comments-empty"), l = document.querySelector("#comment-list"); const a = e.getBoundingClientRect(), b = l.getBoundingClientRect(); return { dx: Math.abs((a.left + a.right) / 2 - (b.left + b.right) / 2), dy: Math.abs((a.top + a.bottom) / 2 - (b.top + b.bottom) / 2), lh: b.height }; });
     check(c.dx < 4 && c.dy < 30, `${vp}: the empty state is centred in the list (off by ${c.dx.toFixed(0)}, ${c.dy.toFixed(0)} px)`);
   } else check(true, `${vp}: (this edit has comments; empty state not shown)`);
   // The composer on the demo edit with a comment.
   await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await sleep(1200);
-  await page.locator("#tab-comments").click(); await page.locator("#comment-box").waitFor();
+  await page.locator("#side-comments").click(); await page.locator("#comment-box").waitFor();
   check(await page.locator("#comment-time").count() === 1 && /\d\d:\d\d/.test(await page.locator("#comment-time").textContent()), `${vp}: a clock chip with the moment`);
   check(await page.locator("#comment-post").isDisabled(), `${vp}: the round send button waits for something to post`);
   const sb = await page.locator("#comment-post").boundingBox();

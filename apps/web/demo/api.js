@@ -190,7 +190,11 @@ Object.assign(api, {
   getVideo: async (id) => { const v = withKind(await getVideo(id)); return { ...v, proxyUrl: playable[id] || null, breakdown: v.status === "ready" ? demoBreakdown(v) : null }; },
   listVideos: async () => { const vs = await listVideos(); return Array.isArray(vs) ? vs.map(withKind) : vs; },
   // The design's fake backend makes an edit of one video: several (videoIds) start from the first in the preview.
-  createProject: async ({ videoIds, videoId, ...rest }) => createProject({ ...rest, videoId: (Array.isArray(videoIds) && videoIds[0]) || videoId }),
+  // The reference (a style, a gallery video, a reference video) is kept with the edit, as the server does.
+  createProject: async ({ videoIds, videoId, reference, ...rest }) => {
+    const p = await createProject({ ...rest, videoId: (Array.isArray(videoIds) && videoIds[0]) || videoId });
+    return reference ? api.updateProject(p.id, { reference }) : p;
+  },
   updateVideo: async (id, body) => { await wait(300); if (body.kind) kinds[id] = body.kind; if (body.libraryFolderId !== undefined) { if (body.libraryFolderId) inFolder[id] = body.libraryFolderId; else delete inFolder[id]; } return withKind(await getVideo(id)); },
   addFromDrive: async (ids, kind, fid) => { const out = await addFromDrive(ids); out.forEach((v) => { if (kind) kinds[v.id] = kind; if (fid) inFolder[v.id] = fid; }); return out.map(withKind); },
   // A folder picked or dropped whole: its videos only, each in a library folder like the one it sat in.
@@ -355,7 +359,12 @@ const deleted = new Set(), edits = {};
 const getProjectBefore = api.getProject; // the wrapper above, kept
 Object.assign(api, {
   getProject: async (id, ...rest) => {
-    const p = await getProjectBefore(id, ...rest);
+    let p = await getProjectBefore(id, ...rest);
+    // A test can give the edit one of your own sound files playing in place of the clips' sound (set_voice), once.
+    if (p && globalThis.__demoVoice) {
+      p = { ...p, sounds: { ...(p.sounds || {}), snd1: { name: "Voiceover", seconds: 20 } } };
+      if (!globalThis.__demoVoiceUsed) { globalThis.__demoVoiceUsed = true; p.timeline = { ...p.timeline, voice: { soundId: "snd1", start: 0, editSeconds: 30 } }; }
+    }
     if (!p || id !== "p5") return p;
     const comments = [...(p.comments || []).filter((c) => c.id !== fromClaude.id), fromClaude].filter((c) => !deleted.has(c.id)).map((c) => (edits[c.id] ? { ...c, text: edits[c.id], edited: true } : c));
     return { ...p, comments: comments.sort((a, b) => a.time - b.time) };
