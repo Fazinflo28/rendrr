@@ -7,6 +7,7 @@ import { authenticate } from "../auth";
 import { commentOut, galleryOut, reviewOut } from "../serialize";
 import { latestRender } from "../services/projects";
 import { startRender } from "../services/render";
+import { deleteGalleryMedia, galleryMedia, prepareGalleryMedia } from "../services/galleryMedia";
 
 const keyFor = (r: Review) => createHmac("sha256", env().ENCRYPTION_KEY || env().CLERK_SECRET_KEY || "dev").update(`${r.token}:${r.passwordHash || ""}`).digest("base64url");
 const unlocked = (req: FastifyRequest, r: Review) => !r.passwordHash || req.headers["x-review-key"] === keyFor(r);
@@ -246,14 +247,17 @@ export default async function reviews(app: FastifyInstance) {
         platforms: input.platforms?.length ? input.platforms : ["instagram"], allowRecreate: input.allowRecreate !== false, recipe,
       } });
       await prisma.reference.create({ data: { id: g.id, userId: me.id, name: g.title, recipe } }).catch(() => {});
+      // The real video: the edit's export copied to the item now, or a preview started if it has none yet.
+      const ready = await prepareGalleryMedia(g, me.id);
       const style = await prisma.style.findUnique({ where: { id: g.styleId } });
-      return galleryOut(g, me.id, false, style || undefined);
+      return galleryOut(ready, me.id, false, style || undefined, await galleryMedia(ready));
     });
 
     a.delete("/gallery/:id", async (req) => {
       const g = await prisma.galleryItem.findUnique({ where: { id: (req.params as { id: string }).id } });
       if (!g || g.userId !== req.user!.id) throw notFound("That video is not in the gallery any more.");
       await prisma.galleryItem.delete({ where: { id: g.id } });
+      await deleteGalleryMedia(g);
       await prisma.reference.deleteMany({ where: { id: g.id, userId: g.userId } });
       return { ok: true };
     });
@@ -273,7 +277,7 @@ export default async function reviews(app: FastifyInstance) {
         return { u: made.count ? await tx.galleryItem.update({ where: { id }, data: { likes: { increment: 1 } } }) : await tx.galleryItem.findUniqueOrThrow({ where: { id } }), liked: !!made.count || !!(await tx.galleryLike.findUnique({ where: key })) };
       });
       const style = await prisma.style.findUnique({ where: { id: u.styleId } });
-      return galleryOut(u, me, liked, style || undefined);
+      return galleryOut(u, me, liked, style || undefined, await galleryMedia(u));
     });
 
     a.post("/gallery/:id/recreate", async (req) => {

@@ -426,6 +426,9 @@ model GalleryItem {
   recreates     Int           @default(0)
   allowRecreate Boolean       @default(true)
   recipe        Json          @default("{}")
+  videoKey      String? // its own copy of the export it shows (gallery/<id>.mp4), made when published
+  posterKey     String? // a still from it
+  seconds       Float?
   createdAt     DateTime      @default(now())
   likedBy       GalleryLike[]
 }

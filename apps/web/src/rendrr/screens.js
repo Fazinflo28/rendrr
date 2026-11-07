@@ -786,6 +786,21 @@ function StylePacks({ fixedTypes, hideFilters, onPick, cols = 4, wall }) {
 
 /* ---------- /home: community gallery ---------- */
 const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n));
+// A published video: its real export. In the gallery the tile shows a still and plays (muted) while the pointer is
+// on it; the window plays it with sound and controls. One whose export is still being made shows the style's preview.
+function GalleryVideo({ g, big }) {
+  const ref = useRef(null);
+  const ar = { "9:16": "9 / 16", "16:9": "16 / 9", "1:1": "1 / 1", "4:5": "4 / 5" }[g.ori] || "9 / 16";
+  if (!g.video) return html`<${StyleVideo} s=${g.style} ori=${g.ori} className=${big ? "modal-sv" : "fill"} />`;
+  // Without a still, the first frame (#t=0.1) stands in for it.
+  const src = g.poster ? g.video : g.video + "#t=0.1";
+  // The window starts playing with sound; where the browser refuses sound without a tap, it plays muted instead.
+  const start = (v) => { if (!v || v.dataset.started) return; v.dataset.started = "1"; v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); };
+  if (big) return html`<video class="gvid big" ref=${start} src=${src} poster=${g.poster || undefined} controls playsinline style=${{ aspectRatio: ar }} />`;
+  const play = () => { const v = ref.current; if (v) { v.muted = true; v.play().catch(() => {}); } };
+  const stop = () => { const v = ref.current; if (v) { v.pause(); v.currentTime = 0; } };
+  return html`<video ref=${ref} class="gvid" src=${src} poster=${g.poster || undefined} muted loop playsinline preload=${g.poster ? "none" : "metadata"} style=${{ aspectRatio: ar }} onMouseEnter=${play} onMouseLeave=${stop} />`;
+}
 function HomePage() { return html`<${ExploreFeed} />`; }
 function ExploreFeed({ types, embedded, title = "Explore", sub }) {
   const { go } = useNav(); const toast = useToast(); const { requireUser, user } = useApp();
@@ -808,7 +823,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
       const all = shown; shown = shown.slice(0, limit);
       return html`<div class="col" style="gap:12px">
         ${shown.length === 0 ? html`<${EmptyState} icon="search" title="Nothing here yet" text=${mine ? "You have not published a video yet." : "Try another shape or platform."} action=${mine ? html`<${Btn} size="sm" onClick=${() => setPublish(true)}>Publish a video<//>` : null} />` : html`<${Masonry} items=${shown} oriOf=${(g) => g.ori} render=${(g) => html`<div key=${g.id} class="gcard" role="button" tabindex="0" data-g=${g.id} data-ori=${g.ori} onClick=${() => setOpen(g)} onKeyDown=${(e) => e.key === "Enter" && setOpen(g)}>
-            <${StyleVideo} s=${g.style} ori=${g.ori} className="fill" />
+            <${GalleryVideo} g=${g} />
             <div class="gtop"><span class="gauthor" title=${g.title}><span class="gava">${initials(g.author)}</span><b>${g.mine && user ? "You" : g.author}</b></span></div>
             <div class="gbot"><button class=${"glike" + (g.liked ? " on" : "")} aria-pressed=${g.liked} aria-label="Like" onClick=${(e) => like(e, g)}><${Icon} name="heart" size="14" />${fmtK(g.likes)}</button>
               <button class="grec" data-recreate=${g.id} onClick=${(e) => startRecreate(e, g)}><${Icon} name="refresh" size="14" />Recreate</button></div>
@@ -816,7 +831,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
         ${all.length > shown.length && html`<div class="row" style="justify-content:center;padding:8px 0"><${Btn} kind="secondary" id="show-more" onClick=${() => setLimit((l) => l + 60)}>Show more (${all.length - shown.length} left)<//></div>`}
       </div>`; }}<//>
     ${open && html`<${Modal} title=${open.title} sub=${open.author + " · " + fmtAgo(open.at)} onClose=${() => setOpen(null)} wide footer=${html`${open.mine && html`<${Btn} kind="ghost" onClick=${() => unpublish(open)}>Remove from gallery<//>`}<${Btn} kind="secondary" icon="heart" onClick=${(e) => like(e, open)}>${open.liked ? "Liked" : "Like"} · ${fmtK(open.likes)}<//><${Btn} id="recreate-open" icon="refresh" disabled=${!open.allowRecreate} onClick=${(e) => startRecreate(e, open)}>Recreate this<//>`}>
-      <${StyleVideo} s=${open.style} ori=${open.ori} className="modal-sv" />
+      <${GalleryVideo} g=${open} big />
       ${!open.allowRecreate && html`<p class="t-small muted">The creator turned off recreate for this video.</p>`}
     <//>`}
     ${recreate && html`<${RecreateModal} g=${recreate} onClose=${() => setRecreate(null)} />`}

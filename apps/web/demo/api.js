@@ -435,3 +435,12 @@ for (const [name, fn] of Object.entries(api)) {
   if (typeof fn !== "function" || /^(get|list|has|is|read|follow|desktopApp|captureDrop)/.test(name)) continue;
   api[name] = function (...a) { globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1; return fn.apply(this, a); };
 }
+
+// Published videos with their real export (tests set globalThis.__demoGalleryVideo = { video, poster }): the demo's
+// fake gallery has none, so its tiles show the style preview otherwise.
+const listGallery0 = api.listGallery;
+api.listGallery = async (...a) => {
+  const list = await listGallery0(...a);
+  const m = globalThis.__demoGalleryVideo;
+  return m ? list.map((g, i) => (i === 0 ? { ...g, ori: "9:16", video: m.video, poster: m.poster ?? null } : g)) : list;
+};

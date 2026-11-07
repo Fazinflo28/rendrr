@@ -1488,3 +1488,8 @@ html.desktop body:not(:has(.top, .ed-top))::after { content: ""; position: fixed
 /* Editor on a phone: the tool tabs under the player already list every tool, so the search box goes (one row less
    above the video). */
 @media (max-width: 1023px) { .editor .ed-top .tb-search { display: none; } }
+
+/* Published videos: the real export, filling the tile at its own shape; in the window, as big as fits. */
+.gvid { display: block; width: 100%; height: auto; object-fit: cover; background: #000; }
+.gvid.big { max-height: 62vh; width: auto; max-width: 100%; margin: 0 auto; border-radius: var(--r-sm); object-fit: contain; }
+@media (max-width: 1023px) { .gvid.big { max-height: 56vh; } }

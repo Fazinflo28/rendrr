@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authenticate } from "../auth";
 import { galleryOut, styleOut } from "../serialize";
 import { stylesById } from "../services/projects";
+import { attachWaiting, galleryMedia } from "../services/galleryMedia";
 
 /** Explore, Create and Styles are open to everyone. A valid login adds the user's own styles and likes. */
 async function optionalAuth(req: FastifyRequest, reply: FastifyReply) {
@@ -41,6 +42,8 @@ export default async function explore(app: FastifyInstance) {
     const items = await prisma.galleryItem.findMany({ orderBy: { createdAt: "desc" }, take: 300 });
     const likes = me ? new Set((await prisma.galleryLike.findMany({ where: { userId: me, galleryItemId: { in: items.map((i) => i.id) } } })).map((l) => l.galleryItemId)) : new Set<string>();
     const styles = await stylesById(items.map((g) => g.styleId));
-    return items.filter((g) => styles.has(g.styleId)).map((g) => galleryOut(g, me, likes.has(g.id), styles.get(g.styleId)));
+    // Each video plays its real export; one whose export was still being made when published takes it now.
+    const shown = await attachWaiting(items.filter((g) => styles.has(g.styleId)));
+    return Promise.all(shown.map(async (g) => galleryOut(g, me, likes.has(g.id), styles.get(g.styleId), await galleryMedia(g))));
   });
 }

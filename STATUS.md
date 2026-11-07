@@ -1217,3 +1217,14 @@ From before:
   /download/mac/:chip signed in with the workflow's GitHub OIDC token. The API checks GitHub's signature (its keys),
   the audience "rendrr-downloads", the repository and the workflow file, and the expiry; no secret is stored.
 - Test: apps/api/test/mac-download.test.ts (3; a stand-in GitHub key server).
+
+### Explore plays the real video
+
+- A published video showed the style's drawn preview, not the edit. Publishing now copies the edit's best export (the
+  current version's final, else its preview, else the newest; MP4 or MOV only) and a still from it to the gallery
+  item's own keys (gallery/<id>.mp4, .jpg; GalleryItem.videoKey, posterKey, seconds), so it stays when previews
+  expire or the edit is deleted. An edit with no export yet gets a preview rendered; the item takes it when the
+  gallery is next loaded (a few per load; earlier published videos take theirs the same way). Removing a video
+  deletes its copy.
+- The tile shows the still and plays muted while the pointer is on it; the window plays it with sound and controls.
+- Tests: apps/api/test/gallery-media.test.ts (2), apps/web/demo/gallery-video.mjs.

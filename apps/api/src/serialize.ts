@@ -79,11 +79,13 @@ export async function reviewOut(r: Review & { comments: ReviewComment[] }, ctx: 
   };
 }
 
-export function galleryOut(g: GalleryItem, me: string, liked: boolean, style: Style | undefined) {
+/** media: the published video's own export and its still (signed links), or nulls while it is still being made. */
+export function galleryOut(g: GalleryItem, me: string, liked: boolean, style: Style | undefined, media?: { video: string | null; poster: string | null; seconds: number | null }) {
   return {
     id: g.id, title: g.title, author: g.author, styleId: g.styleId, ori: g.ori, platforms: g.platforms,
     likes: g.likes, views: g.views, recreates: g.recreates, liked, mine: g.userId === me, allowRecreate: g.allowRecreate,
     at: g.createdAt.getTime(), projectId: g.projectId ?? undefined, style: style ? styleOut(style) : undefined,
+    video: media?.video ?? null, poster: media?.poster ?? null, seconds: media?.seconds ?? null,
   };
 }
 
