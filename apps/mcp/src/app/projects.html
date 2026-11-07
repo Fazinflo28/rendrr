@@ -507,9 +507,11 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const d = res.structuredContent;
     if (res.isError || !d) { state.err = ((res.content || [])[0] || {}).text || null; if (!state.page) loadList(); return; }
     // With an edit open the list is not sent: loaded when the user goes back to it.
+    state.err = null;
     state.page = d.projects ? { projects: d.projects, total: d.total || 0, offset: 0 } : null;
     if (d.folders) state.folders = d.folders;
-    if (!d.open) state.folder = null;
+    // A project (folder) the AI opened: its edits, with the way back to every project.
+    if (!d.open) state.folder = d.folder ? { id: d.folder.id, name: d.folder.name } : null;
     state.webUrl = d.webUrl || null;
     if (d.samples) return showSamples(d.samples);
     const again = !d.open && isFullscreen() ? remembered() : null;

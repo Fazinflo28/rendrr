@@ -470,6 +470,14 @@ await app.locator('button[aria-label="Back to Spine clinic"]').waitFor({ timeout
 await app.locator('button[aria-label="Back to Spine clinic"]').click(); await app.locator("[data-edit]").first().waitFor({ timeout: 5000 });
 check(/Spine clinic/i.test(await app.locator("#list-title").innerText()) && (await app.locator(".card").count()) === 2, "an edit the AI opened goes back to its project's videos");
 await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card.proj").first().waitFor();
+// A project (folder) the AI opened (open_projects with a folder): its videos, and the way back to every project.
+const inFolder = db.projects.filter((p) => p.folderId === "f1");
+await page.evaluate((d) => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: d } }, "*"),
+  { projects: inFolder, total: inFolder.length, offset: 0, folder: { id: "f1", name: "Spine clinic" }, open: null, webUrl: "https://app.rendrr.live" });
+await app.locator('button[aria-label="All projects"]').waitFor({ timeout: 5000 });
+check(/Spine clinic/i.test(await app.locator("#list-title").innerText()) && (await app.locator("[data-edit]").count()) === inFolder.length, "a project the AI opened shows its videos");
+await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card.proj").first().waitFor();
+check((await app.locator(".card.proj").count()) === 2, "and goes back to all projects");
 
 // The host switches theme: the app keeps Rendrr's look.
 await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark", styles: { variables: { "--color-background-primary": "rgb(31, 30, 29)" } } } }, "*"));

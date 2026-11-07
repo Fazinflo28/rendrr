@@ -141,6 +141,26 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
     assert.ok(JSON.stringify(one.data).length < JSON.stringify(all.data).length + JSON.stringify((one.data as any).open).length);
   });
 
+  it("open_projects opens what it is given: a project (folder) by id or name, an edit by name; an id that names nothing shows the list", async () => {
+    const folder = await prisma.folder.findFirstOrThrow({ where: { userId, name: "Client A" } });
+    for (const input of [{ projectId: folder.id }, { folderId: folder.id }, { projectId: "client a" }]) {
+      const out = await tool("open_projects", input);
+      assert.match(out.text, /^Showing the project "Client A" \(\w+\) in the Rendrr app: \d+ edits?\./, JSON.stringify(input));
+      assert.equal((out.data as any).folder.id, folder.id);
+      assert.equal((out.data as any).open, null);
+    }
+    const byName = await tool("open_projects", { projectId: `reel ${run}` });
+    assert.equal((byName.data as any).open.project.id, projectId);
+    const none = await tool("open_projects", { projectId: "cm-not-a-thing" });
+    assert.match(none.text, /^Showing the Rendrr app: .* No edit or project is called "cm-not-a-thing", so the list is shown \(list_projects has the ids\)\.$/);
+    assert.equal((none.data as any).open, null);
+    // Someone else's project is not opened.
+    const theirs = await prisma.folder.create({ data: { userId: otherId, name: `Theirs ${run}`, workspace: "Other's Workspace" } });
+    const other = await tool("open_projects", { projectId: theirs.id });
+    assert.match(other.text, /No edit or project is called/);
+    await prisma.folder.delete({ where: { id: theirs.id } });
+  });
+
   it("the app's tools go through the internal route as the user; its polling is not logged as tool calls", async () => {
     const { buildServer } = await import("../src/server");
     const srv = await buildServer();

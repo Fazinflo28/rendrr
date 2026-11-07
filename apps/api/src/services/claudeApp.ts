@@ -132,15 +132,36 @@ function openText(page: AppProjectsPage | null, open: AppProjectView | null): st
  * The app with the user's edits, or one edit open (projectId): then only that edit and its preview are sent, not the
  * list and its picture links (the app loads the list when the user goes back to it).
  */
-export async function openProjects(c: ToolCtx, i: { projectId?: string }): Promise<ToolOut> {
-  if (i.projectId) {
-    const open = await appProject(c.userId, i.projectId);
-    const data: AppOpen = { open, webUrl: WEB() };
-    return { text: openText(null, open), data };
+export async function openProjects(c: ToolCtx, i: { projectId?: string; folderId?: string }): Promise<ToolOut> {
+  // The AI often has a project (folder) where an edit is meant, or a name: whatever it gives opens what it names,
+  // and an id that names nothing shows the list with a line saying so (the call never fails on it).
+  const asked = (i.projectId || i.folderId || "").trim();
+  let note = "";
+  if (asked) {
+    const named = { equals: asked, mode: "insensitive" as const };
+    const edit = !i.folderId ? await prisma.project.findFirst({ where: { userId: c.userId, deletedAt: null, OR: [{ id: asked }, { name: named }] }, orderBy: { updatedAt: "desc" }, select: { id: true } }) : null;
+    if (edit) {
+      const open = await appProject(c.userId, edit.id);
+      const data: AppOpen = { open, webUrl: WEB() };
+      return { text: openText(null, open), data };
+    }
+    const folder = await prisma.folder.findFirst({ where: { userId: c.userId, OR: [{ id: asked }, { name: named }] }, orderBy: { createdAt: "desc" }, select: { id: true } });
+    if (folder) {
+      const page = await appProjects(c.userId, { folderId: folder.id });
+      const data: AppOpen = { ...page, open: null, webUrl: WEB() };
+      return { text: folderText(page), data };
+    }
+    note = ` No edit or project is called "${asked.slice(0, 80)}", so the list is shown (list_projects has the ids).`;
   }
   const page = await appProjects(c.userId, {});
   const data: AppOpen = { ...page, open: null, webUrl: WEB() };
-  return { text: openText(page, null), data };
+  return { text: openText(page, null) + note, data };
+}
+
+/** The line for the AI when one project (folder) is open in the app: its edits. */
+function folderText(page: AppProjectsPage): string {
+  const f = page.folder!;
+  return `Showing the project "${f.name}" (${f.id}) in the Rendrr app: ${page.total} ${page.total === 1 ? "edit" : "edits"}. ${page.projects.slice(0, 5).map((p) => `${p.name} (${p.id}, v${p.version}${p.openComments ? `, ${p.openComments} open comments` : ""})`).join("; ") || "No edits yet."}`;
 }
 
 export const APP_HANDLERS: Record<string, (c: ToolCtx, input: any) => Promise<ToolOut>> = {

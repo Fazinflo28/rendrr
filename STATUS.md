@@ -1274,4 +1274,13 @@ From before:
 - The connector has a Rendrr address: https://mcp.rendrr.live/mcp (Railway custom domain on the mcp service; CNAME
   and _railway-verify TXT at GoDaddy). PUBLIC_MCP_URL on api2 and mcp is https://mcp.rendrr.live, so Settings shows
   that address and the server's icons are on it. The old mcp-production-7fa0.up.railway.app address still works.
-  AI chats take a connector's icon from its address, so re-adding the connector with the new address shows Rendrr's.
+  Claude's connector icon (checked 7 Nov 2026): Claude does not use the server's `icons` or its favicon. It asks
+  Google's favicon service for the last two parts of the connector's host (github.com/anthropics/claude-ai-mcp
+  issue 152). The old address gives railway.app, so Railway's logo; mcp.rendrr.live gives rendrr.live. Google has
+  the black "R" saved for rendrr.live (the web app's icon from 25 Oct to 6 Nov) and changes to the lime mark when it
+  next reads the site (rendrr.live forwards to app.rendrr.live, whose favicon.ico has 16, 32 and 48 px). Asking for
+  indexing of rendrr.live in Google Search Console makes that sooner. The user must re-add the connector with the
+  new address for any of this to apply.
+- open_projects opens whatever the AI gives it: an edit's id or name, a project (folder) by id or name (folderId too),
+  and an id that names nothing shows the list with a line saying so, instead of failing (Claude had passed a
+  project's id and the call showed "Failed"). Tests: apps/api/test/claude-app.test.ts, apps/mcp/test/app-browser.mjs.
