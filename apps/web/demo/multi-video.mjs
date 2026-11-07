@@ -60,7 +60,7 @@ check(/\/editor\//.test(await page.evaluate(() => location.pathname + location.h
 // 3. The editor's Add videos: several whole videos, in order, at the end.
 const before = await page.locator(".track-v1 .clip, [data-track='v1'] .clip").count().catch(() => 0);
 await page.locator("#add-clip").click(); await page.locator("#add-videos").waitFor();
-const rows = page.locator("#add-videos .clip-card:not(.clip-sk)");
+const rows = page.locator("#add-videos .clip-card[data-video]");
 await rows.nth(2).waitFor();
 check((await rows.count()) >= 3, `Add clips shows the ready videos as pictures (${await rows.count()})`);
 await rows.nth(1).click(); await rows.nth(2).click();

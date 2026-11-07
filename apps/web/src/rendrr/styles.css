@@ -1437,6 +1437,17 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .clip-num { position: absolute; left: 8px; top: 8px; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #111; font-size: 12px; font-weight: 700; display: grid; place-items: center; }
 .clip-thumb .badge-in { left: auto; right: 6px; top: 6px; }
 .clip-name { font-size: 13px; font-weight: 500; padding: 0 2px; }
+/* Add clips: where from (Library, Google Drive, this computer), and the Library's folders as cards. */
+.add-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.add-tabs button { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 14px; border-radius: 10px; font-size: 13px; font-weight: 600; color: var(--ink-dim); background: var(--raised); box-shadow: 0 0 0 1px var(--hair-strong); }
+.add-tabs button:hover { color: var(--ink); }
+.add-tabs button.on { color: var(--on-accent, #111); background: var(--accent); box-shadow: none; }
+.clip-thumb.folder { display: grid; place-items: center; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--raised)); }
+.clip-prep { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.55); color: #fff; font-size: 12px; font-weight: 600; }
+.add-trail { gap: 10px; }
+.add-trail .link { background: none; border: 0; padding: 0; color: inherit; cursor: pointer; font: inherit; }
+.add-trail .link:hover { color: var(--ink); text-decoration: underline; }
+
 @media (max-width: 1023px) { .clip-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: none; } .modal.wide:has(.clip-grid) { min-height: 0; } }
 @media (max-width: 1023px) {
   .editor .ed-top { height: auto; flex: none; padding-top: 10px; padding-bottom: 10px; }

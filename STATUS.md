@@ -1260,3 +1260,7 @@ From before:
   "R") and "You're offline" under it. In the web app it covers the window while the connection is gone and goes away
   by itself when it is back, leaving the page as it was; the Mac app's page (when it cannot load at all) goes back to
   where it was as soon as it is online. Test: apps/web/demo/offline.mjs.
+- Add clips (and Add your footage) is the Library as it is: its folders as cards (open one, Back and the path to go
+  up, "Pick the whole folder"), the videos in no folder at the top, plus Google Drive and This computer tabs. New
+  footage is picked at once and shown while it is prepared; Add waits for it, then adds everything in the order
+  picked. Test: apps/web/demo/add-clips.mjs.

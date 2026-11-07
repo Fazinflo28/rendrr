@@ -14,7 +14,9 @@ const getVideo = api.getVideo, listVideos = api.listVideos, addFromDrive = api.a
 const kinds = {}; // videoId -> "footage" | "reference" (the design's fake backend has no references)
 const inFolder = {}; // videoId -> library folder id (the design's fake backend has no library folders)
 const libFolders = []; // { id, name, updated }
-const withKind = (v) => (v ? { ...v, kind: kinds[v.id] || "footage", libraryFolderId: inFolder[v.id] || null } : v);
+// A test can start the Library with a folder ("Shoot day": Founder story take 3 and Office tour).
+const seedFolders = () => { if (globalThis.__demoLibSeed && !libFolders.some((f) => f.id === "fd-seed")) { libFolders.push({ id: "fd-seed", name: "Shoot day", parentId: null, updated: Date.now() }); inFolder.v3 = "fd-seed"; inFolder.v5 = "fd-seed"; } };
+const withKind = (v) => (v ? (seedFolders(), { ...v, kind: kinds[v.id] || "footage", libraryFolderId: inFolder[v.id] || null }) : v);
 const libFolderIn = (name, parentId) => {
   const same = libFolders.find((x) => (x.parentId || null) === (parentId || null) && x.name.toLowerCase() === name.toLowerCase());
   if (same) return same;
@@ -230,6 +232,7 @@ Object.assign(api, {
   },
   // Library folders, kept in this tab (folders inside folders too).
   listLibraryFolders: async () => {
+    seedFolders();
     const vs = await listVideos(); const all = Array.isArray(vs) ? vs : [];
     const cmp = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
     const path = (f) => { const out = [f.name]; let p = libFolders.find((x) => x.id === f.parentId); while (p) { out.unshift(p.name); p = libFolders.find((x) => x.id === p.parentId); } return out.join(" / "); };
