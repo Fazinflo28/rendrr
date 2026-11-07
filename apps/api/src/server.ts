@@ -18,6 +18,7 @@ import footageUpload from "./routes/footageUpload";
 import graphicUpload from "./routes/graphicUpload";
 import fonts from "./routes/fonts";
 import reviews from "./routes/reviews";
+import downloads from "./routes/downloads";
 import { backfillOutputSeconds, refreshFillerFlags } from "./services/projects";
 import { removeDemoFootage } from "./services/cleanup";
 import { mergeDuplicateAccounts } from "./services/logins";
@@ -118,6 +119,7 @@ export async function buildServer() {
   await app.register(graphicUpload);
   await app.register(fonts);
   await app.register(reviews);
+  await app.register(downloads);
   await app.register(internal);
   return app;
 }

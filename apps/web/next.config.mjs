@@ -6,5 +6,9 @@ const nextConfig = {
   eslint: { ignoreDuringBuilds: true },
   // The editor uses the shared timeline module and render plan (TypeScript source), so it plays what renders.
   transpilePackages: ["@rendrr/shared"],
+  // app.rendrr.live/download: the public page to get Rendrr for Mac (served by the API, which holds the installers).
+  async redirects() {
+    return [{ source: "/download", destination: "https://api.rendrr.live/download/mac", permanent: false }];
+  },
 };
 export default nextConfig;

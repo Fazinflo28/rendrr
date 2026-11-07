@@ -1206,3 +1206,14 @@ From before:
   author lines, the editable status select, the Library's badges and step counts, the Footage storage box, scene cuts
   and legend, the What your AI can do card, and the long editor notes. Rarer actions moved into "…" menus (folder
   Rename/Move/Delete, Footage/Reference, Export preview and Samples).
+
+### Rendrr for Mac: a public download link
+
+- app.rendrr.live/download (a redirect) opens api.rendrr.live/download/mac: a page with the Apple chip and Intel
+  installers and the install steps. /download/mac/apple and /download/mac/intel always give the newest build (a
+  fresh short-lived storage link per click). The repository is private, so GitHub's release links only work for its
+  owner; this link works for anyone.
+- The Mac build (desktop-mac.yml) puts each new installer there after publishing the release: PUT
+  /download/mac/:chip signed in with the workflow's GitHub OIDC token. The API checks GitHub's signature (its keys),
+  the audience "rendrr-downloads", the repository and the workflow file, and the expiry; no secret is stored.
+- Test: apps/api/test/mac-download.test.ts (3; a stand-in GitHub key server).

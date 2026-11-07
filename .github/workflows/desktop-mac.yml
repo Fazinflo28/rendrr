@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write # GitHub's sign-in token, which Rendrr's API checks before it takes the installers
 
 concurrency:
   group: mac-app-${{ github.ref }}
@@ -80,3 +81,20 @@ jobs:
           V=$(node -p "require('./package.json').version")
           gh release create "mac-v$V" out/Rendrr-Mac-AppleSilicon.dmg out/Rendrr-Mac-Intel.dmg \
             --target "$GITHUB_SHA" --title "Rendrr for Mac $V" --notes-file RELEASE_NOTES.md --latest
+
+      # The public download link (api.rendrr.live/download/mac, app.rendrr.live/download): the installers go to
+      # Rendrr's storage, signed in with this workflow's GitHub OIDC token (no stored secret). A fresh token for
+      # each file; the API may still be deploying, so each upload is tried a few times.
+      - name: Put the installers on Rendrr's download link
+        run: |
+          V=$(node -p "require('./package.json').version")
+          for pair in apple:Rendrr-Mac-AppleSilicon.dmg intel:Rendrr-Mac-Intel.dmg; do
+            chip=${pair%%:*}; file=${pair#*:}
+            for try in 1 2 3 4 5 6; do
+              TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=rendrr-downloads" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).value")
+              if curl -fsS --max-time 900 -X PUT -H "Authorization: Bearer $TOKEN" -H "content-type: application/octet-stream" -T "out/$file" "https://api.rendrr.live/download/mac/$chip?version=$V"; then echo; break; fi
+              if [ "$try" = 6 ]; then echo "Could not put $file on the download link"; exit 1; fi
+              echo "Upload of $file failed (try $try), trying again in 60 s"; sleep 60
+            done
+          done
+          echo "Download page: https://app.rendrr.live/download"
