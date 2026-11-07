@@ -1226,5 +1226,8 @@ From before:
   expire or the edit is deleted. An edit with no export yet gets a preview rendered; the item takes it when the
   gallery is next loaded (a few per load; earlier published videos take theirs the same way). Removing a video
   deletes its copy.
+- A video published with nothing to play (never rendered, or published before this) gets a preview started when the
+  gallery loads (Render.by "gallery"), once per item every 6 hours, so a failed one is not retried on every load.
+  It does not count toward the AI's one-preview rule. Checked live: "IMG_7692 edit" now plays its own 33.6 s video.
 - The tile shows the still and plays muted while the pointer is on it; the window plays it with sound and controls.
-- Tests: apps/api/test/gallery-media.test.ts (2), apps/web/demo/gallery-video.mjs.
+- Tests: apps/api/test/gallery-media.test.ts (3), apps/web/demo/gallery-video.mjs.
