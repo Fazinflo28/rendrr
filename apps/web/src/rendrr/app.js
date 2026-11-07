@@ -206,7 +206,23 @@ function App() {
   <//><//>`;
 }
 
+// No internet: the whole window says so, as the Mac app's offline page does (the Rendrr icon and "You're offline"),
+// and goes away by itself when the connection is back. What is open stays as it was underneath.
+function OfflineScreen() {
+  const [off, setOff] = useState(() => typeof navigator !== "undefined" && navigator.onLine === false);
+  useEffect(() => {
+    const on = () => setOff(false), gone = () => setOff(true);
+    window.addEventListener("online", on); window.addEventListener("offline", gone);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", gone); };
+  }, []);
+  if (!off) return null;
+  return html`<div class="offline" id="offline" role="alert" aria-live="assertive">
+    <div class="offline-tile"><${Mark} size=${78} color="#0b0c0e" /></div>
+    <p class="offline-say"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 18H17a4 4 0 0 0 1.2-7.8" /><path d="M15.6 7.1A6 6 0 0 0 5.2 10.4 4 4 0 0 0 6 18" /><path d="M3 3l18 18" /></svg>You're offline</p>
+  </div>`;
+}
+
 // Desktop (1024px and wider) renders the 1280px design at 80%. Narrower screens get the phone layout (styles.css, "Phone and tablet").
 export function Root() {
-  return html`<div id="root"><${ToastHost}><${App} /><//></div>`;
+  return html`<div id="root"><${ToastHost}><${App} /><//><${OfflineScreen} /></div>`;
 }

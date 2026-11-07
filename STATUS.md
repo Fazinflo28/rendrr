@@ -1252,3 +1252,7 @@ From before:
   rows than fit scroll, names with them.
 - Tests: apps/web/demo/recreate.mjs, demo/layers.mjs (new); panel, comments-claude, comments-compose, multi-video,
   sweep updated.
+- No internet: the web app and the Mac app show one calm screen, like Higgsfield's: the Rendrr icon (lime tile, dark
+  "R") and "You're offline" under it. In the web app it covers the window while the connection is gone and goes away
+  by itself when it is back, leaving the page as it was; the Mac app's page (when it cannot load at all) goes back to
+  where it was as soon as it is online. Test: apps/web/demo/offline.mjs.

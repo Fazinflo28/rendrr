@@ -1524,3 +1524,10 @@ html.desktop body:not(:has(.top, .ed-top))::after { content: ""; position: fixed
 .gvid { display: block; width: 100%; height: auto; object-fit: cover; background: #000; }
 .gvid.big { max-height: 62vh; width: auto; max-width: 100%; margin: 0 auto; border-radius: var(--r-sm); object-fit: contain; }
 @media (max-width: 1023px) { .gvid.big { max-height: 56vh; } }
+
+/* No internet: the whole window, the Rendrr icon (lime tile, dark mark) and "You're offline" under it. */
+/* Sizes are for the 80% desktop zoom: 120px shows as 96. */
+.offline { position: fixed; inset: 0; z-index: 10000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 32px; background: #0b0c0e; color: #f2f2f3; -webkit-user-select: none; user-select: none; }
+.offline-tile { width: 120px; height: 120px; border-radius: 28px; background: #bde815; display: grid; place-items: center; box-shadow: 0 14px 48px rgba(189, 232, 21, .12); }
+.offline-say { display: flex; align-items: center; gap: 14px; margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -.01em; }
+.offline-say svg { width: 26px; height: 26px; }
