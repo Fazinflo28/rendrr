@@ -797,7 +797,15 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
   useEffect(() => { setLimit(60); }, [sort, mine, types]);
   const plats = fq.data?.platforms || []; const pl = (k) => (plats.find(([x]) => x === k) || [])[1] || k;
   const like = (e, g) => { e.stopPropagation(); requireUser(async () => { try { const u = await api.likeGalleryItem(g.id); q.setData((d) => d.map((i) => (i.id === g.id ? { ...i, ...u } : i))); if (open?.id === g.id) setOpen((o) => ({ ...o, ...u })); } catch (er) { toast(er.message); } }); };
-  const startRecreate = (e, g) => { e?.stopPropagation(); if (!g.allowRecreate) { toast("The creator turned off recreate for this one."); return; } requireUser(() => { setOpen(null); setRecreate(g); }); };
+  // Recreate: straight into the editor on an edit that waits for your footage, this video attached as its reference.
+  const startRecreate = (e, g) => {
+    e?.stopPropagation(); if (!g.allowRecreate) { toast("The creator turned off recreate for this one."); return; }
+    requireUser(async () => {
+      if (recreate) return; setRecreate(g.id); setOpen(null);
+      try { const p = await api.createProject({ waiting: true, reference: { kind: "recipe", id: g.id, name: g.title }, aspect: g.ori, name: "Recreate: " + g.title }); api.countRecreate(g.id); go("/editor/" + p.id); }
+      catch (err) { toast(err.message); setRecreate(null); }
+    });
+  };
   const unpublish = async (g) => { try { await api.unpublishFromGallery(g.id); q.setData((d) => d.filter((i) => i.id !== g.id)); setOpen(null); toast("Removed from the gallery"); } catch (er) { toast(er.message); } };
   const actions = html`<div class="row"><${Btn} kind=${mine ? "primary" : "secondary"} size="sm" icon="user" id="gallery-mine" aria-pressed=${mine} onClick=${() => requireUser(() => setMine((m) => !m))}>My videos<//><${Btn} size="sm" icon="globe" id="publish-video" onClick=${() => requireUser(() => setPublish(true))}>Publish a video<//></div>`;
   const sortSeg = html`<${Dropdown} id="sort-dd" left value=${sort} options=${[{ value: "trending", label: "Trending" }, { value: "newest", label: "Newest" }, { value: "recreated", label: "Most recreated" }]} onChange=${setSort} />`;
@@ -813,7 +821,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
             <${GalleryVideo} g=${g} />
             <div class="gtop"><span class="gauthor" title=${g.title}><span class="gava">${initials(g.author)}</span><b>${g.mine && user ? "You" : g.author}</b></span></div>
             <div class="gbot"><button class=${"glike" + (g.liked ? " on" : "")} aria-pressed=${g.liked} aria-label="Like" onClick=${(e) => like(e, g)}><${Icon} name="heart" size="14" />${fmtK(g.likes)}</button>
-              <button class="grec" data-recreate=${g.id} onClick=${(e) => startRecreate(e, g)}><${Icon} name="refresh" size="14" />Recreate</button></div>
+              <button class="grec" data-recreate=${g.id} disabled=${recreate === g.id} onClick=${(e) => startRecreate(e, g)}><${Icon} name="refresh" size="14" />${recreate === g.id ? "Opening…" : "Recreate"}</button></div>
           </div>`} />`}
         ${all.length > shown.length && html`<div class="row" style="justify-content:center;padding:8px 0"><${Btn} kind="secondary" id="show-more" onClick=${() => setLimit((l) => l + 60)}>Show more (${all.length - shown.length} left)<//></div>`}
       </div>`; }}<//>
@@ -821,8 +829,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
       <${GalleryVideo} g=${open} big />
       ${!open.allowRecreate && html`<p class="t-small muted">The creator turned off recreate for this video.</p>`}
     <//>`}
-    ${recreate && html`<${NewProjectModal} title="Recreate this video" sub="Pick your footage. Your AI follows this video." reference=${{ kind: "recipe", id: recreate.id, name: recreate.title }} defaultName=${"Recreate: " + recreate.title} onClose=${() => setRecreate(null)}
-      onCreated=${(p) => { api.countRecreate(recreate.id); setRecreate(null); toast("Edit created. Opening the editor.", { icon: "check", tone: "brand" }); go("/editor/" + p.id); }} />`}
+
     ${publish && html`<${PublishModal} plats=${plats} onClose=${() => setPublish(false)} onPublished=${(g) => { q.setData((d) => [g, ...(d || [])]); setPublish(false); setMine(true); }} />`}
   </div>`;
 }

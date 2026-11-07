@@ -1,6 +1,6 @@
 import { AppError, applyTimelineChange, matteBlockUrls, notFound, projectChannel, restoreVersion, signGet } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
-import { COMMENT_IMAGES_MAX, CommentImageInput, CreateFolderInput, CreateProjectInput, DrawingInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot, type Timeline } from "@rendrr/shared";
+import { COMMENT_IMAGES_MAX, CommentImageInput, CreateFolderInput, CreateProjectInput, DrawingInput, UseFootageInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot, type Timeline } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { faceTracks, skinFaceAreas, speakerCentres } from "../services/color";
@@ -11,7 +11,7 @@ import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
 import { projectChat } from "../services/aiChat";
 import { editorMarks } from "../services/marks";
-import { createFolder, createProject, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference, stylesById } from "../services/projects";
+import { createFolder, createProject, createWaitingEdit, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference, stylesById, useFootage } from "../services/projects";
 import { addNote, deleteComment, editNote } from "../services/commentMedia";
 
 /** A picture of each edit for its card: a frame of its latest render (the edit as it looks), else its footage's
@@ -104,8 +104,16 @@ export default async function projects(app: FastifyInstance) {
       const canvas = await createCanvas(req.user!.id, { seconds: input.blank.seconds, aspect, color: input.blank.color, name });
       return projectOut(await createProject(req.user!.id, { videoId: canvas.id, name, folderId: input.folderId, aspect, length: input.blank.seconds, reference: input.reference }));
     }
+    // Recreate: the editor opens at once on an edit waiting for its footage.
+    if (input.waiting) return projectOut(await createWaitingEdit(req.user!.id, { reference: input.reference, name: input.name, folderId: input.folderId, aspect: input.aspect }));
     const p = await createProject(req.user!.id, input);
     return projectOut(p);
+  });
+
+  // The footage of an edit that was waiting for it: the first video the user adds in the editor.
+  app.post("/projects/:id/footage", async (req) => {
+    const { videoIds } = UseFootageInput.parse(req.body);
+    return projectOut(await useFootage(req.user!.id, (req.params as { id: string }).id, videoIds));
   });
 
   // Editor autosave and status changes. Timeline writes go through applyTimelineChange only.

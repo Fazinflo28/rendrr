@@ -6,6 +6,7 @@ import { notOriginalMessage, sameOriginal } from "../../../packages/shared/src/o
 import { desktopApp, forgetVerifier, newChallenge, s256, savedVerifier } from "../src/rendrr/desktopLogin.ts";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const waitingEdits = new Set(); // Recreate's edits still waiting for their footage
 const playable = {}; // videoId -> blob URL of the file picked in this tab, so the editor can play it
 
 const getProject = api.getProject, createProject = api.createProject;
@@ -191,9 +192,23 @@ Object.assign(api, {
   listVideos: async () => { const vs = await listVideos(); return Array.isArray(vs) ? vs.map(withKind) : vs; },
   // The design's fake backend makes an edit of one video: several (videoIds) start from the first in the preview.
   // The reference (a style, a gallery video, a reference video) is kept with the edit, as the server does.
-  createProject: async ({ videoIds, videoId, reference, ...rest }) => {
-    const p = await createProject({ ...rest, videoId: (Array.isArray(videoIds) && videoIds[0]) || videoId });
+  // waiting (Recreate): an edit with no footage yet; the first video added becomes it (useFootage).
+  createProject: async ({ videoIds, videoId, reference, waiting, ...rest }) => {
+    let vid = (Array.isArray(videoIds) && videoIds[0]) || videoId;
+    if (waiting) { const vs = await listVideos(); vid = (Array.isArray(vs) ? vs : []).find((v) => v.status === "ready")?.id; }
+    const p = await createProject({ ...rest, videoId: vid });
+    if (waiting) waitingEdits.add(p.id);
     return reference ? api.updateProject(p.id, { reference }) : p;
+  },
+  useFootage: async (id, ids) => {
+    await wait(300);
+    const p = await getProject(id);
+    const t = await createProject({ videoId: ids[0], name: p.name, aspect: p.aspect, folderId: p.folderId });
+    const made = await getProject(t.id);
+    await api.updateProject(id, { videoId: ids[0], timeline: made.timeline, art: made.art });
+    await api.deleteAsset(t.id);
+    waitingEdits.delete(id);
+    return api.getProject(id);
   },
   updateVideo: async (id, body) => { await wait(300); if (body.kind) kinds[id] = body.kind; if (body.libraryFolderId !== undefined) { if (body.libraryFolderId) inFolder[id] = body.libraryFolderId; else delete inFolder[id]; } return withKind(await getVideo(id)); },
   addFromDrive: async (ids, kind, fid) => { const out = await addFromDrive(ids); out.forEach((v) => { if (kind) kinds[v.id] = kind; if (fid) inFolder[v.id] = fid; }); return out.map(withKind); },
@@ -365,6 +380,7 @@ Object.assign(api, {
       p = { ...p, sounds: { ...(p.sounds || {}), snd1: { name: "Voiceover", seconds: 20 } } };
       if (!globalThis.__demoVoiceUsed) { globalThis.__demoVoiceUsed = true; p.timeline = { ...p.timeline, voice: { soundId: "snd1", start: 0, editSeconds: 30 } }; }
     }
+    if (p && waitingEdits.has(id)) p = { ...p, waiting: true };
     if (!p || id !== "p5") return p;
     const comments = [...(p.comments || []).filter((c) => c.id !== fromClaude.id), fromClaude].filter((c) => !deleted.has(c.id)).map((c) => (edits[c.id] ? { ...c, text: edits[c.id], edited: true } : c));
     return { ...p, comments: comments.sort((a, b) => a.time - b.time) };

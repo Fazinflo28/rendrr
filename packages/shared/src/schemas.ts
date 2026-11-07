@@ -27,7 +27,12 @@ export const CreateProjectInput = z.object({
   aspect: z.enum(ASPECTS).optional(),
   /** From scratch: no footage, a blank canvas of that length and colour (graphics, text and music go on top). */
   blank: z.object({ seconds: z.number().min(1, "At least 1 second.").max(CANVAS_MAX_SECONDS, "Up to an hour."), color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "A colour like #0B0B10.").optional() }).optional(),
-}).refine((x) => !!x.videoId || !!x.videoIds?.length || !!x.blank, { message: "Pick footage first.", path: ["videoId"] });
+  /** Recreate: the editor opens at once and the edit waits for its footage; the first video the user adds becomes it. */
+  waiting: z.literal(true).optional(),
+}).refine((x) => !!x.videoId || !!x.videoIds?.length || !!x.blank || !!x.waiting, { message: "Pick footage first.", path: ["videoId"] });
+
+/** The footage of an edit that was waiting for it (Recreate): one video, or several in order. */
+export const UseFootageInput = z.object({ videoIds: z.array(z.string().min(1).max(80)).min(1, "Pick a video.").max(20, "Up to 20 videos at once.") });
 
 export const UpdateProjectInput = z.object({
   name: z.string().trim().min(1).max(200).optional(),

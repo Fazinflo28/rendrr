@@ -863,27 +863,27 @@ function AudioTab({ a, clip, track, len, here = 0, planned, doOp, H, liveOp, voi
 
 // Puts whole videos (the parts of a video filmed in parts, in order) or a part of one video into the sequence (the
 // connector's add_clip).
-function AddClipModal({ main, at, onAdd, onClose }) {
+function AddClipModal({ main, at, onAdd, onClose, waiting = false }) {
   const q = useAsync(() => api.listVideos(), []);
-  const list = [main, ...(Array.isArray(q.data) ? q.data : []).filter((v) => v.id !== main.id && v.status === "ready" && v.kind !== "reference")];
+  const list = [...(waiting ? [] : [main]), ...(Array.isArray(q.data) ? q.data : []).filter((v) => (waiting || v.id !== main.id) && v.status === "ready" && v.kind !== "reference")];
   const [mode, setMode] = useState("whole"); const [ids, setIds] = useState([]);
   const [vid, setVid] = useState(main.id);
   const v = list.find((x) => x.id === vid) || main;
   const [from, setFrom] = useState(0); const [to, setTo] = useState(main.seconds || 5); const [where, setWhere] = useState("end");
   const ok = mode === "whole" ? ids.length > 0 : to - from >= 0.1 && from >= 0 && to <= (v.seconds || 0) + 0.05;
   const go_ = () => onAdd({ items: mode === "whole" ? ids.map((id) => { const x = list.find((y) => y.id === id); return { video: x, from: 0, to: r2(x.seconds || 0) }; }) : [{ video: v, from: r2(from), to: r2(to) }], at: where === "playhead" ? at : undefined });
-  return html`<${Modal} title="Add clips" sub="Pick them in the order they play." onClose=${onClose} wide
-    footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="add-clip-go" icon="plus" disabled=${!ok} onClick=${go_}>${mode === "whole" && ids.length > 1 ? "Add " + ids.length + " videos" : mode === "whole" ? "Add video" : "Add clip"}<//>`}>
+  return html`<${Modal} title=${waiting ? "Add your footage" : "Add clips"} sub=${waiting ? "Pick your raw video. It is framed for this edit by itself." : "Pick them in the order they play."} onClose=${onClose} wide
+    footer=${html`<${Btn} kind="ghost" onClick=${onClose}>Cancel<//><${Btn} id="add-clip-go" icon="plus" disabled=${!ok} onClick=${go_}>${waiting ? (ids.length > 1 ? "Use " + ids.length + " videos" : "Use this video") : mode === "whole" && ids.length > 1 ? "Add " + ids.length + " videos" : mode === "whole" ? "Add video" : "Add clip"}<//>`}>
     <div class="col" style="gap:12px" id="add-clip-form">
-      <div class="row" style="gap:12px">${[["whole", "Whole videos"], ["part", "A part of a video"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-mode" data-mode=${k} checked=${mode === k} onChange=${() => setMode(k)} />${l}</label>`)}</div>
+      ${!waiting && html`<div class="row" style="gap:12px">${[["whole", "Whole videos"], ["part", "A part of a video"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-mode" data-mode=${k} checked=${mode === k} onChange=${() => setMode(k)} />${l}</label>`)}</div>`}
       ${mode === "whole" ? html`<div class="clip-grid" id="add-videos">${q.status === "loading" ? Array.from({ length: 6 }).map((_, i) => html`<div key=${i} class="clip-card clip-sk" aria-busy="true"><div class="clip-thumb skeleton" /><div class="skeleton sk-line" style="width:70%" /></div>`)
         : list.map((x) => { const n = ids.indexOf(x.id); return html`<button key=${x.id} type="button" class=${"clip-card" + (n >= 0 ? " on" : "")} data-video=${x.id} aria-pressed=${n >= 0} title=${x.name} onClick=${() => setIds(n >= 0 ? ids.filter((i) => i !== x.id) : [...ids, x.id])}>
-          <div class="clip-thumb"><${Thumb} src=${x.thumb} art=${x.art} /><span class="clip-len">${fmtTime(x.seconds || 0)}</span>${n >= 0 && html`<span class="clip-num">${n + 1}</span>`}${x.id === main.id && html`<span class="badge-in">This edit</span>`}</div>
+          <div class="clip-thumb"><${Thumb} src=${x.thumb} art=${x.art} /><span class="clip-len">${fmtTime(x.seconds || 0)}</span>${n >= 0 && html`<span class="clip-num">${n + 1}</span>`}${!waiting && x.id === main.id && html`<span class="badge-in">This edit</span>`}</div>
           <span class="clip-name ell">${x.name}</span></button>`; })}</div>`
       : html`<label class="t-small" style="display:grid;gap:4px">Video<select class="input sm" id="add-clip-video" value=${vid} onChange=${(e) => { setVid(e.target.value); const nv = list.find((x) => x.id === e.target.value); if (nv) { setFrom(0); setTo(nv.seconds || 5); } }}>${list.map((x) => html`<option key=${x.id} value=${x.id}>${x.id === main.id ? x.name + " (this edit's footage)" : x.name} · ${fmtTime(x.seconds || 0)}</option>`)}</select></label>
       <div class="row" style="gap:8px"><label class="t-small grow" style="display:grid;gap:4px">From (s)<input class="input sm" id="add-clip-from" type="number" min="0" step="0.1" value=${from} onInput=${(e) => setFrom(+e.target.value)} /></label><label class="t-small grow" style="display:grid;gap:4px">To (s)<input class="input sm" id="add-clip-to" type="number" min="0" step="0.1" value=${to} onInput=${(e) => setTo(+e.target.value)} /></label></div>
       ${!ok && html`<p class="t-small muted" role="alert">Pick a part at least 0.1 s long inside the video (${fmtTime(v.seconds || 0)}).</p>`}`}
-      <div class="row" style="gap:12px">${[["end", "At the end"], ["playhead", "At the playhead (" + fmtTime(at) + ")"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-where" data-where=${k} checked=${where === k} onChange=${() => setWhere(k)} />${l}</label>`)}</div>
+      ${!waiting && html`<div class="row" style="gap:12px">${[["end", "At the end"], ["playhead", "At the playhead (" + fmtTime(at) + ")"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-where" data-where=${k} checked=${where === k} onChange=${() => setWhere(k)} />${l}</label>`)}</div>`}
     </div>
   <//>`;
 }
@@ -927,7 +927,7 @@ function EditorInner({ project, reload, ai, keep }) {
   const timeline = useMemo(() => tlOf(S), [S]);
   const lay = useMemo(() => layoutTimeline(timeline, words), [timeline, words]);
   // What the timeline shows on a track: V3 without the caption lines (captions are set in the Captions panel).
-  const onTrack = (k) => (k === "v3" ? lay.tracks.v3.filter((c) => c.kind !== "caption") : lay.tracks[k]);
+  const onTrack = (k) => (project.waiting ? [] : k === "v3" ? lay.tracks.v3.filter((c) => c.kind !== "caption") : lay.tracks[k]);
   const view = useMemo(() => sequenceView(lay, words), [lay, words]);
   const main = view.mainVideoId;
   // The other videos on V1: sent with the project, plus any added here (their preview copy is fetched then).
@@ -1100,14 +1100,30 @@ function EditorInner({ project, reload, ai, keep }) {
       else { doOp({ op: "set_framing", focus: "face", centers, clipIds: ids }); if (found < clips.length) toast(`Reframed ${found} of ${clips.length} clips: no face in the others.`); }
     } catch (e) { toast(e.message); } finally { setReframing(false); }
   };
+  // The footage just came in (Recreate): when its shape is not the edit's, follow the speaker so it fills the frame.
+  useEffect(() => {
+    if (!keep.current.autoFrame || project.waiting) return; keep.current.autoFrame = false;
+    const v = project.video || {}, r = v.width && v.height ? v.width / v.height : { Landscape: 16 / 9, Portrait: 9 / 16, Square: 1 }[v.orientation] || 0, want = ASPECT_RATIO[S.aspect];
+    if (r && want && Math.abs(r - want) / want > 0.05) { toast(`Framing it for ${S.aspect}: it follows the speaker`, { icon: "spark", tone: "brand" }); setTimeout(() => reframeFace(true), 300); }
+  }, []);
   const onDelete = () => { const ids = selWords(); if (ids.length) { cutWords(ids); setWsel(null); } else if (sel) removeSel(); };
   const fit = () => setZoom(Math.max(ZMIN, Math.min(ZMAX, Math.floor(((canvasRef.current?.parentElement?.clientWidth || 900) - 40) / Math.max(1, dur)))));
   // Clips of other videos: their preview copies, so they play here at once. Several go in one after another, from the
   // playhead (or the end), as one change.
   // Phase 10: a camera's preview copy, so its monitor and the player can show it.
   const addVideo = async (id) => { if (id === main || others[id]) return; const v = await api.getVideo(id); setAdded((a) => ({ ...a, [id]: { name: v.name, seconds: v.seconds, width: v.width, height: v.height, url: v.proxyUrl || null, transcript: [] } })); };
+  // Recreate: the edit waits for its footage; the first videos added become it, and the editor opens on them (then
+  // frames them for the edit's shape by itself).
+  const waiting = !!project.waiting;
+  const [adopting, setAdopting] = useState(false);
+  const adoptFootage = async (ids) => {
+    if (!ids.length || adopting) return; setAdopting(true);
+    try { await api.useFootage(project.id, ids); keep.current.autoFrame = true; reload(); }
+    catch (e) { toast(e.message); setAdopting(false); }
+  };
   const addClip = async ({ items, at }) => {
     setAddOpen(false);
+    if (waiting) return adoptFootage(items.map(({ video }) => video.id));
     for (const { video } of items) {
       if (video.id === main || others[video.id]) continue;
       try { const v = await api.getVideo(video.id); setAdded((a) => ({ ...a, [video.id]: { name: v.name, seconds: v.seconds, width: v.width, height: v.height, url: v.proxyUrl || null, transcript: [] } })); }
@@ -1465,11 +1481,11 @@ function EditorInner({ project, reload, ai, keep }) {
         ${topMenu === "search" && html`<div class="menu tb-menu" id="tool-search-menu" role="menu">${foundTools.length ? foundTools.slice(0, 9).map((t) => html`<button key=${t.label} role="menuitem" class="tb-found" onClick=${() => { t.run(); setToolQ(""); setTopMenu(null); }}><${Icon} name=${t.icon} size="15" /><span class="grow">${t.label}</span><small class="muted">${t.where}</small></button>`) : html`<span class="t-small muted tb-menu-h">No tool called "${toolQ}"</span>`}</div>`}
       </div>
       <${MoreMenu} id="editor-more" label="More" items=${[
-        !fresh && { id: "render-preview", label: "Export preview", icon: "play", disabled: saved !== "Saved" || !plan, onClick: () => startRender("preview") },
+        !fresh && { id: "render-preview", label: "Export preview", icon: "play", disabled: waiting || saved !== "Saved" || !plan, onClick: () => startRender("preview") },
         { id: "samples-btn", label: "Samples", icon: "image", title: "A few frames and short clips, drawn as the export draws them", disabled: saved !== "Saved" || !plan, onClick: () => { pb.setPlaying(false); setSamplesOpen(true); } },
       ]} />
       <${Btn} kind="secondary" size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share<//>
-      <${Btn} size="sm" id="render-final" icon="download" onClick=${() => setExportOpen(true)}>Export<//>
+      <${Btn} size="sm" id="render-final" icon="download" disabled=${waiting} onClick=${() => setExportOpen(true)}>Export<//>
     </div>
 
     <div class="ed-body">
@@ -1482,7 +1498,7 @@ function EditorInner({ project, reload, ai, keep }) {
           ${rtab === "media" && html`<div class="pb lib-media" id="media-panel">
           <${SourceMonitor} reference=${reference} source=${source} onCloseSource=${() => setSource(null)}
             onInsert=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }], at: pb.time })} onAppend=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }] })} />
-          <${MediaBin} onAddClips=${() => setAddOpen(true)} library=${lib.library} used=${usedIds} bin=${S.media || []} mainId=${project.videoId} previewing=${source?.id} onPreview=${(v) => setSource(v)}
+          <${MediaBin} onAddClips=${() => setAddOpen(true)} library=${lib.library} used=${waiting ? [] : usedIds} bin=${S.media || []} mainId=${waiting ? null : project.videoId} previewing=${source?.id} onPreview=${(v) => setSource(v)}
             onAppend=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }] })} onAddToBin=${(v) => doOp({ op: "add_media", videoIds: [v.id] })} onRemoveFromBin=${(v) => doOp({ op: "remove_media", videoIds: [v.id] })}
             onImport=${() => openAdd("footage")} />
           </div>`}
@@ -1501,7 +1517,12 @@ function EditorInner({ project, reload, ai, keep }) {
           ${viewVer && viewVer !== project.versions.length && html`<div class="ver-banner"><span>Viewing V${viewVer} of ${S.name} (read only)</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" onClick=${async () => { try { await api.restoreVersion(project.id, viewVer); toast("V" + viewVer + " restored as a new version"); setViewVer(null); reload(); } catch (e) { toast(e.message); } }}>Restore this version<//><${Btn} kind="ghost" size="xs" id="back-latest" onClick=${() => setViewVer(null)}>Back to latest<//></div></div>`}
           ${!viewVer && !watch && !sideDismissed && sideways.length > 0 && html`<div class="ver-banner" id="sideways"><span>${sideways.length === 1 && sideways[0].vid === main ? "This footage looks" : "Some footage looks"} filmed sideways: faces are upright when it is turned ${sideways[0].turn}° clockwise.</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="turn-upright" onClick=${() => { const ok = sideways.every((x) => doOp({ op: "set_rotation", degrees: x.turn, clipIds: x.clips.map((c) => c.id) }, false)); if (ok) toast("Turned upright", { icon: "refresh" }); }}>Turn it upright<//><${Btn} kind="ghost" size="xs" onClick=${() => setSideDismissed(true)}>Keep as is<//></div></div>`}
           ${watch && html`<div class="ver-banner"><span>Watching the rendered preview (V${watch.version || project.version})</span><div class="row" style="gap:8px"><${Btn} kind="ghost" size="xs" id="back-editing" onClick=${() => { wpb.setPlaying(false); setWatch(null); }}>Back to editing<//></div></div>`}
-          <div style="flex:1;min-height:0;display:flex;justify-content:center">${watch
+          <div style="flex:1;min-height:0;display:flex;justify-content:center">${waiting
+            ? html`<div class="waiting-footage" id="waiting-footage"><div class="wf-ico"><${Icon} name="film" size="28" /></div>
+                <b class="t-heading">Add your footage</b>
+                <p class="t-small muted">${reference ? `Recreating "${reference.name}". ` : ""}Pick your raw video: it is framed for this ${S.aspect} edit by itself.</p>
+                <${Btn} id="add-footage-first" icon="plus" disabled=${adopting} onClick=${() => setAddOpen(true)}>${adopting ? "Adding your footage…" : "Add your footage"}<//></div>`
+            : watch
             ? html`<${Player} tools key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
             : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
             : fresh ? html`<${Player} tools key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${drawOverlay || inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setSide("comments"); }} />`
@@ -1649,7 +1670,7 @@ function EditorInner({ project, reload, ai, keep }) {
     ${samplesOpen && html`<${SamplesWindow} projectId=${project.id} time=${pb.time} duration=${dur} aspect=${S.aspect} toast=${toast} onSeek=${(t) => pb.seek(t)} onClose=${() => setSamplesOpen(false)} />`}
     ${exportOpen && html`<${ExportModal} snap=${{ timeline, aspect: S.aspect }} plan=${plan} name=${(S.name || "edit").replace(/[^\w\- ]+/g, "").trim() || "edit"} video=${project.video} doOp=${doOp} onReframe=${() => reframeFace(true)} reframing=${reframing} onRender=${(o) => { setExportOpen(false); startRender("final", o); }} onClose=${() => setExportOpen(false)} />`}
     ${share && html`<${CreateLinkModal} projectId=${project.id} onClose=${() => setShare(false)} onCreated=${() => setStatus("In review")} />`}
-    ${addOpen && html`<${AddClipModal} main=${{ id: main, name: project.video?.name || "Footage", seconds: footDur }} at=${pb.time} onAdd=${addClip} onClose=${() => setAddOpen(false)} />`}
+    ${addOpen && html`<${AddClipModal} waiting=${waiting} main=${{ id: main, name: project.video?.name || "Footage", seconds: footDur }} at=${pb.time} onAdd=${addClip} onClose=${() => setAddOpen(false)} />`}
     ${help && html`<${Modal} title="Keyboard shortcuts" onClose=${() => setHelp(false)}><div class="list">${SHORTCUTS.map(([k, d]) => html`<div key=${k} class="row between" style="padding:6px 4px"><span>${d}</span><span class="kbd">${k}</span></div>`)}</div><//>`}
   </div>`;
 }

@@ -1234,9 +1234,13 @@ From before:
 
 ### Recreate, a simpler editor, and Claude's layers on the timeline
 
-- Recreate (Explore) opens the New edit window with the gallery video already set as the reference and the name
-  filled in. Pick footage from the Library or add new footage right there (Drive or this computer); the edit waits
-  for new footage to be prepared, then the editor opens. The old two-step Recreate window is gone.
+- Recreate (Explore) opens the editor at once, with no window: the edit waits for its footage (a hidden placeholder,
+  POST /projects {waiting: true}; GET shows waiting: true), the gallery video attached as its reference and playing in
+  the monitor, in the gallery video's shape, nothing on the timeline, Export off. The player's place says Add your
+  footage; the first videos added (that button, Add clips, or + on a bin video) become the edit's footage
+  (POST /projects/:id/footage: version 1 made again from them, the placeholder deleted; name, shape and reference
+  kept), and when the footage's shape is not the edit's the editor follows the speaker so it fills the frame. The New
+  edit window can also add new footage itself (Drive or this computer) and waits for it to be prepared.
 - The editor's monitor plays a gallery video reference. The reference dropdown under it and the Reference panel are
   gone (the reference is set when the edit is made, or by your AI).
 - The right panel has tabs: Comments (open first), Your AI, and the selected clip's settings. Selecting a clip opens
@@ -1250,7 +1254,7 @@ From before:
   clips' own sound" in the right panel; the background behind V1 on a BG row (Change it in Color, Remove); and an
   fx badge on clips with effects (grade, masks, key, blur, no background, skin, stabilize) that opens Color. More
   rows than fit scroll, names with them.
-- Tests: apps/web/demo/recreate.mjs, demo/layers.mjs (new); panel, comments-claude, comments-compose, multi-video,
+- Tests: apps/api/test/recreate-waiting.test.ts, apps/web/demo/recreate.mjs, demo/layers.mjs (new); panel, comments-claude, comments-compose, multi-video,
   sweep updated.
 - No internet: the web app and the Mac app show one calm screen, like Higgsfield's: the Rendrr icon (lime tile, dark
   "R") and "You're offline" under it. In the web app it covers the window while the connection is gone and goes away

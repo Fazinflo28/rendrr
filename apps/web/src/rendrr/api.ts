@@ -324,13 +324,16 @@ export const api: any = {
   getProjectMarks: async (id: string) => emptyIf(await get(`/projects/${enc(id)}/marks`)),
   // A new edit is the raw footage. `reference` ({ kind: style | recipe | video, id }) is attached for the AI, never applied.
   // videoIds: several videos in order (a video filmed in parts); the first is the edit's footage.
-  createProject: async ({ videoId, videoIds, reference, name, folderId, cut, aspect, blank }: any) => {
+  createProject: async ({ videoId, videoIds, reference, name, folderId, cut, aspect, blank, waiting }: any) => {
     const ids = Array.isArray(videoIds) && videoIds.length ? videoIds : videoId ? [videoId] : [];
-    if (!ids.length && !blank) throw fail("Pick footage first.");
-    const p = await post("/projects", { ...(blank ? { blank } : ids.length > 1 ? { videoIds: ids } : { videoId: ids[0] }), reference: reference ? { kind: reference.kind, id: reference.id } : undefined, name: name || undefined, folderId: folderId || undefined, cut: Array.isArray(cut) ? cut : undefined, aspect: aspect || undefined });
+    if (!ids.length && !blank && !waiting) throw fail("Pick footage first.");
+    // waiting (Recreate): the edit opens at once and waits for its footage.
+    const p = await post("/projects", { ...(waiting ? { waiting: true } : blank ? { blank } : ids.length > 1 ? { videoIds: ids } : { videoId: ids[0] }), reference: reference ? { kind: reference.kind, id: reference.id } : undefined, name: name || undefined, folderId: folderId || undefined, cut: Array.isArray(cut) ? cut : undefined, aspect: aspect || undefined });
     versions[p.id] = p.version;
     return p;
   },
+  // The footage of an edit that was waiting for it (Recreate): the first videos the user adds.
+  useFootage: async (id: string, videoIds: string[]) => post(`/projects/${id}/footage`, { videoIds }),
   updateProject: async (id: string, p: any) => {
     const body = p.timeline ? { ...p, baseVersion: versions[id], ...(stamps[id] ? { baseAt: stamps[id] } : {}) } : p;
     const r = await patch(`/projects/${enc(id)}`, body);

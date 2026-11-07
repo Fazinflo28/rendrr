@@ -1,7 +1,7 @@
 import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, renderFileKeys, signGet } from "@rendrr/core";
 import { deleteEditCommentFiles } from "./commentMedia";
 import { prisma, type Prisma, type Project } from "@rendrr/db";
-import { allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, libraryVideoIds, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip } from "@rendrr/shared";
+import { allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, libraryVideoIds, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip, ASPECTS, aspectSize, orientationOf, type Aspect } from "@rendrr/shared";
 import { otherVideoIds, playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 
@@ -76,13 +76,11 @@ export async function resolveReference(userId: string, ref: { kind: ReferenceRef
   throw new AppError("That reference is not available any more. Pick another one.", 400, "no-reference");
 }
 
-/**
- * Creates an edit. Version 1 is the footage as recorded and nothing else: no style, no captions, no cuts (only words
- * the user removed on the footage page). A reference (a style, a gallery recipe or a reference video; `styleId` from
- * the connector is a style reference) is attached for the user's AI to read. Rendrr never applies it. Several videos
- * (videoIds, in order): the first is the edit's footage, the others follow it whole on V1.
- */
-export async function createProject(userId: string, input: { videoId?: string; videoIds?: string[]; styleId?: string | null; reference?: { kind: ReferenceRef["kind"]; id: string } | null; name?: string | null; folderId?: string | null; cut?: string[]; aspect?: string; length?: number }, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}) {
+type FirstCutInput = { videoId?: string; videoIds?: string[]; name?: string | null; cut?: string[]; aspect?: string; length?: number };
+
+/** The footage of a new edit and its first timeline (version 1: the footage as recorded). Checks the videos are the
+ *  user's and ready. Shared by a new edit and by an edit that was waiting for its footage (useFootage). */
+async function firstCut(userId: string, input: FirstCutInput) {
   // One video, or several in order (a video filmed in parts): the first is the edit's footage.
   const ids = Array.from(new Set(input.videoIds?.length ? input.videoIds : input.videoId ? [input.videoId] : []));
   if (!ids.length) throw new AppError("Pick footage first.", 400, "no-footage");
@@ -94,9 +92,6 @@ export async function createProject(userId: string, input: { videoId?: string; v
   const refs = vids.filter((v) => v!.kind === "reference" && ids.length > 1);
   if (refs.length) throw new AppError(`${refs.map((v) => `"${v!.name}"`).join(", ")} ${refs.length === 1 ? "is a reference" : "are references"}: an edit is made of footage. Leave ${refs.length === 1 ? "it" : "them"} out, or attach one as the reference.`, 400, "reference-as-footage");
   const [v, ...more] = vids as NonNullable<(typeof vids)[number]>[];
-  const asked = input.reference ?? (input.styleId ? { kind: "style" as const, id: input.styleId } : null);
-  const reference = asked ? await resolveReference(userId, asked) : null;
-  const folderId = (await ownFolder(userId, input.folderId)) ?? (await defaultFolderId(userId));
   const transcript = v.analysis!.transcript as unknown as Transcript;
   let timeline = buildRawSequence(transcript, v.seconds, Array.isArray(input.cut) ? input.cut : [], v.id, more.map((m) => ({ id: m.id, name: m.name, seconds: m.seconds, ready: true })));
   // A blank canvas (an edit from scratch) is longer than the edit asked for, so the edit can grow: V1 plays the length.
@@ -108,6 +103,20 @@ export async function createProject(userId: string, input: { videoId?: string; v
   const name = (input.name || "").trim() || (more.length ? `${v.name} + ${more.length} more` : v.name + " edit");
   const snap: Snapshot = { timeline, name, aspect: aspect as Snapshot["aspect"], styleId: null };
   const note = v.kind === "canvas" ? `Blank canvas, ${Math.round((input.length ?? v.seconds) * 10) / 10} s` : more.length ? `${vids.length} videos as recorded, back to back` : input.cut?.length ? `First cut (${input.cut.length} words removed)` : "Footage as recorded";
+  return { v, more, vids: vids as NonNullable<(typeof vids)[number]>[], timeline, aspect, name, snap, note, transcript };
+}
+
+/**
+ * Creates an edit. Version 1 is the footage as recorded and nothing else: no style, no captions, no cuts (only words
+ * the user removed on the footage page). A reference (a style, a gallery recipe or a reference video; `styleId` from
+ * the connector is a style reference) is attached for the user's AI to read. Rendrr never applies it. Several videos
+ * (videoIds, in order): the first is the edit's footage, the others follow it whole on V1.
+ */
+export async function createProject(userId: string, input: { videoId?: string; videoIds?: string[]; styleId?: string | null; reference?: { kind: ReferenceRef["kind"]; id: string } | null; name?: string | null; folderId?: string | null; cut?: string[]; aspect?: string; length?: number }, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}) {
+  const asked = input.reference ?? (input.styleId ? { kind: "style" as const, id: input.styleId } : null);
+  const reference = asked ? await resolveReference(userId, asked) : null;
+  const folderId = (await ownFolder(userId, input.folderId)) ?? (await defaultFolderId(userId));
+  const { v, timeline, aspect, name, snap, note, transcript } = await firstCut(userId, input);
   const p = await prisma.project.create({
     data: {
       userId, folderId, videoId: v.id, styleId: null, ...(reference ? { reference } : {}), name, aspect, status: "Draft", art: v.art,
@@ -117,6 +126,48 @@ export async function createProject(userId: string, input: { videoId?: string; v
   });
   await prisma.folder.update({ where: { id: folderId }, data: { updatedAt: new Date() } });
   return p;
+}
+
+/**
+ * An edit waiting for its footage (Recreate opens the editor at once): a hidden placeholder stands in for the footage
+ * until the user adds theirs (useFootage). The reference is attached and the edit has the shape asked for (the gallery
+ * video's), so the footage is framed to it when it comes.
+ */
+export async function createWaitingEdit(userId: string, input: { reference?: { kind: ReferenceRef["kind"]; id: string } | null; name?: string | null; folderId?: string | null; aspect?: string }) {
+  const aspect = (ASPECTS as readonly string[]).includes(input.aspect || "") ? (input.aspect as Aspect) : "9:16";
+  const { width, height } = aspectSize(aspect, 1080);
+  const name = (input.name || "").trim().slice(0, 200) || "New edit";
+  const v = await prisma.video.create({ data: {
+    userId, name: `${name} (waiting for footage)`.slice(0, 200), kind: "canvas", source: "placeholder", status: "ready", seconds: 30, width, height, fps: 30,
+    orientation: orientationOf(width, height), hasAudio: false, art: "a",
+    analysis: { create: { transcriber: "none", transcript: [], silences: [], sceneCuts: [] } },
+  } });
+  return createProject(userId, { videoId: v.id, name, folderId: input.folderId, aspect, reference: input.reference });
+}
+
+/** True for an edit still waiting for its footage (its footage is the placeholder createWaitingEdit made). */
+export const isWaitingFootage = (v: { source: string; kind: string } | null | undefined) => v?.kind === "canvas" && v?.source === "placeholder";
+
+/**
+ * The footage of an edit that was waiting for it: the videos the user picked become the edit's footage, version 1 is
+ * made again from them (as a new edit's), and the placeholder goes. The edit keeps its name, folder, shape and reference.
+ */
+export async function useFootage(userId: string, projectId: string, videoIds: string[]) {
+  const p = await getOwnedProject(userId, projectId);
+  const old = await prisma.video.findUnique({ where: { id: p.videoId } });
+  if (!isWaitingFootage(old)) throw new AppError("This edit has its footage already. Add more with Add clips.", 409, "has-footage");
+  const { v, timeline, snap, note, transcript } = await firstCut(userId, { videoIds, name: p.name, aspect: p.aspect });
+  const keep = { ...snap, name: p.name, aspect: p.aspect as Snapshot["aspect"] };
+  await prisma.$transaction([
+    prisma.projectVersion.deleteMany({ where: { projectId: p.id } }),
+    prisma.project.update({ where: { id: p.id }, data: {
+      videoId: v.id, art: v.art, status: "Draft", currentVersion: 1, timeline: timeline as unknown as Prisma.InputJsonValue,
+      outputSeconds: Math.round(outputDuration(timeline, allWords(transcript)) * 100) / 100,
+      versions: { create: { v: 1, note, timeline: keep as unknown as Prisma.InputJsonValue, createdBy: "user", sealed: true } },
+    } }),
+  ]);
+  await prisma.video.delete({ where: { id: old!.id } }).catch(() => {});
+  return prisma.project.findUniqueOrThrow({ where: { id: p.id } });
 }
 
 /** The styles these ids name, by id (only those: never every user's styles). */
@@ -181,6 +232,7 @@ export async function projectFull(userId: string, id: string) {
     ...projectOut(p),
     style: style ? styleOut(style) : undefined,
     video: { ...(await videoOut(video)), proxyUrl: video.proxyKey && video.status !== "expired" ? await signGet(video.proxyKey, 6 * 3600) : null },
+    waiting: isWaitingFootage(video), // Recreate: no footage yet; the first video the user adds becomes it
     transcript,
     silences: (video.analysis?.silences as unknown as { start: number; end: number }[]) || [], // for Cut silences in the editor
     timeline,
