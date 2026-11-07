@@ -55,11 +55,12 @@ check(await page.locator("#tab-style").count() === 0, "no Reference panel in the
 await page.evaluate(() => globalThis.__rendrrNav.go("/")); await page.locator(".gcard").first().waitFor();
 await page.locator("[data-recreate]").first().click();
 await until(async () => (await modal.locator("#np-add-footage").count()) === 1);
+await until(async () => (await modal.locator("#np-videos .prow").count()) > 0); // the Library list has loaded
 await modal.locator("#np-add-footage").click();
 await modal.locator("#np-add-local").click();
 const before = await modal.locator("#np-videos .prow").count();
 await modal.locator('#np-add input[type="file"]').setInputFiles({ name: "My take.mp4", mimeType: "video/mp4", buffer: Buffer.alloc(4096) });
-check(await until(async () => (await modal.locator("#np-videos .prow").count()) === before + 1), "the added video shows in the footage list");
+check(await until(async () => (await modal.locator("#np-videos .prow", { hasText: "My take" }).count()) === 1 && (await modal.locator("#np-videos .prow").count()) === before + 1), "the added video shows in the footage list");
 const row = modal.locator("#np-videos .prow.on", { hasText: "My take" });
 check(await row.count() === 1, "and is picked");
 check(await modal.locator("#np-add").count() === 0, "the add panel closes");
