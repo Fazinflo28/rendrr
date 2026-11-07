@@ -7,6 +7,7 @@ import { getOwnedProject } from "../services/projects";
 import { renderResult, renderStatus, startRender, stopRender } from "../services/render";
 import { listen, openSse } from "../live";
 import { samplesView, startSamples } from "../services/samples";
+import { claimMacExport, macExports, macPing } from "../services/macExport";
 import { SampleRequestSchema } from "@rendrr/shared";
 
 export default async function render(app: FastifyInstance) {
@@ -41,6 +42,11 @@ export default async function render(app: FastifyInstance) {
   }
 
   app.get("/renders/:id", async (req) => renderStatus(await ownedRender(req.user!.id, (req.params as { id: string }).id)));
+
+  // The Rendrr Mac app: it is open (every 20 s), the finals queued for it, and taking one to save to Downloads.
+  app.post("/desktop/ping", async (req) => { await macPing(req.user!.id, String((req.body as { version?: unknown } | null)?.version ?? "")); return { ok: true }; });
+  app.get("/desktop/exports", async (req) => macExports(req.user!.id));
+  app.post("/desktop/exports/:id/claim", async (req) => ({ claimed: await claimMacExport(req.user!.id, (req.params as { id: string }).id) }));
 
   // "Stop export" in the export window.
   app.post("/renders/:id/stop", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => stopRender(await ownedRender(req.user!.id, (req.params as { id: string }).id)));

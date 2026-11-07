@@ -118,6 +118,7 @@ function App() {
   const [theme, setThemeState] = useState(readTheme);
   useEffect(() => { applyTheme(theme); }, []);
   const toast = useToast();
+  useMacExports(user, toast);
   const go = useCallback((path, force) => { if (path !== window.location.pathname) router.push(path); if (force) setNonce((n) => n + 1); document.querySelector(".main")?.scrollTo?.(0, 0); }, [router]);
   const refreshUsage = useCallback(() => api.getUsage().then(setUsage).catch(() => {}), []);
   useEffect(() => { if (user) refreshUsage(); }, [user]);
@@ -204,6 +205,32 @@ function App() {
     ${!page ? null : !guarded && (opts.bare || opts.full) ? page : html`<${Shell} key=${nonce}>${page}<//>`}
     ${login && !user && html`<${LoginPage} key=${login.mode} initialMode=${login.mode} onClose=${onCloseLogin} after=${(u) => { const f = login.after; setLogin(null); if (pathname === "/login") go("/explore"); if (f) f(u); }} />`}
   <//><//>`;
+}
+
+// In the Mac app: tell Rendrr the app is open (so your AI exports finals to this Mac), and save each final your AI
+// exported here to Downloads as soon as it is done (the app saves file links straight to Downloads, with the Dock's
+// progress). One window takes each final, so two windows do not save it twice.
+function useMacExports(user, toast) {
+  useEffect(() => {
+    const d = typeof window !== "undefined" ? window.rendrrDesktop : null;
+    if (!d || !user) return;
+    let live = true;
+    const tick = async () => {
+      try {
+        await api.macPing(d.version || "");
+        for (const x of await api.macExports()) {
+          if (!live || (!x.url && !x.failed)) continue;
+          const { claimed } = await api.macClaim(x.renderId);
+          if (!claimed) continue;
+          if (x.url) { window.open(x.url, "_blank"); toast(`Your AI's export "${x.fileName}" is saving to Downloads`, { icon: "download", tone: "brand" }); }
+          else toast(`Your AI's export "${x.fileName}" did not finish: ${x.failed}`, { icon: "alert" });
+        }
+      } catch { /* offline or signed out: the next tick tries again */ }
+    };
+    tick();
+    const t = setInterval(tick, 20_000);
+    return () => { live = false; clearInterval(t); };
+  }, [user?.id]);
 }
 
 // No internet: the whole window says so, as the Mac app's offline page does (the Rendrr icon and "You're offline"),

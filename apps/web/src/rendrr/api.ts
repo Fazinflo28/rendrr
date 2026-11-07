@@ -332,6 +332,10 @@ export const api: any = {
     versions[p.id] = p.version;
     return p;
   },
+  // The Rendrr Mac app: it is open (every 20 s), the finals your AI exported to it, and taking one to save.
+  macPing: (version: string) => post("/desktop/ping", { version }),
+  macExports: async () => { try { return await get("/desktop/exports"); } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },
+  macClaim: (renderId: string) => post(`/desktop/exports/${enc(renderId)}/claim`, {}) as Promise<{ claimed: boolean }>,
   // The footage of an edit that was waiting for it (Recreate): the first videos the user adds.
   useFootage: async (id: string, videoIds: string[]) => post(`/projects/${id}/footage`, { videoIds }),
   updateProject: async (id: string, p: any) => {

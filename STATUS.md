@@ -1264,3 +1264,10 @@ From before:
   up, "Pick the whole folder"), the videos in no folder at the top, plus Google Drive and This computer tabs. New
   footage is picked at once and shown while it is prepared; Add waits for it, then adds everything in the order
   picked. Test: apps/web/demo/add-clips.mjs.
+- Exports from your AI go to your Mac when the Rendrr Mac app is open: the app (a signed-in Rendrr window) pings
+  every 20 s (POST /desktop/ping, open for 75 s); render_final then queues the final for it and says it is going to
+  the Mac, and the app saves it to Downloads the moment it is done (GET /desktop/exports, one claim per final so two
+  windows never save it twice; a failed one is said). With the app closed, render_final says it is switching to
+  Rendrr's cloud server and to ask which Google Drive folder, then save_to_drive. to: "drive" always goes to Drive.
+  The render itself runs on Rendrr's servers either way. Tests: apps/api/test/mac-export.test.ts,
+  apps/web/demo/mac-export.mjs.

@@ -16,6 +16,7 @@ import { createCanvas } from "./services/canvas";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
+import { macOnline, queueMacExport } from "./services/macExport";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
@@ -1161,8 +1162,11 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return samplesAnswer(c.userId, r.id, i.images !== false);
   },
   async render_final(c, i) {
-    // Saving into Drive: the folder is found and checked first, so a wrong name or a refused folder is said now, not
-    // after the render.
+    // Where the final goes: the user's Mac when the Rendrr Mac app is open (it saves it to Downloads), else Rendrr's
+    // cloud server renders it into Google Drive (the folder given, or asked for). Saving into Drive: the folder is found
+    // and checked first, so a wrong name or a refused folder is said now, not after the render.
+    const wantsDrive = i.driveFolder != null || !!i.saveToDrive || i.to === "drive";
+    const mac = !wantsDrive && (await macOnline(c.userId));
     const target = i.driveFolder != null || i.saveToDrive ? await driveTargetOrText(c.userId, i.driveFolder, i.createFolders) : null;
     if (typeof target === "string") return { text: target };
     let r;
@@ -1173,8 +1177,13 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       throw e;
     }
     if (target) await askDriveSave(r, target, fileNameFor(i.fileName, (await renderResult(r)).fileName));
+    if (mac) await queueMacExport(c.userId, r.id, fileNameFor(i.fileName, (await renderResult(r)).fileName));
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
-    return renderOut(r.id);
+    const out = await renderOut(r.id);
+    const where = mac ? "Exporting to the user's Mac: the Rendrr Mac app is open, and it saves the final to the Mac's Downloads folder by itself the moment it is done. Tell the user it is going to their Mac."
+      : target ? null
+      : `${i.to === "mac" ? "The Rendrr Mac app is not open, so the final cannot go to the Mac now. " : "The Rendrr Mac app is not open. "}Switching to Rendrr's cloud server: the final renders there and is saved to Google Drive. Tell the user you are switching to the cloud server, and ask which Google Drive folder to export it to (a folder link or a name). Then call save_to_drive with it: it saves the moment the render is done.`;
+    return where ? { ...out, text: `${where}\n${out.text}` } : out;
   },
   async save_to_drive(c, i) {
     await getOwnedProject(c.userId, i.projectId);
