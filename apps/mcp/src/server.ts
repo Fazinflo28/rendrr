@@ -9,6 +9,7 @@ import { MCP_RATE_LIMIT_PER_MIN } from "@rendrr/shared";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { buildServer, type Who } from "./build";
 import { ICON_FILES, ICON_LINKS, iconBytes } from "./icons";
+import { hostLine } from "./hosts";
 import { useKnownProtocolVersion } from "./protocol";
 import { internalSecret } from "./secret";
 
@@ -100,6 +101,7 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 const newerVersions = new Set<string>();
+
 app.post("/mcp", requireAuth, rateLimit, async (req, res) => {
   try {
     const w = await who(req);
@@ -108,6 +110,7 @@ app.post("/mcp", requireAuth, rateLimit, async (req, res) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     const body = req.body as { method?: string } | { method?: string }[] | undefined;
     const method = Array.isArray(body) ? body.map((m) => m?.method).join(",") : body?.method || "?";
+    if (method.includes("initialize")) { const line = hostLine(String(req.get("host") || "?"), w.clerkId, w.name); if (line) console.log(line); }
     const sent = useKnownProtocolVersion(req);
     if (sent && !newerVersions.has(sent)) { newerVersions.add(sent); console.warn(`[mcp] a client asks for protocol ${sent}, newer than this server knows: answered as the newest it knows`); }
     // Why a request was refused (the SDK answers 400 before any tool runs), so it shows in the logs.
