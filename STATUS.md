@@ -1271,3 +1271,7 @@ From before:
   Rendrr's cloud server and to ask which Google Drive folder, then save_to_drive. to: "drive" always goes to Drive.
   The render itself runs on Rendrr's servers either way. Tests: apps/api/test/mac-export.test.ts,
   apps/web/demo/mac-export.mjs.
+- The connector has a Rendrr address: https://mcp.rendrr.live/mcp (Railway custom domain on the mcp service; CNAME
+  and _railway-verify TXT at GoDaddy). PUBLIC_MCP_URL on api2 and mcp is https://mcp.rendrr.live, so Settings shows
+  that address and the server's icons are on it. The old mcp-production-7fa0.up.railway.app address still works.
+  AI chats take a connector's icon from its address, so re-adding the connector with the new address shows Rendrr's.
