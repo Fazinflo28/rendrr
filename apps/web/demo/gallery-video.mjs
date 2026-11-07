@@ -53,6 +53,18 @@ const big = page.locator(".modal video.gvid.big");
 check(await big.count() === 1 && await big.evaluate((v) => v.controls), "opening it plays the video with controls");
 const st = await big.evaluate((v) => ({ t: v.currentTime, paused: v.paused, muted: v.muted, rs: v.readyState }));
 check(st.t > 0.1 && !st.paused, `the window's video plays (${st.t.toFixed(2)} s${st.muted ? ", muted: the browser wants a tap for sound" : ", with sound"})`);
+// Recreate it: in the editor's reference monitor (16:9) the vertical video shows whole, black at its sides.
+await page.keyboard.press("Escape"); await sleep(300);
+await page.evaluate(() => globalThis.__rendrrNav.go("/library")); await sleep(400);
+const email = page.locator('input[type="email"]').first();
+if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await sleep(800); }
+await page.evaluate(() => globalThis.__rendrrNav.go("/")); await page.locator(".gcard video.gvid").first().waitFor();
+await page.locator(".gcard", { has: page.locator("video.gvid") }).first().locator("[data-recreate]").click();
+const ref = page.locator("#reference-video");
+await ref.waitFor({ timeout: 15000 }); await sleep(800);
+const fit = await page.evaluate(() => { const v = document.querySelector("#reference-video"), s = v.closest(".mon-screen").getBoundingClientRect(), r = v.getBoundingClientRect(); return { sw: s.width, sh: s.height, vw: r.width, vh: r.height, fit: getComputedStyle(v).objectFit, nat: v.videoWidth / v.videoHeight }; });
+check(fit.nat < 1 && fit.sw > fit.sh, `the reference is vertical, the monitor wide (${fit.nat.toFixed(2)} in ${(fit.sw / fit.sh).toFixed(2)})`);
+check(Math.abs(fit.vh - fit.sh) <= 1 && Math.abs(fit.vw - fit.sw) <= 1 && fit.fit === "contain", `it fits the monitor whole, not cropped (${Math.round(fit.vw)}x${Math.round(fit.vh)} in ${Math.round(fit.sw)}x${Math.round(fit.sh)})`);
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close(); rmSync(dir, { recursive: true, force: true });
 if (fails.length) { console.log(`${fails.length} failed`); process.exit(1); }

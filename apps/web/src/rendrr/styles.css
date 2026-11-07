@@ -1112,8 +1112,9 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .mon-tabs { display: flex; gap: 2px; min-width: 0; flex: 1; }
 .mon-tabs button { height: 28px; padding: 0 10px; border-radius: var(--r-sm); font-size: 12px; font-weight: 500; color: var(--ink-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .mon-tabs button.on { color: var(--ink); background: var(--raised-strong); box-shadow: var(--shadow-indicator); }
-.mon-screen { aspect-ratio: 16 / 9; background: #000; display: grid; place-items: center; min-height: 0; }
-.mon-screen video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.mon-screen { position: relative; aspect-ratio: 16 / 9; background: #000; display: grid; place-items: center; min-height: 0; overflow: hidden; }
+/* The whole video in the 16:9 screen, never cropped: a vertical one sits in the middle with black at its sides. */
+.mon-screen video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
 .mon-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 16px; text-align: center; color: var(--muted); }
 .mon-empty b { color: var(--ink); }
 .mon-foot { padding: 8px; border-top: 1px solid var(--line); }
