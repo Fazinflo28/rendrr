@@ -6,6 +6,9 @@ import { DRIVE_SWEEP_AGE_MS, syncStaleDriveFolders } from "./services/driveLibra
 import { prisma } from "@rendrr/db";
 import Fastify from "fastify";
 import account from "./routes/account";
+import billing from "./routes/billing";
+import admin from "./routes/admin";
+import { ensureAdmins } from "./services/billing";
 import explore from "./routes/explore";
 import internal from "./routes/internal";
 import library from "./routes/library";
@@ -37,6 +40,8 @@ export async function buildServer() {
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
     const text = typeof body === "string" ? body : body.toString("utf8");
+    // Kept as sent: Stripe's webhook signature is checked against the exact bytes.
+    (_req as unknown as { rawBody?: string }).rawBody = text;
     if (!text.trim()) return done(null, {});
     try { done(null, JSON.parse(text)); } catch { done(Object.assign(new Error("Bad JSON"), { statusCode: 400 }), undefined); }
   });
@@ -107,7 +112,11 @@ export async function buildServer() {
   mergeDuplicateAccounts().then((r) => { if (r.merged.length || r.skipped.length) app.log.info(r, "duplicate accounts merged"); }, (e) => app.log.warn({ msg: (e as Error).message }, "duplicate account merge failed"));
   removeDemoFootage().then((r) => { if (r.removed || r.kept || r.fakeDriveConnections) app.log.info(r, "demo footage removed"); }, (e) => app.log.warn({ msg: (e as Error).message }, "demo footage cleanup failed"));
 
+  ensureAdmins().then((n) => { if (n) app.log.info({ admins: n }, "admin accounts set"); }, (e) => app.log.warn({ msg: (e as Error).message }, "admin accounts not set"));
+
   await app.register(account);
+  await app.register(billing);
+  await app.register(admin);
   await app.register(explore);
   await app.register(library);
   await app.register(projects);

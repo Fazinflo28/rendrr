@@ -1,6 +1,6 @@
-import { env, newRedis, queue, type GraphicJob, type MaintenanceJob } from "@rendrr/core";
+import { env, newRedis, queue, saveJobCost, type GraphicJob, type MaintenanceJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { deepTimeoutMs, matteTimeoutMs, processTimeoutMs, QUEUES, renderLimitMs, styleTimeoutMs } from "@rendrr/shared";
+import { deepTimeoutMs, jobCost, matteTimeoutMs, processTimeoutMs, QUEUES, renderLimitMs, styleTimeoutMs } from "@rendrr/shared";
 import { Worker, type Job } from "bullmq";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -25,6 +25,7 @@ import { renderFailed, renderJob } from "./jobs/render";
 import { cpuBudget, filterThreads } from "./lib/ffmpeg";
 import { BROWSER_SLOTS, closeIdleBrowsers, GRAPHIC_WORKERS, recordLimitMs } from "./lib/graphics";
 import { activeJobs, failStalled, guarded, STOP_CHANNEL, stopJob } from "./lib/job";
+import { startCostMeter } from "./lib/cost";
 import { makeWatchdog, stopStrays, threadReport, threadUse } from "./lib/threads";
 // Object tracking runs in the frames queue but takes longer than frames (up to a minute of footage, the tracker's own
 // 120 s limit inside it); the API waits 150 s for it.
@@ -96,6 +97,12 @@ for (const w of workers) {
 }
 // A rejected promise nobody waits on is logged, not a crash of every job running here.
 process.on("unhandledRejection", (e) => console.error("[worker] unhandled rejection:", e));
+
+// Every job's cost is measured from the container's CPU and memory; what the worker uses with no job running goes to an
+// hourly "idle" row.
+startCostMeter(2000, async (row) => {
+  await saveJobCost({ queue: "idle", jobId: `idle-${Date.now()}`, kind: "idle", ok: true, wallMs: row.wallMs, cpuSeconds: row.cpuSeconds, memGbSeconds: row.memGbSeconds, measured: row.measured, ...jobCost({ cpuSeconds: row.cpuSeconds, memGbSeconds: row.memGbSeconds }) });
+});
 
 // Stuck work is looked for every ten minutes (not only in the daily cleanup).
 await queue("maintenance").upsertJobScheduler("stuck-sweep", { every: 10 * 60_000 }, { name: "maintenance", data: { task: "stuck" } satisfies MaintenanceJob });

@@ -2,13 +2,15 @@
 // Ported from ui/rendrr-ui-v2.html (app script). The route is the real URL (Next.js); `go` pushes it.
 // Screen paths:
 //   /explore (public)  /create/:cat (public, actions gated)  /styles (public)  /library  /library/:id  /projects  /projects/:id
-//   /editor/:id  /review/:token  /connect  /usage  /billing  /settings
+//   /editor/:id  /review/:token  /connect  /usage (Usage & billing)  /billing (its Billing tab)  /admin (team)  /settings
 //   Login is a modal over Explore (Higgsfield-style): browse free, act after logging in. /login opens that modal.
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, useNav, useApp, forgetPages } from "./ui";
 import { AppIcon, Mark } from "./logo";
 import { appLink, isChallenge } from "./desktopLogin";
-import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, UsagePage, BillingPage, SettingsPage, Shell } from "./screens";
+import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, SettingsPage, Shell } from "./screens";
+import { UsageBillingPage, LimitDialog } from "./billing";
+import { AdminPage } from "./admin";
 import { EditorPage } from "./editor";
 import { api } from "./api";
 const ROUTES = [
@@ -22,8 +24,9 @@ const ROUTES = [
   [/^\/editor\/([^/]+)$/, (m) => html`<${EditorPage} id=${m[1]} />`, { full: true }],
   [/^\/review\/([^/]+)$/, (m) => html`<${ClientReviewPage} token=${m[1]} />`, { bare: true }],
   [/^\/connect$/, () => html`<${ConnectPage} />`],
-  [/^\/usage$/, () => html`<${UsagePage} />`],
-  [/^\/billing$/, () => html`<${BillingPage} />`],
+  [/^\/usage$/, () => html`<${UsageBillingPage} key="usage" />`],
+  [/^\/billing$/, () => html`<${UsageBillingPage} key="billing" initialTab="billing" />`],
+  [/^\/admin$/, () => html`<${AdminPage} />`],
   [/^\/settings$/, () => html`<${SettingsPage} />`],
   [/^\/sso-callback$/, () => null, { bare: true }], // Clerk finishes Google sign-in here (src/app/sso-callback)
   [/^\/drive-done$/, () => html`<${DriveDone} />`, { bare: true }],
@@ -119,6 +122,10 @@ function App() {
   useEffect(() => { applyTheme(theme); }, []);
   const toast = useToast();
   useMacExports(user, toast);
+  useClientErrors(user);
+  // A plan limit reached anywhere (a render, an upload): one dialog says what ran out and where to top up.
+  const [limit, setLimit] = useState(null);
+  useEffect(() => { const on = (e) => setLimit(e.detail?.message || "Your plan's allowance is used up."); window.addEventListener("rendrr:billing", on); return () => window.removeEventListener("rendrr:billing", on); }, []);
   const go = useCallback((path, force) => { if (path !== window.location.pathname) router.push(path); if (force) setNonce((n) => n + 1); document.querySelector(".main")?.scrollTo?.(0, 0); }, [router]);
   const refreshUsage = useCallback(() => api.getUsage().then(setUsage).catch(() => {}), []);
   useEffect(() => { if (user) refreshUsage(); }, [user]);
@@ -203,6 +210,7 @@ function App() {
   const onCloseLogin = () => { const leave = login?.leave; setLogin(null); if (leave || pathname === "/login") go("/explore"); };
   return html`<${NavCtx.Provider} value=${{ route, go }}><${AppCtx.Provider} value=${ctx}>
     ${!page ? null : !guarded && (opts.bare || opts.full) ? page : html`<${Shell} key=${nonce}>${page}<//>`}
+    ${limit && html`<${LimitDialog} message=${limit} onClose=${() => setLimit(null)} />`}
     ${login && !user && html`<${LoginPage} key=${login.mode} initialMode=${login.mode} onClose=${onCloseLogin} after=${(u) => { const f = login.after; setLogin(null); if (pathname === "/login") go("/explore"); if (f) f(u); }} />`}
   <//><//>`;
 }
@@ -230,6 +238,23 @@ function useMacExports(user, toast) {
     tick();
     const t = setInterval(tick, 20_000);
     return () => { live = false; clearInterval(t); };
+  }, [user?.id]);
+}
+
+// Errors in this browser go to Rendrr's admin panel (grouped there), a few per page load at most, never in the demo.
+function useClientErrors(user) {
+  useEffect(() => {
+    if (typeof window === "undefined" || process.env.NODE_ENV !== "production") return;
+    let sent = 0;
+    const report = (message, stack) => {
+      if (!message || sent >= 5 || /ResizeObserver loop|Script error\.?$|NetworkError|Failed to fetch|Load failed|AbortError/i.test(message)) return;
+      sent++;
+      api.reportClientError({ message: String(message).slice(0, 1000), stack: stack ? String(stack).slice(0, 4000) : undefined, url: window.location.href, userId: user?.id || null });
+    };
+    const onErr = (e) => report(e.message, e.error?.stack);
+    const onRej = (e) => { const r = e.reason; if (r && r.friendly) return; report(r?.message || String(r || ""), r?.stack); };
+    window.addEventListener("error", onErr); window.addEventListener("unhandledrejection", onRej);
+    return () => { window.removeEventListener("error", onErr); window.removeEventListener("unhandledrejection", onRej); };
   }, [user?.id]);
 }
 

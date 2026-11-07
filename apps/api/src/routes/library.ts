@@ -9,6 +9,7 @@ import { projectOut, videoOut } from "../serialize";
 import { purgeProjectFiles } from "../services/projects";
 import { DRIVE_SYNC_FRESH_MS, driveConn, folderNamed, importDriveFolder, linkDriveFile, rememberRemoved, syncDriveFolder, syncStaleDriveFolders } from "../services/driveLibrary";
 import { createLibraryFolder, deleteLibraryFolder, folderTree, libraryFolderFull, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, updateLibraryFolder } from "../services/libraryFolders";
+import { assertMayAddFootage } from "../services/billing";
 
 /** The folder new videos go in: the user's own, or none. */
 async function intoFolder(userId: string, id?: string | null): Promise<string | null> {
@@ -204,6 +205,8 @@ export default async function library(app: FastifyInstance) {
       const userId = req.user!.id;
       const conn = await driveConn(userId);
       const inFolder = await intoFolder(userId, libraryFolderId);
+      // Billing: room for new footage (each file's length is checked again when it is processed).
+      await assertMayAddFootage(userId, 0);
       const out: Video[] = [];
       for (const fid of Array.from(new Set(fileIds))) {
         const f = await drive.getFile(userId, fid, conn.stub);
@@ -297,6 +300,7 @@ export default async function library(app: FastifyInstance) {
       const proxyKey = `${PREFIX.proxies}${base}.mp4`, audioKey = `${PREFIX.audio}${base}.m4a`;
       const [ph, ah] = await Promise.all([headObject(proxyKey), headObject(audioKey)]);
       if (!ph || !ah) throw new AppError("The preview did not finish uploading. Try again.", 400, "upload");
+      await assertMayAddFootage(req.user!.id, b.seconds / 60, v.id);
       const u = await prisma.video.update({ where: { id: v.id }, data: {
         proxyKey, audioKey, seconds: b.seconds, width: b.width, height: b.height, fps: b.fps ?? 30, orientation: orientationOf(b.width, b.height),
         previewSizeBytes: BigInt(ph.size + ah.size), status: "processing", step: 0, progress: null, error: null,

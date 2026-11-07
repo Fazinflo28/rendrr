@@ -1,4 +1,4 @@
-import { downloadFile, enqueue, signGet, transcriber, type AnalyzeJob, type DeepJob } from "@rendrr/core";
+import { downloadFile, enqueue, noteCost, recordUsage, signGet, transcriber, type AnalyzeJob, type DeepJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import { buildTranscript, DAY_MS, DEEP_VERSION, PREVIEW_RETENTION_DAYS, stubTranscript, type Transcript } from "@rendrr/shared";
 import { dirname, join } from "node:path";
@@ -48,6 +48,9 @@ export async function analyzeJob(ctx: Ctx) {
   } else {
     transcript = stubTranscript(v.seconds);
   }
+  // Billing: this video's footage minutes, once (a video processed again is not counted again).
+  noteCost({ kind: "analyze", refId: v.id });
+  if (!v.sample) await recordUsage({ userId: v.userId, metric: "footage", quantity: Math.round((v.seconds / 60) * 1000) / 1000, refId: v.id, meta: { name: v.name } });
 
   await step(1);
   const audio = join(ctx.dir, "audio.m4a"), proxy = join(ctx.dir, "proxy.mp4");

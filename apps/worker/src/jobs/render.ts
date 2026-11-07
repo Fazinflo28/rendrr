@@ -1,9 +1,9 @@
-import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, publishRender, queueDriveSave, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
+import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, noteCost, publishRender, queueDriveSave, recordUsage, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
 import { bestResolution, fmtClock, formatFile, isBestQuality, lengthTolerance, renderLimitMs, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { joinPieces, makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
-import { allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
@@ -429,6 +429,10 @@ export async function renderJob(ctx: Ctx) {
         plan: { samples: { items: noted(items), done: noted(done), width: plan.width, height: plan.height }, operations: plan.operations, outputSeconds: plan.outputSeconds, mix: mixLoudness } as unknown as Prisma.InputJsonValue,
       } });
       await usage(video.userId, "render_preview", Math.round((Math.max(seconds, items.length / fps) / 60) * 100) / 100, { projectId: project.id, renderId: r.id });
+      // Samples are previews for billing: free on Starter, counted in the trial.
+      const sampleMin = Math.round((Math.max(seconds, items.length / fps) / 60) * 1000) / 1000;
+      noteCost({ kind: "render_samples", refId: r.id, outputBytes: bytes });
+      if (r.by !== "gallery") await recordUsage({ userId: video.userId, metric: "preview", quantity: sampleMin, refId: r.id, meta: { projectId: project.id, samples: true } });
       await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100 });
       return { samples: done.length };
     }
@@ -702,6 +706,14 @@ export async function renderJob(ctx: Ctx) {
       sizeBytes: BigInt(size),
     } });
     await usage(video.userId, kind === "final" ? "render_final" : "render_preview", Math.round((outInfo.seconds / 60) * 100) / 100, { projectId: project.id, renderId: r.id });
+    // Billing: a final's export minutes (4K and heavy effects count double), a preview's preview minutes. Gallery
+    // renders (Rendrr's own) are not billed.
+    noteCost({ kind: kind === "final" ? "render_final" : "render_preview", refId: r.id, outputBytes: size });
+    if (r.by !== "gallery") {
+      const minutes = Math.round((outInfo.seconds / 60) * 1000) / 1000;
+      const fourK = kind === "final" && isFourKQuality(r.quality), heavy = isHeavyPlan(plan);
+      await recordUsage({ userId: video.userId, metric: kind === "final" ? "export" : "preview", quantity: minutes, billable: kind === "final" ? minutes * exportMultiplier({ fourK, heavy }) : minutes, refId: r.id, meta: { projectId: project.id, quality: r.quality, fourK, heavy } });
+    }
     await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100 });
     // A final the user asked to be saved into their Google Drive (render_final driveFolder): the copy starts now.
     const save = kind === "final" ? driveSaveOf(await prisma.render.findUniqueOrThrow({ where: { id: r.id }, select: { driveSave: true } })) : null;

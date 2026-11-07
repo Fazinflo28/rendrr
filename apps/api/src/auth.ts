@@ -1,5 +1,5 @@
 import { createClerkClient, verifyToken } from "@clerk/backend";
-import { env, internalSecrets, safeEqual, unauthorized, AppError } from "@rendrr/core";
+import { env, internalSecrets, safeEqual, trialFields, unauthorized, AppError } from "@rendrr/core";
 import { prisma, type User } from "@rendrr/db";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
@@ -47,7 +47,7 @@ export async function ensureUser(clerkId: string): Promise<ReqUser> {
       return owner;
     }
     try {
-      u = await prisma.user.create({ data: { clerkId, email, name }, select: SELECT });
+      u = await prisma.user.create({ data: { clerkId, email, name, ...trialFields() }, select: SELECT });
     } catch {
       // Two first requests at once: the other one created it.
       u = await prisma.user.findUniqueOrThrow({ where: { clerkId }, select: SELECT });
@@ -67,8 +67,21 @@ async function sameEmailAccount(email: string): Promise<ReqUser | null> {
   return users[0] ?? null;
 }
 
+// When each account was last seen (the admin panel's "last active"), written at most every 5 minutes per account.
+const seen = new Map<string, number>();
+function touch(userId: string) {
+  const now = Date.now();
+  if (now - (seen.get(userId) ?? 0) < 5 * 60_000) return;
+  seen.set(userId, now);
+  void prisma.user.update({ where: { id: userId }, data: { lastActiveAt: new Date(now) } }).catch(() => {});
+}
+
 /** Web app: Clerk session token. MCP server: internal secret + the Clerk user it verified. */
-export async function authenticate(req: FastifyRequest, _reply: FastifyReply) {
+export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
+  await authenticateInner(req, reply);
+  if (req.user) touch(req.user.id);
+}
+async function authenticateInner(req: FastifyRequest, _reply: FastifyReply) {
   const internal = req.headers["x-internal-secret"];
   if (typeof internal === "string") {
     if (!internalSecrets().some((s) => safeEqual(internal, s))) throw unauthorized();

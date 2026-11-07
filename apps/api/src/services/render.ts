@@ -1,9 +1,10 @@
 import { chapterProblems, chaptersText, type Chapter } from "@rendrr/shared";
 import { AppError, enqueue, publishRender, queue, readRender, redis, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
-import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, PREVIEW_STEPS, qualityLabel } from "@rendrr/shared";
+import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, isFourKQuality, PREVIEW_STEPS, qualityLabel } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
 import { samplesView } from "./samples";
+import { assertMay } from "./billing";
 
 export function stepsFor(kind: "preview" | "final", source: string, sample: boolean): string[] {
   if (kind === "preview") return [...PREVIEW_STEPS];
@@ -36,6 +37,8 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   const ex = (exists.timeline as unknown as { timeline?: { export?: { resolution?: string; codec?: string } } })?.timeline?.export;
   const resolution = best && (ex?.resolution === "4k" || bestResolution(p.aspect, video.width, video.height) === "4k") ? "4k" : best ? "1080p" : ex?.resolution;
   const quality = kind === "final" ? qualityLabel({ resolution, codec: ex?.codec, hdr: !!video.hdr && ((ex as { hdr?: string })?.hdr ?? "keep") === "keep", best }) : "540p";
+  // Billing: the plan must have room for this export (or preview). Gallery renders are Rendrr's own.
+  if (opts.by !== "gallery") await assertMay(userId, { metric: kind === "final" ? "export" : "preview", minutes: (p.outputSeconds || video.seconds || 60) / 60, fourK: kind === "final" && isFourKQuality(quality) });
   // Asking again while the same version is already waiting or rendering joins that render, however long it has been
   // going (the stuck-work sweep ends one that died). One request at a time per edit and kind: two quick clicks, or a
   // click and the AI's render at once, make one render, not two.

@@ -68,7 +68,9 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
 
 /* ---------- app shell: one top bar (Higgsfield-style), no side rail ---------- */
 const TOP = [["/explore", "Explore"], ["/projects", "Projects"], ["/library", "Library"]];
-const MENU = [["/library", "Library", "library"], ["/usage", "Usage", "usage"], ["/billing", "Billing", "key"], ["/settings", "Settings", "settings"], ["/connect", "Connect AI", "connect"]];
+const MENU = [["/library", "Library", "library"], ["/usage", "Usage & billing", "usage"], ["/settings", "Settings", "settings"], ["/connect", "Connect AI", "connect"]];
+// Rendrr's team also sees the admin panel.
+const menuFor = (user) => (user?.admin ? [...MENU, ["/admin", "Admin", "key"]] : MENU);
 function Shell({ children }) {
   const { route, go } = useNav(); const { user, setUser, openAdd, addOpen, closeAdd, openLogin, requireUser, auth, wasIn } = useApp(); const toast = useToast();
   // While the session is checked: nothing where the account buttons go, and the signed-in frame if it was signed in.
@@ -99,7 +101,7 @@ function Shell({ children }) {
           <button class="avatar" id="profile" aria-label="Profile menu" onClick=${() => setMenu((m) => !m)}>${user?.photo ? html`<img src=${user.photo} alt="" />` : initials(user?.name)}</button>
           ${menu && html`<div class="menu">
             <div class="head">${user?.email}</div>
-            ${MENU.map(([p, l, i]) => html`<button key=${p} class=${"item" + (route.startsWith(p) ? " on" : "")} data-menu=${l} onClick=${() => { go(p); setMenu(false); }}><${Icon} name=${i} />${l}</button>`)}
+            ${menuFor(user).map(([p, l, i]) => html`<button key=${p} class=${"item" + (route.startsWith(p) || (p === "/usage" && route.startsWith("/billing")) ? " on" : "")} data-menu=${l} onClick=${() => { go(p); setMenu(false); }}><${Icon} name=${i} />${l}</button>`)}
             ${!IS_PROD && html`<div class="sep" /><div class="head">Demo states</div>
             ${[["ready", "Normal data"], ["empty", "Empty states"], ["error", "Error states"]].map(([m, l]) => html`<button key=${m} class=${"item" + (api.demo.mode === m ? " on" : "")} onClick=${() => { setDemo(m); setMenu(false); }}><${Icon} name=${api.demo.mode === m ? "check" : "more"} />${l}</button>`)}
             <button class="item" id="fail-render" onClick=${() => { api.demo.failNextRender = true; toast("The next render will fail"); setMenu(false); }}><${Icon} name="alert" />Fail the next render</button>
@@ -987,49 +989,6 @@ function LoginsCard() {
   </div>`;
 }
 
-/* ---------- /usage ---------- */
-function UsagePage() {
-  const { go } = useNav(); const q = useAsync(() => api.getUsage(), []);
-  const hq = useAsync(() => api.getUsageHistory(), []);
-  // Skeletons in the real cards' shapes (stat cards with the .stat class, so a phone lays them out 3 across too).
-  const statSk = html`<div class="three">${[1, 2, 3].map((i) => html`<div key=${i} class="card stat"><div class="skeleton" style="height:40px;width:50%" /><div class="skeleton sk-line" style="width:80%;margin-top:10px" /></div>`)}</div>
-    <div class="card col" style="gap:12px"><div class="row between"><div class="skeleton sk-line" style="width:90px" /><div class="skeleton sk-line" style="width:140px" /></div><div class="skeleton" style="height:12px;border-radius:999px" /><div class="skeleton sk-line" style="width:50%" /></div>`;
-  return html`<div class="page">
-    <div class="page-head"><div><h1 class="t-title">Usage</h1></div><${Btn} kind="secondary" id="manage-plan" onClick=${() => go("/billing")}>Manage plan<//></div>
-    <${Async} q=${q} skeleton=${statSk}>${(u) => html`
-      <div class="three">
-        <div class="card stat"><span class="big" id="minutes-big">${u.renderMinutes}</span><span class="lbl">Render minutes this month</span></div>
-        <div class="card stat"><span class="big">${u.videosEdited}</span><span class="lbl">Videos edited this month</span></div>
-        <div class="card stat"><span class="big">${(u.storageTotalGB - u.storageUsedGB).toFixed(0)}</span><span class="lbl">GB of storage free</span></div>
-      </div>
-      <div class="card col" style="gap:12px" id="storage-card"><div class="row between"><b class="t-heading">Storage</b><b class="t-label">${u.storageUsedGB} GB of ${u.storageTotalGB} GB</b></div>
-        <div class="bar big split"><i style=${{ width: Math.round((u.previewsGB / u.storageTotalGB) * 100) + "%" }} /><i class="alt" style=${{ width: Math.round((u.finalsGB / u.storageTotalGB) * 100) + "%" }} /></div>
-        <div class="row" style="gap:16px"><span class="t-small row" style="gap:6px"><i class="dot sw-prev" /> Previews ${u.previewsGB} GB</span><span class="t-small row" style="gap:6px"><i class="dot sw-fin" /> Finals ${u.finalsGB} GB</span></div></div>`}<//>
-    ${q.status !== "error" && html`<${Async} q=${hq} skeleton=${html`<div class="card"><div class="skeleton sk-line" style="width:160px" /><div class="skeleton" style="height:180px;margin-top:16px" /></div>`}>${(days) => html`<${Heatmap} days=${days} />`}<//>`}
-  </div>`;
-}
-
-// 12 weeks of activity, one square per day. Darker = more render minutes that day.
-function Heatmap({ days }) {
-  const max = Math.max(1, ...days.map((d) => d.minutes));
-  const level = (c) => (c === 0 ? 0 : Math.min(4, Math.ceil((c / max) * 4)));
-  const first = new Date(days[0].date + "T00:00:00"); const pad = (first.getDay() + 6) % 7; // Monday first
-  const cells = [...Array(pad).fill(null), ...days];
-  const weeks = []; for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
-  const months = weeks.map((w, i) => { const d = w.find(Boolean); if (!d) return ""; const dt = new Date(d.date + "T00:00:00"); const prev = weeks[i - 1]?.find(Boolean); const pm = prev ? new Date(prev.date + "T00:00:00").getMonth() : -1; return dt.getMonth() !== pm ? dt.toLocaleString("en", { month: "short" }) : ""; });
-  const fmt = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en", { weekday: "short", day: "numeric", month: "short" });
-  // On a phone the grid scrolls to the newest weeks (today is at the right).
-  const toEnd = (el) => { if (el) requestAnimationFrame(() => { el.scrollLeft = el.scrollWidth; }); };
-  return html`<div class="card col" style="gap:16px" id="heatmap">
-    <b class="t-heading">Activity, last 12 weeks</b>
-    <div class="hm" ref=${toEnd}>
-      <div class="hm-days"><span>Mon</span><span /><span>Wed</span><span /><span>Fri</span><span /><span>Sun</span></div>
-      <div class="hm-grid"><div class="hm-months">${months.map((m, i) => html`<span key=${i}>${m}</span>`)}</div>
-        <div class="hm-weeks">${weeks.map((w, i) => html`<div key=${i} class="hm-week">${Array.from({ length: 7 }).map((_, j) => { const d = w[j]; return d ? html`<i key=${j} class=${"hm-cell l" + level(d.minutes)} data-level=${level(d.minutes)} title=${fmt(d.date) + ": " + d.renders + (d.renders === 1 ? " render, " : " renders, ") + d.minutes + " min"} />` : html`<i key=${j} class="hm-cell empty" />`; })}</div>`)}</div></div>
-    </div>
-  </div>`;
-}
-
 /* ---------- /settings ---------- */
 // Fonts added once and used by name in graphics. The weight and style are guessed from the file's name
 // ("BrandSans-BoldItalic.ttf": Brand Sans, 700, italic) and can be changed before saving.
@@ -1100,24 +1059,8 @@ function SettingsPage() {
   </div>`;
 }
 
-/* ---------- /billing ---------- */
-// Payments are not switched on yet (Stripe is stubbed): switching plans works, there is no card and no invoices.
-function BillingPage() {
-  const toast = useToast(); const { refreshUsage } = useApp(); const q = useAsync(() => api.getBilling(), []); const [busy, setBusy] = useState(false);
-  const pick = async (name) => { setBusy(true); try { const b = await api.updatePlan(name); q.setData(b); refreshUsage(); toast("Plan changed to " + name, { icon: "check", tone: "brand" }); } catch (e) { toast(e.message); } finally { setBusy(false); } };
-  return html`<div class="page">
-    <div class="page-head"><div><h1 class="t-title">Billing</h1></div></div>
-    <${Async} q=${q} skeleton=${html`<div class="three">${[0, 1, 2].map((i) => html`<div key=${i} class="card col" style="gap:10px"><div class="skeleton sk-line" style="width:40%" /><div class="skeleton" style="height:34px;width:55%" /><div class="skeleton sk-line" style="width:85%" /></div>`)}</div>`}>${(b) => html`
-      <div class="three">${b.plans.map((p) => html`<div key=${p.name} class=${"card col" + (b.plan === p.name ? " plan-on" : "")} style="gap:8px" data-plan=${p.name}><div class="row between"><b class="t-heading">${p.name}</b>${b.plan === p.name && html`<span class="tag accent">Current</span>`}</div><span class="t-title" style="font-size:28px">${p.price}<span class="t-small muted per-month" style="font-weight:400"> / month</span></span><p class="t-small muted">${p.note}</p>${b.plan !== p.name && html`<${Btn} kind="secondary" size="sm" disabled=${busy} onClick=${() => pick(p.name)}>Switch to ${p.name}<//>`}</div>`)}</div>
-      <div class="two" style="align-items:start">
-        <div class="card col" style="gap:12px" id="payment-card"><b class="t-heading">Payment method</b>${b.card ? html`<div class="row between"><div class="row" style="gap:12px"><div class="ico sm"><${Icon} name="key" size="18" /></div><div><b class="t-label">${b.card.brand} ending ${b.card.last4}</b><p class="t-small muted">Expires ${b.card.exp} · renews ${b.renew}</p></div></div></div>` : html`<p class="t-small muted">No card on file. Every plan is free for now.</p>`}</div>
-        <div class="card col" style="gap:8px" id="invoices"><b class="t-heading">Invoices</b>${b.invoices.length ? b.invoices.map((inv) => html`<div key=${inv.id} class="row between" style="padding:8px 0;border-top:1px solid var(--hair)"><span class="t-label">${inv.id}</span><span class="t-small muted">${inv.date}</span><span class="t-small">${inv.amount}</span><${Chip} tone="neutral" size="sm">${inv.status}<//>${inv.url && html`<${Btn} kind="ghost" size="xs" icon="download" onClick=${() => window.open(inv.url, "_blank", "noopener")}>PDF<//>`}</div>`) : html`<p class="t-small muted">No invoices yet.</p>`}</div>
-      </div>`}<//>
-  </div>`;
-}
-
 export {
   LoginPage, Shell, SourceBadge, DrivePicker, AddFootageModal, LibraryPage, FootagePage, NewProjectModal, VideoOrderPicker, ProjectsPage, FolderPage,
-  StyleVideo, StyleArt, ReferencePicker, StylesPage, StylePacks, HomePage, CreatePage, ExploreFeed, PublishModal, CreateLinkModal, ClientReviewPage, ConnectPage, UsagePage, Heatmap,
-  BillingPage, SettingsPage,
+  StyleVideo, StyleArt, ReferencePicker, StylesPage, StylePacks, HomePage, CreatePage, ExploreFeed, PublishModal, CreateLinkModal, ClientReviewPage, ConnectPage,
+  SettingsPage,
 };

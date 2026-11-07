@@ -1,4 +1,4 @@
-import { deleteObject, downloadFile, drive, enqueue, signGet, uploadFile, type AnalyzeJob, type ProxyJob } from "@rendrr/core";
+import { checkUsage, deleteObject, downloadFile, drive, enqueue, signGet, uploadFile, type AnalyzeJob, type ProxyJob } from "@rendrr/core";
 import { prisma, type Prisma, type Video } from "@rendrr/db";
 import { DAY_MS, orientationOf, PREFIX, PREVIEW_RETENTION_DAYS, STILL_SECONDS } from "@rendrr/shared";
 import { stat } from "node:fs/promises";
@@ -65,6 +65,15 @@ export async function proxyJob(ctx: Ctx) {
   });
   if (!info.hasVideo || info.seconds <= 0) throw new JobError("The file looks damaged. Try exporting it again, then add it.", "damaged", false);
   if (info.seconds > 4 * 3600) throw new JobError("That video is longer than 4 hours. Trim it first, then add it.", "too-long", false);
+  // Billing: new footage uses footage minutes (and storage). A video already counted (a rebuilt preview copy) is not
+  // counted or checked again; samples and pictures are free.
+  if (!v.sample && !v.still) {
+    const counted = await prisma.usageRecord.findUnique({ where: { metric_refId: { metric: "footage", refId: v.id } } });
+    if (!counted) {
+      const c = await checkUsage(v.userId, { metric: "footage", minutes: info.seconds / 60, storageGBAfter: undefined });
+      if (!c.ok && c.enforced) throw new JobError(c.message, "billing", false);
+    }
+  }
   await prisma.video.update({ where: { id: v.id }, data: { status: local ? "previewing" : "preview", seconds: info.seconds, width: info.width, height: info.height, fps: info.fps, orientation: orientationOf(info.width, info.height), hasAudio: info.hasAudio, hdr: info.transfer ?? null, timecode: info.timecode } });
 
   const proxy = join(ctx.dir, "proxy.mp4"), audio = join(ctx.dir, "audio.m4a");

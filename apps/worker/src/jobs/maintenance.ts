@@ -1,4 +1,4 @@
-import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix, planWithoutFiles, renderFileKeys } from "@rendrr/core";
+import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix, planWithoutFiles, renderFileKeys, snapshotStorage } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderLimitMs, TEMP_ORIGINAL_HOURS, type Breakdown } from "@rendrr/shared";
 import { ensureAssets } from "../lib/assets";
@@ -120,7 +120,10 @@ export async function maintenanceJob(ctx: Ctx) {
   const task = (ctx.job.data as { task?: string }).task;
   if (task === "ensure-assets") return ensureAssets();
   if (task === "stuck") { const r = await sweepStuck(); if (Object.values(r).some(Boolean)) console.log("[maintenance] stuck", JSON.stringify(r)); return r; }
+  if (task === "storage") { const n = await snapshotStorage(); return { users: n }; }
   const r = await cleanup();
   console.log("[maintenance] cleanup", JSON.stringify(r));
-  return r;
+  // Each user's storage today: the storage bill (Starter, over 10 GB) and the storage cost in the admin panel.
+  const users = await snapshotStorage().catch((e) => { console.warn("[maintenance] storage snapshot:", (e as Error).message); return 0; });
+  return { ...r, storageSnapshots: users };
 }

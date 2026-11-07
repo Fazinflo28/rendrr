@@ -14,6 +14,7 @@ import { linkDriveFile } from "./driveLibrary";
 import { fetchPublicTo } from "./fetchPublic";
 import { ensureLibraryFolderPath, findLibraryFolder } from "./libraryFolders";
 import { driveIdOf } from "./luts";
+import { assertMayAddFootage } from "./billing";
 
 const err = (m: string) => new AppError(m, 400, "bad-footage");
 const UPLOAD_SECONDS = 30 * 60;
@@ -73,6 +74,8 @@ export async function keepFootage(userId: string, path: string, name: string, o:
   if (kind.image && size > IMAGE_MAX_BYTES) throw err(`Pictures are ${MB(IMAGE_MAX_BYTES)} at most.`);
   if (!kind.image && size > FOOTAGE_UPLOAD_MAX_BYTES) throw err(`Videos are ${GB(FOOTAGE_UPLOAD_MAX_BYTES)} at most this way: put it in Google Drive and send its driveFileId (Drive files are linked, nothing is copied).`);
   if (o.projectId) await ownProject(userId, o.projectId);
+  // Billing: room for new footage (its length is learnt by the worker, which checks again).
+  if (!kind.image) await assertMayAddFootage(userId, 0);
   const libraryFolderId = await folderOf(userId, o.libraryFolder);
   const v = await prisma.video.create({ data: {
     userId, name: nameOf(o.name || name, kind.image ? "Picture" : "Video"), kind: o.kind || "footage", libraryFolderId, source: "upload", still: kind.image,
@@ -112,6 +115,7 @@ export async function footageFromSource(userId: string, i: { url?: string; drive
       if (!/^image\//.test(f.mimeType || "")) {
         if (i.projectId) await ownProject(userId, i.projectId);
         const have = await prisma.video.findFirst({ where: { userId, source: "drive", driveFileId: f.id, status: { not: "missing" } } });
+        if (!have) await assertMayAddFootage(userId, (f.seconds || 0) / 60);
         const v = have ?? (await linkDriveFile(userId, f, { stub: false, kind: i.kind ?? "footage", libraryFolderId: await folderOf(userId, i.libraryFolder) }));
         if (i.name && !have) await prisma.video.update({ where: { id: v.id }, data: { name: nameOf(i.name, v.name) } });
         if (i.projectId) await intoEdit(userId, i.projectId, v.id, i);

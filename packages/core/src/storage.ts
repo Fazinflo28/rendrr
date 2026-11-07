@@ -9,6 +9,7 @@ import { stat } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import type { Readable } from "node:stream";
 import { env } from "./env";
+import { noteCost } from "./cost";
 
 // One private bucket. Every read and write is a short-lived signed URL or a server-side call.
 // Raw keys never leave the server.
@@ -56,6 +57,8 @@ export async function signPut(key: string, contentType: string, seconds = 3600):
 }
 export async function putObject(key: string, body: Buffer | string | Readable, contentType: string, contentLength?: number) {
   await s3().send(new PutObjectCommand({ Bucket: Bucket(), Key: key, Body: body, ContentType: contentType, ...(contentLength != null ? { ContentLength: contentLength } : {}) }));
+  // Sent over the public network to the bucket: Railway bills it as this service's egress.
+  noteCost({ egressBytes: contentLength ?? (typeof body === "string" ? Buffer.byteLength(body) : Buffer.isBuffer(body) ? body.length : 0) });
 }
 /** The bucket asked us to slow down (SlowDown, 503, 429): worth sending again after a pause. */
 export const throttled = (e: unknown) => {

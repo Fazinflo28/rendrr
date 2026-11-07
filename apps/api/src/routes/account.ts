@@ -1,6 +1,6 @@
 import { AppError, deleteObject, env, putObject } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { fmtShortDate, LoginInput, LogoInput, PlanInput, PLANS, PREFIX, ProfilePatch, SettingsPatch, SignupInput } from "@rendrr/shared";
+import { fmtShortDate, LoginInput, LogoInput, PREFIX, ProfilePatch, SettingsPatch, SignupInput } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { authenticate, clerk, forgetUser } from "../auth";
 import { userOut } from "../serialize";
@@ -96,17 +96,7 @@ export default async function account(app: FastifyInstance) {
       };
     });
 
-    // ---------------- billing (payments not switched on: no card, no invoices, plans switch freely) ----------------
-    const billingOut = (u: { plan: string; planRenewsAt: Date }) => {
-      const plan = PLANS.find((p) => p.name === u.plan) || PLANS[PLANS.length - 1];
-      return { plan: plan.name, price: plan.price, period: "month", renew: fmtShortDate(u.planRenewsAt), card: null, invoices: [], payments: false, plans: PLANS.map(({ name, price, note }) => ({ name, price, note })) };
-    };
-    a.get("/billing", async (req) => billingOut(await prisma.user.findUniqueOrThrow({ where: { id: req.user!.id } })));
-    a.post("/billing/plan", async (req) => {
-      const { plan } = PlanInput.parse(req.body);
-      const storageLimitGB = PLANS.find((p) => p.name === plan)!.storageGB;
-      return billingOut(await prisma.user.update({ where: { id: req.user!.id }, data: { plan, storageLimitGB } }));
-    });
+    // Billing moved to routes/billing.ts (plans are paid now: nobody switches plan from here).
 
     a.get("/account/usage/history", async (req) => {
       const today = new Date(); today.setUTCHours(0, 0, 0, 0);

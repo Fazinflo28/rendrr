@@ -1,5 +1,5 @@
 // Database rows -> the exact shapes ui/rendrr-ui.html's fake api returned. Signed URLs only, never raw keys.
-import { signGet } from "@rendrr/core";
+import { isAdmin, signGet } from "@rendrr/core";
 import { commentMedia } from "./services/commentMedia";
 import type { AiAction, Folder, GalleryItem, Project, ProjectComment, Review, ReviewComment, Style, User, Video } from "@rendrr/db";
 import { DAY_MS, DRIVE_STEPS, fmtShortDate, fmtSize, LOCAL_STEPS, UPLOAD_STEPS, type ReferenceRef } from "@rendrr/shared";
@@ -90,7 +90,7 @@ export function galleryOut(g: GalleryItem, me: string, liked: boolean, style: St
 }
 
 export async function userOut(u: User) {
-  return { id: u.id, name: u.name, email: u.email, photo: u.photoKey ? await signGet(u.photoKey, 3600) : null, logo: u.logoKey ? await signGet(u.logoKey, 3600) : null, plan: u.plan };
+  return { id: u.id, name: u.name, email: u.email, photo: u.photoKey ? await signGet(u.photoKey, 3600) : null, logo: u.logoKey ? await signGet(u.logoKey, 3600) : null, plan: u.plan, admin: isAdmin(u) };
 }
 
 export const shortDate = fmtShortDate;

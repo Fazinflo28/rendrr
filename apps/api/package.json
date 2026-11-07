@@ -19,6 +19,7 @@
     "@rendrr/shared": "workspace:*",
     "bullmq": "5.81.5",
     "fastify": "5.12.7",
+    "stripe": "^17.7.0",
     "tsx": "4.23.15",
     "zod": "3.25.76"
   },

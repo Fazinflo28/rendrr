@@ -4,6 +4,7 @@ import { api } from "rendrr-fake-api";
 import { breakdownAsText, buildBreakdown } from "../../../packages/shared/src/breakdown.ts";
 import { notOriginalMessage, sameOriginal } from "../../../packages/shared/src/original.ts";
 import { desktopApp, forgetVerifier, newChallenge, s256, savedVerifier } from "../src/rendrr/desktopLogin.ts";
+import { demoBillingApi } from "./billingDemo.js";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const waitingEdits = new Set(); // Recreate's edits still waiting for their footage
@@ -448,6 +449,12 @@ Object.assign(api, {
     return { folderId: top.id, added: out.length, folders: 0, truncated: false };
   },
 });
+
+// Usage & billing and the admin panel (billingDemo.js); a test makes the demo user an admin with __demoAdmin.
+const getProfile0 = api.getProfile;
+const login0 = api.login, signup0 = api.signup;
+const asAdmin = (u) => (u ? { ...u, admin: !!globalThis.__demoAdmin } : u);
+Object.assign(api, demoBillingApi, { getProfile: async (...a) => asAdmin(await getProfile0(...a)), login: async (...a) => asAdmin(await login0(...a)), signup: async (...a) => asAdmin(await signup0(...a)) });
 
 export { api };
 export const API_BASE = "";

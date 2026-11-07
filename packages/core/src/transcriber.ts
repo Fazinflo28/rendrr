@@ -1,4 +1,5 @@
 import { sentencesFromWords, type RawWord } from "@rendrr/shared";
+import { noteCost } from "./cost";
 import { env } from "./env";
 
 // Behind an interface so Deepgram (or anything else) can be swapped in.
@@ -49,7 +50,7 @@ export class AssemblyAI implements Transcriber {
         if (/no spoken audio|contain(s)? no speech|audio duration is too short/i.test(msg)) return [];
         throw new TranscriptionError("We could not transcribe this audio. " + (msg ? "(" + msg.slice(0, 120) + ")" : ""));
       }
-      if (t.status === "completed") break;
+      if (t.status === "completed") { noteCost({ transcribeSeconds: Number(t.audio_duration) || 0 }); break; }
     }
     try {
       const s = await this.call(`/v2/transcript/${id}/sentences`, { signal: opts.signal });

@@ -16,10 +16,27 @@ model User {
   name           String   @default("")
   photoKey       String?  // storage key; the API returns a signed URL as `photo`
   logoKey        String?  // storage key; the API returns a signed URL as `logo`
-  plan           String   @default("Studio")
+  // Billing: plan trial (7 days, small allowance) | starter ($5 a month + pay as you go) | comp (granted, no limits).
+  plan           String   @default("trial")
   planRenewsAt   DateTime @default(dbgenerated("(now() + interval '30 days')"))
   credits        Int      @default(0)
-  storageLimitGB Float    @default(100)
+  storageLimitGB Float    @default(5)
+  // trialing | active | past_due | canceled | expired (trial over, no plan)
+  billingStatus  String   @default("trialing")
+  trialEndsAt    DateTime @default(dbgenerated("(now() + interval '7 days')"))
+  // The billing period now: the trial, a Stripe subscription period, or 30-day periods for a granted plan.
+  periodStart    DateTime @default(now())
+  periodEnd      DateTime @default(dbgenerated("(now() + interval '7 days')"))
+  stripeCustomerId     String? @unique
+  stripeSubscriptionId String?
+  // The most pay-as-you-go usage a period may run up (cents), set by the user; 0: none beyond the plan.
+  spendLimitCents Int     @default(2000)
+  // Granted by an admin, used before pay as you go (this period and later until used).
+  bonusExportMinutes  Float @default(0)
+  bonusFootageMinutes Float @default(0)
+  role           String   @default("user") // user | admin
+  lastActiveAt   DateTime?
+  billingNotes   Json     @default("{}") // alerts sent this period, the last payment error
   settings       Json     @default("{\"autoDelete\": true, \"theme\": \"system\"}")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -46,6 +63,8 @@ model User {
   fonts       Font[]
   styleFiles  StyleFile[]
   sounds      Sound[]
+  usageRecords UsageRecord[]
+  invoices    BillingInvoice[]
 }
 
 // More logins that open the same Rendrr account: for example the Google account someone used for the AI connector
@@ -583,4 +602,128 @@ model Sound {
   createdAt DateTime @default(now())
 
   @@index([userId, createdAt])
+}
+
+// ---------------- billing and cost ----------------
+
+// What a user is billed on: one row per thing used. Export and preview minutes per render, footage minutes per video
+// (once, however often it is processed again), storage GB per user per day. billable = quantity x its multiplier
+// (4K and heavy effects count double). One row per (metric, refId): a retried job never bills twice.
+model UsageRecord {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  metric    String   // export | preview | footage | storage
+  quantity  Float    // minutes (storage: GB that day)
+  billable  Float    // what counts against the plan (minutes x multiplier; storage: GB)
+  refId     String   // render id, video id, or "<userId>:<day>" for storage
+  meta      Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@unique([metric, refId])
+  @@index([userId, createdAt])
+  @@index([metric, createdAt])
+}
+
+// What one job cost us, measured: CPU and memory of the worker container shared among the jobs running at the time,
+// seconds sent to transcription, bytes sent out of Railway, at the rates in packages/shared/src/billing.ts.
+// queue "idle": the worker's own use while no job ran (one row an hour, no user).
+model JobCost {
+  id               String   @id @default(cuid())
+  userId           String?
+  queue            String
+  jobId            String
+  kind             String   // render_preview | render_final | proxy | analyze | deep | graphic | frames | heard | ... | idle
+  refId            String?  // render id or video id
+  ok               Boolean  @default(true)
+  wallMs           Int      @default(0)
+  cpuSeconds       Float    @default(0)
+  memGbSeconds     Float    @default(0)
+  transcribeSeconds Float   @default(0)
+  egressBytes      BigInt   @default(0)
+  outputBytes      BigInt   @default(0)
+  costCompute      Float    @default(0) // USD
+  costMemory       Float    @default(0)
+  costTranscribe   Float    @default(0)
+  costEgress       Float    @default(0)
+  costTotal        Float    @default(0)
+  measured         String   @default("cgroup") // cgroup | process (the container's counters were not readable)
+  createdAt        DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([queue, createdAt])
+}
+
+// Storage per user per day (bytes by kind), for the storage bill, the admin panel and the storage cost.
+model StorageSnapshot {
+  id        String   @id @default(cuid())
+  userId    String
+  day       String   // YYYY-MM-DD (UTC)
+  bytes     BigInt
+  byKind    Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@unique([userId, day])
+  @@index([day])
+}
+
+// A bill: a Stripe invoice mirrored here (status, totals, link), with the usage lines Rendrr added to it.
+model BillingInvoice {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stripeInvoiceId String?  @unique
+  number          String?
+  periodStart     DateTime
+  periodEnd       DateTime
+  baseCents       Int      @default(0)
+  usageCents      Int      @default(0)
+  totalCents      Int      @default(0)
+  status          String   @default("draft") // draft | open | paid | void | uncollectible | failed
+  usageAdded      Boolean  @default(false)
+  lines           Json     @default("[]")
+  hostedUrl       String?
+  pdfUrl          String?
+  paidAt          DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+// A front-end error seen in someone's browser, grouped by fingerprint (message + first stack line + page).
+model ClientError {
+  id          String   @id @default(cuid())
+  fingerprint String   @unique
+  message     String
+  stack       String?
+  url         String?
+  userAgent   String?
+  userId      String?
+  count       Int      @default(1)
+  firstSeen   DateTime @default(now())
+  lastSeen    DateTime @default(now())
+  resolved    Boolean  @default(false)
+
+  @@index([lastSeen])
+}
+
+// What an admin changed (plan, trial, bonus minutes, limit), and on whose account.
+model AdminAction {
+  id         String   @id @default(cuid())
+  adminId    String
+  targetId   String?
+  action     String
+  meta       Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([targetId, createdAt])
+}
+
+// A Stripe event handled (its id), so a resent webhook is not applied twice.
+model StripeEvent {
+  id        String   @id
+  type      String
+  createdAt DateTime @default(now())
 }

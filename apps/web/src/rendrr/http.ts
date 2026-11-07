@@ -58,6 +58,10 @@ export async function req(method: string, path: string, body?: unknown, opts: Op
   if (!res.ok) {
     const err = (data && data.error) || {};
     const { message, code, ...rest } = err;
+    // A plan limit (402 billing_*): the app shows what ran out and where to top up, wherever it was asked.
+    if (res.status === 402 && typeof code === "string" && code.startsWith("billing_") && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("rendrr:billing", { detail: { message, code } }));
+    }
     throw fail(message || (res.status >= 500 ? "Something went wrong on our side. Please try again." : "That did not work. Please try again."), code, { status: res.status, ...rest });
   }
   return data;

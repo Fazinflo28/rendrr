@@ -20,7 +20,7 @@ const server = createServer((_req, res) => { res.setHeader("content-type", "text
 const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] }).catch(() => chromium.launch());
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const VIEWPORTS = [["desktop", 1440, 900], ["laptop", 1280, 720], ["phone", 390, 844]];
-const PAGES = ["/explore", "/styles", "/library", "/projects", "/connect", "/usage", "/billing", "/settings", "/review/demo"];
+const PAGES = ["/explore", "/styles", "/library", "/projects", "/connect", "/usage", "/billing", "/admin", "/settings", "/review/demo"];
 const TOOLS = ["transcript", "clip", "text", "audio", "color", "multicam"];
 const report = [];
 
@@ -77,6 +77,7 @@ for (const [vp, w, h] of VIEWPORTS) {
   const page = await browser.newPage({ viewport: { width: w, height: h }, ...(vp === "phone" ? { isMobile: true, hasTouch: true, deviceScaleFactor: 2 } : {}) });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  await page.addInitScript(() => { globalThis.__demoAdmin = true; }); // the admin panel is swept too
   await page.goto(`http://localhost:${server.address().port}/`); await sleep(800);
   await page.evaluate(() => globalThis.__rendrrNav.go("/library")); await sleep(500);
   const email = page.locator('input[type="email"]').first();

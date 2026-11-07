@@ -30,7 +30,7 @@ export type DriveSaveJob = { renderId: string };
 export type GraphicJob = { graphicId: string; params?: Record<string, unknown> };
 /** remove_background: one block of a video's matte (footage k x MATTE_BLOCK s on), made ahead of the render. */
 export type MatteJob = { videoId: string; userId: string; k: number; turn: number };
-export type MaintenanceJob = { task: "cleanup" | "ensure-assets" | "stuck" };
+export type MaintenanceJob = { task: "cleanup" | "ensure-assets" | "stuck" | "storage" };
 /** Frames at given times: from a render (output times) or from footage / a reference (original times). */
 /** overlays: a PNG (storage key) laid over the frame at the same index, the drawing on a comment (the app in the chat). */
 export type FramesJob = { renderId?: string; videoId?: string; times: number[]; overlays?: (string | null)[]; colorSamples?: ColorSampleJob; faces?: FaceJob; track?: TrackJob };

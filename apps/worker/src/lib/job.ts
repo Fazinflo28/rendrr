@@ -1,4 +1,6 @@
-import { logJob } from "@rendrr/core";
+import { costScope, logJob, newCostNotes, saveJobCost } from "@rendrr/core";
+import { jobCost } from "@rendrr/shared";
+import { jobEnded, jobStarted } from "./cost";
 import { UnrecoverableError, type Job } from "bullmq";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -65,13 +67,19 @@ export function guarded<T>(queue: string, timeoutMs: number | ((job: Job) => Pro
     const userId = userIdOf ? await userIdOf(job).catch(() => null) : null;
     const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
     await logJob({ queue, jobId: String(job.id), name: job.name, event: "start", userId, meta: { attempt: job.attemptsMade + 1 } });
+    // Its cost: a share of the container's CPU and memory while it runs, and what it notes (transcription, uploads).
+    const costKey = `${queue}:${job.id}:${started}`;
+    const notes = newCostNotes();
+    let ok = false;
+    await jobStarted(costKey, queue).catch(() => {});
     try {
-      const work = fn({ signal: ac.signal, dir, job, isLastAttempt });
+      const work = costScope(notes, () => fn({ signal: ac.signal, dir, job, isLastAttempt }));
       work.catch(() => {}); // if the limit wins, a late failure must not become an unhandled rejection
       // A stop ends the job at once too, even while a step ignores the signal.
       const halted = new Promise<never>((_, reject) => ac.signal.addEventListener("abort", () => { if (stopped.has(key)) reject(new Error("stopped by the user")); }, { once: true }));
       halted.catch(() => {});
       const r = await Promise.race([work, expired, halted]);
+      ok = true;
       await logJob({ queue, jobId: String(job.id), name: job.name, event: "finish", userId, durationMs: Date.now() - started });
       return r;
     } catch (e) {
@@ -93,6 +101,15 @@ export function guarded<T>(queue: string, timeoutMs: number | ((job: Job) => Pro
       throw e;
     } finally {
       running--;
+      try {
+        const m = await jobEnded(costKey);
+        const d = (job.data ?? {}) as { renderId?: string; videoId?: string; graphicId?: string; styleFileId?: string };
+        await saveJobCost({
+          userId, queue, jobId: String(job.id), kind: notes.kind ?? queue, refId: notes.refId ?? d.renderId ?? d.videoId ?? d.graphicId ?? d.styleFileId ?? null, ok,
+          wallMs: Date.now() - started, ...m, transcribeSeconds: notes.transcribeSeconds, egressBytes: notes.egressBytes, outputBytes: notes.outputBytes,
+          ...jobCost({ cpuSeconds: m.cpuSeconds, memGbSeconds: m.memGbSeconds, transcribeSeconds: notes.transcribeSeconds, egressBytes: notes.egressBytes }),
+        });
+      } catch { /* cost tracking never breaks a job */ }
       controllers.delete(key);
       stopped.delete(key);
       clearTimeout(timer);

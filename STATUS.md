@@ -1016,7 +1016,7 @@ Earlier, on a full local copy of the system (Postgres, Redis, S3-compatible stor
 | Stub | What happens now | Key that unblocks it | Where it goes |
 |---|---|---|---|
 | Google Drive | The Drive tab says Google Drive is not set up yet (the fake Drive with demo folders is gone) | `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (Google Cloud → OAuth client, Drive API on, redirect URI `https://api-production-2428.up.railway.app/drive/callback`) | Railway → `api2` and `worker` → Variables |
-| Billing | The Billing page shows Free / Pro / Studio. Switching changes the plan name and storage figure only; there is no card, no invoices and no limits | `STRIPE_SECRET_KEY` (plus product setup, not built yet) | Railway → `api` |
+| Billing | **Built** (7-day trial, $5 Starter, pay as you go, Usage & billing page, admin panel). Usage and our costs are measured now; nothing is charged or blocked until a Stripe key is set | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and the $5 product (steps in `docs/billing.md`) | Railway → `api2` |
 | Save final to Google Drive | Says it is not switched on yet; Save to this computer works | Same Google keys as Drive (above) | Railway → `api` |
 | Transcription | **Real** (your AssemblyAI key is set). Without a key every video would get the sample transcript | `ASSEMBLYAI_API_KEY` | already set on `api` and `worker` |
 | Login | **Real** Clerk (development instance `mature-joey-7879`; Google login uses Clerk's shared test credentials) | For a public launch: a Clerk production instance and your own Google OAuth app | Railway → `api`, `mcp`, `web` |
@@ -1291,3 +1291,25 @@ From before:
 - open_projects opens whatever the AI gives it: an edit's id or name, a project (folder) by id or name (folderId too),
   and an id that names nothing shows the list with a line saying so, instead of failing (Claude had passed a
   project's id and the call showed "Failed"). Tests: apps/api/test/claude-app.test.ts, apps/mcp/test/app-browser.mjs.
+
+## Plans, billing, cost tracking and the admin panel (7 November)
+
+- Plans: a 7-day free trial (10 export minutes, 30 footage minutes, 60 preview minutes, 5 GB, up to 1080p: about 10
+  one-minute videos or one 10-minute video) and Starter at $5 a month (25 export minutes, 60 footage minutes, 10 GB,
+  previews free, 4K counts double), then pay as you go: $0.10 an export minute, $1 an hour of footage, $0.10 a GB over
+  10 GB. Each Starter account has a spending limit ($20 to start). Admins (`ADMIN_EMAILS`) get complimentary access.
+- Cost tracking: the worker measures the container's CPU and memory every 2 s and shares them among the jobs running
+  by weight; transcription seconds, bytes sent out and storage per day are noted too. Every job's cost is saved
+  (JobCost), and idle time hourly. Each export, preview and footage upload is a usage record (one per render or
+  video, never twice).
+- Usage & billing page (`/usage`, `/billing`) like Railway's: money so far, estimated bill, spending limit, meters,
+  day-by-day chart, pay-as-you-go lines, by project, storage, plans, card (Stripe's page) and invoices.
+- Admin panel (`/admin`, admins only): overview (MRR, money in, our cost, margin, users, cost by day, usage, problems,
+  queues), users (open one to give trial days, comp, bonus minutes, a limit; logged), costs per kind of job and per
+  export minute, storage, issues (grouped errors, stuck work, AI tool errors, browser errors) and the job log.
+- Limits: a render or upload past the plan gets a 402 with a plain reason; the web app shows a dialog and the AI the
+  same text. Blocking is on only once `STRIPE_SECRET_KEY` is set (or `BILLING_ENFORCE=on`).
+- Everyone already signed up starts a 7-day trial at deploy. Nothing is blocked until payments are switched on.
+- Owner steps (Stripe product, webhook, keys): `docs/billing.md`.
+- Tests: packages/shared/test/billing.test.ts, apps/worker/test/cost-meter.test.ts, apps/api/test/billing.test.ts
+  (fake Stripe, real webhook signatures), apps/web/demo/usage-billing.mjs, apps/web/demo/admin-panel.mjs, sweep.

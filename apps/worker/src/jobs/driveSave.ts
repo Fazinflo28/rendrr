@@ -1,4 +1,4 @@
-import { drive, driveSaveOf, finalType, setDriveSave, signGet, withExt, type DriveSaveJob } from "@rendrr/core";
+import { drive, driveSaveOf, finalType, noteCost, setDriveSave, signGet, withExt, type DriveSaveJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { JobError } from "../lib/ffmpeg";
 import type { Ctx } from "../lib/job";
@@ -23,6 +23,8 @@ export async function driveSaveJob(ctx: Ctx): Promise<{ fileId: string }> {
     const pct = Math.floor(p * 100);
     if (pct - shown >= 5 && pct < 100) { shown = pct; void setDriveSave(r.id, { ...d, name, state: "saving", percent: pct, at: Date.now() }).catch(() => {}); }
   });
+  // The file went from the bucket through this service to Google: Railway bills it as egress.
+  noteCost({ kind: "drive_save", refId: r.id, egressBytes: Number(r.sizeBytes) });
   await setDriveSave(r.id, { ...d, name, state: "saved", percent: 100, fileId: f.id, link: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`, error: undefined, code: undefined, at: Date.now() });
   return { fileId: f.id };
 }
