@@ -1313,3 +1313,28 @@ From before:
 - Owner steps (Stripe product, webhook, keys): `docs/billing.md`.
 - Tests: packages/shared/test/billing.test.ts, apps/worker/test/cost-meter.test.ts, apps/api/test/billing.test.ts
   (fake Stripe, real webhook signatures), apps/web/demo/usage-billing.mjs, apps/web/demo/admin-panel.mjs, sweep.
+
+## The database moved to Supabase (8 November)
+
+- The app's database is now Supabase, project "Rendrr US" in East US (North Virginia), Pro plan, Postgres 17. Before it
+  was Railway Postgres 18 in US West, 64-69 ms from the servers in US East; Supabase is 2-3 ms away, so every page and
+  AI tool call that reads the database is faster.
+- How the app connects: `DATABASE_URL` on `api2` and `worker` is `${{shared.SUPABASE_DATABASE_URL}}` (Supabase's
+  Transaction pooler, port 6543; the code adds pgbouncer=true and a pool of 8 per service, `DB_CONNECTION_LIMIT`).
+  Migrations run through `DIRECT_URL` = `${{shared.SUPABASE_DIRECT_URL}}` (Session pooler, port 5432). The two values
+  are Railway Shared Variables the owner set; nobody else has read them.
+- Safety: Supabase's Data API is off; public tables are closed to its `anon` and `authenticated` roles (now and for
+  tables made later) and row level security is on for every table. The app connects as the owner, which RLS does not
+  limit.
+- The move: maintenance mode (`MAINTENANCE=1` on api2 and worker: health stays up, every other request gets a plain
+  503, the worker takes no jobs, nothing writes), a one-off Railway service `supabase-move`
+  (scripts/supabase-move: pg_dump 18, pg_restore, row counts compared table by table, then the lock-down), then the
+  switch. Every table matched (4 users, 44 projects, 715 videos, 491 renders, 8,793 job logs). Down about 6 minutes
+  (08:25-08:31 UTC). A first try went to a project in Mumbai (207 ms away): stopped before the switch, app put back.
+- Still to do by the owner: delete the Mumbai Supabase project ("Rendrr", ap-south-1; it holds an old locked copy);
+  delete the `supabase-move` service in Railway (disarmed: its addresses are set to "disabled"); after a week with no
+  problems, delete the old Railway Postgres service (kept as a fallback: set `DATABASE_URL` back to
+  `${{Postgres.DATABASE_URL}}` on api2 and worker and remove `DIRECT_URL` to go back).
+- Video files stay in the Railway bucket and Redis stays on Railway.
+- Tests: apps/api/test/maintenance.test.ts (maintenance mode, pooler address), the copy job dry-run locally (first
+  copy, refusal on a non-empty target, reset of an older copy, refusal to empty a target newer than the source).
