@@ -1,9 +1,10 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import { ensureBucketCors, env, internalSecrets, redis, safeEqual, toFriendly } from "@rendrr/core";
+import { ensureBucketCors, env, internalSecrets, maintenanceOn, redis, safeEqual, toFriendly } from "@rendrr/core";
 import { isWebOrigin, webOrigins } from "./origins";
 import { DRIVE_SWEEP_AGE_MS, syncStaleDriveFolders } from "./services/driveLibrary";
-import { prisma } from "@rendrr/db";
+import { dbHost, prisma } from "@rendrr/db";
+import { buildMaintenanceServer } from "./maintenance";
 import Fastify from "fastify";
 import account from "./routes/account";
 import billing from "./routes/billing";
@@ -134,7 +135,9 @@ export async function buildServer() {
 }
 
 if (process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.js")) {
-  const app = await buildServer();
+  const down = maintenanceOn();
+  const app = down ? await buildMaintenanceServer() : await buildServer();
+  if (!down) app.log.info({ db: dbHost(process.env.DATABASE_URL) }, "database");
   // One stray rejected promise (a background refresh, a closed stream) is logged, never a crash for every user.
   process.on("unhandledRejection", (e) => app.log.error({ msg: (e as Error)?.message || String(e), stack: (e as Error)?.stack }, "unhandled rejection"));
   const port = Number(process.env.PORT || 4000);
@@ -146,6 +149,7 @@ if (process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.
   // Folders imported from Google Drive: videos put in the Drive folder later come in by themselves. Every few minutes
   // one API instance (a Redis lock) looks at the folders not synced for DRIVE_SWEEP_AGE_MS.
   const sweep = setInterval(() => {
+    if (down) return;
     void (async () => {
       if (!(await redis().set("drive-sweep", "1", "PX", 4 * 60_000, "NX").catch(() => null))) return;
       const r = await syncStaleDriveFolders({ age: DRIVE_SWEEP_AGE_MS, limit: 50 });

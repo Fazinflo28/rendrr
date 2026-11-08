@@ -57,4 +57,4 @@ ENV NODE_ENV=production PORT=8080
 EXPOSE 8080
 WORKDIR /app/apps/worker
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
-CMD ["npx", "tsx", "src/index.ts"]
+CMD ["npx", "tsx", "src/start.ts"]
