@@ -14,6 +14,22 @@ echo "[move] target: $(host "$TARGET_URL"), $(psql "$TARGET_URL" -tAc 'select ve
 # How far the target is from here (the region): 10 round trips, median in ms.
 ms() { { printf '%s\n' '\timing on'; for i in 1 2 3 4 5 6 7 8 9 10; do printf 'select 1;\n'; done; } | psql "$1" -At 2>/dev/null | sed -n 's/^Time: \([0-9.]*\) ms.*/\1/p' | sort -n | sed -n 5p; }
 echo "[move] round trip: source $(ms "$SOURCE_URL") ms, target $(ms "$TARGET_URL") ms"
+# RESET_TARGET=1: empty the target first (it holds an older copy). Refused when the target has newer data than the
+# source (newest job log or usage event), which means the app already uses it: a live database is never emptied.
+if [ "${RESET_TARGET:-}" = "1" ]; then
+  newest() { psql "$1" -tAc "select coalesce(greatest((select max(\"createdAt\") from public.\"JobLog\"), (select max(\"createdAt\") from public.\"UsageEvent\")), 'epoch')::text" 2>/dev/null || echo "1970-01-01 00:00:00"; }
+  s=$(newest "$SOURCE_URL"); t=$(newest "$TARGET_URL")
+  echo "[move] newest data: source $s, target $t"
+  if [ "$t" \> "$s" ]; then echo "[move] the target has newer data than the source: it is in use, not emptying it"; exit 1; fi
+  psql "$TARGET_URL" -v ON_ERROR_STOP=1 -q <<'SQL'
+do $$ declare r record; begin
+  for r in select tablename from pg_tables where schemaname = 'public' loop execute format('drop table if exists public.%I cascade', r.tablename); end loop;
+  for r in select sequence_name from information_schema.sequences where sequence_schema = 'public' loop execute format('drop sequence if exists public.%I cascade', r.sequence_name); end loop;
+  for r in select t.typname from pg_type t join pg_namespace n on n.oid = t.typnamespace where n.nspname = 'public' and t.typtype = 'e' loop execute format('drop type if exists public.%I cascade', r.typname); end loop;
+end $$;
+SQL
+  echo "[move] target emptied (it held an older copy)"
+fi
 existing=$(psql "$TARGET_URL" -tAc "select count(*) from information_schema.tables where table_schema='public'")
 if [ "$existing" != "0" ] && [ "${ALLOW_NON_EMPTY:-}" != "1" ]; then echo "[move] the target already has $existing tables in public: stopping (set ALLOW_NON_EMPTY=1 to load anyway)"; exit 1; fi
 pg_dump --format=custom --no-owner --no-acl --schema=public --file=/tmp/rendrr.dump "$SOURCE_URL"
