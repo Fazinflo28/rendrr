@@ -1594,3 +1594,6 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
 .admin .adm-user .mono { font-size: 11px; }
 .client-err { padding: 8px 0; border-top: 1px solid var(--hair); }
 @media (max-width: 760px) { .chart { height: 120px; } }
+/* Where a render runs (always Rendrr's cloud server): a small line in the Export window. */
+.where-line { display: flex; align-items: center; gap: 6px; }
+.where-line .dot, #render-place .dot { background: var(--accent); }

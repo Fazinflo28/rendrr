@@ -964,12 +964,26 @@ function ConnectPage() {
             <div class="col" style="gap:16px">${steps[tab].map((st, i) => html`<div key=${i} class="step-card"><div class="n">${i + 1}</div><p>${st}</p></div>`)}</div>
             <div class="row">${on ? html`<${Btn} kind="secondary" size="sm" disabled=${busy} onClick=${disc}>Disconnect<//>` : html`<${Btn} size="sm" id="test-conn" icon="zap" disabled=${busy} onClick=${test}>${busy ? "Checking…" : "Test connection"}<//>`}</div>
           </div>`; }}<//>
+        <${ExportsCard} />
         <${LoginsCard} />
       </div>
       <div class="card col" style="gap:12px"><div class="row between"><b class="t-heading">Recent AI activity</b><${Btn} kind="quiet" size="xs" icon="refresh" aria-label="Refresh" onClick=${aq.reload} /></div>
         <${Async} q=${aq} skeleton=${html`<${Skeleton} card=${false} rows=${4} />`} whenEmpty=${html`<p class="muted t-small">Nothing yet. Ask your AI to edit something.</p>`}>${(list) => html`<div class="list">${list.slice(0, 6).map((x) => html`<div key=${x.id} class="li"><${Chip} tone="neutral" size="sm">${x.ai}<//><div class="grow"><div class="t">${x.text}</div><div class="sub">${x.project?.name} · ${fmtAgo(x.at)}</div></div></div>`)}</div>`}<//>
       </div>
     </div>
+  </div>`;
+}
+
+/** Where your AI's renders run (always Rendrr's cloud server) and where its finals go: this Mac when the Rendrr Mac app is open. */
+function ExportsCard() {
+  const mq = useAsync(() => api.macStatus(), []);
+  return html`<div class="card col" style="gap:12px" id="exports-card">
+    <div class="row between"><b class="t-heading">Where exports go</b><${Btn} kind="quiet" size="xs" icon="refresh" aria-label="Refresh" onClick=${mq.reload} /></div>
+    <${Async} q=${mq} skeleton=${html`<${Skeleton} card=${false} rows=${2} />`}>${(m) => html`
+      <div class="list">
+        <div class="li"><${Chip} tone="neutral" size="sm" id="render-place"><i class="dot on" />Cloud<//><div class="grow"><div class="t">Renders run on Rendrr's cloud server</div><div class="sub">Previews and finals, never on your computer</div></div></div>
+        <div class="li"><${Chip} tone=${m.online ? "brand" : "neutral"} size="sm" id="mac-status"><i class=${"dot " + (m.online ? "on" : "")} />${m.online ? "Mac connected" : "Mac app closed"}<//><div class="grow"><div class="t" id="exports-to">${m.online ? "Finals from your AI go to " + (m.device ? m.device : "your Mac") : "Finals from your AI go to Google Drive"}</div><div class="sub">${m.online ? "The Rendrr Mac app saves them to Downloads" : "Open the Rendrr Mac app to get them in Downloads"}</div></div></div>
+      </div>`}<//>
   </div>`;
 }
 

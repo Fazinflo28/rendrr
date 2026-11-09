@@ -3,7 +3,8 @@
 // tables as the editor's (the Comments tab and the markers show them, and get_comments reads them for the AI).
 import { AppError, applyTimelineChange, notFound, signGet } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import type { AppComment, AppFolderCard, AppOpen, AppProjectCard, AppProjectsPage, AppProjectView } from "@rendrr/shared";
+import { whereShort, type AppComment, type AppFolderCard, type AppOpen, type AppProjectCard, type AppProjectsPage, type AppProjectView } from "@rendrr/shared";
+import { macStatus, renderWhere } from "./macExport";
 import { getOwnedProject } from "./projects";
 import { renderResult, renderStatus, startRender } from "./render";
 import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
@@ -83,13 +84,14 @@ export async function appProject(userId: string, projectId: string, renderId?: s
     prisma.user.findUnique({ where: { id: userId }, select: { name: true } }),
     prisma.projectVersion.findFirst({ where: { projectId: p.id }, orderBy: { v: "desc" }, select: { v: true } }),
     prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", status: "done", outputKey: { not: null } }, orderBy: { createdAt: "desc" } }),
-    prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - 3 * 3600_000) } }, orderBy: { createdAt: "desc" } }),
+    prisma.render.findFirst({ where: { projectId: p.id, kind: { in: ["preview", "final"] }, status: { in: ["queued", "running"] }, createdAt: { gt: new Date(Date.now() - 3 * 3600_000) } }, orderBy: { createdAt: "desc" } }),
     prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", status: "failed" }, orderBy: { createdAt: "desc" } }),
     prisma.projectComment.findMany({ where: { projectId: p.id }, orderBy: { createdAt: "asc" }, take: 300 }),
     prisma.reviewComment.findMany({ where: clientCommentsWhere(p), orderBy: { createdAt: "asc" }, take: 300 }),
     prisma.render.findMany({ where: { projectId: p.id, status: "done", outputKey: { not: null } }, orderBy: { createdAt: "desc" }, take: 120 }),
   ]);
   const st = live ? await renderStatus(live) : null;
+  const mac = await macStatus(userId);
   // The versions to pick from: the newest render of each version and kind.
   const seen = new Set<string>();
   const versions = all.filter((r) => { const k = `${r.kind}:${r.version}`; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 40);
@@ -103,9 +105,10 @@ export async function appProject(userId: string, projectId: string, renderId?: s
   ].sort((a, b) => a.time - b.time || a.at - b.at);
   return {
     project: { id: p.id, name: p.name, folder: folder?.name ?? "", folderId: p.folderId, aspect: p.aspect, status: p.status, version, updated: p.updatedAt.getTime(), seconds: p.outputSeconds || null, editorUrl: WEB() ? `${WEB()}/editor/${p.id}` : null },
-    preview: shown?.outputKey && res ? { renderId: shown.id, version: shown.version, kind: shown.kind === "final" ? "final" : "preview", url: await signGet(shown.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), download: res.downloadUrl!, fileName: res.fileName, seconds: shown.seconds, quality: shown.quality ?? (shown.kind === "final" ? "1080p" : "540p"), at: shown.createdAt.getTime() } : null,
+    preview: shown?.outputKey && res ? { renderId: shown.id, version: shown.version, kind: shown.kind === "final" ? "final" : "preview", url: await signGet(shown.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), download: res.downloadUrl!, fileName: res.fileName, seconds: shown.seconds, quality: shown.quality ?? (shown.kind === "final" ? "1080p" : "540p"), at: shown.createdAt.getTime(), where: whereShort(renderWhere(shown), shown.kind) } : null,
     versions: versions.map((r) => ({ renderId: r.id, version: r.version, kind: r.kind === "final" ? "final" as const : "preview" as const, quality: r.quality ?? (r.kind === "final" ? "1080p" : "540p"), at: r.createdAt.getTime() })),
-    rendering: live && st ? { renderId: live.id, version: live.version, percent: Math.round(st.percent ?? 0), step: st.steps[st.step] ?? null, etaSec: st.etaSec, queued: st.status === "queued" } : null,
+    rendering: live && st ? { renderId: live.id, version: live.version, percent: Math.round(st.percent ?? 0), step: st.steps[st.step] ?? null, etaSec: st.etaSec, queued: st.status === "queued", kind: live.kind === "final" ? "final" : "preview", where: whereShort(renderWhere(live), live.kind) } : null,
+    mac: { online: mac.online, device: mac.device },
     // A failed render is only news while nothing newer worked.
     failed: failed && (!done || failed.createdAt > done.createdAt) && (!live || failed.createdAt > live.createdAt) ? { version: failed.version, error: failed.error || "The render failed." } : null,
     comments,
@@ -125,7 +128,7 @@ function openText(page: AppProjectsPage | null, open: AppProjectView | null): st
   const nf = page?.folders?.length ?? 0;
   if (!open) return `Showing the Rendrr app: ${nf} ${nf === 1 ? "project" : "projects"}, ${page?.total ?? 0} ${page?.total === 1 ? "edit" : "edits"} (the user opens a project to see its videos). Newest: ${(page?.projects ?? []).slice(0, 5).map((p) => `${p.name} (${p.id}, v${p.version}${p.openComments ? `, ${p.openComments} open comments` : ""})`).join("; ") || "none"}.`;
   const o = open.comments.filter((c) => !c.resolved).length;
-  return `Showing "${open.project.name}" (${open.project.id}) in the Rendrr app, v${open.project.version}; ${open.preview ? `preview v${open.preview.version}` : "no preview yet"}${open.rendering ? `, rendering v${open.rendering.version} (${open.rendering.percent}%)` : ""}; ${o} open ${o === 1 ? "comment" : "comments"} (get_comments reads them).`;
+  return `Showing "${open.project.name}" (${open.project.id}) in the Rendrr app, v${open.project.version}; ${open.preview ? `preview v${open.preview.version}` : "no preview yet"}${open.rendering ? `, rendering ${open.rendering.kind === "final" ? "the final of " : ""}v${open.rendering.version} (${open.rendering.percent}%) on Rendrr's cloud server` : ""}; ${o} open ${o === 1 ? "comment" : "comments"} (get_comments reads them). The Rendrr Mac app is ${open.mac?.online ? `open${open.mac.device ? ` on "${open.mac.device}"` : ""}: finals go to that Mac's Downloads` : "not open: finals go to Google Drive or a download"}.`;
 }
 
 /**

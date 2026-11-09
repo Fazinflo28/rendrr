@@ -43,8 +43,13 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
   });
 
   it("with the Mac app closed: switches to the cloud server and asks which Drive folder", async () => {
+    const st = (await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json();
+    assert.equal(st.online, false);
+    const proj = await TOOL_HANDLERS.get_project(c(), { projectId });
+    assert.match(proj.text, /Exports: Renders run on Rendrr's cloud server\. The Rendrr Mac app is not open, so finals your AI exports go to Google Drive/);
     const r = await TOOL_HANDLERS.render_final(c(), { projectId });
     assert.match(r.text, /Mac app is not open/);
+    assert.match(r.text, /Where: Rendering on Rendrr's cloud server \(US East\), not on your computer\./, "the answer says where it renders");
     assert.match(r.text, /Switching to Rendrr's cloud server/);
     assert.match(r.text, /ask which Google Drive folder/);
     assert.equal(Object.keys(await redis().hgetall(`mac:exports:${userId}`)).length, 0, "nothing queued for the Mac");
@@ -52,10 +57,16 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
   });
 
   it("with the Mac app open: exports to the Mac, which takes the final once it is done", async () => {
-    const ping = await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.1.7" } });
+    const ping = await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.1.7", device: "Studio-Mac.local" } });
     assert.equal(ping.statusCode, 200, ping.body);
+    const st = (await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json();
+    assert.equal(st.online, true); assert.equal(st.device, "Studio Mac", "the Mac's name, readable"); assert.equal(st.version, "0.1.7");
+    const proj = await TOOL_HANDLERS.get_project(c(), { projectId });
+    assert.match(proj.text, /Exports: Renders run on Rendrr's cloud server\. The Rendrr Mac app is open on "Studio Mac", so finals your AI exports go to that Mac's Downloads\./);
     const r = await TOOL_HANDLERS.render_final(c(), { projectId });
     assert.match(r.text, /Exporting to the user's Mac/);
+    assert.match(r.text, /It renders on Rendrr's cloud server \(US East\), not on the Mac; the Rendrr Mac app on "Studio Mac" is open/, "the AI is told it renders in the cloud, not on the Mac");
+    assert.match(r.text, /Where: Rendering on Rendrr's cloud server \(US East\), not on your computer\. Goes to the Rendrr Mac app on "Studio Mac": it saves the file to Downloads the moment it is done\./);
     const renderId = (r.data as { renderId?: string })?.renderId ?? (await prisma.render.findFirstOrThrow({ where: { userId, status: { in: ["queued", "running"] } } })).id;
     let list = (await app.inject({ method: "GET", url: "/desktop/exports", headers: headers() })).json();
     assert.equal(list.length, 1); assert.equal(list[0].renderId, renderId);
@@ -67,6 +78,17 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
     const second = (await app.inject({ method: "POST", url: `/desktop/exports/${renderId}/claim`, headers: headers() })).json();
     assert.equal(first.claimed, true); assert.equal(second.claimed, false, "only one window saves it");
     assert.equal((await app.inject({ method: "GET", url: "/desktop/exports", headers: headers() })).json().length, 0);
+    const d = (await prisma.render.findUniqueOrThrow({ where: { id: renderId } })).delivery as { to: string; device: string; state: string };
+    assert.deepEqual([d.to, d.device, d.state], ["mac", "Studio Mac", "sent"], "the render remembers it went to that Mac");
+    const after = await TOOL_HANDLERS.get_render(c(), { renderId });
+    assert.match(after.text, /Where: Rendered on Rendrr's cloud server \(US East\), not on your computer\. Sent to the Rendrr Mac app on "Studio Mac": saved in its Downloads folder\./);
+    // The web app's status and the Claude card say the same.
+    const web = (await app.inject({ method: "GET", url: `/renders/${renderId}`, headers: headers() })).json();
+    assert.deepEqual([web.where.renders, web.where.delivery.to, web.where.delivery.state], ["cloud", "mac", "sent"]);
+    const { appProject } = await import("../src/services/claudeApp");
+    const view = await appProject(userId, projectId, renderId);
+    assert.deepEqual(view.mac, { online: true, device: "Studio Mac" });
+    assert.equal(view.preview?.where, 'Made in the cloud · Saved to "Studio Mac"');
   });
 
   it("to: drive goes to the cloud even with the Mac app open", async () => {

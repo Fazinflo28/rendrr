@@ -2,7 +2,7 @@
 //   npm test   (from desktop/)
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { linkKind, isDownload, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen } = require("../links");
+const { linkKind, isDownload, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName } = require("../links");
 
 test("Rendrr pages stay in the app", () => {
   for (const u of ["https://app.rendrr.live/projects", "https://app.rendrr.live/editor/p1?x=1", "https://api.rendrr.live/drive/callback?code=1", "https://api-production-2428.up.railway.app/drive/callback", "https://clerk.rendrr.live/v1/oauth_callback", "http://localhost:3000/login"])
@@ -74,4 +74,11 @@ test("the web app may open only Rendrr and sign-in pages in the browser", () => 
   assert.equal(browserMayOpen("https://app.rendrr.live/desktop-login?c=abc"), true);
   assert.equal(browserMayOpen("https://accounts.google.com/o/oauth2/v2/auth?client_id=x"), true);
   for (const u of ["https://evil.example.com/", "file:///etc/hosts", "javascript:alert(1)", "rendrr://auth?grant=x", "smb://server/share"]) assert.equal(browserMayOpen(u), false, u);
+});
+
+test("this Mac's name: the Computer Name, else a readable host name", () => {
+  assert.equal(macName("Ronnii's MacBook Pro\n", "Ronniis-MacBook-Pro.local"), "Ronnii's MacBook Pro");
+  assert.equal(macName("", "Ronniis-MacBook-Pro.local"), "Ronniis MacBook Pro");
+  assert.equal(macName(undefined, undefined), "");
+  assert.equal(macName("x".repeat(80), "").length, 40);
 });

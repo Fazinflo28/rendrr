@@ -333,7 +333,9 @@ export const api: any = {
     return p;
   },
   // The Rendrr Mac app: it is open (every 20 s), the finals your AI exported to it, and taking one to save.
-  macPing: (version: string) => post("/desktop/ping", { version }),
+  macPing: (version: string, device = "") => post("/desktop/ping", { version, device }),
+  // Whether the Rendrr Mac app is open (on which Mac): where finals the AI exports go. Renders always run in the cloud.
+  macStatus: async () => { try { return await get("/desktop/status"); } catch (e: any) { if (isMissingRoute(e)) return { online: false, device: null, version: null, seenAt: null }; throw e; } },
   macExports: async () => { try { return await get("/desktop/exports"); } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },
   macClaim: (renderId: string) => post(`/desktop/exports/${enc(renderId)}/claim`, {}) as Promise<{ claimed: boolean }>,
   // The footage of an edit that was waiting for it (Recreate): the first videos the user adds.

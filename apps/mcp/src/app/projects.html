@@ -189,6 +189,13 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 .step { height: 32px; font-size: 13px; padding: 0 10px; }
 .note { padding: 10px 12px; border-radius: var(--r-md); background: var(--raised); font-size: 13px; line-height: 20px; }
 .note.err { background: var(--raised-strong); color: var(--ink); box-shadow: inset 3px 0 0 var(--ink); }
+.where { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--dim); margin: 2px 2px 0; }
+.where i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+/* Where: compact chips on the version line (made in the cloud, where a final went, the Mac app), no extra height. */
+.pv .top .meta.row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pv .top .meta .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+.chip.mini { height: 16px; padding: 0 7px; font-size: 11px; line-height: 16px; gap: 5px; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chip.mini i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
 .prog { height: 6px; background: var(--raised); box-shadow: inset 0 0 0 1px var(--hair); border-radius: 3px; overflow: hidden; margin-top: 8px; }
 .prog > div { height: 100%; background: var(--accent); transition: width .4s ease; }
 
@@ -821,8 +828,15 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const versions = v.versions || [];
     const pick = versions.length > 1 && shownV ? h("select", { class: "ver", "aria-label": "Version to watch", title: "Version to watch", onChange: (e) => pickVersion(e.target.value) },
       versions.map((x) => h("option", { value: x.renderId, selected: x.renderId === shownV.renderId }, "v" + x.version + " · " + (x.kind === "final" ? "Final " + x.quality : "Preview")))) : null;
+    // Where: every render is made on Rendrr's cloud server; a final watched says where its file went; and whether the
+    // Rendrr Mac app is open (then the AI's finals land in that Mac's Downloads).
+    const macOn = v.mac && v.mac.online;
+    const macWords = macOn ? "The Rendrr Mac app is open" + (v.mac.device ? " on " + v.mac.device : "") + ": finals your AI exports are saved to that Mac's Downloads." : "The Rendrr Mac app is not open: finals your AI exports go to Google Drive or a download.";
+    const shownWhere = shownV && shownV.where ? shownV.where : "Made on Rendrr's cloud server";
+    const whereChip = h("span", { class: "chip mini", id: "where-chip", title: shownWhere + ". Every render runs on Rendrr's cloud server, not on your computer. " + macWords }, shownV && shownV.kind === "final" && shownV.where ? shownWhere.replace("Made in the cloud · ", "Cloud → ") : "Cloud render");
+    const mac = macOn ? h("span", { class: "chip mini ok", id: "mac-chip", title: macWords }, h("i", {}), "Mac connected") : null;
     const top = h("div", { class: "row top" }, back,
-      h("div", { class: "grow" }, name, h("div", { class: "meta" }, [p.folder, "v" + p.version, p.status, p.aspect].filter(Boolean).join(" · "))),
+      h("div", { class: "grow" }, name, h("div", { class: "meta row" }, h("span", { class: "what" }, [p.folder, "v" + p.version, p.status, p.aspect].filter(Boolean).join(" · ")), whereChip, mac)),
       h("div", { class: "acts" }, pick,
         fsButton(),
         iconBtn("share", "Share: a link to watch and comment, no account needed", () => toggleShare(v)),
@@ -870,7 +884,9 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const notes = [];
     if (v.rendering) {
       const r = v.rendering;
-      notes.push(h("div", { class: "note" }, h("div", { class: "row" }, h("span", { class: "grow" }, (r.queued ? "Waiting to render v" : "Rendering v") + r.version + (r.queued ? "" : " · " + r.percent + "%" + (r.step ? " · " + r.step : ""))), h("span", { class: "muted small" }, left(r.etaSec))), h("div", { class: "prog" }, h("div", { style: "width:" + Math.max(3, r.percent) + "%" }))));
+      const what = r.kind === "final" ? "the final of v" : "v";
+      notes.push(h("div", { class: "note", id: "rendering-note" }, h("div", { class: "row" }, h("span", { class: "grow" }, (r.queued ? "Waiting to render " : "Rendering ") + what + r.version + (r.queued ? "" : " · " + r.percent + "%" + (r.step ? " · " + r.step : ""))), h("span", { class: "muted small" }, left(r.etaSec))), h("div", { class: "prog" }, h("div", { style: "width:" + Math.max(3, r.percent) + "%" })),
+        r.where ? h("div", { class: "where", id: "rendering-where" }, h("i", {}), r.where) : null));
     } else if (v.failed) {
       notes.push(h("div", { class: "note err" }, "The render of v" + v.failed.version + " failed: " + v.failed.error));
     }

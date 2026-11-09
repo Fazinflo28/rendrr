@@ -81,4 +81,10 @@ function authGrant(url) {
 // What the web app may open in the default browser: Rendrr pages (the login Allow page) and sign-in pages (Drive).
 const browserMayOpen = (url) => ["app", "auth"].includes(linkKind(url));
 
-module.exports = { START_URL, APP_HOSTS, AUTH_HOSTS, isDownload, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen };
+/** This Mac's name for Rendrr to show ("Finals go to Ronnii's MacBook Pro"): its Computer Name, else the host name. */
+function macName(computerName, hostname) {
+  const pick = String(computerName || "").trim() || String(hostname || "").replace(/\.local$/i, "").replace(/[-_]+/g, " ").trim();
+  return pick.replace(/[\u0000-\u001f]/g, "").slice(0, 40);
+}
+
+module.exports = { START_URL, APP_HOSTS, AUTH_HOSTS, isDownload, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName };

@@ -134,7 +134,7 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
     assert.equal((all.data as any).open, null);
     const one = await tool("open_projects", { projectId });
     console.log(one.text);
-    assert.match(one.text, /^Showing "Reel \w+" \(\w+\) in the Rendrr app, v2; preview v1, rendering v2 \(0%\); 1 open comment \(get_comments reads them\)\./);
+    assert.match(one.text, /^Showing "Reel \w+" \(\w+\) in the Rendrr app, v2; preview v1, rendering v2 \(0%\) on Rendrr's cloud server; 1 open comment \(get_comments reads them\)\. The Rendrr Mac app is not open: finals go to Google Drive or a download\./);
     assert.equal((one.data as any).open.project.id, projectId);
     // Only that edit: not the list and its picture links (the app loads the list when the user goes back).
     assert.equal((one.data as any).projects, undefined);

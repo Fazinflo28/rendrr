@@ -204,7 +204,8 @@ Object.assign(api, {
     return reference ? api.updateProject(p.id, { reference }) : p;
   },
   // The Mac app's exports (a test fills globalThis.__demoMacExports): one claim per final.
-  macPing: async () => { globalThis.__demoMacPings = (globalThis.__demoMacPings || 0) + 1; return { ok: true }; },
+  macPing: async (version, device) => { globalThis.__demoMacPings = (globalThis.__demoMacPings || 0) + 1; globalThis.__demoMacPing = { version, device }; return { ok: true }; },
+  macStatus: async () => globalThis.__demoMac || { online: false, device: null, version: null, seenAt: null },
   macExports: async () => (globalThis.__demoMacExports || []).slice(),
   macClaim: async (id) => { const q = globalThis.__demoMacExports || []; const i = q.findIndex((x) => x.renderId === id); if (i < 0) return { claimed: false }; q.splice(i, 1); return { claimed: true }; },
   useFootage: async (id, ids) => {

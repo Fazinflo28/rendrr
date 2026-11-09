@@ -60,17 +60,18 @@ const db = {
   preview: { p1: { renderId: "r1", version: 1, url: `${M}/v1.webm?X-Amz-Signature=b&slow=1500`, seconds: 8, quality: "540p", at: now - 3600e3 }, p2: null },
   rendering: { p1: null, p2: null },
   older: { p1: [], p2: [] }, // previews a newer one replaced (the version menu keeps them)
+  mac: { online: true, device: "Studio Mac" }, // the Rendrr Mac app is open on this Mac
   finals: { p1: [{ renderId: "rf1", version: 1, url: `${M}/v2.webm?X-Amz-Signature=f`, seconds: 6, quality: "1080p", at: now - 1800e3 }], p2: [] },
 };
 const calls = [];
 const view = (id, renderId) => {
   const p = db.projects.find((x) => x.id === id);
   // Every rendered version, newest first (as Rendrr lists them); the one asked for, else the latest preview.
-  const pv = (x, kind) => x && { ...x, kind, download: x.url + "&dl=1", fileName: `${p.name} ${kind} v${x.version}.mp4` };
+  const pv = (x, kind) => x && { ...x, kind, download: x.url + "&dl=1", fileName: `${p.name} ${kind} v${x.version}.mp4`, where: kind === "final" ? 'Made in the cloud · Saved to "Studio Mac"' : "Made on Rendrr's cloud server" };
   const all = [pv(db.preview[id], "preview"), ...db.older[id].map((x) => pv(x, "preview")), ...db.finals[id].map((x) => pv(x, "final"))].filter(Boolean).sort((a, b) => b.at - a.at);
   const shown = (renderId && all.find((x) => x.renderId === renderId)) || pv(db.preview[id], "preview") || all.find((x) => x.kind === "final") || null;
   return { project: { id: p.id, name: p.name, folder: p.folder, folderId: p.folderId, aspect: p.aspect, status: p.status, version: p.version, updated: p.updated, seconds: p.seconds, editorUrl: `https://app.rendrr.live/editor/${p.id}` },
-    preview: shown, versions: all.map(({ renderId: r, version, kind, quality, at }) => ({ renderId: r, version, kind, quality, at })), rendering: db.rendering[id], failed: null, comments: [...db.comments[id]].sort((a, b) => a.time - b.time) };
+    preview: shown, versions: all.map(({ renderId: r, version, kind, quality, at }) => ({ renderId: r, version, kind, quality, at })), rendering: db.rendering[id], failed: null, comments: [...db.comments[id]].sort((a, b) => a.time - b.time), mac: db.mac };
 };
 function tool(name, args) {
   calls.push({ name, args });
@@ -100,7 +101,7 @@ function tool(name, args) {
   if (name === "app_share_link") return { url: `https://app.rendrr.live/review/tok-${args.projectId}`, version: args.version ?? 2, created: true, expires: null, allowDownload: false };
   if (name === "app_delete_comment") { db.comments[args.projectId] = db.comments[args.projectId].filter((x) => x.id !== args.commentId); return view(args.projectId); }
   if (name === "app_resolve_comment") { const c = db.comments[args.projectId].find((x) => x.id === args.commentId); c.resolved = args.resolved !== false; return view(args.projectId); }
-  if (name === "app_render_preview") { db.rendering[args.projectId] = { renderId: "r2", version: 2, percent: 10, step: null, etaSec: 40, queued: true }; return view(args.projectId); }
+  if (name === "app_render_preview") { db.rendering[args.projectId] = { renderId: "r2", version: 2, percent: 10, step: null, etaSec: 40, queued: true, kind: "preview", where: "Made on Rendrr's cloud server" }; return view(args.projectId); }
   throw new Error("no tool " + name);
 }
 
@@ -406,6 +407,7 @@ check(/Waiting to render v2/.test(await app.locator(".note").first().innerText()
 await app.locator("textarea").click(); await app.locator("textarea").pressSequentially("half typed", { delay: 10 });
 await app.locator(".note", { hasText: "Rendering v2" }).waitFor({ timeout: 6000 });
 check(/Rendering v2 · 55% · Encoding/.test(await app.locator(".note").first().innerText()), `progress comes in (${(await app.locator(".note").first().innerText()).split("\n")[0]})`);
+check(/Made on Rendrr's cloud server/.test(await app.locator("#rendering-where").innerText().catch(() => "")), "while it renders, it says it is made on Rendrr's cloud server");
 check(await frame().evaluate(() => document.activeElement?.tagName === "TEXTAREA" && document.activeElement.value === "half typed"), "typing keeps its place while progress comes in");
 await frame().waitForFunction(() => /v2\.webm/.test(document.querySelector("video")?.getAttribute("src") || ""), null, { timeout: 8000 }).catch(() => {});
 check(/v2\.webm/.test(await frame().evaluate(() => document.querySelector("video").getAttribute("src"))), "the new preview replaces the old one when it is done");
@@ -426,10 +428,14 @@ await app.locator("select.ver").selectOption("rf1");
 await frame().waitForFunction(() => /X-Amz-Signature=f/.test(document.querySelector("video")?.getAttribute("src") || ""), null, { timeout: 5000 }).catch(() => {});
 check(calls.some((c) => c.name === "app_get_project" && c.args.renderId === "rf1") && /X-Amz-Signature=f/.test(await frame().evaluate(() => document.querySelector("video").getAttribute("src"))), "picking the final plays the final");
 check(/v1 · Final/.test(await app.locator("select.ver option:checked").innerText()) && /the final/.test(await app.locator('button[aria-label="Download"]').getAttribute("title")) && await frame().evaluate(() => document.querySelector("video").paused), "the player says it is the final, Download takes the final, nothing plays on its own");
+check((await app.locator("#where-chip").innerText()) === 'Cloud → Saved to "Studio Mac"' && /Every render runs on Rendrr's cloud server, not on your computer/.test(await app.locator("#where-chip").getAttribute("title")), `the final says it was made in the cloud and saved to the Mac by name (${await app.locator("#where-chip").innerText()})`);
 check(!/has changes the latest preview/.test(await app.locator("body").innerText()) && !/Preview v1 is ready/.test(await app.locator("#toast").innerText()), "watching an older render is not news, and no note asks for a render");
 await app.locator("select.ver").selectOption("r2");
 await frame().waitForFunction(() => /v2\.webm\?X-Amz-Signature=c/.test(document.querySelector("video")?.getAttribute("src") || ""), null, { timeout: 5000 }).catch(() => {});
 check(/v2\.webm\?X-Amz-Signature=c/.test(await frame().evaluate(() => document.querySelector("video").getAttribute("src"))), "and back to the latest preview");
+check((await app.locator("#where-chip").innerText()) === "Cloud render" && /^Made on Rendrr's cloud server\./.test(await app.locator("#where-chip").getAttribute("title")), "a preview says it was made on Rendrr's cloud server");
+const chip = app.locator("#mac-chip");
+check((await chip.innerText()) === "Mac connected" && /open on Studio Mac: finals your AI exports are saved to that Mac's Downloads/.test(await chip.getAttribute("title")), "the header says the Mac app is connected, on which Mac, and where finals go");
 // Rename: click the name, type, Enter; Esc leaves it as it was.
 await app.locator("h1.name").click();
 check(await frame().evaluate(() => document.activeElement?.classList.contains("rename") && document.activeElement.value === "Knee pain reel"), "clicking the name opens it to rename");

@@ -5,6 +5,7 @@ import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, isFourK
 import { getOwnedProject } from "./projects";
 import { samplesView } from "./samples";
 import { assertMay } from "./billing";
+import { renderWhere } from "./macExport";
 
 export function stepsFor(kind: "preview" | "final", source: string, sample: boolean): string[] {
   if (kind === "preview") return [...PREVIEW_STEPS];
@@ -94,6 +95,8 @@ export async function renderStatus(r: Render) {
     step: base.step, steps: base.steps.length ? base.steps : steps, percent: r.status === "done" ? 100 : base.percent, etaSec: r.status === "done" || r.status === "failed" ? null : base.etaSec ?? null,
     error: r.error ?? base.error ?? undefined, code: r.errorCode ?? base.code ?? undefined,
     result: r.status === "done" ? (r.kind === "sample" ? { renderId: r.id, samples: await samplesView(r.userId, r.id) } : await renderResult(r)) : undefined,
+    // Where it is made (always Rendrr's cloud server) and where the file goes.
+    where: renderWhere(r),
   };
 }
 

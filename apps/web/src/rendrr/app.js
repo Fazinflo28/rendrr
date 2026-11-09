@@ -225,7 +225,7 @@ function useMacExports(user, toast) {
     let live = true;
     const tick = async () => {
       try {
-        await api.macPing(d.version || "");
+        await api.macPing(d.version || "", d.device || "");
         for (const x of await api.macExports()) {
           if (!live || (!x.url && !x.failed)) continue;
           const { claimed } = await api.macClaim(x.renderId);

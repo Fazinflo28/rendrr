@@ -1338,3 +1338,21 @@ From before:
 - Video files stay in the Railway bucket and Redis stays on Railway.
 - Tests: apps/api/test/maintenance.test.ts (maintenance mode, pooler address), the copy job dry-run locally (first
   copy, refusal on a non-empty target, reset of an older copy, refusal to empty a target newer than the source).
+
+## Where a render runs and where finals go, shown everywhere (9 November)
+
+- Every render, preview or final, runs on Rendrr's cloud server (the worker, US East). The Mac app never renders: when
+  it is open, it only receives the AI's finished finals and saves them to Downloads. This is now said everywhere:
+  - AI tool answers: a "Where:" line on render_final, get_render and finished previews ("Rendering on Rendrr's cloud
+    server (US East), not on your computer. Goes to the Rendrr Mac app on "Studio Mac": it saves the file to Downloads
+    the moment it is done", then "Sent to ... saved in its Downloads folder" once the app took it). get_project ends
+    with "Exports:" (where the next final goes). The connector's instructions and tool text say the same.
+  - Claude card: chips on the version line: "Cloud render" (or "Cloud → Saved to "Studio Mac"" when watching a final)
+    and "● Mac connected" while the Mac app is open; a final being made shows where it is going.
+  - Web app: the Export window says "Rendering on Rendrr's cloud server, not on this computer" and the finished final
+    "Made on Rendrr's cloud server"; Connect AI has a "Where exports go" card (Mac connected or closed, by name).
+- How: Render.delivery (migration 20261109060000_render_delivery) records a final going to the Mac and when the app
+  took it; GET /desktop/status (open, which Mac, version); the Mac app sends its Computer Name with its ping (new in
+  the desktop code: shows by name after the next Mac app build; until then "your Mac").
+- Tests: packages/shared/test/where.test.ts, apps/api/test/mac-export.test.ts, apps/mcp/test/app-browser.mjs,
+  apps/web/demo/render-where.mjs, desktop/test/links.test.js.

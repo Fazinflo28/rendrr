@@ -6,6 +6,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 const arg = (name) => (process.argv.find((a) => a.startsWith("--" + name + "=")) || "").slice(name.length + 3);
 contextBridge.exposeInMainWorld("rendrrDesktop", Object.freeze({
   app: "mac", platform: process.platform, version: arg("rendrr-version"),
+  // This Mac's name, so Rendrr can say which Mac your AI's finals go to.
+  device: (() => { try { return decodeURIComponent(arg("rendrr-device")); } catch { return ""; } })(),
   // Google refuses to sign in inside apps: the login Allow page and Drive consent open in the default browser.
   openInBrowser: (url) => ipcRenderer.send("rendrr:open-browser", String(url)),
 }));

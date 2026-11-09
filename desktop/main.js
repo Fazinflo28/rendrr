@@ -5,7 +5,11 @@
 const { app, BrowserWindow, Menu, Notification, ipcMain, screen, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen } = require("./links");
+const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName } = require("./links");
+const os = require("node:os");
+const { execFileSync } = require("node:child_process");
+// This Mac's name (System Settings › General › About), sent with the app's ping so Rendrr can say which Mac a final went to.
+const deviceName = (() => { let cn = ""; try { cn = execFileSync("scutil", ["--get", "ComputerName"], { timeout: 1500 }).toString(); } catch { /* not macOS */ } return macName(cn, os.hostname()); })();
 
 const DARK = "#0b0c0e";
 const SMOKE_OUT = process.env.RENDRR_SMOKE_OUT; // set by the build check on GitHub: load the app, report, quit
@@ -61,7 +65,7 @@ const appWindowOptions = (extra = {}) => ({
     spellcheck: true,
     // Uploads and the browser-side proxy keep going at full speed while the window is hidden or minimised.
     backgroundThrottling: false,
-    additionalArguments: ["--rendrr-version=" + app.getVersion()],
+    additionalArguments: ["--rendrr-version=" + app.getVersion(), "--rendrr-device=" + encodeURIComponent(deviceName)],
   },
   ...extra,
 });

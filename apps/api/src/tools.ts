@@ -6,8 +6,7 @@ import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
-  ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip,
-} from "@rendrr/shared";
+  ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip, CLOUD, CLOUD_REGION, nextExportText, whereText } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
 import { samplesOut, samplesView, startSamples } from "./services/samples";
@@ -16,7 +15,7 @@ import { createCanvas } from "./services/canvas";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
-import { macOnline, queueMacExport } from "./services/macExport";
+import { macStatus, queueMacExport, renderWhere } from "./services/macExport";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
@@ -318,16 +317,18 @@ async function driveTargetOrText(userId: string, folder: string | undefined, cre
   }
 }
 
+const CLOUD_WORDS = `${CLOUD} (${CLOUD_REGION})`;
+
 async function renderOut(renderId: string): Promise<ToolOut> {
   const r = await prisma.render.findUniqueOrThrow({ where: { id: renderId } });
   if (r.kind === "sample") return samplesAnswer(r.userId, r.id, false);
-  if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Export final; the app will ask for the original file." : ""}${driveLine(r) ? `\n${driveLine(r)}` : ""}` };
+  if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Export final; the app will ask for the original file." : ""}${driveLine(r) ? `\n${driveLine(r)}` : ""}\nWhere: ${CLOUD_WORDS} (the render ran there, not on the user's computer).` };
   if (r.status !== "done") {
     // Phase 7: where it is and the time left (the worker's estimate), so the AI can say when to look again.
     const st = await renderStatus(r);
     const left = st.etaSec != null ? `, about ${fmtLeft(st.etaSec)} left` : ", estimating the time left";
     const dl = driveLine(r);
-    return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). get_render {renderId: "${r.id}", wait_seconds: 120} waits for it.${dl ? `\n${dl}` : ""}` };
+    return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). get_render {renderId: "${r.id}", wait_seconds: 120} waits for it.\nWhere: ${whereText(renderWhere(r), r.kind, false)}${dl ? `\n${dl}` : ""}` };
   }
   const res = await renderResult(r);
   const took = res.renderSeconds != null ? `, rendered in ${res.renderSeconds < 60 ? `${Math.round(res.renderSeconds)} s` : `${Math.floor(res.renderSeconds / 60)} min ${Math.round(res.renderSeconds % 60)} s`}` : "";
@@ -335,11 +336,12 @@ async function renderOut(renderId: string): Promise<ToolOut> {
   const dl = driveLine(r);
   // Phase 12: the captions files and YouTube chapters made with a final.
   const extra = [res.files.srt ? `Captions: SRT ${res.files.srt} , WebVTT ${res.files.vtt}` : "", res.chapters ? `YouTube chapters (paste into the description${res.chapterNote.length ? `; YouTube shows none until there are: ${res.chapterNote.join("; ")}` : ""}):\n${res.chapters}` : ""].filter(Boolean).join("\n");
-  if (r.kind === "final") return { text: [head, extra, dl].filter(Boolean).join("\n"), data: { renderId: r.id } };
+  const where = `Where: ${whereText(renderWhere(r), r.kind, true)}`;
+  if (r.kind === "final") return { text: [head, where, extra, dl].filter(Boolean).join("\n"), data: { renderId: r.id } };
   const plan = r.plan as { loudness?: FileLoudness; measured?: FileMeasure; outputSeconds?: number; operations?: string[]; heard?: HeardTranscript } | null;
   // Phase 6: what the render itself said about HDR and missing LUTs goes into the check.
   const notes = (plan?.operations ?? []).filter((l) => l.startsWith("HDR:") || /^Color: LUT .* left out/.test(l) || /^Graphic \S+ left out/.test(l));
-  return { text: `${head}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null, plan?.outputSeconds ?? null, notes, plan?.heard ?? null)}`, data: { renderId: r.id } };
+  return { text: `${head}\n${where}\n${await checkOf(r.projectId, r.version, plan?.loudness ?? null, plan?.measured ?? null, plan?.outputSeconds ?? null, notes, plan?.heard ?? null)}`, data: { renderId: r.id } };
 }
 
 /** Samples as Claude reads them, with their pictures (a frame's, a clip's first) once done; the app's data with them. */
@@ -608,7 +610,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       ...(luts.length ? [`Your LUTs (set_grade lut id): ${luts.map((l) => `${l.id} "${l.name}"`).join(", ")}`] : []),
       ...(await soundLines(c.userId, p.timeline as unknown as Timeline)),
       ...(await binLine(c.userId, p.timeline as unknown as Timeline)),
-      preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet."].join("\n")) };
+      preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet.",
+      `Exports: ${nextExportText(await macStatus(c.userId))}`].join("\n")) };
   },
 
   // ---------------- marks: measured, never acted on ----------------
@@ -1166,7 +1169,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     // cloud server renders it into Google Drive (the folder given, or asked for). Saving into Drive: the folder is found
     // and checked first, so a wrong name or a refused folder is said now, not after the render.
     const wantsDrive = i.driveFolder != null || !!i.saveToDrive || i.to === "drive";
-    const mac = !wantsDrive && (await macOnline(c.userId));
+    const macNow = await macStatus(c.userId);
+    const mac = !wantsDrive && macNow.online;
     const target = i.driveFolder != null || i.saveToDrive ? await driveTargetOrText(c.userId, i.driveFolder, i.createFolders) : null;
     if (typeof target === "string") return { text: target };
     let r;
@@ -1177,10 +1181,11 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       throw e;
     }
     if (target) await askDriveSave(r, target, fileNameFor(i.fileName, (await renderResult(r)).fileName));
-    if (mac) await queueMacExport(c.userId, r.id, fileNameFor(i.fileName, (await renderResult(r)).fileName));
+    if (mac) await queueMacExport(c.userId, r.id, fileNameFor(i.fileName, (await renderResult(r)).fileName), macNow.device);
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     const out = await renderOut(r.id);
-    const where = mac ? "Exporting to the user's Mac: the Rendrr Mac app is open, and it saves the final to the Mac's Downloads folder by itself the moment it is done. Tell the user it is going to their Mac."
+    const onMac = macNow.device ? `the Rendrr Mac app on "${macNow.device}"` : "the Rendrr Mac app";
+    const where = mac ? `Exporting to the user's Mac. It renders on ${CLOUD_WORDS}, not on the Mac; ${onMac} is open and saves the final to that Mac's Downloads folder by itself the moment it is done. Tell the user in those words: it renders in Rendrr's cloud and lands in their Mac's Downloads.`
       : target ? null
       : `${i.to === "mac" ? "The Rendrr Mac app is not open, so the final cannot go to the Mac now. " : "The Rendrr Mac app is not open. "}Switching to Rendrr's cloud server: the final renders there and is saved to Google Drive. Tell the user you are switching to the cloud server, and ask which Google Drive folder to export it to (a folder link or a name). Then call save_to_drive with it: it saves the moment the render is done.`;
     return where ? { ...out, text: `${where}\n${out.text}` } : out;
