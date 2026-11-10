@@ -3,6 +3,9 @@ import type { Metadata, Viewport } from "next";
 import ClientRoot from "./client-root";
 import "../rendrr/styles.css";
 
+// Supabase Auth replaces Clerk once NEXT_PUBLIC_AUTH_PROVIDER=supabase (then Clerk's script is not loaded at all).
+const SUPABASE_AUTH = (process.env.NEXT_PUBLIC_AUTH_PROVIDER || "").toLowerCase() === "supabase" && !!process.env.NEXT_PUBLIC_SUPABASE_URL && !!process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+
 // The tab icon, Apple icon and manifest come from icon.svg, favicon.ico, apple-icon.png and manifest.ts in this folder.
 export const metadata: Metadata = { title: "Rendrr", applicationName: "Rendrr", appleWebApp: { title: "Rendrr", statusBarStyle: "black-translucent" } };
 export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", themeColor: "#0b0c0e" };
@@ -21,10 +24,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@700&display=swap" />
       </head>
       <body>
-        <ClerkProvider publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY} signInUrl="/login" signUpUrl="/login" afterSignOutUrl="/explore">
-          <ClientRoot />
-          {children}
-        </ClerkProvider>
+        {SUPABASE_AUTH ? (
+          <>
+            <ClientRoot />
+            {children}
+          </>
+        ) : (
+          <ClerkProvider publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY} signInUrl="/login" signUpUrl="/login" afterSignOutUrl="/explore">
+            <ClientRoot />
+            {children}
+          </ClerkProvider>
+        )}
       </body>
     </html>
   );

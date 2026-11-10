@@ -1,6 +1,6 @@
 // Several logins, one Rendrr account. Someone whose AI connector signed in with a different Google account than the
 // website gets a link code on the website (Connect AI) and gives it to their AI, which calls link_account with it.
-import { AppError, redis } from "@rendrr/core";
+import { AppError, redis, isSupabaseLogin, supabaseLoginById } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { randomInt } from "node:crypto";
 import { clerk, forgetUser, verifiedEmail } from "../auth";
@@ -66,6 +66,7 @@ export async function listLogins(userId: string) {
   const u = await prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { clerkId: true, email: true } });
   const extra = await prisma.userLogin.findMany({ where: { userId }, orderBy: { createdAt: "asc" } });
   const emailOf = async (id: string) => {
+    if (isSupabaseLogin(id)) return (await supabaseLoginById(id).catch(() => null))?.email || "";
     try { const cu = await clerk().users.getUser(id); return cu.primaryEmailAddress?.emailAddress || cu.emailAddresses[0]?.emailAddress || ""; } catch { return ""; }
   };
   return [
@@ -114,5 +115,6 @@ export async function mergeDuplicateAccounts(isVerified: (clerkId: string, email
 }
 
 async function clerkVerified(clerkId: string, email: string) {
+  if (isSupabaseLogin(clerkId)) { const p = await supabaseLoginById(clerkId).catch(() => null); return !!p?.emailVerified && p.email === email.toLowerCase(); }
   try { return verifiedEmail(await clerk().users.getUser(clerkId)) === email.toLowerCase(); } catch { return false; }
 }

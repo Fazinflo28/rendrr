@@ -1,8 +1,8 @@
-import { AppError, deleteObject, env, putObject } from "@rendrr/core";
+import { AppError, deleteObject, env, putObject, isSupabaseLogin, supabaseLoginById, supabaseSignInToken } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import { fmtShortDate, LoginInput, LogoInput, PREFIX, ProfilePatch, SettingsPatch, SignupInput } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
-import { authenticate, clerk, forgetUser } from "../auth";
+import { authenticate, clerk, forgetUser, mayOpenAccount } from "../auth";
 import { userOut } from "../serialize";
 import { approveDesktopLogin, redeemDesktopLogin } from "../services/desktopLogin";
 import { createLinkCode, listLogins, unlinkLogin } from "../services/logins";
@@ -62,11 +62,25 @@ export default async function account(app: FastifyInstance) {
       const t = await clerk().signInTokens.createSignInToken({ userId: u.id, expiresInSeconds: 120 });
       return { ticket: t.token };
     });
+    // Supabase login: the web app signs up straight with Supabase; this says first whether the email may open an
+    // account (invite only while SIGNUP_ALLOWLIST is set). The API refuses a new account for any other email anyway.
+    pub.post("/auth/signup-check", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req) => {
+      const email = String(((req.body || {}) as { email?: unknown }).email || "").trim();
+      if (!email) throw new AppError("Enter your email.", 400, "signup");
+      if (!mayOpenAccount(email)) throw new AppError("Sign ups are invite only for now.", 403, "invite-only");
+      return { ok: true };
+    });
     // The Mac app logs in through the browser (services/desktopLogin.ts): it trades the grant the browser approved,
-    // with its own secret, for a one-time sign-in ticket.
+    // with its own secret, for a one-time sign-in (a Clerk ticket, or a Supabase magic link's hashed token).
     pub.post("/auth/desktop/redeem", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req) => {
       const { grant, verifier } = (req.body || {}) as { grant?: unknown; verifier?: unknown };
-      return redeemDesktopLogin(grant, verifier, async (userId) => (await clerk().signInTokens.createSignInToken({ userId, expiresInSeconds: 120 })).token);
+      return redeemDesktopLogin<{ ticket?: string; tokenHash?: string; email?: string }>(grant, verifier, async (loginId) => {
+        if (isSupabaseLogin(loginId)) {
+          const t = await supabaseSignInToken(loginId).catch(() => { throw new AppError("The Mac app could not be logged in. Start again from the Rendrr app.", 500, "desktop-login"); });
+          return { tokenHash: t.tokenHash, email: t.email };
+        }
+        return { ticket: (await clerk().signInTokens.createSignInToken({ userId: loginId, expiresInSeconds: 120 })).token };
+      });
     });
   });
 
@@ -121,15 +135,22 @@ export default async function account(app: FastifyInstance) {
       if (patch.name && patch.name !== u.name) {
         data.name = patch.name;
         const [first, ...rest] = patch.name.split(/\s+/);
-        await clerk().users.updateUser(u.clerkId, { firstName: first, lastName: rest.join(" ") || undefined }).catch(() => {});
+        if (!isSupabaseLogin(u.clerkId)) await clerk().users.updateUser(u.clerkId, { firstName: first, lastName: rest.join(" ") || undefined }).catch(() => {});
       }
       if (patch.email && patch.email.toLowerCase() !== u.email.toLowerCase()) {
         // The browser proves the new address first (Clerk emails a code, the web app makes it primary).
         // Here we only copy it once Clerk says it is verified and primary, so nobody can claim an address they do not own.
-        const cu = await clerk().users.getUser(u.clerkId);
-        const primary = cu.emailAddresses.find((x) => x.id === cu.primaryEmailAddressId);
-        const ok = primary && primary.emailAddress.toLowerCase() === patch.email.toLowerCase() && primary.verification?.status === "verified";
-        if (!ok) throw new AppError("Confirm the new email with the code we send to it first.", 400, "email-unverified");
+        // Supabase: the login that is changing it (the account's main login may be an older Clerk one).
+        const login = req.loginId && isSupabaseLogin(req.loginId) ? req.loginId : isSupabaseLogin(u.clerkId) ? u.clerkId : null;
+        if (login) {
+          const p = await supabaseLoginById(login).catch(() => null);
+          if (!p?.emailVerified || p.email !== patch.email.toLowerCase()) throw new AppError("Confirm the new email with the link we sent to it first.", 400, "email-unverified");
+        } else {
+          const cu = await clerk().users.getUser(u.clerkId);
+          const primary = cu.emailAddresses.find((x) => x.id === cu.primaryEmailAddressId);
+          const ok = primary && primary.emailAddress.toLowerCase() === patch.email.toLowerCase() && primary.verification?.status === "verified";
+          if (!ok) throw new AppError("Confirm the new email with the code we send to it first.", 400, "email-unverified");
+        }
         data.email = patch.email.toLowerCase();
       }
       if (patch.photo !== undefined) {

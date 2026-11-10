@@ -34,6 +34,10 @@ const ROUTES = [
   [/^\/sso-callback$/, () => null, { bare: true }], // Clerk finishes Google sign-in here (src/app/sso-callback)
   [/^\/drive-done$/, () => html`<${DriveDone} />`, { bare: true }],
   [/^\/desktop-login$/, () => html`<${DesktopLogin} />`, { bare: true }],
+  // Supabase Auth: Google (and confirm-email links) come back here; the reset link; the AI connector's consent.
+  [/^\/auth\/callback$/, () => html`<${AuthCallback} />`, { bare: true }],
+  [/^\/reset-password$/, () => html`<${ResetPassword} />`, { bare: true }],
+  [/^\/oauth\/consent$/, () => html`<${OAuthConsent} />`, { bare: true }],
 ];
 
 // Any other address: say so instead of quietly showing Explore.
@@ -82,6 +86,64 @@ function DesktopLogin() {
     <p>You are logged in as <b>${user.email || user.name}</b>. Allow the Rendrr app on this Mac to log in to the same account.</p>
     <div class="dl-row"><${Btn} id="dl-allow" disabled=${state === "allowing"} onClick=${allow}>${state === "allowing" ? "One moment…" : "Allow"}<//><${Btn} kind="secondary" id="dl-cancel" onClick=${() => setState("cancelled")}>Cancel<//></div>
     <p class="dl-note">Only click Allow if you just clicked <b>Log in with your browser</b> in the Rendrr app.</p>`);
+}
+
+// Supabase Auth sends the browser back here after Google (or a confirm-email link): the code in the URL becomes this
+// browser's session (supabase-js trades it), then on to where the person was going.
+function AuthCallback() {
+  const { setUser } = useApp(); const { go } = useNav();
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const next = q.get("next") || "/explore";
+    const safe = next.startsWith("/") && !next.startsWith("//") ? next : "/explore";
+    (async () => {
+      try {
+        if (q.get("error_description")) throw new Error(q.get("error_description"));
+        for (let i = 0; i < 40 && !(await api.hasSession()); i++) await new Promise((r) => setTimeout(r, 150));
+        if (!(await api.hasSession())) throw new Error("We could not log you in. Try again.");
+        const u = await api.getProfile(); setUser(u);
+        window.location.replace(safe);
+      } catch (e) { setMsg(e.message || "We could not log you in. Try again."); }
+    })();
+  }, []);
+  return html`<div class="dl-wrap"><div class="dl-card" id="auth-callback"><${AppIcon} size=${56} />${msg
+    ? html`<h1>Not logged in</h1><p>${msg}</p><div class="dl-row"><${Btn} onClick=${() => go("/login")}>Try again<//></div>`
+    : html`<h1>Logging you in…</h1><p>One moment.</p>`}</div></div>`;
+}
+
+// The reset link from the email lands here (it logs this browser in for the change): pick a new password.
+function ResetPassword() {
+  const { setUser } = useApp();
+  const [pw, setPw] = useState(""); const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(""); const [ready, setReady] = useState(null);
+  useEffect(() => { (async () => { for (let i = 0; i < 40 && !(await api.hasSession()); i++) await new Promise((r) => setTimeout(r, 150)); setReady(await api.hasSession()); })(); }, []);
+  const save = async (e) => { e.preventDefault(); setBusy(true); setMsg(""); try { const u = await api.completeReset("", pw); setUser(u); window.location.replace("/explore"); } catch (er) { setMsg(er.message); setBusy(false); } };
+  return html`<div class="dl-wrap"><div class="dl-card" id="reset-password"><${AppIcon} size=${56} />${ready === false
+    ? html`<h1>This link has expired</h1><p>Ask for a new reset email from the login window (Forgot password).</p>`
+    : html`<h1>Set a new password</h1><form class="col" style="gap:10px;width:100%" onSubmit=${save}><input class="input" id="new-password" type="password" autocomplete="new-password" placeholder="New password (8+ characters)" value=${pw} onInput=${(e) => setPw(e.target.value)} />
+        ${msg && html`<p role="alert" class="t-small">${msg}</p>`}<div class="dl-row"><${Btn} id="save-password" type="submit" disabled=${busy || ready == null || pw.length < 8}>${busy ? "Saving…" : "Save and log in"}<//></div></form>`}</div></div>`;
+}
+
+// The AI connector logging in (Supabase's OAuth server sends Claude or ChatGPT here): log in if needed, then allow it.
+function OAuthConsent() {
+  const { user, auth, openLogin } = useApp();
+  const id = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("authorization_id") || "" : "";
+  const [d, setD] = useState(null); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!user || !id) return;
+    api.oauthDetails(id).then((x) => { if (x?.redirect_url && !x.authorization_id) window.location.replace(x.redirect_url); else setD(x); }).catch((e) => setErr(e.message));
+  }, [user, id]);
+  const decide = async (allow) => { setBusy(true); try { const r = await api.oauthDecide(id, allow); window.location.replace(r.redirect_url); } catch (e) { setErr(e.message); setBusy(false); } };
+  const card = (body) => html`<div class="dl-wrap"><div class="dl-card" id="oauth-consent"><${AppIcon} size=${56} />${body}</div></div>`;
+  if (!id) return card(html`<h1>This link is not right</h1><p>Start again from Claude or ChatGPT: add the Rendrr connector, then Connect.</p>`);
+  if (!user) return card(auth === "checking" ? html`<h1>One moment…</h1>` : html`<h1>Log in to connect</h1><p>Log in to Rendrr, then allow the connection.</p><div class="dl-row"><${Btn} id="oauth-login" onClick=${() => openLogin()}>Log in<//></div>`);
+  if (err) return card(html`<h1>That did not work</h1><p>${err}</p>`);
+  if (!d) return card(html`<h1>One moment…</h1>`);
+  const app = d.client?.client_name || d.client?.name || "This app";
+  return card(html`<h1>Connect ${app} to Rendrr?</h1>
+    <p><b>${app}</b> will be able to see your footage and edits and make changes in your account (<b>${d.user?.email || user.email}</b>).</p>
+    <div class="dl-row"><${Btn} id="oauth-allow" disabled=${busy} onClick=${() => decide(true)}>${busy ? "One moment…" : "Allow"}<//><${Btn} kind="secondary" id="oauth-deny" disabled=${busy} onClick=${() => decide(false)}>Deny<//></div>
+    <p class="dl-note">You can turn it off any time in Rendrr › Connect AI.</p>`);
 }
 
 // Google Drive consent without a popup comes back here; finish it with this browser's own login.

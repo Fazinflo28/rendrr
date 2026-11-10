@@ -6,7 +6,7 @@ import { AppError, redis, safeEqual } from "@rendrr/core";
 //  2. In the browser, logged in, the person clicks Allow: approve() keeps {challenge, login} for 5 minutes under a
 //     random grant, and the page hands the grant to the app through the rendrr:// link (only that Mac gets it).
 //  3. The app redeems grant + verifier: once only, and only with the secret that made the challenge, it gets a
-//     2-minute Clerk sign-in ticket for that login. A link someone else made and got approved is useless to them:
+//     2-minute sign-in for that login (a Clerk ticket, or a Supabase magic link's hashed token). A link someone else made and got approved is useless to them:
 //     the grant goes to the approver's own Mac, and their verifier never matches it.
 
 const GRANT_SECONDS = 300;
@@ -22,7 +22,7 @@ export async function approveDesktopLogin(clerkId: string, challenge: unknown) {
   return { grant, expiresInMinutes: GRANT_SECONDS / 60 };
 }
 
-export async function redeemDesktopLogin(grant: unknown, verifier: unknown, makeTicket: (clerkId: string) => Promise<string>) {
+export async function redeemDesktopLogin<T extends object>(grant: unknown, verifier: unknown, makeTicket: (clerkId: string) => Promise<T>): Promise<T> {
   const gone = () => new AppError("This login has expired or was already used. Start again from the Rendrr app.", 400, "desktop-login");
   if (typeof grant !== "string" || grant.length !== 32 || !B64URL.test(grant)) throw gone();
   if (typeof verifier !== "string" || verifier.length < 43 || verifier.length > 128 || !B64URL.test(verifier)) throw gone();
@@ -32,5 +32,5 @@ export async function redeemDesktopLogin(grant: unknown, verifier: unknown, make
   if (typeof raw !== "string") throw gone();
   const saved = JSON.parse(raw) as { c: string; clerkId: string };
   if (!safeEqual(challengeOf(verifier), saved.c)) throw gone();
-  return { ticket: await makeTicket(saved.clerkId) };
+  return makeTicket(saved.clerkId);
 }

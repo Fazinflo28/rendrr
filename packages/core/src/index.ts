@@ -14,3 +14,4 @@ export * from "./billing";
 export * from "./cost";
 export * from "./maintenance";
 export * from "./assets";
+export * from "./supabaseAuth";

@@ -474,6 +474,11 @@ const asAdmin = (u) => (u ? { ...u, admin: !!globalThis.__demoAdmin } : u);
 Object.assign(api, demoBillingApi, { getProfile: async (...a) => asAdmin(await getProfile0(...a)), login: async (...a) => asAdmin(await login0(...a)), signup: async (...a) => asAdmin(await signup0(...a)) });
 
 demoAssetsApi(api); // the Assets page: favourites, the Trash, elements and audio
+// The AI connector's consent page (Supabase's OAuth server): a test sets globalThis.__demoOAuth.
+Object.assign(api, {
+  oauthDetails: async (id) => { const o = globalThis.__demoOAuth || {}; if (o.done) return { redirect_url: o.redirect }; if (!id || id === "bad") throw Object.assign(new Error("This connection request has expired. Start again from Claude or ChatGPT."), { friendly: true }); return { authorization_id: id, client: { client_name: o.name || "Claude" }, user: { email: "you@example.com" }, scope: "openid email", redirect_uri: "https://claude.ai/api/mcp/auth_callback" }; },
+  oauthDecide: async (id, allow) => { (globalThis.__demoOAuthDecisions ||= []).push({ id, allow }); return { redirect_url: (globalThis.__demoOAuth?.redirect || "https://claude.ai/api/mcp/auth_callback") + (allow ? "?code=demo" : "?error=access_denied") }; },
+});
 
 export { api };
 export const API_BASE = "";

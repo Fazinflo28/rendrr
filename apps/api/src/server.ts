@@ -14,6 +14,7 @@ import explore from "./routes/explore";
 import internal from "./routes/internal";
 import library from "./routes/library";
 import assets from "./routes/assets";
+import { importUsersToSupabase } from "./services/supabaseImport";
 import projects from "./routes/projects";
 import render from "./routes/render";
 import color from "./routes/color";
@@ -112,6 +113,8 @@ export async function buildServer() {
   refreshFillerFlags().then((n) => { if (n) app.log.info({ transcripts: n }, "filler marks refreshed"); }, () => {});
   migrateToSequences().then((r) => { if (r.converted || r.stayed.length) app.log.info({ converted: r.converted, stayed: r.stayed }, "timelines converted to sequences"); }, (e) => app.log.warn({ msg: (e as Error).message }, "sequence migration failed"));
   mergeDuplicateAccounts().then((r) => { if (r.merged.length || r.skipped.length) app.log.info(r, "duplicate accounts merged"); }, (e) => app.log.warn({ msg: (e as Error).message }, "duplicate account merge failed"));
+  // Supabase Auth is the login: every account gets a Supabase login with its email (once).
+  importUsersToSupabase().then((r) => { if (r.created || r.failed) app.log.info(r, "accounts given a Supabase login"); }, (e) => app.log.warn({ msg: (e as Error).message }, "Supabase login import failed"));
   removeDemoFootage().then((r) => { if (r.removed || r.kept || r.fakeDriveConnections) app.log.info(r, "demo footage removed"); }, (e) => app.log.warn({ msg: (e as Error).message }, "demo footage cleanup failed"));
 
   ensureAdmins().then((n) => { if (n) app.log.info({ admins: n }, "admin accounts set"); }, (e) => app.log.warn({ msg: (e as Error).message }, "admin accounts not set"));

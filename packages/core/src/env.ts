@@ -13,6 +13,12 @@ const Env = z.object({
   S3_FORCE_PATH_STYLE: z.string().optional(),
   CLERK_SECRET_KEY: z.string().optional(),
   CLERK_PUBLISHABLE_KEY: z.string().optional(),
+  // Supabase Auth (replacing Clerk): the project URL (https://<ref>.supabase.co), its publishable (anon) key and, on the
+  // API only, its secret (service role) key. AUTH_PROVIDER=supabase makes it the login (web build, MCP connector).
+  SUPABASE_URL: z.string().optional(),
+  SUPABASE_PUBLISHABLE_KEY: z.string().optional(),
+  SUPABASE_SECRET_KEY: z.string().optional(),
+  AUTH_PROVIDER: z.string().optional(),
   ASSEMBLYAI_API_KEY: z.string().optional(), // TODO(key): unset = sample transcript
   GOOGLE_CLIENT_ID: z.string().optional(), // TODO(key): unset = fake Drive with sample files
   GOOGLE_CLIENT_SECRET: z.string().optional(),

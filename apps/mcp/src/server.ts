@@ -1,5 +1,6 @@
-// Rendrr MCP server: one URL for everyone, OAuth login through Clerk (DCR/CIMD), Streamable HTTP.
-// Every tool call is forwarded to the API server with the Clerk user it verified; the API does the work.
+// Rendrr MCP server: one URL for everyone, OAuth login through Supabase Auth (AUTH_PROVIDER=supabase) or, until the
+// switch, Clerk (DCR/CIMD), Streamable HTTP. Every tool call is forwarded to the API server with the login it
+// verified; the API does the work.
 import { clerkClient, clerkMiddleware, getAuth } from "@clerk/express";
 import { authServerMetadataHandlerClerk, protectedResourceHandlerClerk } from "@clerk/mcp-tools/express";
 import { verifyClerkToken } from "@clerk/mcp-tools/server";
@@ -12,16 +13,20 @@ import { ICON_FILES, ICON_LINKS, iconBytes } from "./icons";
 import { hostLine } from "./hosts";
 import { useKnownProtocolVersion } from "./protocol";
 import { internalSecret } from "./secret";
+import { authServerMetadata, protectedResource, supabaseLogin, verifySupabase } from "./supabase";
 
 const API = (process.env.API_INTERNAL_URL || process.env.PUBLIC_API_URL || "http://localhost:4000").replace(/\/$/, "");
 const SECRET = internalSecret();
 const WEB = (process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "");
 if (!SECRET) console.warn("[mcp] neither INTERNAL_API_SECRET nor CLERK_SECRET_KEY is set: tool calls will be refused by the API");
-if (!process.env.CLERK_SECRET_KEY || !process.env.CLERK_PUBLISHABLE_KEY) console.warn("[mcp] CLERK keys are not set: logins will fail");
+const SUPABASE = supabaseLogin();
+if (SUPABASE) console.log(`[mcp] logins through Supabase Auth (${process.env.SUPABASE_URL})`);
+else if (!process.env.CLERK_SECRET_KEY || !process.env.CLERK_PUBLISHABLE_KEY) console.warn("[mcp] CLERK keys are not set: logins will fail");
 
 // ---------------- which AI is calling ----------------
 const clientNames = new Map<string, { name: string; at: number }>();
 async function oauthClientName(clientId: string): Promise<string | null> {
+  if (SUPABASE) return null; // Supabase: the client's own name from initialize, else its user agent
   const hit = clientNames.get("oa:" + clientId);
   if (hit && Date.now() - hit.at < 10 * 60_000) return hit.name;
   try {
@@ -51,12 +56,17 @@ for (const [path, f] of Object.entries(ICON_FILES)) {
   app.get(path, (_req, res) => { res.set({ "Content-Type": f.type, "Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*" }).send(iconBytes(f.file)); });
 }
 app.use(express.json({ limit: "8mb" })); // a create_graphic call carries up to 1 MB of code; a comment from the app up to 4 pictures
-app.use(clerkMiddleware());
-
-const prm = protectedResourceHandlerClerk({ scopes_supported: ["openid", "profile", "email"], resource_name: "Rendrr" });
-app.get("/.well-known/oauth-protected-resource", prm);
-app.get("/.well-known/oauth-protected-resource/mcp", prm);
-app.get("/.well-known/oauth-authorization-server", authServerMetadataHandlerClerk);
+if (SUPABASE) {
+  app.get("/.well-known/oauth-protected-resource", protectedResource);
+  app.get("/.well-known/oauth-protected-resource/mcp", protectedResource);
+  app.get("/.well-known/oauth-authorization-server", authServerMetadata);
+} else {
+  app.use(clerkMiddleware());
+  const prm = protectedResourceHandlerClerk({ scopes_supported: ["openid", "profile", "email"], resource_name: "Rendrr" });
+  app.get("/.well-known/oauth-protected-resource", prm);
+  app.get("/.well-known/oauth-protected-resource/mcp", prm);
+  app.get("/.well-known/oauth-authorization-server", authServerMetadataHandlerClerk);
+}
 app.get("/health", (_req, res) => { res.json({ ok: true, service: "rendrr-mcp", api: API.replace(/\/\/.*@/, "//") }); });
 app.get("/", (req, res) => {
   const url = `${req.protocol}://${req.get("host")}/mcp`;
@@ -83,14 +93,14 @@ setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.so
 
 // Same checks as Clerk's mcpAuthClerk, but every failure is a 401. (mcpAuthClerk does not await its own work, so a
 // malformed "Authorization: Bearer" header became an unhandled rejection that stopped the whole server.)
-function requireAuth(req: Request, res: Response, next: NextFunction) {
+async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const deny = () => {
     res.status(401).set({ "WWW-Authenticate": `Bearer resource_metadata=${req.protocol}://${req.get("host")}/.well-known/oauth-protected-resource${req.originalUrl}` }).json({ error: "Unauthorized" });
   };
   try {
     const m = /^Bearer ([A-Za-z0-9._~+/=-]+)$/.exec(String(req.headers.authorization || ""));
     if (!m) return deny();
-    const info = verifyClerkToken(getAuth(req, { acceptsToken: "oauth_token" }), m[1]);
+    const info = SUPABASE ? await verifySupabase(m[1]) : verifyClerkToken(getAuth(req, { acceptsToken: "oauth_token" }), m[1]);
     if (!info) return deny();
     (req as Request & { auth?: AuthInfo }).auth = info;
     next();

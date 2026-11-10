@@ -14,7 +14,7 @@ describe("Mac app login through the browser", { skip: !ready && "needs REDIS_URL
 
   const newVerifier = () => randomBytes(32).toString("base64url");
   const tickets: string[] = [];
-  const makeTicket = async (clerkId: string) => { tickets.push(clerkId); return "ticket-for-" + clerkId; };
+  const makeTicket = async (clerkId: string) => { tickets.push(clerkId); return { ticket: "ticket-for-" + clerkId }; };
 
   it("the challenge is the browser-standard S256 of the secret", () => {
     const v = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"; // RFC 7636 example

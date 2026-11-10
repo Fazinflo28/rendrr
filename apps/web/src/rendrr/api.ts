@@ -4,7 +4,8 @@
 import { filesFromDrop, folderOfFile, localJobs } from "./local";
 import { filesToAdd } from "./localPick";
 import { notOriginalMessage, sameOriginal } from "@rendrr/shared";
-import { BASE, DEV, NETWORK_MSG, clerk, del, demo, emptyIf, enc, fail, get, patch, post, readEvents, req, wait } from "./http";
+import { BASE, DEV, NETWORK_MSG, clerk, del, demo, emptyIf, enc, fail, get, patch, post, readEvents, req, setTokenSource, wait } from "./http";
+import { SUPABASE_AUTH, lastSupaToken, supa, supaMessage, supaToken } from "./supa";
 import { desktopApp, forgetVerifier, newChallenge, savedVerifier } from "./desktopLogin";
 
 const PROC_STEPS = ["Transcribing", "Finding silences", "Finding scene cuts", "Reading the frames"];
@@ -46,6 +47,11 @@ async function finishSignIn(ticket: string) {
   return api.getProfile();
 }
 const clerkMsg = (e: any, fallback: string) => fail(e?.errors?.[0]?.longMessage || e?.errors?.[0]?.message || e?.message || fallback);
+// Supabase Auth (NEXT_PUBLIC_AUTH_PROVIDER=supabase): the API gets the Supabase session's token instead of Clerk's.
+if (SUPABASE_AUTH) setTokenSource(supaToken);
+const sbFail = (e: unknown, fallback: string, code?: string) => fail(supaMessage(e, fallback), code);
+const here = () => (typeof window !== "undefined" ? window.location.origin : "");
+let resetEmail = "";
 
 // ---------------- render: start, follow live progress, resolve with the result ----------------
 // A route the server does not have (it answers "That page does not exist."): the server is an older version.
@@ -113,11 +119,25 @@ export const api: any = {
   // ---- auth ----
   login: async (email: string, password: string) => {
     if (!email) throw fail("Enter your email to continue.");
+    if (SUPABASE_AUTH) {
+      if (!password) throw fail("Enter your password.");
+      const { error } = await supa().auth.signInWithPassword({ email: email.trim(), password });
+      if (error) throw sbFail(error, "We could not log you in. Try again.", "auth");
+      return api.getProfile();
+    }
     const { ticket } = await post("/auth/login", { email, password }, { auth: false });
     return finishSignIn(ticket);
   },
   signup: async (name: string, email: string, password: string) => {
     if (!email) throw fail("Enter your email to continue.");
+    if (SUPABASE_AUTH) {
+      if (!password || password.length < 8) throw fail("Pick a password of at least 8 characters.");
+      await post("/auth/signup-check", { email: email.trim() }, { auth: false }); // invite only while the list is set
+      const { data, error } = await supa().auth.signUp({ email: email.trim(), password, options: { data: { full_name: (name || "").trim() || undefined }, emailRedirectTo: here() + "/auth/callback" } });
+      if (error) throw sbFail(error, "We could not create your account. Try again.", "signup");
+      if (!data.session) throw fail(`Almost there: open the link we sent to ${email.trim()} to confirm your email, then log in.`, "confirm-email");
+      return api.getProfile();
+    }
     const { ticket } = await post("/auth/signup", { name, email, password }, { auth: false });
     return finishSignIn(ticket);
   },
@@ -136,11 +156,23 @@ export const api: any = {
   finishDesktopLogin: async (grant: string) => {
     const verifier = savedVerifier();
     if (!verifier) throw fail("This login was started too long ago or in another app. Click 'Log in with your browser' again.", "desktop-login");
-    const { ticket } = await post("/auth/desktop/redeem", { grant, verifier }, { auth: false });
+    const r = await post("/auth/desktop/redeem", { grant, verifier }, { auth: false });
     forgetVerifier();
-    return finishSignIn(ticket);
+    if (r.tokenHash) {
+      // Supabase: the browser's approval became a one-time magic link token, traded here for this app's own session.
+      const { error } = await supa().auth.verifyOtp({ token_hash: r.tokenHash, type: "magiclink" });
+      if (error) throw sbFail(error, "We could not log the app in. Click 'Log in with your browser' again.", "desktop-login");
+      return api.getProfile();
+    }
+    return finishSignIn(r.ticket);
   },
-  loginWithGoogle: async () => {
+  loginWithGoogle: async (next?: string) => {
+    if (SUPABASE_AUTH) {
+      const back = next || (window.location.pathname === "/login" ? "/explore" : window.location.pathname + window.location.search);
+      const { error } = await supa().auth.signInWithOAuth({ provider: "google", options: { redirectTo: here() + "/auth/callback?next=" + encodeURIComponent(back) } });
+      if (error) throw sbFail(error, "Google login did not start. Try again.");
+      return new Promise(() => {}); // the page is leaving for Google
+    }
     const c = await clerk();
     try {
       await c.client.signIn.authenticateWithRedirect({ strategy: "oauth_google", redirectUrl: "/sso-callback", redirectUrlComplete: "/explore" });
@@ -149,6 +181,12 @@ export const api: any = {
   },
   sendReset: async (email: string) => {
     if (!email) throw fail("Enter your email and we will send a link.");
+    if (SUPABASE_AUTH) {
+      const { error } = await supa().auth.resetPasswordForEmail(email.trim(), { redirectTo: here() + "/reset-password" });
+      if (error) throw sbFail(error, "We could not send a reset email. Try again.");
+      resetEmail = email.trim();
+      return { sent: true, link: true };
+    }
     const c = await clerk();
     try {
       resetSignIn = await c.client.signIn.create({ strategy: "reset_password_email_code", identifier: email });
@@ -156,6 +194,18 @@ export const api: any = {
     return { sent: true };
   },
   completeReset: async (code: string, password: string) => {
+    if (SUPABASE_AUTH) {
+      if (!password || password.length < 8) throw fail("Pick a new password of at least 8 characters.");
+      // The code from the email (when the email shows one); else the reset link already gave this page a session.
+      if (code?.trim()) {
+        if (!resetEmail) throw fail("Ask for a new reset email first.");
+        const { error } = await supa().auth.verifyOtp({ email: resetEmail, token: code.trim(), type: "recovery" });
+        if (error) throw sbFail(error, "That code did not work. Check the email and try again.");
+      }
+      const { error } = await supa().auth.updateUser({ password });
+      if (error) throw sbFail(error, "Open the link in the reset email first, then set your new password.");
+      return api.getProfile();
+    }
     if (!resetSignIn) throw fail("Ask for a new reset code first.");
     if (!code) throw fail("Enter the code from the email.");
     if (!password) throw fail("Enter a new password.");
@@ -168,8 +218,25 @@ export const api: any = {
     resetSignIn = null;
     return api.getProfile();
   },
-  logout: async () => { try { const c = await clerk(); await c.signOut(); } catch { /* already out */ } return { ok: true }; },
-  hasSession: async () => { const c = await clerk(); return !!c.session; },
+  logout: async () => {
+    if (SUPABASE_AUTH) { await supa().auth.signOut().catch(() => {}); return { ok: true }; }
+    try { const c = await clerk(); await c.signOut(); } catch { /* already out */ } return { ok: true };
+  },
+  hasSession: async () => { if (SUPABASE_AUTH) return !!(await supaToken()); const c = await clerk(); return !!c.session; },
+  // The AI connector's login (Supabase's OAuth server): which app asks, then Allow or Deny. Each answer is where the
+  // browser goes next (back to Claude or ChatGPT).
+  oauthDetails: async (authorizationId: string) => {
+    const { data, error } = await (supa().auth as any).oauth.getAuthorizationDetails(authorizationId);
+    if (error) throw sbFail(error, "This connection request has expired. Start again from Claude or ChatGPT.", "oauth");
+    return data;
+  },
+  oauthDecide: async (authorizationId: string, allow: boolean) => {
+    const o = (supa().auth as any).oauth;
+    const { data, error } = await (allow ? o.approveAuthorization(authorizationId) : o.denyAuthorization(authorizationId));
+    if (error) throw sbFail(error, "That did not go through. Start again from Claude or ChatGPT.", "oauth");
+    return data;
+  },
+  authProvider: SUPABASE_AUTH ? "supabase" : "clerk",
 
   // ---- library ----
   listVideos: async () => emptyIf((await get("/videos")).map(remember)),
@@ -316,7 +383,7 @@ export const api: any = {
     if (!ev || ev.type !== "pagehide") return;
     const ids = localJobs.running();
     if (!ids.length) return;
-    const t = (window as any).Clerk?.session?.lastActiveToken?.getRawString?.();
+    const t = SUPABASE_AUTH ? lastSupaToken() : (window as any).Clerk?.session?.lastActiveToken?.getRawString?.();
     try { fetch(BASE + "/videos/pause", { method: "POST", keepalive: true, headers: { "content-type": "application/json", ...(t ? { authorization: "Bearer " + t } : {}) }, body: JSON.stringify({ ids }) }); } catch { /* best effort */ }
   },
   resumeLocalPreview: async (videoId: string) => {
@@ -531,7 +598,19 @@ export const api: any = {
   // A new email is confirmed with Clerk first (it emails a code); the server only accepts a verified, primary address.
   updateProfile: async (p: any) => {
     const want = typeof p?.email === "string" ? p.email.trim().toLowerCase() : "";
-    const c = want ? await clerk() : null;
+    if (SUPABASE_AUTH && want) {
+      // Supabase emails a link to the new address; the API copies it once that link is opened.
+      const { data } = await supa().auth.getUser();
+      if (data.user?.email?.toLowerCase() !== want) {
+        const { error } = await supa().auth.updateUser({ email: want }, { emailRedirectTo: here() + "/settings" });
+        if (error) throw sbFail(error, "We could not change your email. Try again.", "email");
+        const { email: _e, ...rest } = p;
+        if (Object.keys(rest).length) await patch("/account/profile", rest);
+        throw fail(`We sent a link to ${want}. Open it, then save again to finish changing your email.`, "email-unverified");
+      }
+      return patch("/account/profile", p);
+    }
+    const c = want && !SUPABASE_AUTH ? await clerk() : null;
     const u = c?.user;
     if (u && want && u.primaryEmailAddress?.emailAddress?.toLowerCase() !== want) {
       try {

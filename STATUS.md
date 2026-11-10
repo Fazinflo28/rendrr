@@ -1398,3 +1398,14 @@ From before:
 - Tests: `packages/shared/test/assets.test.ts`, `apps/api/test/assets.test.ts`, `apps/worker/test/element-render.test.ts`
   (a real render: transparent half shows the picture, held past 1 s), `apps/web/demo/assets.mjs`; library-delete and
   library-folders updated for the Trash and the Videos name.
+
+## Login moving from Clerk to Supabase Auth (10 November)
+
+- Built in both modes: Clerk stays the login until `AUTH_PROVIDER=supabase` (a Railway shared variable). Owner steps
+  (Supabase keys into Railway, URL configuration, Google provider, new JWT signing keys, OAuth Server with
+  `/oauth/consent`, then the switch) are in `docs/supabase-auth.md`.
+- A Supabase login is stored as `sb:<id>` and opens the account with the same verified email, so nothing is lost;
+  at the switch every account gets a Supabase login with its email (Forgot password then works for Clerk users).
+- The AI connector logs in through Supabase's OAuth 2.1 server (dynamic client registration; Rendrr's consent page);
+  the Mac app logs in through the browser with a one-time magic link token. Invite-only sign ups (`SIGNUP_ALLOWLIST`)
+  are now enforced for every new account.
