@@ -25,7 +25,7 @@ export const soundLine = (s: { id: string; name: string; seconds: number; status
   `${s.id} "${s.name}" ${s.status === "ready" ? `${fmtLen(s.seconds)} (${s.seconds.toFixed(3)}s)` : s.status === "failed" ? `failed: ${s.error || "unreadable"}` : "being prepared"}`;
 
 export async function soundsText(userId: string) {
-  const ss = await prisma.sound.findMany({ where: { userId }, orderBy: { createdAt: "desc" }, take: 20 });
+  const ss = await prisma.sound.findMany({ where: { userId, deletedAt: null }, orderBy: { createdAt: "desc" }, take: 20 });
   return ss.length ? ss.map(soundLine).join("; ") : "none yet";
 }
 

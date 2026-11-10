@@ -67,8 +67,8 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
 }
 
 /* ---------- app shell: one top bar (Higgsfield-style), no side rail ---------- */
-const TOP = [["/explore", "Explore"], ["/projects", "Projects"], ["/library", "Library"]];
-const MENU = [["/library", "Library", "library"], ["/usage", "Usage & billing", "usage"], ["/settings", "Settings", "settings"], ["/connect", "Connect AI", "connect"]];
+const TOP = [["/explore", "Explore"], ["/projects", "Projects"], ["/assets", "Assets"]];
+const MENU = [["/assets", "Assets", "library"], ["/usage", "Usage & billing", "usage"], ["/settings", "Settings", "settings"], ["/connect", "Connect AI", "connect"]];
 // Rendrr's team also sees the admin panel.
 const menuFor = (user) => (user?.admin ? [...MENU, ["/admin", "Admin", "key"]] : MENU);
 function Shell({ children }) {
@@ -80,7 +80,7 @@ function Shell({ children }) {
   useEffect(() => { if (!q.trim()) { setHits(null); return; } let on = true; api.search(q).then((r) => on && setHits(r)).catch(() => on && setHits([])); return () => { on = false; }; }, [q]);
   useEffect(() => { const k = () => { setMenu(false); setHits(null); setSOpen(false); }; window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
   const setDemo = (m) => { api.demo.mode = m; toast(m === "ready" ? "Demo: normal data" : m === "empty" ? "Demo: empty states on" : "Demo: error states on"); go(route, true); };
-  const isOn = (p) => (p === "/explore" ? route === "/explore" || route === "/home" : route.startsWith(p));
+  const isOn = (p) => (p === "/explore" ? route === "/explore" || route === "/home" : p === "/assets" ? route.startsWith("/assets") || route.startsWith("/library") : route.startsWith(p));
   return html`<div class=${"shell" + (looksIn ? " in" : "")}>
     <header class="top">
       <button class="logo" aria-label="Rendrr home" title="Rendrr" onClick=${() => go("/explore")}><${AppIcon} size=${36} /></button>
@@ -101,7 +101,7 @@ function Shell({ children }) {
           <button class="avatar" id="profile" aria-label="Profile menu" onClick=${() => setMenu((m) => !m)}>${user?.photo ? html`<img src=${user.photo} alt="" />` : initials(user?.name)}</button>
           ${menu && html`<div class="menu">
             <div class="head">${user?.email}</div>
-            ${menuFor(user).map(([p, l, i]) => html`<button key=${p} class=${"item" + (route.startsWith(p) || (p === "/usage" && route.startsWith("/billing")) ? " on" : "")} data-menu=${l} onClick=${() => { go(p); setMenu(false); }}><${Icon} name=${i} />${l}</button>`)}
+            ${menuFor(user).map(([p, l, i]) => html`<button key=${p} class=${"item" + (route.startsWith(p) || (p === "/assets" && route.startsWith("/library")) || (p === "/usage" && route.startsWith("/billing")) ? " on" : "")} data-menu=${l} onClick=${() => { go(p); setMenu(false); }}><${Icon} name=${i} />${l}</button>`)}
             ${!IS_PROD && html`<div class="sep" /><div class="head">Demo states</div>
             ${[["ready", "Normal data"], ["empty", "Empty states"], ["error", "Error states"]].map(([m, l]) => html`<button key=${m} class=${"item" + (api.demo.mode === m ? " on" : "")} onClick=${() => { setDemo(m); setMenu(false); }}><${Icon} name=${api.demo.mode === m ? "check" : "more"} />${l}</button>`)}
             <button class="item" id="fail-render" onClick=${() => { api.demo.failNextRender = true; toast("The next render will fail"); setMenu(false); }}><${Icon} name="alert" />Fail the next render</button>
@@ -115,7 +115,7 @@ function Shell({ children }) {
     </header>
     <main class="main">${children}</main>
     ${looksIn && html`<nav class="mnav" aria-label="Main">
-      ${[["/explore", "Explore", "home"], ["/projects", "Projects", "projects"], [null, "Add", "plus"], ["/library", "Library", "library"], ["/settings", "Account", "user"]].map(([p, l, i]) => p
+      ${[["/explore", "Explore", "home"], ["/projects", "Projects", "projects"], [null, "Add", "plus"], ["/assets", "Assets", "library"], ["/settings", "Account", "user"]].map(([p, l, i]) => p
         ? html`<button key=${l} class=${"mtab" + (isOn(p) || (p === "/settings" && ["/usage", "/billing", "/connect"].some((x) => route.startsWith(x))) ? " on" : "")} data-mtab=${l} onClick=${() => go(p)}><${Icon} name=${i} size="20" /><span>${l}</span></button>`
         : html`<button key=${l} class="mtab add" data-mtab="Add" aria-label="Add footage" onClick=${openAdd}><i><${Icon} name="plus" size="20" /></i></button>`)}
     </nav>`}
@@ -314,7 +314,7 @@ const LibrarySkeleton = ({ folders }) => html`<div class="col" style="gap:16px">
     <div class="lfgrid">${[0, 1, 2].map((i) => html`<div key=${i} class="skeleton" style="height:62px;border-radius:12px" />`)}</div></div>`}
   <div class="grid">${Array.from({ length: 8 }).map((_, i) => html`<div key=${i} class="vcard sk"><div class="skeleton" style="aspect-ratio:16/9" /><div class="meta"><div class="skeleton sk-line" style="width:70%" /><div class="skeleton sk-line" style="width:35%" /></div></div>`)}</div>
 </div>`;
-function LibraryPage() {
+function LibraryPage({ embedded = false, only = null } = {}) {
   const { go } = useNav(); const { startUpload, openAdd } = useApp(); const toast = useToast();
   const q = useAsync(() => api.listVideos(), []);
   // Library folders: videos of one kind kept together. The open folder is remembered for this tab.
@@ -385,20 +385,30 @@ function LibraryPage() {
   const onDrop = (e) => { e.preventDefault(); setOver(false); if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return; api.captureDrop?.(e.dataTransfer); api.filesFromDrop(e.dataTransfer).then((fs) => { if (fs.length) startUpload(fs, undefined, openF || undefined); }); };
   const dropProps = { onDragOver: (e) => { e.preventDefault(); if (Array.from(e.dataTransfer?.types || []).includes("Files")) setOver(true); }, onDragLeave: () => setOver(false), onDrop };
   const act = async (e, fn, msg) => { e.stopPropagation(); try { await fn(); if (msg) toast(msg); q.reload(); } catch (er) { toast(er.message); } };
+  // Assets page: delete moves to the Trash (Undo, or restore it from Assets > Trash); the heart marks a favorite.
+  const toTrash = async (vs) => {
+    try {
+      for (const v of vs) await api.trashAsset(v.still ? "image" : "video", v.id);
+      const ids = new Set(vs.map((v) => v.id)); q.setData((x) => (x || []).filter((v) => !ids.has(v.id))); setPick((p) => p.filter((id) => !ids.has(id)));
+      window.dispatchEvent(new Event("rendrr:assets"));
+      toast(vs.length === 1 ? `"${vs[0].name}" moved to the Trash` : `${vs.length} videos moved to the Trash`, { icon: "trash", ms: 6000, action: { label: "Undo", onClick: async () => { try { for (const v of vs) await api.restoreTrashed(v.still ? "image" : "video", v.id); reloadAll(); window.dispatchEvent(new Event("rendrr:assets")); } catch (er) { toast(er.message); } } } });
+    } catch (er) { toast(er.message); reloadAll(); }
+  };
+  const toggleFav = async (e, v) => { e.stopPropagation(); q.setData((x) => (x || []).map((y) => (y.id === v.id ? { ...y, favorite: !v.favorite } : y))); try { await api.favoriteAsset(v.still ? "image" : "video", v.id, !v.favorite); window.dispatchEvent(new Event("rendrr:assets")); } catch (er) { toast(er.message); q.reload(); } };
   const filt = (v) => filter === "All" || (filter === "Ready" && v.status === "ready") || (filter === "In progress" && BUSY.includes(v.status)) || (filter === "Needs attention" && ATTN.includes(v.status)) || (filter === "References" && v.kind === "reference");
-  return html`<div class="page wide" ...${dropProps}>
-    <div class="page-head"><div>${cur ? html`<div class="row wrap" id="folder-crumbs" style="gap:6px"><button class="dlink t-small" id="folder-back" onClick=${() => openFolder(null)}>Library</button>${crumbs.slice(0, -1).map((f) => html`<span class="t-small muted">/</span><button class="dlink t-small" data-crumb=${f.id} onClick=${() => openFolder(f.id)}>${f.name}</button>`)}<span class="t-small muted">/</span></div><h1 class="t-title row" style="gap:10px" id="folder-title"><${Icon} name="folder" size="26" />${cur.name}</h1><p class="muted" id="folder-meta">${fcount(cur)} · ${fmtLen(cur.totalSeconds ?? cur.seconds)}</p>${driveTop && html`<p class="t-small muted row wrap" id="folder-drive" style="gap:8px;margin-top:4px"><${Icon} name="drive" size="14" /><span>Synced with Google Drive</span><button class="dlink t-small" id="folder-sync" disabled=${syncing} onClick=${() => syncDrive(false)}>${syncing ? "Syncing…" : "Sync now"}</button></p>`}` : openF && fq.status === "loading" ? html`<div class="skeleton sk-pill" style="width:220px;height:34px" />` : html`<h1 class="t-title">Library</h1>`}</div>
+  return html`<div class=${embedded ? "as-pane lib" : "page wide"} ...${dropProps}>
+    <div class="page-head"><div>${cur ? html`<div class="row wrap" id="folder-crumbs" style="gap:6px"><button class="dlink t-small" id="folder-back" onClick=${() => openFolder(null)}>${embedded ? "Videos" : "Library"}</button>${crumbs.slice(0, -1).map((f) => html`<span class="t-small muted">/</span><button class="dlink t-small" data-crumb=${f.id} onClick=${() => openFolder(f.id)}>${f.name}</button>`)}<span class="t-small muted">/</span></div><h1 class="t-title row" style="gap:10px" id="folder-title"><${Icon} name="folder" size="26" />${cur.name}</h1><p class="muted" id="folder-meta">${fcount(cur)} · ${fmtLen(cur.totalSeconds ?? cur.seconds)}</p>${driveTop && html`<p class="t-small muted row wrap" id="folder-drive" style="gap:8px;margin-top:4px"><${Icon} name="drive" size="14" /><span>Synced with Google Drive</span><button class="dlink t-small" id="folder-sync" disabled=${syncing} onClick=${() => syncDrive(false)}>${syncing ? "Syncing…" : "Sync now"}</button></p>`}` : openF && fq.status === "loading" ? html`<div class="skeleton sk-pill" style="width:220px;height:34px" />` : html`<h1 class="t-title">${embedded ? "Videos" : "Library"}</h1>`}</div>
       <div class="row"><div class="search" style="width:240px"><${Icon} name="search" /><input class="input sm" placeholder="Find footage" value=${search} onInput=${(e) => setSearch(e.target.value)} aria-label="Find footage" /></div>
       <${Seg} size="sm" value=${filter} options=${["All", "Ready", "In progress", "Needs attention", "References"]} onChange=${setFilter} />
       <${Btn} kind="ghost" size="sm" icon="folder" id="new-folder" onClick=${() => setNameModal({ parent: cur })}>${cur ? "New folder here" : "New folder"}<//>
       <${Btn} kind=${picking ? "secondary" : "ghost"} size="sm" icon=${picking ? "x" : "check"} id="select-videos" title="Select videos to make one edit of them, in order" onClick=${() => (picking ? stopPicking() : setPicking(true))}>${picking ? "Cancel" : "Select"}<//></div></div>
     ${picking && html`<div class="bulk pickbar" id="pick-bar" role="region" aria-label="Selected videos"><span class="grow t-small">${pick.length ? html`<b id="pick-count">${pick.length} selected</b> · ${fmtLen(pick.reduce((a, id) => a + ((q.data || []).find((v) => v.id === id)?.seconds || 0), 0))} · they play in the order you picked them` : "Click videos in the order they play. A video filmed in parts becomes one edit."}</span>
-      ${pick.length > 0 && html`<${Btn} kind="ghost" size="sm" onClick=${() => setPick([])}>Clear<//><${Btn} kind="ghost" size="sm" icon="folder" id="pick-move" onClick=${() => setMoveOf(pick.map((id) => (q.data || []).find((v) => v.id === id)).filter(Boolean))}>Move to folder<//><${Btn} kind="ghost" size="sm" icon="trash" id="pick-delete" onClick=${() => setRemove(pick.map((id) => (q.data || []).find((v) => v.id === id)).filter(Boolean))}>Delete<//>`}<${Btn} size="sm" icon="scissors" id="pick-make" disabled=${!pick.length} onClick=${() => setNp(true)}>${pick.length > 1 ? "Make one edit" : "Make an edit"}<//></div>`}
+      ${pick.length > 0 && html`<${Btn} kind="ghost" size="sm" onClick=${() => setPick([])}>Clear<//><${Btn} kind="ghost" size="sm" icon="folder" id="pick-move" onClick=${() => setMoveOf(pick.map((id) => (q.data || []).find((v) => v.id === id)).filter(Boolean))}>Move to folder<//><${Btn} kind="ghost" size="sm" icon="trash" id="pick-delete" onClick=${() => toTrash(pick.map((id) => (q.data || []).find((v) => v.id === id)).filter(Boolean)).then(stopPicking)}>Delete<//>`}<${Btn} size="sm" icon="scissors" id="pick-make" disabled=${!pick.length} onClick=${() => setNp(true)}>${pick.length > 1 ? "Make one edit" : "Make an edit"}<//></div>`}
     <${Async} q=${fq.status === "loading" && q.status !== "error" ? { ...q, status: "loading" } : q} skeleton=${html`<${LibrarySkeleton} folders=${!!fq.data && childFolders.length > 0} />`} whenEmpty=${html`<div class=${"drop" + (over ? " over" : "")} id="drop" onClick=${openAdd}><div class="ico"><${Icon} name="plus" /></div><h2 class="t-heading">Add your first footage</h2><p class="muted">From Google Drive or your computer.</p><div class="row"><${Btn} onClick=${(e) => { e.stopPropagation(); openAdd(); }}>Add footage<//></div></div>`}>
       ${(videos) => {
         // In a folder: its videos in name order. At the top: the videos in no folder (a search looks in every folder).
         const here = (v) => (openF ? v.libraryFolderId === openF : !!search || !v.libraryFolderId || !folderIds.has(v.libraryFolderId));
-        const list = videos.filter((v) => here(v) && filt(v) && v.name.toLowerCase().includes(search.toLowerCase()));
+        const list = videos.filter((v) => (only !== "videos" || !v.still) && here(v) && filt(v) && v.name.toLowerCase().includes(search.toLowerCase()));
         if (openF) list.sort(byName);
         return html`<div class="col" style="gap:16px">
           ${cur && html`<div class="row wrap" id="folder-actions" style="gap:8px">
@@ -421,7 +431,7 @@ function LibraryPage() {
             : list.length === 0 ? (filter === "References" && !search ? html`<${EmptyState} icon="spark" title="No references yet" text="A video whose style your AI copies." action=${html`<${Btn} size="sm" icon="plus" id="add-reference" onClick=${() => openAdd("reference")}>Add a reference<//>`} />`
             : html`<${EmptyState} icon="search" title="No footage matches" action=${html`<${Btn} kind="secondary" size="sm" onClick=${() => { setFilter("All"); setSearch(""); }}>Clear filters<//>`} />`) : html`<div class="grid">
             ${list.map((v) => { const n = pick.indexOf(v.id); return html`<button key=${v.id} class=${"vcard" + (v.status !== "ready" ? " busy" : "") + (picking ? " picking" : "") + (n >= 0 ? " picked" : "")} data-id=${v.id} draggable=${!picking} onDragStart=${(e) => { e.dataTransfer.setData("text/rendrr-video", v.id); e.dataTransfer.effectAllowed = "move"; }} data-status=${v.status} aria-pressed=${picking ? n >= 0 : undefined} onClick=${() => (picking ? togglePick(v) : v.status === "ready" && go("/library/" + v.id))} aria-label=${v.name}>
-              <div class="thumb"><${Thumb} src=${v.thumb} art=${v.art} />${picking && html`<span class=${"vpick" + (n >= 0 ? " on" : "")} aria-hidden="true">${n >= 0 ? n + 1 : ""}</span>`}<div class="len"><${Chip} tone="neutral" size="sm" style="background:rgba(0,0,0,.5);color:#fff">${fmtLen(v.seconds)}<//></div>
+              <div class="thumb"><${Thumb} src=${v.thumb} art=${v.art} />${picking && html`<span class=${"vpick" + (n >= 0 ? " on" : "")} aria-hidden="true">${n >= 0 ? n + 1 : ""}</span>`}${!picking && html`<span role="button" tabindex="0" class=${"as-act vfav" + (v.favorite ? " on" : "")} data-fav=${v.id} aria-pressed=${!!v.favorite} aria-label=${v.favorite ? "Remove " + v.name + " from favorites" : "Add " + v.name + " to favorites"} title=${v.favorite ? "Favorite" : "Add to favorites"} onClick=${(e) => toggleFav(e, v)} onKeyDown=${(e) => (e.key === "Enter" || e.key === " ") && toggleFav(e, v)}><${Icon} name="heart" size="14" /></span>`}<div class="len"><${Chip} tone="neutral" size="sm" style="background:rgba(0,0,0,.5);color:#fff">${fmtLen(v.seconds)}<//></div>
                 ${BUSY.includes(v.status) && html`<div class="veil"><span class="dot brand pulse" /><b class="t-small">${v.stepName}${v.progress != null && (v.status === "previewing" || v.status === "uploading") ? " " + v.progress + "%" : ""}</b>${(v.status === "previewing" || v.status === "uploading") && html`<div class="bar"><i style=${{ width: v.progress + "%" }} /></div>`}</div>`}
                 ${v.status === "paused" && html`<div class="veil"><${Icon} name="clock" size="22" /><b class="t-small">Paused. Open this tab to continue</b></div>`}
                 ${v.status === "failed" && html`<div class="veil"><${Icon} name="alert" size="22" /><b class="t-small">Failed</b></div>`}
@@ -435,7 +445,7 @@ function LibraryPage() {
                   : v.status === "missing" ? html`<${Btn} size="xs" icon="drive" data-reconnect=${v.id} onClick=${(e) => { e.stopPropagation(); setReconnect(v); }}>Reconnect file<//>`
                   : v.status === "expired" ? html`<${Btn} size="xs" icon="refresh" data-rebuild=${v.id} onClick=${(e) => act(e, () => api.rebuildPreview(v.id), "Rebuilding the preview")}>Rebuild preview<//>`
                   : html`<span class="t-small muted">${fmtAgo(v.date)} · ${v.size}</span>`}
-                  <span class="row" style="gap:2px;flex:none"><${Btn} kind="quiet" size="xs" icon="folder" aria-label=${"Move " + v.name + " to a folder"} title="Move to a folder" data-move=${v.id} onClick=${(e) => { e.stopPropagation(); setMoveOf([v]); }} /><${Btn} kind="quiet" size="xs" icon="trash" aria-label=${"Delete " + v.name} data-delete=${v.id} onClick=${(e) => { e.stopPropagation(); setRemove([v]); }} /></span></div>
+                  <span class="row" style="gap:2px;flex:none"><${Btn} kind="quiet" size="xs" icon="folder" aria-label=${"Move " + v.name + " to a folder"} title="Move to a folder" data-move=${v.id} onClick=${(e) => { e.stopPropagation(); setMoveOf([v]); }} /><${Btn} kind="quiet" size="xs" icon="trash" aria-label=${"Delete " + v.name} title="Move to the Trash" data-delete=${v.id} onClick=${(e) => { e.stopPropagation(); toTrash([v]); }} /></span></div>
                 ${v.status === "failed" && html`<span class="t-small muted">${v.error}</span>`}
               </div>
             </button>`; })}
@@ -481,13 +491,13 @@ function FootagePage({ id }) {
   const inWsel = (i) => wsel && i >= Math.min(wsel.a, wsel.b) && i <= Math.max(wsel.a, wsel.b);
   const startWithout = async () => { setBusy(true); try { const p = await api.createProject({ videoId: id, cut: selIds }); toast(selIds.length + " words removed. Opening the editor.", { icon: "scissors", tone: "brand" }); go("/editor/" + p.id); } catch (e) { toast(e.message); setBusy(false); } };
   return html`<div class="page">
-    <div class="row"><${Btn} kind="quiet" size="sm" icon="back" onClick=${() => go("/library")}>Library<//></div>
+    <div class="row"><${Btn} kind="quiet" size="sm" icon="back" onClick=${() => go("/assets/videos")}>Videos<//></div>
     <${Async} q=${q} errorBack=${{ label: "Library", onClick: () => go("/library") }} skeleton=${html`<div class="col" style="gap:16px"><div class="page-head" style="padding-top:0"><div class="col" style="gap:8px"><div class="skeleton sk-pill" style="width:260px;height:32px" /><div class="skeleton sk-line" style="width:120px" /></div></div><div class="two" style="grid-template-columns:1.4fr 1fr;align-items:start"><div class="skeleton" style="aspect-ratio:16/9;border-radius:20px" /><div class="skeleton" style="height:420px;border-radius:20px" /></div></div>`}>${(v) => html`
       <div class="page-head" style="padding-top:0"><div><h1 class="t-title">${v.name}</h1><p class="muted row" style="gap:8px;flex-wrap:wrap">${v.kind === "reference" && html`<span class="tag accent">Reference</span>`}${fmtLen(v.seconds)} · ${v.size}</p></div>
         <div class="row" style="gap:8px"><${MoreMenu} id="video-more" label="More" items=${[
           { id: "flip-kind", label: v.kind === "reference" ? "Use as footage" : "Mark as reference", icon: "spark", onClick: () => flipKind(v) },
           v.source === "drive" && { id: "open-drive", label: "Open in Drive", icon: "drive", onClick: () => (v.driveFile?.webViewLink ? window.open(v.driveFile.webViewLink, "_blank", "noopener") : toast("We could not find this file in Google Drive.", { icon: "drive" })) },
-          { id: "delete-video", label: "Delete", icon: "trash", danger: true, onClick: () => setRemove(true) },
+          { id: "delete-video", label: "Move to Trash", icon: "trash", danger: true, onClick: async () => { try { await api.trashAsset(v.still ? "image" : "video", v.id); toast(`"${v.name}" moved to the Trash`, { icon: "trash", ms: 6000, action: { label: "Undo", onClick: () => api.restoreTrashed(v.still ? "image" : "video", v.id).then(() => go("/library/" + v.id)).catch((e) => toast(e.message)) } }); go("/assets/videos"); } catch (e) { toast(e.message); } } },
         ]} /><${Btn} id="start-edit" icon="spark" disabled=${busy || v.status !== "ready"} onClick=${start}>${busy ? "Creating…" : "Start an edit"}<//></div>
         ${remove && html`<${DeleteVideoModal} video=${v} onClose=${() => setRemove(false)} onDeleted=${() => go("/library")} />`}</div>
       ${BUSY.includes(v.status) || v.status === "paused" ? html`<div class="card flat row" id="video-state"><span class="dot brand pulse" />Getting it ready: ${v.stepName || v.status}</div>`
@@ -1074,7 +1084,7 @@ function SettingsPage() {
 }
 
 export {
-  LoginPage, Shell, SourceBadge, DrivePicker, AddFootageModal, LibraryPage, FootagePage, NewProjectModal, VideoOrderPicker, ProjectsPage, FolderPage,
+  LoginPage, Shell, SourceBadge, DrivePicker, AddFootageModal, LibraryPage, DeleteVideoModal, FootagePage, NewProjectModal, VideoOrderPicker, ProjectsPage, FolderPage,
   StyleVideo, StyleArt, ReferencePicker, StylesPage, StylePacks, HomePage, CreatePage, ExploreFeed, PublishModal, CreateLinkModal, ClientReviewPage, ConnectPage,
   SettingsPage,
 };

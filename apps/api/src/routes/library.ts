@@ -76,7 +76,7 @@ export default async function library(app: FastifyInstance) {
 
     // ---------------- library ----------------
     a.get("/videos", async (req) => {
-      const vs = await prisma.video.findMany({ where: { userId: req.user!.id, kind: { not: "canvas" } }, orderBy: { createdAt: "desc" } });
+      const vs = await prisma.video.findMany({ where: { userId: req.user!.id, kind: { not: "canvas" }, deletedAt: null }, orderBy: { createdAt: "desc" } }); // the Trash is listed apart
       return Promise.all(vs.map(videoOut));
     });
 

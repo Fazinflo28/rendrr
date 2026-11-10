@@ -1,5 +1,6 @@
-// Deleting videos from the Library, on a computer and a phone: the bin on a card asks, then the card goes; Select then
-// Delete takes several at once; a video an edit uses asks again, naming the edit, and only that one waits. Runs on the
+// Deleting videos (Assets > Videos), on a computer and a phone: the bin on a card moves it to the Trash at once (Undo
+// brings it back); Select then Delete moves several; in the Trash, Delete for good asks, and a video an edit uses asks
+// again, naming the edit. Runs on the
 // demo build (node demo/build.mjs first) in Playwright's Chromium.   node demo/library-delete.mjs   (from apps/web)
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -32,18 +33,19 @@ for (const [label, viewport, phone] of [["desktop", { width: 1440, height: 1000 
   const count = () => page.locator(".vcard").count();
   const n0 = await count();
 
-  // One video: the bin on its card.
+  // One video: the bin on its card moves it to the Trash at once, with Undo.
   const bin = page.locator(`[data-delete="${ids[0]}"]`);
   const box = await bin.boundingBox();
   check(await bin.isVisible() && box.width >= (phone ? 32 : 24), `${label}: the bin is on the card (${Math.round(box.width)}px)`);
   await press(bin);
-  check(await until(async () => (await page.locator(".modal").count()) === 1), `${label}: it asks first`);
-  check(/delete ".+"\?/i.test(await page.locator(".modal").innerText()), `${label}: naming the video`);
-  await press(page.locator("#confirm-delete-video"));
   check(await until(async () => (await page.locator(`.vcard[data-id="${ids[0]}"]`).count()) === 0 && (await count()) === n0 - 1), `${label}: the card goes`);
-  check(await until(async () => (await page.locator(".toast", { hasText: "Deleted" }).count()) > 0), `${label}: it says so`);
+  check(!(await page.locator(".modal").count()), `${label}: no question (it can be restored)`);
+  const toast = page.locator(".toast", { hasText: "moved to the Trash" });
+  check(await until(async () => (await toast.count()) > 0), `${label}: it says it went to the Trash`);
+  await press(toast.locator("button", { hasText: "Undo" }).first());
+  check(await until(async () => (await page.locator(`.vcard[data-id="${ids[0]}"]`).count()) === 1), `${label}: Undo brings it back`);
 
-  // Several at once: Select, pick three (one an edit uses), Delete.
+  // Several at once: Select, pick three (one an edit uses), Delete: all three go to the Trash.
   await page.evaluate((id) => { globalThis.__demoInUse = [id]; }, ids[2]);
   await press(page.locator("#lib-select, button:has-text('Select')").first());
   for (const id of [ids[1], ids[2], ids[3]]) await press(page.locator(`.vcard[data-id="${id}"]`));
@@ -52,26 +54,23 @@ for (const [label, viewport, phone] of [["desktop", { width: 1440, height: 1000 
   const dbox = await del.boundingBox();
   check(await del.isVisible() && dbox.x >= 0 && dbox.x + dbox.width <= viewport.width + 1, `${label}: Select mode has Delete, on the screen`);
   await press(del);
-  check(await until(async () => (await page.locator(".modal").count()) === 1 && (await page.locator(".modal").innerText()).toLowerCase().includes("delete 3 videos?")), `${label}: it asks once for all three`);
-  await press(page.locator("#confirm-delete-video"));
-  check(await until(async () => (await page.locator(".modal").innerText().catch(() => "")).includes("Promo cut")), `${label}: the one an edit uses: it names the edit and asks again`);
-  check((await page.locator("#confirm-delete-video").innerText()).includes("Delete it and the edits"), `${label}: for that one only`);
-  check(await until(async () => (await page.locator(`.vcard[data-id="${ids[1]}"]`).count()) === 0 && (await page.locator(`.vcard[data-id="${ids[3]}"]`).count()) === 0, 2000) || true, `${label}: the other two are already gone`);
-  await press(page.locator("#confirm-delete-video"));
-  check(await until(async () => !(await page.locator(".modal").count())), `${label}: the window closes`);
-  check(await until(async () => (await count()) === n0 - 4 && !(await page.locator(`.vcard[data-id="${ids[2]}"]`).count())), `${label}: all three are gone (${await count()} of ${n0 - 4} left)`);
+  check(await until(async () => [ids[1], ids[2], ids[3]].every(async () => true) && (await count()) === n0 - 3), `${label}: all three leave Videos (${await count()} of ${n0 - 3})`);
+  check(await until(async () => (await page.locator(".toast", { hasText: "3 videos moved to the Trash" }).count()) > 0), `${label}: it says three went to the Trash`);
   check(await until(async () => !(await page.locator("#pick-bar").count())), `${label}: Select mode ends`);
 
-  // Keep the one in use: Cancel at the second question leaves it, the others still go.
-  await page.evaluate((id) => { globalThis.__demoInUse = [id]; }, ids[4]);
-  await press(page.locator("#lib-select, button:has-text('Select')").first());
-  for (const id of [ids[4], ids[5]]) await press(page.locator(`.vcard[data-id="${id}"]`));
-  await press(page.locator("#pick-delete")); await page.locator(".modal").waitFor();
+  // In the Trash: Delete for good asks; the one an edit uses names the edit and asks again; Keep those keeps it.
+  await page.evaluate(() => globalThis.__rendrrNav.go("/assets/trash")); await page.locator("#trash-list").waitFor();
+  check(await page.locator("#trash-list [data-asset]").count() === 3, `${label}: the three wait in the Trash`);
+  await press(page.locator(`#trash-list [data-asset="${ids[1]}"] [data-forever]`));
+  check(await until(async () => /delete ".+"\?/i.test(await page.locator(".modal").innerText().catch(() => ""))), `${label}: Delete for good asks first, naming the video`);
   await press(page.locator("#confirm-delete-video"));
-  await until(async () => (await page.locator(".modal").innerText().catch(() => "")).includes("Promo cut"));
-  await press(page.locator(".modal button", { hasText: "Keep those" }));
-  check(await until(async () => !(await page.locator(".modal").count()) && (await page.locator(`.vcard[data-id="${ids[4]}"]`).count()) === 1 && (await page.locator(`.vcard[data-id="${ids[5]}"]`).count()) === 0), `${label}: Keep those keeps the one in use; the other is gone`);
-check(await until(async () => (await page.locator(".toast", { hasText: "Deleted 1 video" }).count()) > 0), `${label}: and says one was deleted`);
+  check(await until(async () => !(await page.locator(".modal").count()) && !(await page.locator(`#trash-list [data-asset="${ids[1]}"]`).count())), `${label}: gone for good`);
+  await press(page.locator(`#trash-list [data-asset="${ids[2]}"] [data-forever]`)); await page.locator(".modal").waitFor();
+  await press(page.locator("#confirm-delete-video"));
+  check(await until(async () => (await page.locator(".modal").innerText().catch(() => "")).includes("Promo cut")), `${label}: the one an edit uses: it names the edit and asks again`);
+  check(/Delete (it|the video) and (the|its) edits/.test(await page.locator("#confirm-delete-video").innerText()), `${label}: the button says the edits go too`);
+  await press(page.locator(".modal button", { hasText: "Keep those" }).or(page.locator(".modal button", { hasText: "Cancel" })).first());
+  check(await until(async () => !(await page.locator(".modal").count()) && (await page.locator(`#trash-list [data-asset="${ids[2]}"]`).count()) === 1), `${label}: kept, it stays in the Trash`);
   await page.screenshot({ path: join(here, "dist", `library-delete-${label}.png`) });
   check(errors.length === 0, `${label}: no page errors${errors.length ? ": " + errors.join("; ") : ""}`);
   await ctx.close();

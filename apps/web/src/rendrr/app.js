@@ -8,6 +8,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, useNav, useApp, forgetPages } from "./ui";
 import { AppIcon, Mark } from "./logo";
 import { appLink, isChallenge } from "./desktopLogin";
+import { AssetsPage } from "./assets";
 import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, SettingsPage, Shell } from "./screens";
 import { UsageBillingPage, LimitDialog } from "./billing";
 import { AdminPage } from "./admin";
@@ -17,7 +18,9 @@ const ROUTES = [
   [/^\/(explore|home)?$/, () => html`<${HomePage} />`, { pub: true }],
   [/^\/create\/([^/]+)$/, (m) => html`<${CreatePage} cat=${m[1]} />`, { pub: true }],
   [/^\/styles$/, () => html`<${StylesPage} />`, { pub: true }],
-  [/^\/library$/, () => html`<${LibraryPage} />`],
+  [/^\/library$/, () => html`<${AssetsPage} section="videos" />`],
+  [/^\/assets$/, () => html`<${AssetsPage} section="all" />`],
+  [/^\/assets\/(videos|images|elements|audio|favorites|trash)$/, (m) => html`<${AssetsPage} key=${m[1]} section=${m[1]} />`],
   [/^\/library\/([^/]+)$/, (m) => html`<${FootagePage} id=${m[1]} />`],
   [/^\/projects$/, () => html`<${ProjectsPage} />`],
   [/^\/projects\/([^/]+)$/, (m) => html`<${FolderPage} id=${m[1]} />`],

@@ -21,7 +21,7 @@ export async function videoOut(v: Video) {
     id: v.id, name: v.name, seconds: Math.round(v.seconds * 100) / 100,
     size: fmtSize(v.originalSize ?? v.sizeBytes), orientation: v.orientation, date: v.createdAt.getTime(),
     status: v.status, step: v.step ?? undefined, progress: v.progress ?? undefined, error: v.error ?? undefined,
-    art: v.art, source: v.source, sample: v.sample, still: v.still, kind: v.kind, libraryFolderId: v.libraryFolderId ?? null, driveFileId: v.driveFileId ?? undefined,
+    art: v.art, source: v.source, sample: v.sample, still: v.still, kind: v.kind, favorite: v.favorite, deletedAt: v.deletedAt ? v.deletedAt.getTime() : null, libraryFolderId: v.libraryFolderId ?? null, driveFileId: v.driveFileId ?? undefined,
     originalName: v.originalName ?? undefined, originalSize: num(v.originalSize) ?? undefined,
     previewSize: fmtSize(v.previewSizeBytes), previewExpires: expires,
     previewDays: expires != null && v.status !== "expired" ? Math.max(0, Math.ceil((expires - Date.now()) / DAY_MS)) : v.status === "expired" ? 0 : null,

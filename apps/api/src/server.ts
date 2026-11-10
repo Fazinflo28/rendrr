@@ -13,6 +13,7 @@ import { ensureAdmins } from "./services/billing";
 import explore from "./routes/explore";
 import internal from "./routes/internal";
 import library from "./routes/library";
+import assets from "./routes/assets";
 import projects from "./routes/projects";
 import render from "./routes/render";
 import color from "./routes/color";
@@ -120,6 +121,7 @@ export async function buildServer() {
   await app.register(admin);
   await app.register(explore);
   await app.register(library);
+  await app.register(assets);
   await app.register(projects);
   await app.register(render);
   await app.register(color);

@@ -42,7 +42,7 @@ export function SourceMonitor({ reference, source, onCloseSource, onInsert, onAp
 }
 
 /** The project bin: every video the edit uses or keeps (add_media), the library to add from, Import for new footage. */
-export function MediaBin({ library, used, bin, mainId, onPreview, onAppend, onAddToBin, onRemoveFromBin, onImport, onAddClips, previewing }) {
+export function MediaBin({ library, used, bin, mainId, onPreview, onAppend, onAddToBin, onRemoveFromBin, onImport, onAddClips, previewing, elements, onAddElement }) {
   const [adding, setAdding] = useState(false); const [q, setQ] = useState("");
   const all = library || [];
   const ids = useMemo(() => Array.from(new Set([mainId, ...used, ...bin])), [mainId, used, bin]);
@@ -64,6 +64,8 @@ export function MediaBin({ library, used, bin, mainId, onPreview, onAppend, onAd
           <button class="tool icon xs" aria-label=${"Add " + v.name + " at the end of the edit"} title="Add at the end of the edit" onClick=${() => onAppend(v)}><${Icon} name="plus" size="13" /></button>
           ${!inEdit && bin.includes(v.id) && html`<button class="tool icon xs" aria-label=${"Take " + v.name + " out of the project"} title="Take out of the project" onClick=${() => onRemoveFromBin(v)}><${Icon} name="x" size="13" /></button>`}</div>
       </div>`; })}</div>
+    ${elements && elements.length > 0 && html`<div class="bin-els" id="bin-elements"><b class="t-small">Elements</b>
+      <div class="bin-el-grid">${elements.filter((e) => e.status === "ready").slice(0, 24).map((e) => html`<button key=${e.id} class="bin-el checker" data-element=${e.id} title=${"Add " + e.name + " (top right, 5 s)"} aria-label=${"Add the element " + e.name + " to the edit"} onClick=${() => onAddElement(e)}>${e.thumb ? html`<img src=${e.thumb} alt="" />` : html`<${Icon} name="spark" size="16" />`}</button>`)}</div></div>`}
     ${onAddClips && html`<div class="bin-foot"><button class="bin-add-clips" id="bin-add-clips" onClick=${onAddClips}><${Icon} name="plus" size="18" />Add clips</button></div>`}
   </section>`;
 }

@@ -34,3 +34,4 @@ export * from "./original";
 export * from "./billing";
 export * from "./where";
 export * from "./aiHandoff";
+export * from "./assets";

@@ -59,6 +59,9 @@ export type StyleJob = { styleFileId: string };
 export type CanvasJob = { kind: "canvas"; videoId: string; width: number; height: number; seconds: number; color: string };
 /** The user's own audio file (add_audio): the file as sent (srcKey) made into AAC 48 kHz stereo, its length measured. */
 export type SoundJob = { kind: "sound"; soundId: string; srcKey: string };
+/** An element (a logo or overlay picture, Assets page): the picture as sent (srcKey, kept) made into a 1 s transparent
+ *  WebM that plays as a graphic, and a small PNG thumbnail (the test queue). */
+export type ElementJob = { kind: "element"; graphicId: string; srcKey: string };
 /** Phase 22: read the start timecode of videos whose timecode was never read (made before it was read on probe). */
 export type TimecodeJob = { kind: "timecode"; videoIds: string[] };
 export type SnapshotJob = { kind: "snapshot"; userId: string; key: string; html: string; width: number; height: number; at: number };

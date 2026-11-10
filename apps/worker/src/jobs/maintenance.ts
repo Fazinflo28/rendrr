@@ -1,4 +1,4 @@
-import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix, planWithoutFiles, renderFileKeys, snapshotStorage } from "@rendrr/core";
+import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix, planWithoutFiles, purgeTrash, renderFileKeys, snapshotStorage } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderLimitMs, TEMP_ORIGINAL_HOURS, type Breakdown } from "@rendrr/shared";
 import { ensureAssets } from "../lib/assets";
@@ -16,7 +16,7 @@ import { framesPrefix, queueMissingBreakdowns } from "./breakdown";
  */
 export async function cleanup() {
   const now = new Date();
-  const out = { expiredVideos: 0, tempOriginals: 0, previewRenders: 0, stuckRenders: 0, stuckVideos: 0, breakdownsQueued: 0 };
+  const out = { expiredVideos: 0, tempOriginals: 0, previewRenders: 0, stuckRenders: 0, stuckVideos: 0, breakdownsQueued: 0, trashVideos: 0, trashElements: 0, trashSounds: 0, trashKept: 0 };
 
   const expired = await prisma.video.findMany({ where: { previewExpiresAt: { lt: now }, status: { in: ["ready", "missing", "failed"] } }, include: { analysis: true } });
   for (const v of expired) {
@@ -76,6 +76,9 @@ export async function cleanup() {
 
   Object.assign(out, await sweepStuck(now));
   out.breakdownsQueued = await queueMissingBreakdowns().catch(() => 0); // ready videos whose breakdown failed
+  // The Assets page's Trash: what was deleted TRASH_DAYS ago goes for good (kept while an edit still uses it).
+  const t = await purgeTrash().catch((e) => { console.warn("[maintenance] trash:", (e as Error).message); return null; });
+  if (t) { out.trashVideos = t.videos; out.trashElements = t.elements; out.trashSounds = t.sounds; out.trashKept = t.kept.length; }
   return out;
 }
 

@@ -88,6 +88,8 @@ async function firstCut(userId: string, input: FirstCutInput) {
   const found = await prisma.video.findMany({ where: { id: { in: ids }, userId }, include: { analysis: true } });
   const vids = ids.map((id) => found.find((v) => v.id === id));
   if (vids.some((v) => !v)) throw new AppError(ids.length > 1 ? "One of those videos is not in your library any more. Pick them again." : "Pick footage first.", 400, "no-footage");
+  const trashed = vids.filter((v) => v!.deletedAt);
+  if (trashed.length) throw new AppError(`${trashed.map((v) => `"${v!.name}"`).join(", ")} ${trashed.length === 1 ? "is" : "are"} in the Trash. Restore ${trashed.length === 1 ? "it" : "them"} first (Assets > Trash).`, 409, "in-trash");
   const waiting = vids.filter((v) => v!.status !== "ready" || !v!.analysis);
   if (waiting.length) throw new AppError(`${waiting.map((v) => `"${v!.name}"`).join(", ")} ${waiting.length === 1 ? "is" : "are"} not ready yet. Wait until ${waiting.length === 1 ? "it finishes" : "they finish"} processing.`, 409, "not-ready");
   const refs = vids.filter((v) => v!.kind === "reference" && ids.length > 1);
@@ -278,7 +280,7 @@ async function playerMedia(userId: string, tl: Snapshot["timeline"]) {
 export async function graphicPlacements(userId: string, tl: Snapshot["timeline"]) {
   const clips = (tl.tracks.v3 as V3Clip[]).filter((c) => c.kind === "graphic" && c.graphicId && !findTemplate(c.graphicId));
   if (!clips.length) return [];
-  const gs = await prisma.graphic.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.graphicId!))) }, ownerId: userId, kind: "custom" },
+  const gs = await prisma.graphic.findMany({ where: { id: { in: Array.from(new Set(clips.map((c) => c.graphicId!))) }, ownerId: userId, kind: { in: ["custom", "element"] } },
     select: { id: true, ownerId: true, paramsSchema: true, status: true, renderedKey: true, error: true, durationSec: true, width: true, height: true } });
   const out = await Promise.all(clips.map(async (c) => {
     const g = gs.find((x) => x.id === c.graphicId);

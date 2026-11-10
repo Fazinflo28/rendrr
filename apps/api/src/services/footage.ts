@@ -23,7 +23,9 @@ const ART = ["c", "d", "e", "f", "a", "b"];
 const GB = (n: number) => `${Math.round(n / 1024 / 1024 / 1024)} GB`;
 const MB = (n: number) => `${Math.round(n / 1024 / 1024)} MB`;
 
-export type FootageOpts = { name?: string | null; kind?: VideoKind | null; libraryFolder?: string | null; projectId?: string | null; ai?: "claude" | "chatgpt"; aiName?: string };
+export type FootageOpts = { name?: string | null; kind?: VideoKind | null; libraryFolder?: string | null; projectId?: string | null; ai?: "claude" | "chatgpt"; aiName?: string;
+  /** What the Assets page asked for: "element" keeps a picture as a logo or overlay (transparent); "image" / "video" refuse the other. */
+  as?: "video" | "image" | "element" | null };
 
 /** What a file is, from its first bytes: an image (its type) or, failing that, taken as a video (the worker checks it). */
 export function sniff(head: Buffer): { image: false } | { image: true; ext: string; type: string } {

@@ -34,7 +34,7 @@ type Tree = Awaited<ReturnType<typeof folderTree>>;
 
 export async function listLibraryFolders(userId: string) {
   const t = await folderTree(userId);
-  const stats = await prisma.video.groupBy({ by: ["libraryFolderId"], where: { userId, libraryFolderId: { not: null }, kind: { not: "canvas" } }, _count: { _all: true }, _sum: { seconds: true } });
+  const stats = await prisma.video.groupBy({ by: ["libraryFolderId"], where: { userId, libraryFolderId: { not: null }, kind: { not: "canvas" }, deletedAt: null }, _count: { _all: true }, _sum: { seconds: true } });
   const by = new Map(stats.map((s) => [s.libraryFolderId, { count: s._count._all, seconds: s._sum.seconds ?? 0 }]));
   const out = t.all.map((f) => {
     const own = by.get(f.id) ?? { count: 0, seconds: 0 };
@@ -164,7 +164,7 @@ export async function moveVideos(userId: string, videoIds: string[], folderId: s
 export async function folderFootage(userId: string, f: LibraryFolder) {
   const t = await folderTree(userId);
   const folders = t.subtree(f);
-  const vids = await prisma.video.findMany({ where: { userId, libraryFolderId: { in: folders.map((x) => x.id) }, kind: { not: "canvas" } }, include: { analysis: { select: { videoId: true } } } });
+  const vids = await prisma.video.findMany({ where: { userId, libraryFolderId: { in: folders.map((x) => x.id) }, kind: { not: "canvas" }, deletedAt: null }, include: { analysis: { select: { videoId: true } } } });
   const rel = (x: LibraryFolder) => (x.id === f.id ? "" : t.path(x).slice(t.path(f).length + 3)); // "Module 1" under "Course"
   const all = folders.flatMap((x) => vids.filter((v) => v.libraryFolderId === x.id).sort(byName).map((v) => ({ ...v, folderPath: rel(x) })));
   const use: (Video & { folderPath: string })[] = [], skipped: { id: string; name: string; why: string }[] = [];

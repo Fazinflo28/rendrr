@@ -201,7 +201,7 @@ export default async function account(app: FastifyInstance) {
       const userId = req.user!.id;
       const like = { contains: s, mode: "insensitive" as const };
       const [vs, fs, ps, ss] = await Promise.all([
-        prisma.video.findMany({ where: { userId, name: like, kind: { not: "canvas" } }, take: 8, select: { id: true, name: true } }),
+        prisma.video.findMany({ where: { userId, name: like, kind: { not: "canvas" }, deletedAt: null }, take: 8, select: { id: true, name: true } }),
         prisma.folder.findMany({ where: { userId, name: like }, take: 8, select: { id: true, name: true } }),
         prisma.project.findMany({ where: { userId, deletedAt: null, name: like }, take: 8, select: { id: true, name: true } }),
         prisma.style.findMany({ where: { name: like, OR: [{ ownerId: null }, { ownerId: userId }] }, take: 8, select: { id: true, name: true } }),

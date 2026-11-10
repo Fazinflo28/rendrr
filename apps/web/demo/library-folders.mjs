@@ -115,7 +115,7 @@ check(await until(async () => (await page.locator(`.lfcard[data-folder="${course
 await page.locator(`.lfcard[data-folder="${courseId}"]`).click(); await page.locator(`.lfcard[data-folder="${modId}"]`).click();
 check(await until(async () => (await page.locator("#folder-title").textContent()).includes("Module 1")), "opening the inner folder");
 const crumbText = (await page.locator("#folder-crumbs").innerText()).replace(/\s+/g, " ").trim();
-check(crumbText === "Library / Course /", `the path at the top: Library / Course / (${crumbText})`);
+check(crumbText === "Videos / Course /", `the path at the top: Videos / Course / (${crumbText})`);
 check((await page.locator(".vcard").count()) === 1, "the inner folder shows its one video");
 await page.locator(`#folder-crumbs [data-crumb="${courseId}"]`).click(); await until(async () => (await page.locator("#folder-title").textContent()).includes("Course"));
 await page.waitForTimeout(400); await page.screenshot({ path: join(here, "dist", "library-subfolders.png") });
@@ -130,7 +130,7 @@ await page.locator(`.lfcard[data-folder="${modId}"]`).click(); await until(async
 await page.locator("#folder-more").click(); await page.locator("#folder-move").click();
 check(!(await page.locator(`#move-folder-list [data-move-to="${modId}"]`).count()), "a folder cannot be moved into itself (it is not in the list)");
 await page.locator("#move-folder-top").click();
-check(await until(async () => (await page.locator("#folder-crumbs").innerText()).replace(/\s+/g, " ").trim() === "Library /"), `Move to the top of the Library (${(await page.locator("#folder-crumbs").innerText()).trim()})`);
+check(await until(async () => (await page.locator("#folder-crumbs").innerText()).replace(/\s+/g, " ").trim() === "Videos /"), `Move to the top of Videos (${(await page.locator("#folder-crumbs").innerText()).trim()})`);
 await page.locator("#folder-back").click(); await page.locator(`.lfcard[data-folder="${modId}"]`).waitFor();
 const dt2 = await page.evaluateHandle(() => new DataTransfer());
 await page.locator(`.lfcard[data-folder="${modId}"]`).dispatchEvent("dragstart", { dataTransfer: dt2 });

@@ -5,7 +5,8 @@ import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { AppError } from "@rendrr/core";
 import { FOOTAGE_UPLOAD_MAX_BYTES } from "@rendrr/shared";
-import { footageText, footageUploadFor, isAudioHead, keepFootage, usedFootageUpload, waitForFootage } from "../services/footage";
+import { footageText, footageUploadFor, isAudioHead, keepFootage, sniff, usedFootageUpload, waitForFootage } from "../services/footage";
+import { elementOut, elementText, keepElement } from "../services/elements";
 import { keepSound, soundOut } from "../services/sounds";
 import { saveBody } from "../services/uploadBody";
 import { open } from "node:fs/promises";
@@ -32,6 +33,14 @@ export default async function footageUpload(app: FastifyInstance) {
       // Music or a voice sent here: kept as the user's audio instead (add_music{soundId} puts it under the edit).
       const fh = await open(path, "r"); const head = Buffer.alloc(16);
       try { await fh.read(head, 0, 16, 0); } finally { await fh.close(); }
+      // An element (Assets page or the AI): a logo or overlay picture, kept transparent.
+      if (u.as === "element") {
+        const g = await keepElement(u.userId, path, asked || file);
+        await usedFootageUpload(token);
+        return { graphicId: g.id, element: await elementOut(g), name: g.name, status: g.status, text: elementText(g) };
+      }
+      if (u.as === "image" && !sniff(head).image) throw new AppError("That is not a picture: send a PNG, JPEG or WebP.", 400, "bad-footage");
+      if (u.as === "video" && sniff(head).image) throw new AppError("That is a picture: add it under Images or Elements.", 400, "bad-footage");
       if (isAudioHead(head)) {
         const snd = await keepSound(u.userId, path, asked || file);
         await usedFootageUpload(token);

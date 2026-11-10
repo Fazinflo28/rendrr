@@ -27,7 +27,7 @@ import { SamplesWindow } from "./samples";
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
-import { ASPECT_RATIO, BLEND_MODES, lookTags, adjustCss, areaAt, objectBoxAt, hashOf, maskPicture, rateOf, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize, aiName, handoffTarget } from "@rendrr/shared";
+import { ASPECT_RATIO, BLEND_MODES, lookTags, adjustCss, areaAt, objectBoxAt, hashOf, maskPicture, rateOf, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize, aiName, handoffTarget, elementKeys } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 import { applyLiveFx, resumeLiveAudio } from "./liveAudio";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
@@ -1003,7 +1003,11 @@ function EditorInner({ project, reload, ai, keep }) {
     for (const id of insideIds ? insideIds.split(",") : []) if (!project.brollMedia?.[id] && !insideMedia[id])
       api.getVideo(id).then((v) => v?.proxyUrl && setInsideMedia((m) => ({ ...m, [id]: { url: v.proxyUrl, seconds: v.seconds } }))).catch(() => {});
   }, [insideIds]);
-  const media = useMemo(() => ({ broll: { ...(project.brollMedia || {}), ...insideMedia }, graphicClips: project.graphicClipMedia || {}, audio: project.audioMedia || {} }), [project, insideMedia]);
+  // Elements (Assets page: logos, overlays) put on the edit here play at once (the saved edit lists them after a reload).
+  const [elementMedia, setElementMedia] = useState({});
+  const [elements, setElements] = useState(null);
+  useEffect(() => { let live = true; api.listElements?.().then((xs) => live && setElements(Array.isArray(xs) ? xs : [])).catch(() => live && setElements([])); return () => { live = false; }; }, []);
+  const media = useMemo(() => ({ broll: { ...(project.brollMedia || {}), ...insideMedia }, graphicClips: { ...(project.graphicClipMedia || {}), ...elementMedia }, audio: project.audioMedia || {} }), [project, insideMedia, elementMedia]);
   const urls = useMemo(() => ({ ...Object.fromEntries(Object.entries(others).map(([id, v]) => [id, v.url || null])), [main]: project.video?.proxyUrl || null }), [others, main, project]);
   const [sel, setSel] = useState(null); // {track,id}
   // The right panel's tab: comments (first), what your AI did, or the selected clip's settings.
@@ -1091,13 +1095,27 @@ function EditorInner({ project, reload, ai, keep }) {
   // ---- editing: every change is one of the connector's ops, run here on the editor's state ----
   const ectx = useMemo(() => ({ videoId: project.videoId, transcript, silences: project.silences || [], sceneCuts: [], duration: footDur, getStyle: () => undefined,
     getVideo: (id) => { if (others[id]) return { id, name: others[id].name, seconds: others[id].seconds || 0, ready: true }; const v = (lib.library || []).find((x) => x.id === id); return v ? { id, name: v.name, seconds: v.seconds || 0, ready: v.status === "ready" } : undefined; },
-    getGraphic: (id) => { const g = findTemplate(id); return g ? { id, name: g.name, durationSec: g.durationSec } : undefined; },
+    getGraphic: (id) => { const g = findTemplate(id); if (g) return { id, name: g.name, durationSec: g.durationSec }; const el = (elements || []).find((x) => x.id === id); return el ? { id, name: el.name, durationSec: 1 } : undefined; },
     getSound: (id) => { const x = (project.sounds || {})[id]; return x ? { id, name: x.name, seconds: x.seconds, ready: true } : undefined; },
-    sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others, lib.library]);
+    sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { transcript: o.transcript || [], silences: [] }])) }), [project, transcript, others, lib.library, elements]);
   const snapOf = (s) => ({ timeline: tlOf(s), name: s.name, aspect: s.aspect, styleId: s.styleId });
   const opOn = (s, op) => { const r = applyOp(snapOf(s), op, ectx); const t = r.snap.timeline; return { state: { ...s, cut: t.cut, tracks: t.tracks, audio: t.audio, captionsOn: t.captionsOn, captionLook: t.captionLook, captionText: t.captionText, captionStyle: t.captionStyle, export: t.export, media: t.media, voice: t.voice ?? null, background: t.background ?? null, multicam: t.multicam ?? null, aspect: r.snap.aspect, name: r.snap.name }, summary: r.summary }; };
   const say = (t) => t.charAt(0).toUpperCase() + t.slice(1);
   const doOp = (op, tell = true) => { try { const r = opOn(H.state, op); H.commit(r.state); if (tell) toast(say(r.summary), { icon: "scissors" }); return r; } catch (e) { toast(e.message); return null; } };
+  // An element from the Assets page: on V3 at the playhead for 5 s, at the top right at about a fifth of the frame
+  // (a graphic fills the frame by itself), then moved and sized like any graphic.
+  const addElement = (el) => {
+    const total = Math.max(0.5, dur || 0), at = Math.max(0, Math.min(pb.time, total - 0.5)), end = Math.min(total, at + 5);
+    const had = new Set(H.state.tracks.v3.map((c) => c.id));
+    const r = doOp({ op: "add_graphic", graphicId: el.id, start: at, end, label: el.name, params: {} }, false);
+    const made = r && r.state.tracks.v3.find((c) => c.kind === "graphic" && !had.has(c.id));
+    if (!made) return;
+    const ratio = ASPECT_RATIO[H.state.aspect] || 16 / 9, frame = ratio >= 1 ? { width: 1920, height: Math.round(1920 / ratio) } : { width: Math.round(1920 * ratio), height: 1920 };
+    doOp({ op: "set_keyframes", track: "v3", clipId: made.id, keys: elementKeys(el, frame) }, false);
+    if (el.url) setElementMedia((m) => ({ ...m, [made.id]: { url: el.url, width: el.width, height: el.height, seconds: 1 } }));
+    setSel({ track: "v3", id: made.id });
+    toast(`Added "${el.name}" at the top right`, { icon: "spark", tone: "brand" });
+  };
   const liveOp = (base, op) => { try { H.replace(opOn(base, op).state); return true; } catch { return false; } };
   const cutWords = (ids) => { if (!ids.length) return; H.commit((s) => ({ ...s, cut: Array.from(new Set([...s.cut, ...ids])) })); toast(ids.length + (ids.length === 1 ? " word cut" : " words cut"), { icon: "scissors" }); };
   const restoreWord = (wid) => H.commit((s) => ({ ...s, cut: s.cut.filter((x) => x !== wid) }));
@@ -1588,7 +1606,7 @@ function EditorInner({ project, reload, ai, keep }) {
             onInsert=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }], at: pb.time })} onAppend=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }] })} />
           <${MediaBin} onAddClips=${() => setAddOpen(true)} library=${lib.library} used=${waiting ? [] : usedIds} bin=${S.media || []} mainId=${waiting ? null : project.videoId} previewing=${source?.id} onPreview=${(v) => setSource(v)}
             onAppend=${(v) => addClip({ items: [{ video: v, from: 0, to: v.seconds }] })} onAddToBin=${(v) => doOp({ op: "add_media", videoIds: [v.id] })} onRemoveFromBin=${(v) => doOp({ op: "remove_media", videoIds: [v.id] })}
-            onImport=${() => openAdd("footage")} />
+            onImport=${() => openAdd("footage")} elements=${elements} onAddElement=${addElement} />
           </div>`}
           ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
             <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted" style="white-space:nowrap">${S.cut.length} cut</span></div>

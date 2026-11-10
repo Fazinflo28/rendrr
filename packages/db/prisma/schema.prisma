@@ -135,6 +135,9 @@ model Video {
   // A folder in the library (videos of one kind kept together); null: loose in the library.
   libraryFolderId  String?
   libraryFolder    LibraryFolder? @relation(fields: [libraryFolderId], references: [id], onDelete: SetNull)
+  // Assets page: a heart, and the Trash (deletedAt set: hidden from the library; gone for good TRASH_DAYS later).
+  favorite         Boolean   @default(false)
+  deletedAt        DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -143,6 +146,7 @@ model Video {
   originals TempOriginal[]
 
   @@index([userId, createdAt])
+  @@index([userId, deletedAt])
 }
 
 // A folder in the video library: videos of one kind kept together, sent to an edit all at once. Deleting it leaves its
@@ -330,7 +334,7 @@ model Graphic {
   ownerId      String?  // null = built-in template
   owner        User?    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   name         String
-  kind         String   // template | custom
+  kind         String   // template | custom | element (a logo or overlay picture the user added: renderedKey plays it, transparent)
   paramsSchema Json     @default("{}")
   code         String?  // custom only
   renderedKey  String?
@@ -347,7 +351,16 @@ model Graphic {
   /// When its code or a recording of it was last replaced (create_graphic replace, rerecord, retry_graphic): a
   /// preview made before it is out of date even though the edit did not change.
   changedAt    DateTime @default(now())
+  /// An element: the picture as sent (PNG, WebP, JPEG) and a small thumbnail; its size in storage.
+  sourceKey    String?
+  thumbKey     String?
+  sizeBytes    BigInt   @default(0)
+  /// Assets page: a heart, and the Trash (gone for good TRASH_DAYS after deletedAt).
+  favorite     Boolean  @default(false)
+  deletedAt    DateTime?
   createdAt    DateTime @default(now())
+
+  @@index([ownerId, kind])
 }
 
 model Render {
@@ -621,6 +634,9 @@ model Sound {
   error     String?
   seconds   Float    @default(0)
   sizeBytes BigInt   @default(0)
+  // Assets page: a heart, and the Trash (gone for good TRASH_DAYS after deletedAt).
+  favorite  Boolean  @default(false)
+  deletedAt DateTime?
   createdAt DateTime @default(now())
 
   @@index([userId, createdAt])

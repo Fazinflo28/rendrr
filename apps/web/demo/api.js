@@ -6,6 +6,7 @@ import { notOriginalMessage, sameOriginal } from "../../../packages/shared/src/o
 import { aiName, handoffPrompt, handoffUrl } from "../../../packages/shared/src/aiHandoff.ts";
 import { desktopApp, forgetVerifier, newChallenge, s256, savedVerifier } from "../src/rendrr/desktopLogin.ts";
 import { demoBillingApi } from "./billingDemo.js";
+import { demoAssetsApi } from "./assetsDemo.js";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const waitingEdits = new Set(); // Recreate's edits still waiting for their footage
@@ -471,6 +472,8 @@ const getProfile0 = api.getProfile;
 const login0 = api.login, signup0 = api.signup;
 const asAdmin = (u) => (u ? { ...u, admin: !!globalThis.__demoAdmin } : u);
 Object.assign(api, demoBillingApi, { getProfile: async (...a) => asAdmin(await getProfile0(...a)), login: async (...a) => asAdmin(await login0(...a)), signup: async (...a) => asAdmin(await signup0(...a)) });
+
+demoAssetsApi(api); // the Assets page: favourites, the Trash, elements and audio
 
 export { api };
 export const API_BASE = "";

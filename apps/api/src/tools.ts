@@ -17,6 +17,7 @@ import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./s
 import { renderResult, renderStatus, startRender } from "./services/render";
 import { macStatus, queueMacExport, renderWhere } from "./services/macExport";
 import { pendingLine, sentLines } from "./services/handoff";
+import { elementFromSource, elementsText, elementText } from "./services/elements";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
@@ -486,7 +487,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       return { text: `${acct} ${synced}${subLine}Library folder "${ff.path}" (${lf.id})${nested ? " with its folders" : ""}, in the order create_project libraryFolder uses (its own videos in name order, then each folder inside, the same way): videos ${pg.offset + 1}-${pg.offset + pg.shown.length} of ${vs.length} (id | name | kind | length | shape | status | raw file${nested ? " | folder inside" : ""}):\n` +
         pg.shown.map((v) => row(v, nested ? v.folderPath : undefined)).join("\n") + pg.tail };
     }
-    const vs = await prisma.video.findMany({ where: { userId: c.userId, ...(i.kind ? { kind: i.kind } : { kind: { not: "canvas" } }) }, orderBy: { createdAt: "desc" }, take: 500 });
+    const vs = await prisma.video.findMany({ where: { userId: c.userId, deletedAt: null, ...(i.kind ? { kind: i.kind } : { kind: { not: "canvas" } }) }, orderBy: { createdAt: "desc" }, take: 500 }); // the Trash is left out
     const recipes = i.kind === "reference" ? await prisma.reference.findMany({ where: { userId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 }) : [];
     const folderLine = folders.length ? `Library folders (id | path | videos with its folders'): ${folders.map((f) => `${f.id} | ${f.path} | ${f.total}`).join("; ")}.\n` : "";
     if (!vs.length && !recipes.length) return { text: i.kind ? `${acct} ${folderLine}No ${i.kind === "reference" ? "reference videos" : "footage"} yet.` : `${acct} No footage yet: the user adds videos in Rendrr (Library > Add footage). ${EMPTY_HINT}` };
@@ -739,8 +740,9 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   async list_graphics(c) {
-    const custom = await prisma.graphic.findMany({ where: { ownerId: c.userId }, orderBy: { createdAt: "desc" }, take: 50 });
+    const custom = await prisma.graphic.findMany({ where: { ownerId: c.userId, kind: "custom" }, orderBy: { createdAt: "desc" }, take: 50 });
     const fonts = await listFonts(c.userId);
+    const elements = await elementsText(c.userId);
     // Recording progress of the ones not ready yet: "42%, about 3 min left".
     const progress: Record<string, string> = {};
     for (const g of custom.filter((x) => x.status === "rendering" || x.status === "queued")) {
@@ -757,6 +759,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       "Graphic templates (id | name | seconds | params):",
       ...GRAPHIC_TEMPLATES.map((t) => `${t.id} | ${t.name} | ${t.durationSec}s | ${params(t.paramsSchema)}`),
       "Custom graphics (id | name | status | seconds | size | params = defaults): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${progress[g.id] ? ` ${progress[g.id]}` : ""}${g.error ? " (" + g.error.replace(/\s+/g, " ").trim() + (graphicFailedOnServer(g.error) ? "; retry_graphic records it again" : "") + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}${defaultsText(g.paramsSchema)}${warningsText(g.warnings)}`).join("\n") : "none (create_graphic)"),
+      "Your elements (logos and overlays from Assets > Elements, transparent; id | name | size): " + (elements ? `\n${elements}\nPlace one with add_graphic {graphicId}; it fills the frame as large as it fits, so size it with set_keyframes (a corner logo: scale about 0.15-0.3, x/y about ±0.38).` : "none (add_footage as: \"element\" keeps a logo the user gives you)"),
       "Your fonts (add_font; use by name): " + (fonts.length ? fontsText(fonts) : "none"),
       "Music (trackId | name | mood): " + MUSIC_TRACKS.map((m) => `${m.id} | ${m.name} | ${m.mood}`).join("; "),
       "Sound effects for a3 (set_clips clip with sfxId): " + SFX.map((x) => `${x.id} ${x.seconds}s`).join(", "),
@@ -1042,6 +1045,16 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async add_footage(c, i) {
     const o = { name: i.name ?? null, kind: i.kind ?? null, libraryFolder: i.libraryFolder ?? null, projectId: i.projectId ?? null, ai: c.ai === "chatgpt" ? "chatgpt" as const : "claude" as const, aiName: c.aiName };
     const waitMs = Math.min(120, i.wait_seconds ?? 0) * 1000;
+    // A logo or overlay picture kept as an element (Assets > Elements), transparent: placed with add_graphic.
+    if (i.as === "element") {
+      if (i.upload) {
+        const u = await footageUploadLink(c.userId, { ...o, as: "element" });
+        return { text: `Upload link for one picture (PNG keeps its transparency), for 30 minutes: ${u.url}\nSend it from your code workspace: curl -sS -T "<file>" "${u.url}?filename=<its file name>"\nThe reply is JSON with its graphicId and how to place it.`, data: { uploadUrl: u.url } };
+      }
+      if (!i.url && !i.driveFileId) return { text: "An element comes from upload: true, url (a share link) or driveFileId." };
+      const g = await elementFromSource(c.userId, { url: i.url, driveFileId: i.driveFileId, name: i.name });
+      return { text: elementText(g), data: { graphicId: g.id, status: g.status } };
+    }
     if (i.upload) {
       const u = await footageUploadLink(c.userId, o);
       return { text: `Upload link for one video or picture, for 30 minutes: ${u.url}\nSend the file from your code workspace (a file the user attached is in your uploads folder):\n  curl -sS -T "<file>" "${u.url}?filename=<its file name>"\nThe reply is JSON with its videoId and how to place it (it waits up to 45 s for a picture or a short clip to be ready). ${c.ai === "chatgpt" ? "ChatGPT's code sandbox has no internet, so it cannot send the file: use url (a share link) or driveFileId instead." : `If the workspace cannot reach ${u.host}, the user allows that host in their AI's settings (Claude: Settings > Capabilities, code execution, allowed domains), or use url (a share link) or driveFileId instead.`}`, data: { uploadUrl: u.url } };

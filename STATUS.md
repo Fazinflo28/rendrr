@@ -1373,3 +1373,28 @@ From before:
   `POST /projects/:id/comments/send`, the notice in `apps/api/src/routes/internal.ts`. Migration
   `20261110090000_ai_handoff`. Tests: `packages/shared/test/aiHandoff.test.ts`, `apps/api/test/ai-handoff.test.ts`,
   `apps/web/demo/send-to-ai.mjs`.
+
+## Assets page (once Library): Videos, Images, Elements, Audio, Favorites, Trash (10 November)
+
+- Top bar and menu say **Assets** (`/assets`, `/assets/<section>`; old `/library` links open Videos). A side bar like
+  Higgsfield's: All assets, Favorites, Trash, then Types: Videos, Images, Elements, Audio, each with a count. On a phone
+  the side bar is a row of chips.
+- **Videos**: the library as it was (folders, Drive sync, references, Select, Edit this folder). Pictures moved to Images.
+- **Images**: pictures (stills). They can now be uploaded from the web (they become still clips, as from the AI).
+- **Elements**: logos and overlays. PNG keeps its transparency; an SVG is drawn to a PNG in the browser first. Stored as
+  a graphic of kind `element`: the worker (`apps/worker/src/jobs/element.ts`) makes a 1 s transparent VP9 WebM plus a
+  thumbnail, and the graphics layer holds it for as long as it is placed, so it moves, scales, fades and blends like any
+  graphic. Shown on a see-through checkerboard. In the editor's Media panel one click puts an element on V3 at the
+  playhead, 5 s, top right at about a fifth of the frame (`elementKeys`).
+- **Audio**: the user's own music and voice files (Sound), with play, rename and upload from the web.
+- **Favorites**: a heart on every card (videos too).
+- **Trash**: delete now moves things to the Trash (Undo in the toast). Restore, Delete for good (videos ask about edits
+  using them, as before), Empty trash. The nightly cleanup deletes what was trashed 30 days ago, except what an edit
+  still uses. Trashed items are hidden from the library, search, list_footage and new edits.
+- AI: `add_footage as: "element"` keeps a logo as an element; `list_graphics` lists the user's elements with how to
+  place them (add_graphic, then set_keyframes).
+- Code: `packages/shared/src/assets.ts`, `packages/core/src/assets.ts` (purge), `apps/api/src/routes/assets.ts`,
+  `apps/api/src/services/elements.ts`, `apps/web/src/rendrr/assets.js`. Migration `20261110120000_assets`.
+- Tests: `packages/shared/test/assets.test.ts`, `apps/api/test/assets.test.ts`, `apps/worker/test/element-render.test.ts`
+  (a real render: transparent half shows the picture, held past 1 s), `apps/web/demo/assets.mjs`; library-delete and
+  library-folders updated for the Trash and the Videos name.

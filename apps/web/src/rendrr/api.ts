@@ -34,6 +34,7 @@ let resetSignIn: any = null;
 const reviewKey = (t: string) => { try { return sessionStorage.getItem("rendrr-review-" + t) || ""; } catch { return ""; } };
 const reviewHeaders = (t: string): Record<string, string> => (reviewKey(t) ? { "x-review-key": reviewKey(t) } : {});
 import { keepThumb } from "./thumbs";
+import { assetFile } from "./svgPng";
 const remember = (v: any) => { if (v && v.id) videoMeta[v.id] = v; return keepThumb(v); };
 
 
@@ -201,6 +202,34 @@ export const api: any = {
   },
   // withEdits: the edits made from it are deleted too (after the user said yes to that).
   removeVideo: (id: string, withEdits = false) => del(`/videos/${enc(id)}${withEdits ? "?edits=delete" : ""}`),
+
+  // ---- Assets page: videos, images, elements (logos, overlays), audio, favourites, the Trash ----
+  assetsSummary: () => get("/assets/summary"),
+  listElements: () => get("/elements"),
+  listSounds: () => get("/sounds"),
+  listTrash: () => get("/trash"),
+  favoriteAsset: (type: string, id: string, favorite: boolean) => patch(`/assets/${enc(type)}/${enc(id)}`, { favorite }),
+  renameAsset: (type: string, id: string, name: string) => {
+    if (!name?.trim()) throw fail("Give it a name.");
+    return patch(`/assets/${enc(type)}/${enc(id)}`, { name: name.trim() });
+  },
+  trashAsset: (type: string, id: string) => post(`/assets/${enc(type)}/${enc(id)}/trash`),
+  restoreTrashed: (type: string, id: string) => post(`/assets/${enc(type)}/${enc(id)}/restore`),
+  // For good: elements and audio here; videos and pictures through removeVideo (it asks about edits using them).
+  deleteAssetForever: (type: string, id: string, keepEdits = false) => del(`/assets/${enc(type)}/${enc(id)}${keepEdits ? "?edits=keep" : ""}`),
+  emptyTrash: () => post("/trash/empty"),
+  // One file into the assets: as "image" (a picture), "element" (a logo or overlay, transparent; an SVG is drawn to a
+  // PNG here first) or "audio". The file goes straight to Rendrr through a one-time link.
+  uploadAsset: async (file: File, as: "image" | "element" | "audio") => {
+    const { body, name } = await assetFile(file, as);
+    const link = await post("/assets/upload-link", { as, name });
+    let r: Response;
+    try { r = await fetch(`${link.url}?filename=${encodeURIComponent(name)}`, { method: "POST", body, headers: { "content-type": "application/octet-stream" } }); }
+    catch { throw fail("The upload did not go through. Check your connection and try again.", "network"); }
+    const out = await r.json().catch(() => null);
+    if (!r.ok) throw fail(out?.error?.message || "Rendrr could not take that file.", out?.error?.code);
+    return out;
+  },
 
   // ---- Google Drive ----
   getDriveStatus: () => get("/drive/status"),
