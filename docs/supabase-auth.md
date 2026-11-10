@@ -68,6 +68,8 @@ Railway > Shared Variables > add `AUTH_PROVIDER` = `supabase`. Deploy when Railw
 
 ### 9. Check
 
+- Railway > api2 > Logs: each start writes lines beginning `Supabase setup:` (ok / MISSING / ?) for the keys, Google,
+  confirm email, the JWT signing key, the OAuth server, the Site URL, each redirect address and Google's redirect URI.
 - app.rendrr.live > Log in > Continue with Google: you land in your account with your edits.
 - Claude > Settings > Connectors > Rendrr > Connect: a Rendrr page asks "Connect Claude to Rendrr?" > Allow.
 
@@ -75,6 +77,7 @@ Railway > Shared Variables > add `AUTH_PROVIDER` = `supabase`. Deploy when Railw
 
 ## How it works (for the code)
 
+- `packages/core/src/supabaseSetup.ts`: the start-up check above (public endpoints and the secret key; prints no values).
 - `packages/core/src/supabaseAuth.ts`: checks Supabase tokens (public keys from
   `<SUPABASE_URL>/auth/v1/.well-known/jwks.json`, issuer `<SUPABASE_URL>/auth/v1`; older shared-secret tokens are
   asked of `/auth/v1/user`), the admin client (secret key), a login stored as `sb:<user id>` in `User.clerkId` /
