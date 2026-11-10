@@ -3,7 +3,8 @@
 // browser (localStorage) and refreshes itself; its access token goes to the API on every request.
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-const URL_ = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+// The project's address alone: anything pasted after it (".../rest/v1/", a trailing slash) is dropped.
+const URL_ = ((raw) => { if (!raw) return ""; try { return new URL(raw).origin; } catch { return raw.replace(/\/+$/, ""); } })((process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim());
 const KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "";
 export const SUPABASE_AUTH = (process.env.NEXT_PUBLIC_AUTH_PROVIDER || "").toLowerCase() === "supabase" && !!URL_ && !!KEY;
 

@@ -53,6 +53,20 @@ describe("Supabase setup check", () => {
     expect(text).toContain("ok Google client");
   });
 
+  it("a URL pasted with more after it still works, and the line says what was ignored; the dashboard address is named", async () => {
+    const { supabaseSetupCheck, supabaseUrlNote } = await import("../src/supabaseSetup");
+    const { env } = await import("../src/env");
+    (env() as { SUPABASE_URL?: string }).SUPABASE_URL = `${base}/rest/v1/`;
+    try {
+      const by = Object.fromEntries((await supabaseSetupCheck([SITE])).map((l) => [l.item, l]));
+      expect(by["Supabase URL"].note).toContain('"/rest/v1/" after it is ignored');
+      for (const k of ["publishable key", "secret key", "OAuth server", "JWT signing key", `redirect ${SITE}/auth/callback`]) expect(by[k]?.ok, `${k}: ${by[k]?.note}`).toBe(true);
+    } finally { (env() as { SUPABASE_URL?: string }).SUPABASE_URL = base; }
+    expect(supabaseUrlNote("https://abcdefghijklmnopqrst.supabase.co")).toEqual({ ok: true, note: "a Supabase project address" });
+    expect(supabaseUrlNote("https://supabase.com/dashboard/project/abcdefghijklmnopqrst").ok).toBe(false);
+    expect(supabaseUrlNote("abcd").ok).toBe(false);
+  });
+
   it("names what is missing: Google's redirect URI, the signing key, the OAuth server's registration, confirm email, a wrong key", async () => {
     const { supabaseSetupCheck } = await import("../src/supabaseSetup");
     const { env } = await import("../src/env");

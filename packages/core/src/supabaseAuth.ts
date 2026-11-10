@@ -15,7 +15,9 @@ export const supabaseUserId = (loginId: string) => loginId.slice(SB_PREFIX.lengt
 export const supabaseConfigured = () => !!env().SUPABASE_URL;
 /** Supabase is the login the web app and the AI connector use (Clerk otherwise). */
 export const supabaseIsLogin = () => supabaseConfigured() && (env().AUTH_PROVIDER || "").toLowerCase() === "supabase";
-const base = () => (env().SUPABASE_URL || "").replace(/\/$/, "");
+/** The project's address alone: anything pasted after it (".../rest/v1/", a trailing slash) is dropped. */
+export const supabaseOrigin = (raw: string) => { const t = (raw || "").trim(); if (!t) return ""; try { return new URL(t).origin; } catch { return t.replace(/\/+$/, ""); } };
+const base = () => supabaseOrigin(env().SUPABASE_URL || "");
 /** The issuer Supabase writes in its tokens, and the OAuth authorization server's id. */
 export const supabaseIssuer = () => `${base()}/auth/v1`;
 

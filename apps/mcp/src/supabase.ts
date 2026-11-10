@@ -5,7 +5,8 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { Request, Response } from "express";
 import { createRemoteJWKSet, decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
 
-const base = () => (process.env.SUPABASE_URL || "").replace(/\/$/, "");
+// The project's address alone: anything pasted after it (".../rest/v1/", a trailing slash) is dropped.
+const base = () => { const t = (process.env.SUPABASE_URL || "").trim(); if (!t) return ""; try { return new URL(t).origin; } catch { return t.replace(/\/+$/, ""); } };
 /** Supabase is the connector's login. */
 export const supabaseLogin = () => !!base() && (process.env.AUTH_PROVIDER || "").toLowerCase() === "supabase";
 /** Supabase Auth's issuer: the authorization server the connector logs in with. */

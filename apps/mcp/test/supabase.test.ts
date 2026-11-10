@@ -23,6 +23,11 @@ describe("connector login through Supabase", async () => {
 
   it("is on with AUTH_PROVIDER=supabase and a project URL", () => { assert.equal(supabaseLogin(), true); assert.equal(issuer(), `${base}/auth/v1`); });
 
+  it("keeps only the project address when more was pasted after it", () => {
+    process.env.SUPABASE_URL = `${base}/rest/v1/`;
+    try { assert.equal(issuer(), `${base}/auth/v1`); } finally { process.env.SUPABASE_URL = base; }
+  });
+
   it("publishes Supabase as the authorization server for the URL asked about", () => {
     const { r, res } = fakeRes();
     protectedResource({ protocol: "https", get: () => "mcp.rendrr.live", originalUrl: "/.well-known/oauth-protected-resource/mcp" } as never, res);

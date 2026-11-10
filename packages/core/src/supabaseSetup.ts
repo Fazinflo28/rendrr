@@ -5,6 +5,15 @@ import { decodeJwt } from "jose";
 import { env } from "./env";
 import { supabaseAdmin, supabaseConfigured, supabaseIssuer } from "./supabaseAuth";
 
+/** What SUPABASE_URL looks like: a project address, the dashboard by mistake, or with extra text after it (ignored). */
+export function supabaseUrlNote(raw: string): { ok: boolean | null; note: string } {
+  let u: URL;
+  try { u = new URL(raw.trim()); } catch { return { ok: false, note: "not a web address: copy the Project URL from Project Settings > Data API" }; }
+  const extra = u.pathname === "/" ? "" : u.pathname, project = /^[a-z0-9]{20}\.supabase\.co$/.test(u.hostname);
+  if (/(^|\.)supabase\.com$/.test(u.hostname)) return { ok: false, note: `${u.hostname} is the dashboard, not the project: copy the Project URL (https://<ref>.supabase.co) from Project Settings > Data API` };
+  return { ok: project ? true : null, note: `${project ? "a Supabase project address" : `${u.hostname}: not a .supabase.co address (fine only for a custom domain)`}${extra ? `; "${extra}" after it is ignored` : ""}` };
+}
+
 /** One thing checked. ok null: could not tell. */
 export type SetupLine = { item: string; ok: boolean | null; note: string };
 
@@ -18,6 +27,8 @@ export async function supabaseSetupCheck(webUrls: string[]): Promise<SetupLine[]
   const add = (item: string, ok: boolean | null, note: string) => out.push({ item, ok, note });
   if (!supabaseConfigured()) { add("Supabase URL", false, "SUPABASE_URL is not set"); return out; }
   const iss = supabaseIssuer(), base = iss.replace(/\/auth\/v1$/, "");
+  const u = supabaseUrlNote(env().SUPABASE_URL || "");
+  add("Supabase URL", u.ok, u.note);
 
   // The publishable key, and which sign-ins are on.
   const pk = env().SUPABASE_PUBLISHABLE_KEY;
@@ -48,7 +59,7 @@ export async function supabaseSetupCheck(webUrls: string[]): Promise<SetupLine[]
     const r = await get(`${iss}/.well-known/jwks.json`).catch(() => null);
     const keys = (r?.ok ? ((await json(r)).keys as { alg?: string; kty?: string }[]) : null) || [];
     const asym = keys.filter((k) => (k.alg ? !k.alg.startsWith("HS") : k.kty === "EC" || k.kty === "RSA"));
-    add("JWT signing key", r ? asym.length > 0 : null, !r ? "Supabase did not answer"
+    add("JWT signing key", r?.ok ? asym.length > 0 : null, !r ? "Supabase did not answer" : !r.ok ? `not checked (Supabase answered ${r.status})`
       : asym.length ? `${[...new Set(asym.map((k) => k.alg || k.kty))].join(", ")} published (make sure Rotate made it the current key)`
       : "still the legacy shared secret (Project Settings > JWT Keys: Migrate, then Rotate)");
   }
