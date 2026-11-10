@@ -90,19 +90,26 @@ export async function supabaseSetupCheck(webUrls: string[]): Promise<SetupLine[]
       const want = urls[0];
       add("Site URL", site.replace(/\/$/, "") === want, site.replace(/\/$/, "") === want ? site : `${site} (set it to ${want} under Authentication > URL Configuration)`);
     }
-    add(`redirect ${to}`, ref === null ? null : ref === to, ref === null ? "not checked (state not readable)"
+    add(`redirect ${to}`, ref === null ? null : ref === to, ref === null ? "can't be read from outside: a Google login shows it"
       : ref === to ? "allowed" : `not allowed: people would land on ${ref} (add ${u}/** under Authentication > URL Configuration > Redirect URLs)`);
     if (!googleSaid) {
       googleSaid = true;
       const g = await get(loc).catch(() => null);
       const next = g?.headers.get("location") || "";
-      let why = "";
+      // Google answers a good request with a redirect to its sign-in page, a bad one with an error page (400) or a
+      // redirect to /signin/oauth/error whose authError names the reason. Anything else: can't tell.
+      let why = "", seen = "";
       if (!g) why = "Google did not answer";
-      else if (/authError=/.test(next)) why = googleRefusal(Buffer.from(new URL(next, "https://accounts.google.com").searchParams.get("authError") || "", "base64").toString("latin1")) || "refused";
-      else if (g.status >= 400 || g.status === 200) why = googleRefusal(await g.text().catch(() => "")) || (g.status >= 400 ? `refused (${g.status})` : "");
-      add("Google client", !why, !why ? "takes Supabase's callback (the secret is checked at the first real login)"
-        : why === "redirect_uri_mismatch" ? `refuses Supabase's callback: add ${iss}/callback to the Google client's Authorized redirect URIs`
-        : `${why}: check the Client ID in Supabase's Google settings`);
+      else {
+        const to = next ? new URL(next, "https://accounts.google.com") : null;
+        seen = `Google answered ${g.status}${to ? ` to ${to.hostname}${to.pathname}` : ""}`;
+        if (to && to.searchParams.get("authError")) why = googleRefusal(Buffer.from(to.searchParams.get("authError") || "", "base64").toString("latin1")) || "refused";
+        else if (g.status >= 400) why = googleRefusal(await g.text().catch(() => "")) || `refused (${g.status})`;
+      }
+      const good = !!g && !why && g.status >= 300 && g.status < 400 && /signin|ServiceLogin|accountchooser/i.test(next);
+      add("Google client", why ? false : good ? true : null, why === "redirect_uri_mismatch" ? `refuses Supabase's callback (${seen}): add ${iss}/callback to the Authorized redirect URIs of the Google client whose Client ID is in Supabase, then wait a few minutes`
+        : why ? `${why} (${seen}): check the Client ID in Supabase's Google settings`
+        : good ? "takes Supabase's callback (the secret is checked at the first real login)" : `can't tell (${seen})`);
     }
   }
   return out;
