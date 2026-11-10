@@ -4,6 +4,7 @@ import { prisma, type Prisma, type Project } from "@rendrr/db";
 import { allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, libraryVideoIds, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip, ASPECTS, aspectSize, orientationOf, type Aspect } from "@rendrr/shared";
 import { otherVideoIds, playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
+import { sentByComment } from "./handoff";
 
 export async function defaultFolderId(userId: string, name?: string): Promise<string> {
   const f = await prisma.folder.findFirst({ where: { userId }, orderBy: { updatedAt: "desc" } });
@@ -214,10 +215,12 @@ export async function projectFull(userId: string, id: string) {
     prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { name: true } }),
   ]);
   // Client comments and the user's own notes, in video order.
+  // "Send to Claude": each comment says when it was last sent and to which AI.
+  const sent = await sentByComment(p.id);
   const comments = [
     ...reviews.flatMap((r) => r.comments.filter((c) => !c.projectId || c.projectId === p.id)).map(commentOut),
     ...(await Promise.all(notes.map((n) => noteOut(n, owner.name)))),
-  ].sort((a, b) => a.time - b.time || a.at - b.at);
+  ].map((c) => (sent[c.id] ? { ...c, sent: sent[c.id] } : c)).sort((a, b) => a.time - b.time || a.at - b.at);
   const preview = await latestRender(p.id, "preview");
   const final = await latestRender(p.id, "final");
   // The editor always works on a sequence: a project still stored in model A is shown converted (it is stored

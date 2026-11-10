@@ -27,7 +27,7 @@ import { SamplesWindow } from "./samples";
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
 import { Filmstrip } from "./filmstrip";
-import { ASPECT_RATIO, BLEND_MODES, lookTags, adjustCss, areaAt, objectBoxAt, hashOf, maskPicture, rateOf, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize } from "@rendrr/shared";
+import { ASPECT_RATIO, BLEND_MODES, lookTags, adjustCss, areaAt, objectBoxAt, hashOf, maskPicture, rateOf, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize, aiName, handoffTarget } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 import { applyLiveFx, resumeLiveAudio } from "./liveAudio";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
@@ -1475,6 +1475,32 @@ function EditorInner({ project, reload, ai, keep }) {
   const poly = (st, i) => html`<polyline key=${i} points=${st.p.reduce((a, v, k) => (k % 2 ? a + "," + v : a + (k ? " " : "") + v), "")} fill="none" stroke=${st.c} stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />`;
   const drawOverlay = (cDraw || cStrokes.length) && !pb.playing ? html`<svg class=${"cmt-ink" + (cDraw ? " drawing" : "")} id="comment-draw-layer" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Your drawing for this comment" onPointerDown=${drawDown}>${cStrokes.map(poly)}${cLive.current ? poly(cLive.current, "live") : null}</svg>` : null;
   const resolve = async (c) => { try { const u = await api.resolveComment(c.id, !c.resolved); setComments((x) => x.map((i) => (i.id === c.id ? { ...i, resolved: u.resolved } : i))); } catch (e) { toast(e.message); } };
+  // "Send to Claude": the open comments go to the AI the user connected. MCP cannot push into a chat, so the AI's chat
+  // opens with them ready, and Rendrr tells that AI on its next tool call too.
+  const [aiConn, setAiConn] = useState(null); // { claude, chatgpt }: connected or not; null while loading
+  useEffect(() => { let live = true; api.getConnectStatus().then((s) => live && setAiConn({ claude: s?.claude === "connected", chatgpt: s?.chatgpt === "connected" })).catch(() => live && setAiConn({ claude: false, chatgpt: false })); return () => { live = false; }; }, []);
+  const [aiPick, setAiPick] = useState(() => { try { return localStorage.getItem("rendrr.sendAi"); } catch { return null; } });
+  const sendTo = aiConn ? handoffTarget(aiConn, aiPick) : null;
+  const [aiMenu, setAiMenu] = useState(false); const [aiSending, setAiSending] = useState(false);
+  const openCount = comments.filter((c) => !c.resolved).length;
+  const sendToAi = async (which = sendTo) => {
+    if (!which || aiSending) return;
+    setAiMenu(false); setAiPick(which);
+    try { localStorage.setItem("rendrr.sendAi", which); } catch {}
+    // A browser lets a page open a tab only during the click: open it now and fill it when Rendrr answers. The Mac
+    // app sends such links to the browser itself.
+    const tab = window.rendrrDesktop ? null : window.open("", "_blank");
+    if (tab) { try { tab.opener = null; } catch {} }
+    setAiSending(true);
+    try {
+      const r = await api.sendComments(project.id, which, comments.filter((c) => !c.resolved).map((c) => c.id)); // what the button counted
+      if (tab) tab.location.href = r.url; else window.open(r.url, "_blank", "noopener");
+      const ids = new Set(r.commentIds), sent = { to: which, at: r.at };
+      setComments((x) => x.map((c) => (ids.has(c.id) ? { ...c, sent } : c)));
+      toast(`Sent ${r.count} ${r.count === 1 ? "comment" : "comments"} to ${r.name}. Its chat opened with them.`, { icon: "spark" });
+    } catch (e) { try { tab?.close(); } catch {} toast(e.message); }
+    finally { setAiSending(false); }
+  };
   // Comments from the Rendrr app in Claude can carry a drawing and pictures; the user's own notes can be edited, any deleted.
   const [cEdit, setCEdit] = useState(null); // { id, text }
   const [cDel, setCDel] = useState(null);
@@ -1610,6 +1636,12 @@ function EditorInner({ project, reload, ai, keep }) {
           </div>`}
           ${side === "comments" && html`<div class="pb cmts" id="comments-panel">
             <div class="cm-head"><div class="seg sm" role="tablist" aria-label="Which comments">${[["open", "Open", comments.filter((c) => !c.resolved).length], ["all", "All", comments.length], ["done", "Done", comments.filter((c) => c.resolved).length]].map(([k, l, n]) => html`<button key=${k} role="tab" aria-selected=${cFilter === k} class=${cFilter === k ? "on" : ""} id=${"cm-filter-" + k} onClick=${() => setCFilter(k)}>${l} <span class="muted">${n}</span></button>`)}</div></div>
+            ${openCount > 0 && html`<div class="cm-send" id="ai-send">
+              ${aiConn && !sendTo ? html`<button class="cm-send-btn off" id="ai-send-connect" onClick=${() => go("/connect")}><${Icon} name="spark" size="15" />Connect Claude to send comments</button>`
+              : html`<button class="cm-send-btn" id="ai-send-btn" disabled=${!sendTo || aiSending} title=${"Opens " + aiName(sendTo) + " with your open comments; it fixes them through Rendrr"} onClick=${() => sendToAi()}>${aiSending ? html`<span class="spin" />` : html`<${Icon} name="spark" size="15" />`}Send ${openCount} ${openCount === 1 ? "comment" : "comments"} to ${aiName(sendTo)}</button>
+                ${aiConn?.claude && aiConn?.chatgpt && html`<span class="cm-send-wrap"><button class="cm-send-more" id="ai-send-pick" aria-label="Send to another AI" aria-haspopup="menu" aria-expanded=${aiMenu} onClick=${() => setAiMenu(!aiMenu)}><${Icon} name="down" size="14" /></button>
+                  ${aiMenu && html`<div class="cm-send-pop" role="menu" id="ai-send-menu">${["claude", "chatgpt"].map((k) => html`<button key=${k} role="menuitem" class="cm-send-opt" id=${"ai-send-" + k} onClick=${() => sendToAi(k)}>Send to ${aiName(k)}${k === sendTo ? html`<${Icon} name="check" size="12" />` : null}</button>`)}</div>`}</span>`}`}
+            </div>`}
             <div class="col cm-list" id="comment-list">
               ${comments.length === 0 ? html`<div class="cm-empty" id="comments-empty"><span class="cm-empty-ico"><${Icon} name="comment" size="22" /></span><b>No comments yet</b><p class="t-small muted">Pause where something should change and leave a note: write, draw on the picture or add a picture. Clients can comment too, from a review link.</p></div>`
               : shownComments.length === 0 ? html`<p class="t-small muted" style="padding:16px 4px">${cFilter === "open" ? "Every comment is resolved." : "No resolved comments yet."}</p>`
@@ -1622,6 +1654,7 @@ function EditorInner({ project, reload, ai, keep }) {
                       <button class=${"cmt-check" + (c.resolved ? " on" : "")} aria-label=${c.resolved ? "Reopen" : "Resolve"} title=${c.resolved ? "Reopen" : "Mark as done"} onClick=${() => resolve(c)}><${Icon} name="check" size="12" /></button></div>
                     ${cEdit?.id === c.id ? html`<form class="row" style="gap:6px;margin-top:6px" onSubmit=${(e) => { e.preventDefault(); saveCEdit(); }}><input class="input sm grow" aria-label="Edit comment" value=${cEdit.text} onInput=${(e) => setCEdit({ ...cEdit, text: e.target.value })} onKeyDown=${(e) => e.key === "Escape" && setCEdit(null)} autoFocus /><${Btn} size="sm" type="submit">Save<//><${Btn} size="sm" kind="quiet" type="button" onClick=${() => setCEdit(null)}>Cancel<//></form>`
                     : html`<p class="cmt-body">${c.time > 0 && html`<button class="tc" onClick=${() => pb.seek(c.time)}>${fmtTime(c.time)}</button>`}${linkified(c.text)}</p>`}
+                    ${c.sent && html`<div class="cmt-sent" title=${"Sent " + fmtAgo(c.sent.at)}><${Icon} name="spark" size="11" />Sent to ${aiName(c.sent.to)} · ${fmtAgo(c.sent.at)}</div>`}
                     ${(c.drawing || c.images?.length) ? html`<div class="row cmt-media">${c.drawing && html`<button class="cmt-badge" onClick=${() => showInk(c)}>✎ Drawing</button>`}${(c.images || []).map((im) => html`<a key=${im.id} href=${im.url} target="_blank" rel="noopener noreferrer" title=${im.name || "Picture"}><img class="cmt-img" src=${im.url} alt=${im.name || "Picture"} /></a>`)}</div>` : null}</div>
                 </div>`)}
             </div>

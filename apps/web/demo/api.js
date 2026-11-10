@@ -3,6 +3,7 @@
 import { api } from "rendrr-fake-api";
 import { breakdownAsText, buildBreakdown } from "../../../packages/shared/src/breakdown.ts";
 import { notOriginalMessage, sameOriginal } from "../../../packages/shared/src/original.ts";
+import { aiName, handoffPrompt, handoffUrl } from "../../../packages/shared/src/aiHandoff.ts";
 import { desktopApp, forgetVerifier, newChallenge, s256, savedVerifier } from "../src/rendrr/desktopLogin.ts";
 import { demoBillingApi } from "./billingDemo.js";
 
@@ -206,6 +207,18 @@ Object.assign(api, {
   // The Mac app's exports (a test fills globalThis.__demoMacExports): one claim per final.
   macPing: async (version, device) => { globalThis.__demoMacPings = (globalThis.__demoMacPings || 0) + 1; globalThis.__demoMacPing = { version, device }; return { ok: true }; },
   macStatus: async () => globalThis.__demoMac || { online: false, device: null, version: null, seenAt: null },
+  // "Send to Claude" (a test sets globalThis.__demoConnect): the message and chat link come from the shared helper.
+  getConnectStatus: ((before) => async () => (globalThis.__demoConnect ? { ...(await before()), ...globalThis.__demoConnect } : before()))(api.getConnectStatus),
+  sendComments: async (projectId, ai, ids) => {
+    const p = await api.getProject(projectId);
+    const all = [...(p.comments || []), ...(globalThis.__demoPosted || [])].sort((a, b) => a.time - b.time);
+    const open = all.filter((c) => !c.resolved && (!ids?.length || ids.includes(c.id)));
+    if (!open.length) throw new Error("There are no open comments to send.");
+    const prompt = handoffPrompt({ name: p.name, projectId, comments: open });
+    const r = { id: "h" + Date.now(), ai, name: aiName(ai), count: open.length, commentIds: open.map((c) => c.id), at: Date.now(), prompt, url: handoffUrl(ai, prompt), connected: true };
+    (globalThis.__demoSent ||= []).push(r);
+    return r;
+  },
   macExports: async () => (globalThis.__demoMacExports || []).slice(),
   macClaim: async (id) => { const q = globalThis.__demoMacExports || []; const i = q.findIndex((x) => x.renderId === id); if (i < 0) return { claimed: false }; q.splice(i, 1); return { claimed: true }; },
   useFootage: async (id, ids) => {
@@ -401,8 +414,10 @@ Object.assign(api, {
     if (!text?.trim() && !drawing?.strokes?.length && !images?.length) throw Object.assign(new Error("Write a comment, draw on the picture or add a picture first."), { friendly: true });
     await new Promise((r) => setTimeout(r, 120));
     globalThis.__rendrrLastComment = { time, drawing }; // what the editor sent (the browser tests read it)
-    return { id: "cm_" + Math.random().toString(36).slice(2, 8), time: Math.max(0, Number(time) || 0), text: (text || "").trim(), author: "You", mine: true, resolved: false, at: Date.now(), edited: false,
+    const c = { id: "cm_" + Math.random().toString(36).slice(2, 8), time: Math.max(0, Number(time) || 0), text: (text || "").trim(), author: "You", mine: true, resolved: false, at: Date.now(), edited: false,
       drawing: drawing?.strokes?.length ? { w: drawing.w, h: drawing.h, strokes: drawing.strokes } : null, images: (images || []).map((im, i) => ({ id: "im" + i + Math.random().toString(36).slice(2, 5), url: `data:${im.type};base64,${im.data}`, w: im.w, h: im.h, name: im.name })) };
+    (globalThis.__demoPosted ||= []).push(c); // for Send to Claude
+    return c;
   },
   resolveComment: ((before) => async (id, resolved = true) => (id === fromClaude.id ? (fromClaude.resolved = resolved, { id, resolved }) : before(id, resolved)))(api.resolveComment),
 });

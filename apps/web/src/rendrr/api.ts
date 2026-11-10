@@ -464,6 +464,8 @@ export const api: any = {
   },
   addReviewComment: (t: string, { time, text, projectId }: any) => post(`/public/reviews/${enc(t)}/comments`, { time, text, projectId }, { auth: false, headers: reviewHeaders(t) }),
   resolveComment: (commentId: string, resolved = true) => patch(`/comments/${enc(commentId)}`, { resolved }),
+  // "Send to Claude": the edit's open comments (or `ids`) go to the connected AI; returns its chat link with them ready.
+  sendComments: (projectId: string, ai: "claude" | "chatgpt", ids?: string[]) => post(`/projects/${enc(projectId)}/comments/send`, { ai, ...(ids?.length ? { ids } : {}) }),
   editComment: (commentId: string, text: string) => {
     if (!text?.trim()) throw fail("Write the comment first.");
     return patch(`/comments/${enc(commentId)}`, { text: text.trim() });

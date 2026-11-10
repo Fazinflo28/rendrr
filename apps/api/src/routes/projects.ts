@@ -13,6 +13,7 @@ import { projectChat } from "../services/aiChat";
 import { editorMarks } from "../services/marks";
 import { createFolder, createProject, createWaitingEdit, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference, stylesById, useFootage } from "../services/projects";
 import { addNote, deleteComment, editNote } from "../services/commentMedia";
+import { sendComments } from "../services/handoff";
 
 /** A picture of each edit for its card: a frame of its latest render (the edit as it looks), else its footage's
  *  thumbnail. Signed for an hour. */
@@ -281,6 +282,12 @@ export default async function projects(app: FastifyInstance) {
     const n = await prisma.projectComment.findUnique({ where: { id } });
     if (!n || n.userId !== req.user!.id) throw notFound("That comment is gone.");
     return noteOut(await prisma.projectComment.update({ where: { id: n.id }, data: { resolved } }), req.user!.name);
+  });
+
+  // "Send to Claude": the open comments (or the ids given) go to the connected AI; the app opens its chat with `url`.
+  app.post("/projects/:id/comments/send", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => {
+    const b = (req.body ?? {}) as { ai?: unknown; ids?: unknown };
+    return sendComments(req.user!.id, (req.params as { id: string }).id, b.ai, b.ids);
   });
 
   app.delete("/comments/:id", async (req) => {

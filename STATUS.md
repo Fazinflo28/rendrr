@@ -1356,3 +1356,20 @@ From before:
   the desktop code: shows by name after the next Mac app build; until then "your Mac").
 - Tests: packages/shared/test/where.test.ts, apps/api/test/mac-export.test.ts, apps/mcp/test/app-browser.mjs,
   apps/web/demo/render-where.mjs, desktop/test/links.test.js.
+
+## Send comments to Claude from the Rendrr app (10 November)
+
+- The editor's Comments panel has a lime **Send N comments to Claude** button (web and Mac app). It sends the open
+  comments shown to the AI the user connected: Claude, else ChatGPT; with both connected a small menu picks one, and
+  the choice is remembered. Nothing connected: the button leads to Connect AI.
+- MCP cannot push into a chat, so a click does two things:
+  1. Opens the AI's chat with the message typed in (`claude.ai/new?q=…` or `chatgpt.com/?q=…`, the same words as the
+     Claude card's button). In the Mac app the link opens in the default browser.
+  2. Records the send (`AiHandoff` table). That AI's next Rendrr tool call, in any chat, ends with one line saying the
+     user sent N comments on the edit and to fix them after the current request. `get_project` says comments are
+     waiting; `get_comments` names the ones sent and marks them read.
+- Each sent comment shows "Sent to Claude · 2m ago".
+- Code: `packages/shared/src/aiHandoff.ts` (message, chat link, which AI), `apps/api/src/services/handoff.ts`, route
+  `POST /projects/:id/comments/send`, the notice in `apps/api/src/routes/internal.ts`. Migration
+  `20261110090000_ai_handoff`. Tests: `packages/shared/test/aiHandoff.test.ts`, `apps/api/test/ai-handoff.test.ts`,
+  `apps/web/demo/send-to-ai.mjs`.

@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { clip, TOOL_HANDLERS } from "../tools";
 import { APP_HANDLERS, appMediaOrigins } from "../services/claudeApp";
+import { handoffNotice } from "../services/handoff";
 
 // MCP tool calls arrive here from the MCP server (shared secret + the Clerk user it verified).
 export default async function internal(app: FastifyInstance) {
@@ -46,7 +47,9 @@ export default async function internal(app: FastifyInstance) {
         // The app polls while a preview renders: its reads are not logged as tool calls.
         if (def.app && !def.write) return { ...out, text: clip(out.text) };
         await usage(userId, "mcp_tool", 0, { tool: name, ai: req.aiName || client, ms: Date.now() - t0, ok: true });
-        return { ...out, text: clip(out.text) }; // every answer stays under ~6k tokens
+        // "Send to Claude" in the Rendrr app: said once, on this AI's next tool call.
+        const note = await handoffNotice(userId, client).catch(() => "");
+        return { ...out, text: clip(out.text) + (note ? "\n\n" + note : "") }; // every answer stays under ~6k tokens
       } catch (e) {
         await usage(userId, "mcp_tool", 0, { tool: name, ai: req.aiName || client, ms: Date.now() - t0, ok: false, error: toFriendly(e).message.slice(0, 200) });
         throw e;

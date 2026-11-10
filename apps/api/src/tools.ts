@@ -16,6 +16,7 @@ import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
 import { macStatus, queueMacExport, renderWhere } from "./services/macExport";
+import { pendingLine, sentLines } from "./services/handoff";
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
@@ -611,6 +612,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       ...(await soundLines(c.userId, p.timeline as unknown as Timeline)),
       ...(await binLine(c.userId, p.timeline as unknown as Timeline)),
       preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet.",
+      ...[await pendingLine(p.id)].filter(Boolean),
       `Exports: ${nextExportText(await macStatus(c.userId))}`].join("\n")) };
   },
 
@@ -777,6 +779,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const parts = [
       cs.length ? "Client comments (id | output time of the version they watched | text | state):\n" + cs.map((x) => row(x)).join("\n") : "No client comments.",
       notes.length ? "The user's notes (id | time in the edited video | text | what it carries | state):\n" + notes.map((n) => row(n, noteExtra(n))).join("\n") : "",
+      await sentLines(c.userId, p.id, c.ai), // sent from the Rendrr app ("Send to Claude"): now read
     ];
     if (!i.images) {
       const has = notes.some((n) => !n.resolved && (storedDrawing(n) || storedImages(n).length));

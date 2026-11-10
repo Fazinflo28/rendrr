@@ -58,6 +58,7 @@ model User {
   renders     Render[]
   chat        AiChatMessage[]
   notes       ProjectComment[]
+  handoffs    AiHandoff[]
   logins      UserLogin[]
   luts        Lut[]
   fonts       Font[]
@@ -238,6 +239,7 @@ model Project {
   renders   Render[]
   chat      AiChatMessage[]
   notes     ProjectComment[]
+  handoffs  AiHandoff[]
   originals TempOriginal[]
   reviews   Review[]
   gallery   GalleryItem[]
@@ -538,6 +540,25 @@ model ProjectComment {
   images    Json?
   editedAt  DateTime?
 
+  @@index([projectId])
+}
+
+// "Send to Claude" in the Rendrr app: the open comments the user sent to a connected AI. The app opens that AI's chat
+// with a message ready; Rendrr also says it once on that AI's next Rendrr tool call (noticedAt), and get_comments on
+// the edit marks it read (seenAt).
+model AiHandoff {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId  String
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  ai         String // claude | chatgpt
+  commentIds Json // the comment ids sent (client comments and the user's own notes)
+  createdAt  DateTime  @default(now())
+  noticedAt  DateTime?
+  seenAt     DateTime?
+
+  @@index([userId, seenAt])
   @@index([projectId])
 }
 
