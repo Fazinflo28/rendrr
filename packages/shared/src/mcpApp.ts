@@ -54,13 +54,13 @@ export type AppComment = { id: string; time: number; text: string; author: strin
 export type AppProjectView = {
   project: { id: string; name: string; folder: string; folderId: string; aspect: string; status: string; version: number; updated: number; seconds: number | null; editorUrl: string | null };
   /** The render being watched: the latest preview, or the version picked (a preview or a final); download: its file. */
-  preview: { renderId: string; version: number; kind: "preview" | "final"; url: string; download: string; fileName: string; seconds: number; quality: string; at: number; where?: string } | null;
+  preview: { renderId: string; version: number; kind: "preview" | "final"; url: string; download: string; fileName: string; seconds: number; quality: string; at: number; where?: string; machine?: string } | null;
   /** Every rendered version to pick from, newest first (a final and a preview of the same version are both there). */
   versions: { renderId: string; version: number; kind: "preview" | "final"; quality: string; at: number }[];
   /** A preview or final being made now; where: where it is made (the user's Mac or the cloud) and where the file goes. */
-  rendering: { renderId: string; version: number; percent: number; step: string | null; etaSec: number | null; queued: boolean; kind?: "preview" | "final"; where?: string } | null;
-  /** The Rendrr Mac app: open (and on which Mac), so the AI's finals go to that Mac's Downloads. */
-  mac?: { online: boolean; device: string | null; renders?: boolean };
+  rendering: { renderId: string; version: number; percent: number; step: string | null; etaSec: number | null; queued: boolean; kind?: "preview" | "final"; where?: string; machine?: string } | null;
+  /** The Rendrr desktop app: open (and on which computer: a Mac, or a Windows PC), so the AI's finals go to its Downloads. */
+  mac?: { online: boolean; device: string | null; renders?: boolean; platform?: "mac" | "windows" };
   failed: { version: number; error: string } | null;
   comments: AppComment[];
 };

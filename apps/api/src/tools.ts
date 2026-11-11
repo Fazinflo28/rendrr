@@ -6,7 +6,7 @@ import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
-  ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip, CLOUD, CLOUD_REGION, macOriginalOf, nextExportText, whereText } from "@rendrr/shared";
+  ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip, CLOUD, CLOUD_REGION, desktopAppName, machineWord, macOriginalOf, nextExportText, whereText } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
 import { samplesOut, samplesView, startSamples } from "./services/samples";
@@ -1194,21 +1194,22 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       const code = (e as AppError).code;
       if (code === "need-original") {
         const mo = macOriginalOf(await prisma.video.findFirst({ where: { projects: { some: { id: i.projectId } }, userId: c.userId }, select: { macOriginal: true } }));
-        if (mo) return { text: `The original of this footage stays on the user's Mac${mo.device ? ` ("${mo.device}")` : ""} (added in the Rendrr Mac app, never uploaded), and that Mac's Rendrr app is not open and rendering. Ask the user to open the Rendrr Mac app there and export again (the final is made on that Mac), or to open this edit in Rendrr and press Export final to give the file once.` };
+        if (mo) { const m = machineWord(mo.platform), appName = desktopAppName(mo.platform); return { text: `The original of this footage stays on the user's ${m}${mo.device ? ` ("${mo.device}")` : ""} (added in the ${appName}, never uploaded), and that ${m}'s Rendrr app is not open and rendering. Ask the user to open the ${appName} there and export again (the final is made on that ${m}), or to open this edit in Rendrr and press Export final to give the file once.` }; }
         return { text: "This footage is on the user's computer. Full quality needs the original file once: ask the user to open this edit in Rendrr and press Export final. The app will ask for the file and delete it within 24 hours." };
       }
       if (code === "drive") return { text: "The original file is no longer reachable in Google Drive. Ask the user to reconnect it in the Rendrr Library." };
       throw e;
     }
     if (target) await askDriveSave(r, target, fileNameFor(i.fileName, (await renderResult(r)).fileName));
-    if (mac) await queueMacExport(c.userId, r.id, fileNameFor(i.fileName, (await renderResult(r)).fileName), macNow.device);
+    if (mac) await queueMacExport(c.userId, r.id, fileNameFor(i.fileName, (await renderResult(r)).fileName), macNow.device, macNow.platform);
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     const out = await renderOut(r.id);
-    const onMac = macNow.device ? `the Rendrr Mac app on "${macNow.device}"` : "the Rendrr Mac app";
-    const where = mac && macNow.renders ? `Exporting on the user's Mac: ${onMac} is open, so the final is made on that Mac (graphics and checks on ${CLOUD_WORDS}) and kept in its Downloads folder. Tell the user in those words. If the Mac cannot take it, ${CLOUD_WORDS} makes it and the Mac app still saves it to Downloads.`
-      : mac ? `Exporting to the user's Mac. It renders on ${CLOUD_WORDS}${macNow.why ? ` (${macNow.why})` : ""}; ${onMac} is open and saves the final to that Mac's Downloads folder by itself the moment it is done. Tell the user in those words: it renders in Rendrr's cloud and lands in their Mac's Downloads.`
+    const M = machineWord(macNow.platform), APP = desktopAppName(macNow.platform);
+    const onMac = macNow.device ? `the ${APP} on "${macNow.device}"` : `the ${APP}`;
+    const where = mac && macNow.renders ? `Exporting on the user's ${M}: ${onMac} is open, so the final is made on that ${M} (graphics and checks on ${CLOUD_WORDS}) and kept in its Downloads folder. Tell the user in those words. If the ${M} cannot take it, ${CLOUD_WORDS} makes it and the ${APP.replace("Rendrr ", "")} still saves it to Downloads.`
+      : mac ? `Exporting to the user's ${M}. It renders on ${CLOUD_WORDS}${macNow.why ? ` (${macNow.why})` : ""}; ${onMac} is open and saves the final to that ${M}'s Downloads folder by itself the moment it is done. Tell the user in those words: it renders in Rendrr's cloud and lands in their ${M}'s Downloads.`
       : target ? null
-      : `${i.to === "mac" ? "The Rendrr Mac app is not open, so the final cannot go to the Mac now. " : "The Rendrr Mac app is not open. "}Switching to Rendrr's cloud server: the final renders there and is saved to Google Drive. Tell the user you are switching to the cloud server, and ask which Google Drive folder to export it to (a folder link or a name). Then call save_to_drive with it: it saves the moment the render is done.`;
+      : `${i.to === "mac" ? "The Rendrr app (Mac or Windows) is not open, so the final cannot go to the user's computer now. " : "The Rendrr app (Mac or Windows) is not open. "}Switching to Rendrr's cloud server: the final renders there and is saved to Google Drive. Tell the user you are switching to the cloud server, and ask which Google Drive folder to export it to (a folder link or a name). Then call save_to_drive with it: it saves the moment the render is done.`;
     return where ? { ...out, text: `${where}\n${out.text}` } : out;
   },
   async save_to_drive(c, i) {

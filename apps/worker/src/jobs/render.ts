@@ -1,7 +1,7 @@
 import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, forgetOrigins, getBytes, getText, macExportsKey, macForRender, noteCost, publishRender, queueDriveSave, recordUsage, redis, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
-import { bestResolution, fmtClock, formatFile, isBestQuality, lengthTolerance, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
+import { bestResolution, desktopAppName, fmtClock, formatFile, isBestQuality, lengthTolerance, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSideFiles } from "../lib/deliver";
 import { dropTemps, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
 import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
@@ -69,7 +69,7 @@ export async function renderJob(ctx: Ctx) {
   const planKind: "preview" | "final" = kind === "final" ? "final" : "preview";
   // Where it is being made: Rendrr's cloud server until the user's Mac app takes the encode (then that Mac); why: why
   // the Mac did not make it, when the app was open.
-  const where: { on: "mac" | "cloud"; device: string | null; why: string | null } = { on: "cloud", device: null, why: null };
+  const where: { on: "mac" | "cloud"; device: string | null; why: string | null; platform?: "mac" | "windows" } = { on: "cloud", device: null, why: null };
 
   // Preview has a tighter limit than the queue's 15 minutes.
   const ac = new AbortController();
@@ -101,7 +101,7 @@ export async function renderJob(ctx: Ctx) {
     }
     return prior != null ? Math.max(5, Math.round(prior * est.outSeconds - (now - t0) / 1000)) : null;
   };
-  const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)), etaSec: etaSec(), on: where.on, device: where.device });
+  const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)), etaSec: etaSec(), on: where.on, device: where.device, ...(where.platform ? { platform: where.platform } : {}) });
   const sendThrottled = throttle(send, 400);
   const claimed = await prisma.render.updateMany({ where: { id: r.id, status: { in: ["queued", "running"] } }, data: { status: "running", startedAt: new Date(), error: null, errorCode: null } });
   if (!claimed.count) return;
@@ -395,36 +395,37 @@ export async function renderJob(ctx: Ctx) {
     // they read go by link, what they make is uploaded by the Mac to this render's keys). Null: the cloud makes them
     // (the app is closed, cannot take these, did not pick them up in time, went quiet or failed: where.why says).
     const label = `${kind === "final" ? "Final" : kind === "sample" ? "Samples" : "Preview"} v${r.version} of ${project.name}`;
-    const macCpus = async (): Promise<{ cpus: number; have: string[] } | null> => {
+    const macCpus = async (): Promise<{ cpus: number; have: string[]; platform: "mac" | "windows" } | null> => {
       const m = await macForRender(video.userId, []).catch(() => ({ info: null, why: null }));
       if (m.info && m.why) where.why = m.why;
-      return m.info && !m.why ? { cpus: m.info.cpus, have: m.info.have } : null;
+      return m.info && !m.why ? { cpus: m.info.cpus, have: m.info.have, platform: m.info.platform } : null;
     };
-    const onMac = async (mac: { have: string[] }, runs: MacRun[], outputs: MacOut[], onRender: (cmd: number, seconds: number) => void): Promise<MacDone | null> => {
+    const onMac = async (mac: { have: string[]; platform?: "mac" | "windows" }, runs: MacRun[], outputs: MacOut[], onRender: (cmd: number, seconds: number) => void): Promise<MacDone | null> => {
+      const W = machineWord(mac.platform); // "Mac" or "PC"
       let task: Awaited<ReturnType<typeof macTaskFor>>;
       try { task = await macTaskFor({ renderId: r.id, userId: video.userId, kind, label, dir: ctx.dir, fontsDir: FONTS_DIR, runs, outputs, driveSource, macSources }); }
       catch (e) {
         // Whatever stops the hand-off (a render the Mac cannot be given, storage refusing a file): the cloud makes it.
         if (signal.aborted) throw e;
         console.error(`[render] ${r.id}: made on the cloud, not the Mac: ${(e as Error).message}`);
-        where.why = e instanceof NotForMac ? "this render cannot be made on a Mac yet" : "its files could not be readied for the Mac";
+        where.why = e instanceof NotForMac ? `this render cannot be made on a ${W} yet` : `its files could not be readied for the ${W}`;
         return null;
       }
       const missing = task.spec.needs.filter((n) => !mac.have.includes(n));
-      if (missing.length) { where.why = `the Mac's FFmpeg lacks ${missing.join(", ")}`; await dropTemps(task.temps); return null; }
+      if (missing.length) { where.why = `the ${W}'s FFmpeg lacks ${missing.join(", ")}`; await dropTemps(task.temps); return null; }
       const at = i, was = steps[at];
       try {
         const res = await runOnMac(task.spec, {
-          signal,
-          onClaim: (device) => { where.on = "mac"; where.device = device; where.why = null; steps[at] = "Getting the files to your Mac"; void send(at, 0); },
+          signal, machine: W,
+          onClaim: (device, platform) => { where.on = "mac"; where.device = device; where.platform = platform; where.why = null; steps[at] = `Getting the files to your ${machineWord(platform)}`; void send(at, 0); },
           onDownload: (f) => sendThrottled(at, 0.98 * f),
           onRender: (cmd, sec) => { if (steps[at] !== was) steps[at] = was; onRender(cmd, sec); },
           onUpload: () => { if (steps[at] !== was) steps[at] = was; },
-        }).catch((e) => { if (signal.aborted) throw e; return { ok: false as const, why: `the hand-off to your Mac broke (${(e as Error).message.slice(0, 120)})` }; });
+        }).catch((e) => { if (signal.aborted) throw e; return { ok: false as const, why: `the hand-off to your ${W} broke (${(e as Error).message.slice(0, 120)})` }; });
         steps[at] = was;
         if (res.ok) { console.log(`[render] ${r.id}: made on the user's Mac${res.device ? ` "${res.device}"` : ""}`); return res; }
         console.error(`[render] ${r.id}: the Mac did not make it (${res.why}): making it on the cloud`);
-        where.on = "cloud"; where.device = null; where.why = res.why;
+        where.on = "cloud"; where.device = null; where.platform = undefined; where.why = res.why;
         plan.operations.push(`Made on Rendrr's cloud server: ${res.why}`);
         await send(at, 0);
         return null;
@@ -525,7 +526,7 @@ export async function renderJob(ctx: Ctx) {
       const seconds = Math.round(items.reduce((acc, it) => acc + (it.kind === "clip" ? it.end! - it.at : 0), 0) * 1000) / 1000;
       if (signal.aborted) { await deleteObjects(keys).catch(() => {}); throw new JobError("Stopped."); }
       await prisma.render.updateMany({ where: { id: r.id, status: "running" }, data: {
-        status: "done", outputKey: null, sizeBytes: BigInt(bytes), seconds, framesKeys: keys, finishedAt: new Date(), quality: "540p", made: { on: where.on, device: where.device, why: where.why },
+        status: "done", outputKey: null, sizeBytes: BigInt(bytes), seconds, framesKeys: keys, finishedAt: new Date(), quality: "540p", made: { on: where.on, device: where.device, why: where.why, ...(where.platform ? { platform: where.platform } : {}) },
         plan: { samples: { items: noted(items), done: noted(done), width: plan.width, height: plan.height }, operations: plan.operations, outputSeconds: plan.outputSeconds, mix: mixLoudness } as unknown as Prisma.InputJsonValue,
       } });
       await usage(video.userId, "render_preview", Math.round((Math.max(seconds, items.length / fps) / 60) * 100) / 100, { projectId: project.id, renderId: r.id });
@@ -533,7 +534,7 @@ export async function renderJob(ctx: Ctx) {
       const sampleMin = Math.round((Math.max(seconds, items.length / fps) / 60) * 1000) / 1000;
       noteCost({ kind: "render_samples", refId: r.id, outputBytes: bytes });
       if (r.by !== "gallery") await recordUsage({ userId: video.userId, metric: "preview", quantity: sampleMin, refId: r.id, meta: { projectId: project.id, samples: true } });
-      await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100, on: where.on, device: where.device });
+      await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100, on: where.on, device: where.device, ...(where.platform ? { platform: where.platform } : {}) });
       return { samples: done.length };
     }
     // Phase 12: what the final is made as. Sound only goes straight to its file; the overlay export renders over black
@@ -640,7 +641,7 @@ export async function renderJob(ctx: Ctx) {
     let macDone: MacDone | null = null;
     const mac = await macCpus();
     // Made from originals that stay on the user's Mac: only that Mac can make it; otherwise the original is asked for.
-    const needMac = () => new JobError(`This final is made from your original, which stays on your Mac${macMain?.device ? ` ("${macMain.device}")` : ""}. Open the Rendrr Mac app there and export again, or give the original file once${where.why ? ` (${where.why})` : ""}.`, "need-original", false);
+    const needMac = () => new JobError(`This final is made from your original, which stays on your ${machineWord(macMain?.platform)}${macMain?.device ? ` ("${macMain.device}")` : ""}. Open the ${desktopAppName(macMain?.platform)} there and export again, or give the original file once${where.why ? ` (${where.why})` : ""}.`, "need-original", false);
     if (macSources.size && !mac) throw needMac();
     if (mac) {
       const mArgs = (output: string, pictureAs?: "black" | "white") => {
@@ -809,7 +810,7 @@ export async function renderJob(ctx: Ctx) {
     // it made is removed and nothing else changes (no "Final ready", no Drive copy, the original kept).
     if (signal.aborted) throw new JobError("Stopped.");
     const won = await prisma.render.updateMany({ where: { id: r.id, status: "running" }, data: {
-      status: "done", outputKey: outKey, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(), made: { on: where.on, device: where.device, why: where.why },
+      status: "done", outputKey: outKey, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(), made: { on: where.on, device: where.device, why: where.why, ...(where.platform ? { platform: where.platform } : {}) },
       // A final made on the Mac is already in its Downloads (the app kept it there).
       ...(kind === "final" && macDone?.saved ? { delivery: { to: "mac", device: where.device, state: "sent", at: Date.now(), saved: macDone.saved } } : {}),
       quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr, best }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}) } as unknown as Prisma.InputJsonValue,
@@ -847,7 +848,7 @@ export async function renderJob(ctx: Ctx) {
       const fourK = kind === "final" && isFourKQuality(r.quality), heavy = isHeavyPlan(plan);
       await recordUsage({ userId: video.userId, metric: kind === "final" ? "export" : "preview", quantity: minutes, billable: kind === "final" ? minutes * exportMultiplier({ fourK, heavy }) : minutes, refId: r.id, meta: { projectId: project.id, quality: r.quality, fourK, heavy } });
     }
-    await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100, on: where.on, device: where.device });
+    await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100, on: where.on, device: where.device, ...(where.platform ? { platform: where.platform } : {}) });
     // A final the user asked to be saved into their Google Drive (render_final driveFolder): the copy starts now.
     const save = kind === "final" ? driveSaveOf(await prisma.render.findUniqueOrThrow({ where: { id: r.id }, select: { driveSave: true } })) : null;
     if (save?.state === "waiting") await queueDriveSave(r.id, save).catch((e) => console.error("[render] Drive copy not queued:", (e as Error).message));

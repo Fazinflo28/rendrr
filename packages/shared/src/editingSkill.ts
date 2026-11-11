@@ -12,7 +12,7 @@ export const MCP_INSTRUCTIONS = [
   "Shorts from a long video: create_shorts. Another shape of an edit: create_project fromProjectId with aspect and reframe. New client: create_folder.",
   "No footage (a SaaS promo, an explainer, animated type): create_project blank {seconds, color} is a blank canvas; build the video with create_graphic scenes, add_graphic, add_text, music and sound effects.",
   "A video, picture, logo or music the user gives you (attached, a link, Drive): add_footage (logos: as element) or add_audio.",
-  "Export: render_final (Mac app open: made on that Mac, lands in its Downloads; closed: Rendrr's cloud, ask which Drive folder). Never re-upload.",
+  "Export: render_final (Mac/PC app open: made there, lands in its Downloads; closed: Rendrr's cloud, ask which Drive folder). Never re-upload.",
   "open_projects shows the user's edits, previews and comments in the chat; render_samples a few frames of a new look first. Guide: rendrr://how-to-edit.",
 ].join(" ");
 

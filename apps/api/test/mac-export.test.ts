@@ -46,9 +46,9 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
     const st = (await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json();
     assert.equal(st.online, false);
     const proj = await TOOL_HANDLERS.get_project(c(), { projectId });
-    assert.match(proj.text, /Exports: Renders run on Rendrr's cloud server\. The Rendrr Mac app is not open, so finals your AI exports go to Google Drive/);
+    assert.match(proj.text, /Exports: Renders run on Rendrr's cloud server\. The Rendrr app \(Mac or Windows\) is not open, so finals your AI exports go to Google Drive/);
     const r = await TOOL_HANDLERS.render_final(c(), { projectId });
-    assert.match(r.text, /Mac app is not open/);
+    assert.match(r.text, /Rendrr app \(Mac or Windows\) is not open/);
     assert.match(r.text, /Where: Rendering on Rendrr's cloud server \(US East\), not on your computer\./, "the answer says where it renders");
     assert.match(r.text, /Switching to Rendrr's cloud server/);
     assert.match(r.text, /ask which Google Drive folder/);
@@ -87,7 +87,7 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
     assert.deepEqual([web.where.renders, web.where.delivery.to, web.where.delivery.state], ["cloud", "mac", "sent"]);
     const { appProject } = await import("../src/services/claudeApp");
     const view = await appProject(userId, projectId, renderId);
-    assert.deepEqual(view.mac, { online: true, device: "Studio Mac", renders: false });
+    assert.deepEqual(view.mac, { online: true, device: "Studio Mac", renders: false, platform: "mac" });
     assert.equal(view.preview?.where, 'Made in the cloud · Saved to "Studio Mac"');
   });
 
@@ -113,6 +113,29 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
     // Turned off in the Mac app: back to the cloud, saying why.
     await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.2.0", device: "Studio-Mac.local", render: { ...render, enabled: false } } });
     assert.equal((await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json().why, "rendering on the Mac is turned off in the Mac app");
+  });
+
+  it("with the Windows app: said as a PC everywhere (status, the AI's answers, where a final was made, the card)", async () => {
+    await prisma.render.updateMany({ where: { userId, status: { in: ["queued", "running"] } }, data: { status: "done", outputKey: `renders/test-${run}/w.mp4` } });
+    const render = { protocol: 1, ready: true, enabled: true, busy: false, cpus: 16, have: ["libx264", "ass"], ffmpeg: "8.0" };
+    await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.1.1", device: "GAMING-PC", platform: "windows", render } });
+    const st = (await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json();
+    assert.deepEqual([st.online, st.renders, st.platform, st.device], [true, true, "windows", "GAMING PC"]);
+    assert.match((await TOOL_HANDLERS.get_project(c(), { projectId })).text, /Exports: Renders run on the user's PC: the Rendrr Windows app is open on "GAMING PC"/);
+    const r = await TOOL_HANDLERS.render_final(c(), { projectId });
+    assert.match(r.text, /Exporting on the user's PC: the Rendrr Windows app on "GAMING PC" is open, so the final is made on that PC/);
+    const renderId = (r.data as { renderId?: string })?.renderId ?? (await prisma.render.findFirstOrThrow({ where: { userId, status: { in: ["queued", "running"] } } })).id;
+    assert.equal(((await prisma.render.findUniqueOrThrow({ where: { id: renderId } })).delivery as { platform?: string }).platform, "windows", "the final remembers it goes to a PC");
+    await prisma.render.update({ where: { id: renderId }, data: { status: "done", outputKey: `renders/test-${run}/x.mp4`, made: { on: "mac", device: "GAMING PC", why: null, platform: "windows" }, delivery: { to: "mac", device: "GAMING PC", state: "sent", at: Date.now(), platform: "windows" } } });
+    assert.match((await TOOL_HANDLERS.get_render(c(), { renderId })).text, /Where: Rendered on your PC \("GAMING PC"\) by the Rendrr Windows app .* Saved in that PC's Downloads folder/);
+    const web = (await app.inject({ method: "GET", url: `/renders/${renderId}`, headers: headers() })).json();
+    assert.deepEqual([web.where.renders, web.where.platform], ["mac", "windows"]);
+    const { appProject } = await import("../src/services/claudeApp");
+    const card = await appProject(userId, projectId, renderId);
+    assert.deepEqual([card.preview?.machine, card.mac?.platform], ["PC", "windows"]);
+    await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.1.1", device: "GAMING-PC", platform: "windows", render: { ...render, enabled: false } } });
+    assert.equal((await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json().why, "rendering on the PC is turned off in the Windows app");
+    await redis().del(`mac:on:${userId}`);
   });
 
   it("to: drive goes to the cloud even with the Mac app open", async () => {

@@ -72,12 +72,12 @@ const task = (over = {}) => ({
 });
 const opts = () => ({ ffmpeg: FFMPEG, cacheDir: path.join(tmp, "cache"), workDir: tmp, saveDir: fs.mkdtempSync(path.join(tmp, "downloads-")), allowHttp: true });
 
-test("a task naming anything outside its own folder, a protocol, or a plain-http link is refused", () => {
+test("a task naming anything outside its own folder (a Mac's or a Windows PC's), a protocol, or a plain-http link is refused", () => {
   assert.doesNotThrow(() => checkTask(task(), { allowHttp: true }));
   assert.throws(() => checkTask(task()), /not a Rendrr render task|bad link/, "http only in tests");
   const withArg = (a) => task({ commands: [{ args: ["-i", a, "out.mp4"] }] });
-  for (const a of ["/etc/passwd", "~/x", "../x", "a/../../b", "concat:a|b", "http://evil/x", "file:x"]) assert.throws(() => checkTask(withArg(a), { allowHttp: true }), /path|protocol/, a);
-  for (const g of ["movie=/etc/passwd[v]", "ass=filename='/Users/x/a.ass'", "amovie=http://x/y", "lut3d=file=../x"]) assert.throws(() => checkTask(task({ commands: [{ args: ["-i", "source", "out.mp4"], graph: g }] }), { allowHttp: true }), /graph/, g);
+  for (const a of ["/etc/passwd", "~/x", "../x", "a/../../b", "concat:a|b", "http://evil/x", "file:x", "C:\\Windows\\x", "\\\\server\\share\\x", "a\\..\\..\\b"]) assert.throws(() => checkTask(withArg(a), { allowHttp: true }), /path|protocol/, a);
+  for (const g of ["movie=/etc/passwd[v]", "ass=filename='/Users/x/a.ass'", "amovie=http://x/y", "lut3d=file=../x", "movie=C\\:/Windows/x[v]", "lut3d=file='D:\\\\looks\\\\a.cube'", "movie=\\\\\\\\server\\\\x[v]"]) assert.throws(() => checkTask(task({ commands: [{ args: ["-i", "source", "out.mp4"], graph: g }] }), { allowHttp: true }), /graph/, g);
   assert.throws(() => checkTask(task({ inputs: [{ name: "../x", data: "" }] }), { allowHttp: true }), /input name/);
   assert.throws(() => checkTask(task({ inputs: [{ name: "fonts/x.ttf", data: "" }] }), { allowHttp: true }), /input name/);
   assert.throws(() => checkTask(task({ outputs: [{ name: "out.mp4", url: `${base}/up/x`, type: "video/mp4", save: "../../evil" }] }), { allowHttp: true }), /file name/);

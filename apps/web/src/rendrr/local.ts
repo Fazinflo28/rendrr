@@ -259,14 +259,14 @@ export function filesFromDrop(dt: DataTransfer | null | undefined): Promise<File
 }
 
 /**
- * In the Rendrr Mac app: the original stays on this Mac. The app remembers where the file is and reads what it is;
+ * In the Rendrr Mac or Windows app: the original stays on this computer. The app remembers where the file is and reads what it is;
  * Rendrr is told (its size, picture and sound), so a final made on this Mac reads it there and it is never uploaded.
  */
 function keepOnMac(videoId: string, file: File) {
   const d = isBrowser ? (window as any).rendrrDesktop : null;
   if (!d?.keepOriginal) return;
   d.keepOriginal(videoId, file)
-    .then((info: any) => (info ? post(`/videos/${enc(videoId)}/mac-original`, { device: d.device || "", ...info }) : null))
+    .then((info: any) => (info ? post(`/videos/${enc(videoId)}/mac-original`, { device: d.device || "", platform: d.app === "windows" ? "windows" : "mac", ...info }) : null))
     .catch(() => { /* an older server or a file the app cannot read: the original is asked for once, as before */ });
 }
 

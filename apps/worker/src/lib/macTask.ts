@@ -147,7 +147,7 @@ export async function macTaskFor(o: {
   return { spec, temps };
 }
 
-export type MacDone = { ok: true; outputs: Record<string, number>; saved: string | null; device: string | null };
+export type MacDone = { ok: true; outputs: Record<string, number>; saved: string | null; device: string | null; platform: "mac" | "windows" };
 export type MacNot = { ok: false; why: string };
 
 /**
@@ -155,9 +155,12 @@ export type MacNot = { ok: false; why: string };
  * reporting (MAC_QUIET_MS). Its progress comes through the callbacks. Stopped (signal): the Mac is told to stop too.
  */
 export async function runOnMac(spec: MacTaskSpec, o: {
-  signal: AbortSignal; onClaim: (device: string | null) => void; onDownload: (frac: number) => void;
+  signal: AbortSignal; onClaim: (device: string | null, platform: "mac" | "windows") => void; onDownload: (frac: number) => void;
   onRender: (cmd: number, seconds: number) => void; onUpload: (frac: number) => void; pollMs?: number;
+  /** "Mac" or "PC", for the reasons it gives. */
+  machine?: string;
 }): Promise<MacDone | MacNot> {
+  const your = `your ${o.machine || "Mac"}`;
   const id = await createMacTask(spec);
   const t0 = Date.now();
   let claimed = false;
@@ -165,14 +168,15 @@ export async function runOnMac(spec: MacTaskSpec, o: {
     if (o.signal.aborted) { await stopMacTask(id, "stopped").catch(() => {}); throw new JobError("Stopped."); }
     const v = await viewMacTask(id);
     if (!v.owner && Date.now() - t0 > MAC_CLAIM_MS) {
-      if (await expireMacTask(id)) return { ok: false, why: "your Mac did not pick it up" };
+      if (await expireMacTask(id)) return { ok: false, why: `${your} did not pick it up` };
       continue;
     }
     if (v.owner === "mac" && v.run) {
-      if (!claimed) { claimed = true; o.onClaim(v.run.device); }
-      if (v.run.state === "done") return { ok: true, outputs: v.run.outputs ?? {}, saved: v.run.saved ?? null, device: v.run.device };
-      if (v.run.state === "failed") return { ok: false, why: v.run.error || "your Mac could not render it" };
-      if (Date.now() - v.run.at > MAC_QUIET_MS) { await stopMacTask(id, "quiet"); return { ok: false, why: "your Mac stopped answering" }; }
+      const platform = v.run.platform === "windows" ? "windows" : "mac";
+      if (!claimed) { claimed = true; o.onClaim(v.run.device, platform); }
+      if (v.run.state === "done") return { ok: true, outputs: v.run.outputs ?? {}, saved: v.run.saved ?? null, device: v.run.device, platform };
+      if (v.run.state === "failed") return { ok: false, why: v.run.error || `${your} could not render it` };
+      if (Date.now() - v.run.at > MAC_QUIET_MS) { await stopMacTask(id, "quiet"); return { ok: false, why: `${your} stopped answering` }; }
       if (v.run.phase === "download") o.onDownload(v.run.frac ?? 0);
       else if (v.run.phase === "upload") o.onUpload(v.run.frac ?? 0);
       else o.onRender(v.run.cmd ?? 0, v.run.seconds ?? 0);

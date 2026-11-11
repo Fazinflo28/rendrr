@@ -67,7 +67,7 @@ const calls = [];
 const view = (id, renderId) => {
   const p = db.projects.find((x) => x.id === id);
   // Every rendered version, newest first (as Rendrr lists them); the one asked for, else the latest preview.
-  const pv = (x, kind) => x && { ...x, kind, download: x.url + "&dl=1", fileName: `${p.name} ${kind} v${x.version}.mp4`, where: db.macMade ? (kind === "final" ? 'Made on "Studio Mac" · Saved to Downloads' : 'Made on "Studio Mac"') : kind === "final" ? 'Made in the cloud · Saved to "Studio Mac"' : "Made on Rendrr's cloud server" };
+  const pv = (x, kind) => x && { ...x, kind, download: x.url + "&dl=1", fileName: `${p.name} ${kind} v${x.version}.mp4`, ...(db.macMade ? { machine: db.macMade === "pc" ? "PC" : "Mac" } : {}), where: db.macMade ? (kind === "final" ? 'Made on "Studio Mac" · Saved to Downloads' : 'Made on "Studio Mac"') : kind === "final" ? 'Made in the cloud · Saved to "Studio Mac"' : "Made on Rendrr's cloud server" };
   const all = [pv(db.preview[id], "preview"), ...db.older[id].map((x) => pv(x, "preview")), ...db.finals[id].map((x) => pv(x, "final"))].filter(Boolean).sort((a, b) => b.at - a.at);
   const shown = (renderId && all.find((x) => x.renderId === renderId)) || pv(db.preview[id], "preview") || all.find((x) => x.kind === "final") || null;
   return { project: { id: p.id, name: p.name, folder: p.folder, folderId: p.folderId, aspect: p.aspect, status: p.status, version: p.version, updated: p.updated, seconds: p.seconds, editorUrl: `https://app.rendrr.live/editor/${p.id}` },
@@ -437,9 +437,14 @@ check((await app.locator("#where-chip").innerText()) === "Cloud render" && /^Mad
 // Made on the user's Mac (the Rendrr Mac app open): the chip says so.
 db.macMade = true;
 await app.locator("select.ver").selectOption("rf1"); await sleep(400);
-check((await app.locator("#where-chip").innerText()) === "Mac → Downloads" && /^Made on "Studio Mac" · Saved to Downloads\. Made by the Rendrr Mac app on that Mac\./.test(await app.locator("#where-chip").getAttribute("title")), `a final made on the Mac says so (${await app.locator("#where-chip").innerText()})`);
+check((await app.locator("#where-chip").innerText()) === "Mac → Downloads" && /^Made on "Studio Mac" · Saved to Downloads\. Made by the Rendrr app on that Mac\./.test(await app.locator("#where-chip").getAttribute("title")), `a final made on the Mac says so (${await app.locator("#where-chip").innerText()})`);
 await app.locator("select.ver").selectOption("r2"); await sleep(400);
 check((await app.locator("#where-chip").innerText()) === "Mac render", "a preview made on the Mac says so");
+// Made on a Windows PC (the Rendrr Windows app): the chip says PC.
+db.macMade = "pc";
+await app.locator("select.ver").selectOption("rf1"); await sleep(400);
+check((await app.locator("#where-chip").innerText()) === "PC → Downloads" && /Made by the Rendrr app on that PC\./.test(await app.locator("#where-chip").getAttribute("title")), `a final made on a Windows PC says PC (${await app.locator("#where-chip").innerText()})`);
+await app.locator("select.ver").selectOption("r2"); await sleep(400);
 db.macMade = false;
 const chip = app.locator("#mac-chip");
 check((await chip.innerText()) === "Mac connected" && /open on Studio Mac: finals your AI exports are saved to that Mac's Downloads/.test(await chip.getAttribute("title")), "the header says the Mac app is connected, on which Mac, and where finals go");

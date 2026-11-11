@@ -44,7 +44,7 @@ export default async function render(app: FastifyInstance) {
   app.get("/renders/:id", async (req) => renderStatus(await ownedRender(req.user!.id, (req.params as { id: string }).id)));
 
   // The Rendrr Mac app: it is open (every 20 s), the finals queued for it, and taking one to save to Downloads.
-  app.post("/desktop/ping", async (req) => { const b = (req.body as { version?: unknown; device?: unknown; render?: unknown } | null) ?? {}; await macPing(req.user!.id, String(b.version ?? ""), String(b.device ?? ""), b.render); return { ok: true }; });
+  app.post("/desktop/ping", async (req) => { const b = (req.body as { version?: unknown; device?: unknown; render?: unknown; platform?: unknown } | null) ?? {}; await macPing(req.user!.id, String(b.version ?? ""), String(b.device ?? ""), b.render, String(b.platform ?? "")); return { ok: true }; });
   // Whether the Rendrr Mac app is open (and on which Mac): where the AI's next final goes.
   app.get("/desktop/status", async (req) => macStatus(req.user!.id));
   app.get("/desktop/exports", async (req) => macExports(req.user!.id));

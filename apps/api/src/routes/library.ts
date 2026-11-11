@@ -235,7 +235,7 @@ export default async function library(app: FastifyInstance) {
       return [await videoOut(v)];
     });
 
-    // ---------------- the original kept on the user's Mac (added in the Rendrr Mac app, never uploaded) ----------------
+    // ------- the original kept on the user's computer (added in the Rendrr Mac or Windows app, never uploaded) -------
     a.post("/videos/:id/mac-original", async (req) => {
       const v = await prisma.video.findFirst({ where: { id: (req.params as { id: string }).id, userId: req.user!.id } });
       if (!v) throw notFound("video");

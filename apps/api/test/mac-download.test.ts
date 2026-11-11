@@ -1,6 +1,7 @@
-// Rendrr for Mac's public download link: the Mac build puts each installer up with its GitHub OIDC token (checked
-// against GitHub's keys: signature, audience, repository, workflow, expiry), and anyone gets the newest one from
-// /download/mac (a page) and /download/mac/:chip (the file). A stand-in GitHub serves the keys.
+// Rendrr for Mac's and Windows' public download links: each platform's build puts its installers up with its GitHub
+// OIDC token (checked against GitHub's keys: signature, audience, repository, that platform's workflow, expiry), and
+// anyone gets the newest one from /download/:platform (a page; /download picks by the browser) and
+// /download/:platform/:chip (the file). A stand-in GitHub serves the keys.
 // Needs Redis and storage (as in .env).
 import assert from "node:assert/strict";
 import { createSign, generateKeyPairSync, randomBytes } from "node:crypto";
@@ -22,7 +23,10 @@ function token(claims: Record<string, unknown>, key = privateKey, kid = KID) {
   return `${body}.${createSign("RSA-SHA256").update(body).sign(key).toString("base64url")}`;
 }
 
-describe("Mac download link", { skip: !ready && "needs Redis, storage and a database" }, async () => {
+const OBJECTS = ["downloads/Rendrr-Mac-AppleSilicon.dmg", "downloads/Rendrr-Mac-Intel.dmg", "downloads/mac.json", "downloads/Rendrr-Windows-x64.exe", "downloads/Rendrr-Windows-Arm.exe", "downloads/windows.json"];
+const WIN_FLOW = "Fazinflo28/rendrr/.github/workflows/desktop-windows.yml@refs/heads/main";
+
+describe("Mac and Windows download links", { skip: !ready && "needs Redis, storage and a database" }, async () => {
   const { buildServer } = await import("../src/server");
   const { deleteObjects, redis } = await import("@rendrr/core");
   let app: Awaited<ReturnType<typeof buildServer>>;
@@ -33,10 +37,10 @@ describe("Mac download link", { skip: !ready && "needs Redis, storage and a data
     await new Promise<void>((r) => jwks.listen(0, "127.0.0.1", () => r()));
     process.env.DOWNLOADS_OIDC_JWKS_URL = `http://127.0.0.1:${(jwks.address() as { port: number }).port}/jwks`;
     app = await buildServer();
-    await deleteObjects(["downloads/Rendrr-Mac-AppleSilicon.dmg", "downloads/Rendrr-Mac-Intel.dmg", "downloads/mac.json"]).catch(() => {});
+    await deleteObjects(OBJECTS).catch(() => {});
   });
   after(async () => {
-    await deleteObjects(["downloads/Rendrr-Mac-AppleSilicon.dmg", "downloads/Rendrr-Mac-Intel.dmg", "downloads/mac.json"]).catch(() => {});
+    await deleteObjects(OBJECTS).catch(() => {});
     await app.close(); jwks.close();
     await redis().quit().catch(() => {});
   });
@@ -75,5 +79,33 @@ describe("Mac download link", { skip: !ready && "needs Redis, storage and a data
     assert.match(url, /Rendrr-Mac-AppleSilicon\.dmg/);
     const got = Buffer.from(await (await fetch(url)).arrayBuffer());
     assert.ok(got.equals(dmg), "the same bytes come back");
+  });
+
+  it("takes the Windows build's installers (only from the Windows workflow), and a Windows browser gets the Windows page", async () => {
+    const exe = randomBytes(2 * 1024 * 1024);
+    const putWin = (chip: string, auth: string) => app.inject({ method: "PUT", url: `/download/windows/${chip}?version=0.1.4`, payload: exe, headers: { "content-type": "application/octet-stream", authorization: `Bearer ${auth}` } });
+    assert.match((await app.inject({ method: "GET", url: "/download/windows" })).body, /being prepared/);
+    assert.equal((await putWin("x64", token({}))).statusCode, 403, "the Mac workflow cannot put Windows installers");
+    assert.equal((await put("apple", token({ workflow_ref: WIN_FLOW }))).statusCode, 403, "nor the Windows workflow Mac ones");
+    assert.equal((await putWin("intel", token({ workflow_ref: WIN_FLOW }))).statusCode, 404, "unknown chip");
+    const x = await putWin("x64", token({ workflow_ref: WIN_FLOW }));
+    assert.equal(x.statusCode, 200, x.body);
+    assert.equal((await putWin("arm64", token({ workflow_ref: WIN_FLOW }))).statusCode, 200);
+    const pg = await app.inject({ method: "GET", url: "/download/windows" });
+    assert.match(pg.body, /Rendrr for Windows/);
+    assert.match(pg.body, /Download for Windows \(most PCs\)/);
+    assert.match(pg.body, /Windows on Arm/);
+    assert.match(pg.body, /Version 0\.1\.4/);
+    assert.match(pg.body, /More info/);
+    const link = await app.inject({ method: "GET", url: "/download/windows/x64" });
+    assert.equal(link.statusCode, 302);
+    assert.match(String(link.headers.location), /Rendrr-Windows-Setup\.exe/);
+    assert.ok(Buffer.from(await (await fetch(String(link.headers.location))).arrayBuffer()).equals(exe), "the same bytes come back");
+    // /download: the page for the browser's computer.
+    const win = await app.inject({ method: "GET", url: "/download", headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0" } });
+    assert.match(win.body, /<h1>Rendrr for Windows<\/h1>/);
+    const mac = await app.inject({ method: "GET", url: "/download", headers: { "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Safari/605.1" } });
+    assert.match(mac.body, /<h1>Rendrr for Mac<\/h1>/);
+    assert.equal((await app.inject({ method: "GET", url: "/download/linux" })).statusCode, 404);
   });
 });

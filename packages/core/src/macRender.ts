@@ -45,6 +45,8 @@ export type MacTaskSpec = {
 export type MacTask = MacTaskSpec & { id: string; createdAt: number };
 export type MacRun = {
   state: "running" | "done" | "failed"; device: string | null; claimedAt: number; at: number; tokenHash: string;
+  /** The computer that took it: a Mac or a Windows PC (for the words). */
+  platform?: "mac" | "windows";
   phase?: "download" | "render" | "upload"; frac?: number; cmd?: number; seconds?: number;
   outputs?: Record<string, number>; saved?: string | null; error?: string | null;
 };
@@ -61,15 +63,15 @@ const hashOf = (token: string) => createHash("sha256").update(token).digest("hex
 const parse = <T>(s: string | null): T | null => { if (!s) return null; try { return JSON.parse(s) as T; } catch { return null; } };
 
 /** The Mac app's render abilities from its last ping (null: closed, an older app, or the ping is stale). */
-export async function macRenderInfo(userId: string): Promise<(MacRenderInfo & { device: string | null }) | null> {
-  const on = parse<{ at?: number; device?: string | null; render?: Partial<MacRenderInfo> }>(await redis().get(k.on(userId)).catch(() => null));
+export async function macRenderInfo(userId: string): Promise<(MacRenderInfo & { device: string | null; platform: "mac" | "windows" }) | null> {
+  const on = parse<{ at?: number; device?: string | null; platform?: string; render?: Partial<MacRenderInfo> }>(await redis().get(k.on(userId)).catch(() => null));
   const r = on?.render;
   if (!on || !r || r.protocol !== MAC_RENDER_PROTOCOL || !on.at || Date.now() - on.at > PING_FRESH_MS) return null;
-  return { protocol: r.protocol, ready: !!r.ready, enabled: r.enabled !== false, busy: !!r.busy, cpus: Math.max(1, Math.min(64, Math.round(Number(r.cpus) || 4))), have: Array.isArray(r.have) ? r.have.map(String) : [], ffmpeg: r.ffmpeg ? String(r.ffmpeg) : null, why: r.why ? String(r.why) : null, device: on.device ?? null };
+  return { protocol: r.protocol, ready: !!r.ready, enabled: r.enabled !== false, busy: !!r.busy, cpus: Math.max(1, Math.min(64, Math.round(Number(r.cpus) || 4))), have: Array.isArray(r.have) ? r.have.map(String) : [], ffmpeg: r.ffmpeg ? String(r.ffmpeg) : null, why: r.why ? String(r.why) : null, device: on.device ?? null, platform: on.platform === "windows" ? "windows" : "mac" };
 }
 
 /** The Mac that can make a render with these FFmpeg features now, or why not (null reason: it can). */
-export async function macForRender(userId: string, needs: string[]): Promise<{ info: MacRenderInfo & { device: string | null } | null; why: string | null }> {
+export async function macForRender(userId: string, needs: string[]): Promise<{ info: MacRenderInfo & { device: string | null; platform: "mac" | "windows" } | null; why: string | null }> {
   if (process.env.MAC_RENDER === "off") return { info: null, why: "off on this server" };
   const info = await macRenderInfo(userId);
   if (!info) return { info: null, why: "the Mac app is not open" };
@@ -111,15 +113,16 @@ export async function listMacTasks(userId: string): Promise<{ id: string; render
   return out.sort((a, b) => a.createdAt - b.createdAt);
 }
 
-/** The Mac app takes a task (only the first to ask gets it, and only while the cloud has not given up on it). */
-export async function claimMacTask(userId: string, id: string, device: string | null): Promise<{ task: MacTask; token: string } | null> {
+/** The Mac app takes a task (only the first to ask gets it, and only while the cloud has not given up on it).
+ *  platform: the computer the app runs on (a Windows PC says "windows"). */
+export async function claimMacTask(userId: string, id: string, device: string | null, platform?: string | null): Promise<{ task: MacTask; token: string } | null> {
   const r = redis();
   const task = await readMacTask(id);
   if (!task || task.userId !== userId) return null;
   if ((await r.set(k.owner(id), "mac", "EX", MAC_TASK_TTL_S, "NX")) !== "OK") return null;
   await r.srem(k.waiting(userId), id);
   const token = randomBytes(32).toString("base64url"), now = Date.now();
-  const run: MacRun = { state: "running", device, claimedAt: now, at: now, tokenHash: hashOf(token), phase: "download", frac: 0 };
+  const run: MacRun = { state: "running", device, platform: platform === "windows" || platform === "win32" ? "windows" : "mac", claimedAt: now, at: now, tokenHash: hashOf(token), phase: "download", frac: 0 };
   await r.set(k.run(id), JSON.stringify(run), "EX", MAC_TASK_TTL_S);
   return { task, token };
 }

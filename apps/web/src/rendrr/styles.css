@@ -1491,6 +1491,10 @@ html.desktop .top *, html.desktop .editor .ed-top * { -webkit-app-region: no-dra
 html.desktop .top > .grow, html.desktop .editor .ed-top > .grow { -webkit-app-region: drag; }
 html.desktop.desktop-full .top, html.desktop.desktop-full .editor .ed-top { padding-left: 20px; }
 html.desktop body:not(:has(.top, .ed-top))::after { content: ""; position: fixed; left: 0; right: 0; top: 0; height: 32px; -webkit-app-region: drag; z-index: 1; }
+/* Windows app: the minimise, maximise and close buttons sit over the top-right (about 138 screen pixels, 47 high), so
+   the top bars keep their usual left edge and leave that room on the right instead. */
+html.desktop.desktop-win .top, html.desktop.desktop-win .editor .ed-top { padding-left: 20px; padding-right: 184px; }
+html.desktop.desktop-win.desktop-full .top, html.desktop.desktop-win.desktop-full .editor .ed-top { padding-right: var(--s8); }
 
 /* /desktop-login: the browser half of logging the Mac app in (app.js DesktopLogin). */
 .dl-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); }

@@ -2,7 +2,7 @@
   "name": "rendrr-desktop",
   "productName": "Rendrr",
   "version": "0.1.0",
-  "description": "Rendrr for Mac: edit videos with Claude.",
+  "description": "Rendrr: edit videos with your AI.",
   "main": "main.js",
   "private": true,
   "author": "Rendrr",
@@ -10,7 +10,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/links.test.js test/render.test.js",
-    "dist:mac": "electron-builder --mac dmg --arm64 --x64 --publish never"
+    "dist:mac": "electron-builder --mac dmg --arm64 --x64 --publish never",
+    "dist:win": "electron-builder --win nsis --x64 --publish never"
   },
   "devDependencies": {
     "electron": "44.9.3",
@@ -20,11 +21,39 @@
     "appId": "live.rendrr.mac",
     "productName": "Rendrr",
     "copyright": "Rendrr",
-    "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "preload.js", "links.js", "render.js", "offline.html", "package.json"],
-    "extraResources": [{ "from": "vendor/ffmpeg-${arch}", "to": "ffmpeg", "filter": ["ffmpeg", "LICENSE*", "README*"] }],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "links.js",
+      "render.js",
+      "offline.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/ffmpeg-${arch}",
+        "to": "ffmpeg",
+        "filter": [
+          "ffmpeg",
+          "ffmpeg.exe",
+          "LICENSE*",
+          "README*"
+        ]
+      }
+    ],
     "artifactName": "Rendrr-${version}-${arch}.${ext}",
-    "protocols": [{ "name": "Rendrr", "schemes": ["rendrr"] }],
+    "protocols": [
+      {
+        "name": "Rendrr",
+        "schemes": [
+          "rendrr"
+        ]
+      }
+    ],
     "mac": {
       "category": "public.app-category.video",
       "icon": "build/icon.png",
@@ -38,11 +67,39 @@
     "dmg": {
       "title": "Rendrr",
       "iconSize": 112,
-      "window": { "width": 540, "height": 380 },
+      "window": {
+        "width": 540,
+        "height": 380
+      },
       "contents": [
-        { "x": 140, "y": 180 },
-        { "x": 400, "y": 180, "type": "link", "path": "/Applications" }
+        {
+          "x": 140,
+          "y": 180
+        },
+        {
+          "x": 400,
+          "y": 180,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Rendrr-${version}-${arch}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Rendrr",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "uninstallDisplayName": "Rendrr"
     }
   }
 }

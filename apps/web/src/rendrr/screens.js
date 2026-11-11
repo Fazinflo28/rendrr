@@ -985,9 +985,9 @@ function ConnectPage() {
 }
 
 /**
- * Where renders run and where finals go. With the Rendrr Mac app open (and able), renders are made on that Mac and
- * its finals saved to Downloads; otherwise on Rendrr's cloud server, and the AI's finals go to Google Drive. Inside
- * the Mac app, a switch turns rendering on this Mac on or off.
+ * Where renders run and where finals go. With the Rendrr app open on the user's Mac or Windows PC (and able), renders
+ * are made on that computer and its finals saved to Downloads; otherwise on Rendrr's cloud server, and the AI's finals
+ * go to Google Drive. Inside the app, a switch turns rendering on this computer on or off.
  */
 function ExportsCard() {
   const mq = useAsync(() => api.macStatus(), []);
@@ -1003,11 +1003,16 @@ function ExportsCard() {
     <div class="row between"><b class="t-heading">Where renders run</b><${Btn} kind="quiet" size="xs" icon="refresh" aria-label="Refresh" onClick=${mq.reload} /></div>
     <${Async} q=${mq} skeleton=${html`<${Skeleton} card=${false} rows=${2} />`}>${(m) => {
       const onMac = !!(m.online && m.renders);
+      // "Mac" or "PC": the computer the app runs on (its ping says; inside the app, the app itself). Closed and in a
+      // browser, either.
+      const plat = m.online ? (m.platform || "mac") : d ? (d.app === "windows" ? "windows" : "mac") : null;
+      const M = plat === "windows" ? "PC" : "Mac", APP = plat === "windows" ? "Windows app" : plat ? "Mac app" : "app";
+      const openIt = plat ? `Open the Rendrr ${APP}` : "Open the Rendrr app on your Mac or PC";
       return html`
       <div class="list">
-        <div class="li"><${Chip} tone=${onMac ? "brand" : "neutral"} size="sm" id="render-place"><i class="dot on" />${onMac ? "Mac" : "Cloud"}<//><div class="grow"><div class="t" id="render-place-text">${onMac ? `Renders run on ${m.device || "your Mac"}` : "Renders run on Rendrr's cloud server"}</div><div class="sub">${onMac ? "Previews and finals, while the Rendrr Mac app is open" : m.online && m.why ? `The Mac app is open, but ${m.why}` : "Open the Rendrr Mac app to render on your Mac"}</div></div></div>
-        <div class="li"><${Chip} tone=${m.online ? "brand" : "neutral"} size="sm" id="mac-status"><i class=${"dot " + (m.online ? "on" : "")} />${m.online ? "Mac connected" : "Mac app closed"}<//><div class="grow"><div class="t" id="exports-to">${m.online ? "Finals go to " + (m.device ? m.device : "your Mac") : "Finals from your AI go to Google Drive"}</div><div class="sub">${m.online ? "Saved to Downloads" : "Open the Rendrr Mac app to get them in Downloads"}</div></div></div>
-        ${here && html`<div class="li" id="render-here"><div class="grow"><div class="t">Render on this Mac</div><div class="sub" id="render-here-sub">${!here.ready ? (here.why || "Getting ready") : here.busy ? `Rendering now${here.label ? `: ${here.label}` : ""}` : here.enabled ? `On · FFmpeg ${here.ffmpeg || ""}`.trim() : "Off: renders run on Rendrr's cloud server"}</div></div><${Toggle} id="render-here-toggle" on=${!!here.enabled} onChange=${flip} label="Render on this Mac" /></div>`}
+        <div class="li"><${Chip} tone=${onMac ? "brand" : "neutral"} size="sm" id="render-place"><i class="dot on" />${onMac ? M : "Cloud"}<//><div class="grow"><div class="t" id="render-place-text">${onMac ? `Renders run on ${m.device || `your ${M}`}` : "Renders run on Rendrr's cloud server"}</div><div class="sub">${onMac ? `Previews and finals, while the Rendrr ${APP} is open` : m.online && m.why ? `The ${APP} is open, but ${m.why}` : `${openIt} to render on ${plat ? `your ${M}` : "your computer"}`}</div></div></div>
+        <div class="li"><${Chip} tone=${m.online ? "brand" : "neutral"} size="sm" id="mac-status"><i class=${"dot " + (m.online ? "on" : "")} />${m.online ? `${M} connected` : plat ? `${APP[0].toUpperCase() + APP.slice(1)} closed` : "App closed"}<//><div class="grow"><div class="t" id="exports-to">${m.online ? "Finals go to " + (m.device ? m.device : `your ${M}`) : "Finals from your AI go to Google Drive"}</div><div class="sub">${m.online ? "Saved to Downloads" : `${openIt} to get them in Downloads`}</div></div></div>
+        ${here && html`<div class="li" id="render-here"><div class="grow"><div class="t">Render on this ${d.app === "windows" ? "PC" : "Mac"}</div><div class="sub" id="render-here-sub">${!here.ready ? (here.why || "Getting ready") : here.busy ? `Rendering now${here.label ? `: ${here.label}` : ""}` : here.enabled ? `On · FFmpeg ${here.ffmpeg || ""}`.trim() : "Off: renders run on Rendrr's cloud server"}</div></div><${Toggle} id="render-here-toggle" on=${!!here.enabled} onChange=${flip} label=${`Render on this ${d.app === "windows" ? "PC" : "Mac"}`} /></div>`}
       </div>`;
     }}<//>
   </div>`;

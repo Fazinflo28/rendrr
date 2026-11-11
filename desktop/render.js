@@ -1,4 +1,4 @@
-// Renders on this Mac. While Rendrr for Mac is open, Rendrr hands it the encode of each render: a task with the files
+// Renders on this computer (a Mac or a Windows PC). While the Rendrr app is open, Rendrr hands it the encode of each render: a task with the files
 // to fetch (signed links, or small files inline), the FFmpeg runs to make (every path inside the task's own folder),
 // and where to upload what they make. This file checks a task is safe to run, fetches its files (footage kept in a
 // cache, so the next render of the same edit fetches nothing), runs FFmpeg in a fresh folder, reports how far it is,
@@ -14,6 +14,8 @@ const https = require("node:https");
 const { spawn, execFile } = require("node:child_process");
 
 const PROTOCOL = 1;
+const IS_WIN = process.platform === "win32";
+const MACHINE = IS_WIN ? "PC" : "Mac";
 /** FFmpeg features a render may need (the same list as the worker's MAC_FEATURES). */
 const FEATURES = ["ass", "lut3d", "zscale", "tonemap", "vidstabtransform", "minterpolate", "afir", "sendcmd", "libvpx-vp9", "libx264", "libx265", "prores_ks", "ffv1", "palettegen", "paletteuse", "alphamerge"];
 const NAME_CHARS = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
@@ -81,13 +83,14 @@ function checkTask(t, { allowHttp = false } = {}) {
   for (const c of t.commands) {
     if (!Array.isArray(c.args) || c.args.some((a) => typeof a !== "string")) throw bad("bad arguments");
     for (const a of c.args) {
-      if (a.startsWith("/") || a.startsWith("~") || a.includes("\0") || a.split("/").includes("..")) throw bad(`an argument names a path outside the render: ${a.slice(0, 60)}`);
+      if (a.startsWith("/") || a.startsWith("\\") || a.startsWith("~") || a.includes("\0") || a.split(/[\\/]/).includes("..")) throw bad(`an argument names a path outside the render: ${a.slice(0, 60)}`);
       // A protocol (concat:, http:, file:...) could reach outside the render's folder; only FFmpeg's progress pipe.
       if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(a) && a !== "pipe:1" && a !== "pipe:2") throw bad(`an argument names a protocol: ${a.slice(0, 40)}`);
     }
     if (c.graph != null) {
       if (typeof c.graph !== "string" || c.graph.length > 16 << 20) throw bad("bad graph");
-      if (/(^|[='":,\s])\/[A-Za-z]/.test(c.graph) || c.graph.includes("://") || c.graph.includes("..")) throw bad("the graph names a path outside the render");
+      // Also a Windows drive ("C:/", "C\\:\\") or network path ("\\\\server").
+      if (/(^|[='":,\s])\/[A-Za-z]/.test(c.graph) || /(^|[='":,\s])[A-Za-z]\\*:[\\/]/.test(c.graph) || /(^|[='":,\s])\\{2,}[A-Za-z0-9]/.test(c.graph) || c.graph.includes("://") || c.graph.includes("..")) throw bad("the graph names a path outside the render");
     }
   }
   for (const o of t.outputs || []) {
@@ -215,6 +218,19 @@ function adaptArgs(args, major) {
   return args.map((a) => (a === "-filter_complex_script" ? "-/filter_complex" : a === "-filter_script" ? "-/filter" : a));
 }
 
+/**
+ * A file put in the render's folder under its name without copying it: a symbolic link; on Windows (where those need
+ * Developer Mode) a hard link, or, for a file on another drive, a copy. direct: return false instead of copying (the
+ * caller then names the file by its path).
+ */
+async function linkInto(src, dest, { direct = false } = {}) {
+  try { await fsp.symlink(src, dest, "file"); return true; } catch (e) { if (!IS_WIN) throw e; }
+  try { await fsp.link(src, dest); return true; } catch { /* another drive */ }
+  if (direct) return false;
+  await fsp.copyFile(src, dest);
+  return true;
+}
+
 /** A free name in a folder: "name.mp4", then "name (2).mp4"... */
 function freeName(dir, name) {
   const ext = path.extname(name), stem = name.slice(0, name.length - ext.length);
@@ -245,17 +261,19 @@ async function runTask(t, o) {
     const total = (t.inputs || []).reduce((a, i) => a + (i.data == null ? i.size || 0 : 0), 0) + (t.fonts || []).reduce((a, f) => a + (f.size || 0), 0);
     let got = 0;
     const onBytes = (n) => { got += n; state = { ...state, phase: "download", frac: total ? Math.min(1, got / total) : 0 }; say(); };
+    const direct = {}; // an original on another drive of a Windows PC: FFmpeg reads it by its path (the app knows it)
     for (const i of t.inputs || []) {
       const dest = path.join(job, i.name);
       await fsp.mkdir(path.dirname(dest), { recursive: true });
       if (i.data != null) await fsp.writeFile(dest, Buffer.from(i.data, "base64"));
-      // The original kept on this Mac, read where it is (it must still be the same file).
+      // The original kept on this computer, read where it is (it must still be the same file).
       else if (i.local != null) {
         const file = o.localFile ? await o.localFile(String(i.local.videoId), Number(i.local.size)) : null;
-        if (!file) throw new Error("the original of this video is no longer where it was on this Mac (moved, renamed or changed)");
-        await fsp.symlink(file, dest);
+        if (!file) throw new Error(`the original of this video is no longer where it was on this ${MACHINE} (moved, renamed or changed)`);
+        const asArg = t.commands.some((c) => c.args.includes(i.name));
+        if (!(await linkInto(file, dest, { direct: asArg }))) direct[i.name] = file;
       }
-      else if (i.cache) await fsp.symlink(await cached(o.cacheDir, i, onBytes, ac.signal), dest);
+      else if (i.cache) await linkInto(await cached(o.cacheDir, i, onBytes, ac.signal), dest);
       else await download(i.url, dest, { headers: i.headers, size: i.size, onBytes, signal: ac.signal });
     }
     if ((t.fonts || []).length) {
@@ -267,7 +285,9 @@ async function runTask(t, o) {
         if (st && st.size === f.size) { onBytes(f.size); continue; }
         await download(f.url, p, { size: f.size, onBytes, signal: ac.signal });
       }
-      await fsp.symlink(fonts, path.join(job, "fonts"));
+      // A Mac links the fonts folder in; Windows gets its own copy of the (small) font files.
+      if (!IS_WIN) await fsp.symlink(fonts, path.join(job, "fonts"));
+      else { await fsp.mkdir(path.join(job, "fonts")); for (const f of t.fonts) await fsp.copyFile(path.join(fonts, f.name), path.join(job, "fonts", f.name)); }
     }
     // ---- The runs ----
     const major = await ffmpegMajor(o.ffmpeg);
@@ -275,7 +295,7 @@ async function runTask(t, o) {
       if (stop) break;
       let args = c.args;
       if (c.graph != null) { const g = `graph-${k}.txt`; await fsp.writeFile(path.join(job, g), c.graph); args = args.map((a) => (a === "__FILTER_SCRIPT__" ? g : a)); }
-      args = adaptArgs(args, major);
+      args = adaptArgs(args, major).map((a) => direct[a] || a);
       state = { phase: "render", frac: 0, cmd: k, seconds: 0 }; say(true);
       await runFfmpeg(o.ffmpeg, args, { cwd: job, signal: ac.signal, stallSec: t.stallSec || 120, onSeconds: (s) => { state = { ...state, seconds: s, frac: c.seconds ? Math.min(1, s / c.seconds) : 0 }; say(); } });
     }
@@ -289,7 +309,7 @@ async function runTask(t, o) {
       const file = path.join(job, x.name);
       if (!fs.existsSync(file)) throw new Error(`FFmpeg made no ${x.name}`);
       outputs[x.name] = await upload(x.url, file, x.type, (n) => { up += n; state = { ...state, frac: upTotal ? up / upTotal : 1 }; say(); }, ac.signal);
-      // A final is kept on this Mac: in Downloads, under its name.
+      // A final is kept on this computer: in Downloads, under its name.
       if (x.save && o.saveDir) { savedPath = freeName(o.saveDir, x.save); await fsp.copyFile(file, savedPath); }
     }
     await pending;
@@ -300,7 +320,7 @@ async function runTask(t, o) {
   } catch (e) {
     if (stop || e.stopped) return { ok: false, stopped: stop || "stopped" };
     const error = String((e && e.message) || e).slice(0, 480);
-    await report(t, "failed", { error: `the Mac could not render it: ${error}` });
+    await report(t, "failed", { error: `the ${MACHINE} could not render it: ${error}` });
     return { ok: false, error };
   } finally {
     clearInterval(beat);
@@ -309,4 +329,4 @@ async function runTask(t, o) {
   }
 }
 
-module.exports = { PROTOCOL, FEATURES, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs };
+module.exports = { PROTOCOL, FEATURES, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs, linkInto };

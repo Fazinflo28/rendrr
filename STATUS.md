@@ -1424,3 +1424,14 @@ remembers where the file is; Rendrr knows its size, picture and sound (`Video.ma
 then starts with no upload while that Mac is open and can render, and is made there from the file on disk; with the
 app closed, or on another Mac, the original is asked for once, as before, and the AI is told which Mac has it.
 The Mac app's FFmpeg 9 reads a graph from a file with `-/filter_complex`; the app adapts the cloud's runs to it.
+
+## Rendrr for Windows (11 November)
+
+The desktop app now builds for Windows too, from the same code: one-click installers for most PCs (x64) and Windows
+on Arm, made and checked on GitHub (`.github/workflows/desktop-windows.yml`: FFmpeg from BtbN/FFmpeg-Builds, its
+features checked, a real render in the tests, the app opened and its login checked) and published as a Release
+`win-v0.1.<build>` and on app.rendrr.live/download, which now picks the Mac or Windows page by the computer
+(`/download/mac`, `/download/windows`). Everything the Mac app does works on Windows: login through the browser, files
+to Downloads, renders made on the PC while the app is open (the cloud otherwise), originals kept on the PC. Rendrr says
+"PC" and "Rendrr Windows app" for a Windows PC everywhere it said Mac (Settings, the Export window, the Claude card,
+the AI's answers). Not signed with a certificate yet: Windows SmartScreen asks once (More info > Run anyway).

@@ -1,8 +1,9 @@
-// Rendrr for Mac. A native window on the Rendrr web app (app.rendrr.live): the editor is the web app itself, so every
-// UI change on the site shows up here on the next launch or reload, with no new download.
-// The app adds: a Dock icon, Mac menus and shortcuts, files saved straight to Downloads, login through the browser,
-// links to other sites in the default browser, an offline page, full speed while the window is hidden, and renders
-// made on this Mac (render.js: Rendrr hands the app each render's encode while it is open; its own FFmpeg makes it).
+// Rendrr for Mac and Windows. A native window on the Rendrr web app (app.rendrr.live): the editor is the web app
+// itself, so every UI change on the site shows up here on the next launch or reload, with no new download.
+// The app adds: a Dock or taskbar icon, menus and shortcuts, files saved straight to Downloads, login through the
+// browser, links to other sites in the default browser, an offline page, full speed while the window is hidden, and
+// renders made on this computer (render.js: Rendrr hands the app each render's encode while it is open; its own FFmpeg
+// makes it).
 const { app, BrowserWindow, Menu, Notification, ipcMain, screen, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -10,13 +11,24 @@ const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, b
 const os = require("node:os");
 const { execFileSync } = require("node:child_process");
 const render = require("./render");
-// This Mac's name (System Settings › General › About), sent with the app's ping so Rendrr can say which Mac a final went to.
-const deviceName = (() => { let cn = ""; try { cn = execFileSync("scutil", ["--get", "ComputerName"], { timeout: 1500 }).toString(); } catch { /* not macOS */ } return macName(cn, os.hostname()); })();
+const IS_WIN = process.platform === "win32";
+// "Mac" or "PC", for what the app says ("Made on this PC").
+const MACHINE = IS_WIN ? "PC" : "Mac";
+// This computer's name (a Mac's System Settings › General › About; a PC's name), sent with the app's ping so Rendrr can
+// say which computer a final went to.
+const deviceName = (() => {
+  let cn = "";
+  if (IS_WIN) cn = process.env.COMPUTERNAME || "";
+  else try { cn = execFileSync("scutil", ["--get", "ComputerName"], { timeout: 1500 }).toString(); } catch { /* not macOS */ }
+  return macName(cn, os.hostname());
+})();
 
 const DARK = "#0b0c0e";
 const SMOKE_OUT = process.env.RENDRR_SMOKE_OUT; // set by the build check on GitHub: load the app, report, quit
 
 app.setName("Rendrr");
+// Windows: notifications and the taskbar know the app by the id its installer gave its shortcut (electron-builder's appId).
+if (IS_WIN) app.setAppUserModelId("live.rendrr.mac");
 // Google refuses to sign in apps whose user agent says "Electron"; to Google this is plain Chrome.
 app.userAgentFallback = cleanUserAgent(app.userAgentFallback);
 
@@ -36,7 +48,11 @@ function openAuthLink(url) {
   w.webContents.loadURL(target);
   w.show(); w.focus(); app.focus({ steal: true });
 }
+// A Mac hands the link to the open app; Windows starts the app again with the link as an argument (second-instance
+// below), or starts it with the link when it was closed.
 app.on("open-url", (e, url) => { e.preventDefault(); openAuthLink(url); });
+const linkIn = (argv) => (argv || []).find((a) => typeof a === "string" && /^rendrr:\/\//i.test(a)) || null;
+if (IS_WIN && linkIn(process.argv)) openAuthLink(linkIn(process.argv));
 const browserOpened = []; // the build check records instead of opening a browser
 ipcMain.on("rendrr:open-browser", (e, url) => {
   // Only Rendrr's own pages may ask, and only for Rendrr or sign-in pages.
@@ -45,19 +61,25 @@ ipcMain.on("rendrr:open-browser", (e, url) => {
   else shell.openExternal(url).catch(() => {});
 });
 
-// ---- Renders on this Mac (render.js) ----
+// ---- Renders on this computer (render.js) ----
 // The app's own FFmpeg (in its Resources; RENDRR_FFMPEG or the one on the PATH when run from source), checked at start:
-// its version and features go with the web app's ping, so Rendrr only hands this Mac renders it can make.
-const ffmpegPath = () => process.env.RENDRR_FFMPEG || (app.isPackaged ? path.join(process.resourcesPath, "ffmpeg", "ffmpeg") : "ffmpeg");
+// its version and features go with the web app's ping, so Rendrr only hands this computer renders it can make.
+const ffmpegPath = () => process.env.RENDRR_FFMPEG || (app.isPackaged ? path.join(process.resourcesPath, "ffmpeg", IS_WIN ? "ffmpeg.exe" : "ffmpeg") : "ffmpeg");
+// Footage this computer fetched, kept for the next render (up to 20 GB): ~/Library/Caches/Rendrr on a Mac, the local
+// (not roaming) app data on Windows.
+const cacheDir = () => {
+  if (IS_WIN) return path.join(process.env.LOCALAPPDATA || app.getPath("userData"), "Rendrr", "Cache");
+  try { return path.join(app.getPath("cache"), "Rendrr"); } catch { return path.join(app.getPath("userData"), "Cache"); }
+};
 const renderFile = () => path.join(app.getPath("userData"), "render.json");
-const renders = { ready: false, busy: false, version: null, have: [], why: "Checking this Mac's FFmpeg", enabled: true, current: null };
+const renders = { ready: false, busy: false, version: null, have: [], why: `Checking this ${MACHINE}'s FFmpeg`, enabled: true, current: null };
 try { renders.enabled = JSON.parse(fs.readFileSync(renderFile(), "utf8")).enabled !== false; } catch { /* first run: on */ }
 const renderInfo = () => ({ protocol: render.PROTOCOL, ready: renders.ready, enabled: renders.enabled, busy: renders.busy, cpus: os.availableParallelism ? os.availableParallelism() : os.cpus().length, have: renders.have, ffmpeg: renders.version, why: renders.why, label: renders.current });
 // Every Rendrr window hears when this Mac starts or finishes a render (it tells Rendrr straight away).
 const tellWindows = () => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("rendrr:render-state", renderInfo()); };
 async function checkFfmpeg() {
   const p = await render.probeFfmpeg(ffmpegPath());
-  Object.assign(renders, { ready: p.ok && p.have.includes("libx264"), version: p.version, have: p.have, why: p.ok ? (p.have.includes("libx264") ? null : "this Mac's FFmpeg cannot make H.264") : p.why });
+  Object.assign(renders, { ready: p.ok && p.have.includes("libx264"), version: p.version, have: p.have, why: p.ok ? (p.have.includes("libx264") ? null : `this ${MACHINE}'s FFmpeg cannot make H.264`) : p.why });
   tellWindows();
 }
 const fromApp = (e) => linkKind(e.senderFrame?.url || "") === "app";
@@ -69,7 +91,7 @@ ipcMain.handle("rendrr:render-enable", (e, on) => {
   tellWindows();
   return renderInfo();
 });
-// Originals kept on this Mac: footage added in the app stays here (never uploaded); Rendrr knows it by its video and
+// Originals kept on this computer: footage added in the app stays here (never uploaded); Rendrr knows it by its video and
 // size, and a final made here reads the file where it is. Kept in originals.json; one that moved or changed is not used.
 const originalsFile = () => path.join(app.getPath("userData"), "originals.json");
 let originals = {};
@@ -92,7 +114,7 @@ const localFile = async (videoId, size) => {
   return st && st.isFile() && st.size === o.size && st.size === size ? o.path : null;
 };
 
-// A render Rendrr handed this Mac (the web app took it for this user): made in the background, one at a time.
+// A render Rendrr handed this computer (the web app took it for this user): made in the background, one at a time.
 ipcMain.handle("rendrr:render-run", (e, task) => {
   if (!fromApp(e) || !renders.ready || !renders.enabled || renders.busy) return { started: false };
   try { render.checkTask(task); } catch (err) { return { started: false, error: String(err.message || err) }; }
@@ -102,12 +124,12 @@ ipcMain.handle("rendrr:render-run", (e, task) => {
     const v = st.phase === "download" ? 0.1 * (st.frac || 0) : st.phase === "render" ? 0.1 + 0.85 * (st.frac || 0) : 0.95 + 0.05 * (st.frac || 0);
     for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setProgressBar(Math.max(0, Math.min(1, v)));
   };
-  render.runTask(task, { ffmpeg: ffmpegPath(), cacheDir: path.join(app.getPath("cache"), "Rendrr"), workDir: os.tmpdir(), saveDir: app.getPath("downloads"), onState: progress, localFile })
+  render.runTask(task, { ffmpeg: ffmpegPath(), cacheDir: cacheDir(), workDir: os.tmpdir(), saveDir: app.getPath("downloads"), onState: progress, localFile })
     .then((r) => {
       if (r.ok && r.savedPath) {
         if (app.dock) app.dock.downloadFinished(r.savedPath);
-        notify("Made on this Mac", `${path.basename(r.savedPath)} is in Downloads`, () => shell.showItemInFolder(r.savedPath));
-      } else if (!r.ok && !r.stopped) notify("Made on Rendrr's cloud instead", "This Mac could not make it, so Rendrr's cloud server is making it.");
+        notify(`Made on this ${MACHINE}`, `${path.basename(r.savedPath)} is in Downloads`, () => shell.showItemInFolder(r.savedPath));
+      } else if (!r.ok && !r.stopped) notify("Made on Rendrr's cloud instead", `This ${MACHINE} could not make it, so Rendrr's cloud server is making it.`);
     })
     .catch(() => { /* runTask reports its own failures */ })
     .finally(() => {
@@ -126,11 +148,15 @@ function saveBounds(win) {
   try { fs.writeFileSync(boundsFile(), JSON.stringify({ ...win.getNormalBounds(), maximized: win.isMaximized() })); } catch { /* not important */ }
 }
 
+// No title bar: on a Mac the three window buttons sit in the top-left of Rendrr's top bar; on Windows the minimise,
+// maximise and close buttons sit over its top-right (the web app leaves room for either: html.desktop-win).
+const titleBar = IS_WIN
+  ? { titleBarStyle: "hidden", titleBarOverlay: { color: "#131517", symbolColor: "#f7f7f8", height: 47 }, autoHideMenuBar: true }
+  : { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 18, y: 17 } };
 const appWindowOptions = (extra = {}) => ({
   width: 1440, height: 900, minWidth: 1024, minHeight: 640,
   title: "Rendrr",
-  titleBarStyle: "hiddenInset",
-  trafficLightPosition: { x: 18, y: 17 },
+  ...titleBar,
   backgroundColor: DARK,
   webPreferences: {
     preload: path.join(__dirname, "preload.js"),
@@ -217,7 +243,7 @@ app.on("web-contents-created", (_e, wc) => {
   });
 });
 
-// ---- Downloads: straight to ~/Downloads, progress on the Dock icon, a bounce on the Downloads stack when done ----
+// ---- Downloads: straight to Downloads, progress on the Dock or taskbar icon, a bounce on the Downloads stack when done ----
 const downloads = new Set();
 function showProgress() {
   let got = 0, total = 0;
@@ -251,7 +277,8 @@ function watchDownloads(ses) {
 // Rendrr and sign-in pages may use the clipboard, notifications, full screen and files you pick; other sites may not.
 function allowFor(url) { const k = linkKind(url || ""); return k === "app" || k === "auth"; }
 
-// ---- Menus (the Edit menu is what makes Cmd+C / Cmd+V work in text boxes on a Mac) ----
+// ---- Menus (the Edit menu is what makes Cmd+C / Cmd+V work in text boxes on a Mac; on Windows the menu bar is hidden
+// and its shortcuts still work) ----
 function focused() { return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null; }
 function go(p) {
   const w = focused();
@@ -260,18 +287,19 @@ function go(p) {
 }
 function buildMenu() {
   const template = [
-    { label: "Rendrr", submenu: [{ role: "about" }, { type: "separator" }, { role: "services" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, { role: "quit" }] },
+    ...(IS_WIN ? [] : [{ label: "Rendrr", submenu: [{ role: "about" }, { type: "separator" }, { role: "services" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, { role: "quit" }] }]),
     { label: "File", submenu: [
       { label: "New Window", accelerator: "CmdOrCtrl+N", click: () => createWindow() },
       { label: "Open in Browser", click: () => { const w = focused(); if (w) openOutside(w.webContents.getURL()); } },
       { type: "separator" },
       { role: "close" },
+      ...(IS_WIN ? [{ type: "separator" }, { role: "about" }, { role: "quit" }] : []),
     ] },
     { role: "editMenu" },
     { label: "View", submenu: [{ role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" }, { type: "separator" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }] },
     { label: "Go", submenu: [
-      { label: "Back", accelerator: "CmdOrCtrl+[", click: () => { const h = focused()?.webContents.navigationHistory; if (h?.canGoBack()) h.goBack(); } },
-      { label: "Forward", accelerator: "CmdOrCtrl+]", click: () => { const h = focused()?.webContents.navigationHistory; if (h?.canGoForward()) h.goForward(); } },
+      { label: "Back", accelerator: IS_WIN ? "Alt+Left" : "CmdOrCtrl+[", click: () => { const h = focused()?.webContents.navigationHistory; if (h?.canGoBack()) h.goBack(); } },
+      { label: "Forward", accelerator: IS_WIN ? "Alt+Right" : "CmdOrCtrl+]", click: () => { const h = focused()?.webContents.navigationHistory; if (h?.canGoForward()) h.goForward(); } },
       { type: "separator" },
       { label: "Projects", accelerator: "CmdOrCtrl+1", click: () => go("/projects") },
       { label: "Library", accelerator: "CmdOrCtrl+2", click: () => go("/library") },
@@ -283,7 +311,7 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-// ---- Build check on GitHub: open the real app, see that it loaded and knows it is in the Mac app, that its login
+// ---- Build check on GitHub: open the real app, see that it loaded and knows it is in the desktop app, that its login
 // offers the browser (not Google), then quit ----
 function smokeTest(win) {
   const finish = (result) => { try { fs.writeFileSync(SMOKE_OUT, JSON.stringify(result, null, 2)); } catch { /* ignore */ } app.exit(result.ok ? 0 : 1); };
@@ -326,5 +354,8 @@ app.whenReady().then(() => {
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
-app.on("second-instance", () => { const w = focused(); if (w) { if (w.isMinimized()) w.restore(); w.focus(); } });
+app.on("second-instance", (_e, argv) => {
+  if (linkIn(argv)) { openAuthLink(linkIn(argv)); return; } // Windows: the browser handing a login back
+  const w = focused(); if (w) { if (w.isMinimized()) w.restore(); w.focus(); }
+});
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

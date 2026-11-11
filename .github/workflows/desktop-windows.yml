@@ -1,0 +1,129 @@
+# Builds Rendrr for Windows (desktop/) on a Windows machine, tests rendering with the FFmpeg it ships, checks the app
+# opens and loads Rendrr, and publishes the installers (most PCs and Windows on Arm) as a GitHub Release and on
+# Rendrr's download link. Runs when desktop/ changes, or by hand.
+name: Windows app
+
+on:
+  push:
+    branches: [claude/rendrr-backend-mcp-1vbkgg, main]
+    paths: ["desktop/**", ".github/workflows/desktop-windows.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write # GitHub's sign-in token, which Rendrr's API checks before it takes the installers
+
+concurrency:
+  group: windows-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      # The app renders on the PC with its own FFmpeg (render.js): the newest release build (GPL) for each chip from
+      # BtbN/FFmpeg-Builds, with its licence. FFmpeg's source is at ffmpeg.org.
+      - name: Get FFmpeg for each chip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          names=$(gh release view latest -R BtbN/FFmpeg-Builds --json assets -q '.assets[].name')
+          pick() { echo "$names" | grep -E "^ffmpeg-n[0-9]+\.[0-9]+-latest-$1-gpl-[0-9]+\.[0-9]+\.zip$" | sort -V | tail -1 || true; }
+          get() {
+            name=$(pick "$2"); [ -n "$name" ] || name="ffmpeg-master-latest-$2-gpl.zip"
+            echo "FFmpeg for $1: $name"
+            rm -rf "vendor/ffmpeg-$1" "$RUNNER_TEMP/ff-$1"; mkdir -p "vendor/ffmpeg-$1" "$RUNNER_TEMP/ff-$1"
+            gh release download latest -R BtbN/FFmpeg-Builds -p "$name" -D "$RUNNER_TEMP" --clobber
+            7z x -y -o"$RUNNER_TEMP/ff-$1" "$RUNNER_TEMP/$name" > /dev/null
+            f=$(find "$RUNNER_TEMP/ff-$1" -type f -name ffmpeg.exe | head -1); [ -n "$f" ]
+            cp "$f" "vendor/ffmpeg-$1/ffmpeg.exe"
+            l=$(find "$RUNNER_TEMP/ff-$1" -maxdepth 2 -type f -name 'LICENSE*' | head -1 || true); [ -z "$l" ] || cp "$l" "vendor/ffmpeg-$1/LICENSE.txt"
+            printf 'FFmpeg (GPL) from https://github.com/BtbN/FFmpeg-Builds (%s)\r\nFFmpeg source: https://ffmpeg.org/download.html\r\n' "$name" > "vendor/ffmpeg-$1/README.txt"
+          }
+          get x64 win64
+          get arm64 winarm64
+          ls -la vendor/*
+
+      - name: Check FFmpeg has what renders use
+        run: node scripts/check-ffmpeg.js "$(cygpath -w "$PWD/vendor/ffmpeg-x64/ffmpeg.exe")"
+
+      - name: Test the link rules, and rendering on this PC with the app's FFmpeg
+        run: RENDRR_FFMPEG="$(cygpath -w "$PWD/vendor/ffmpeg-x64/ffmpeg.exe")" npm test
+
+      - name: Set the version (0.1.<build number>)
+        run: npm version "0.1.${{ github.run_number }}" --no-git-tag-version
+
+      - name: Build the installers (most PCs, then Windows on Arm)
+        run: |
+          npx electron-builder --win nsis --x64 --publish never
+          npx electron-builder --win nsis --arm64 --publish never
+          ls -la dist
+
+      - name: Check the app carries its FFmpeg
+        run: |
+          ls dist/win-unpacked/resources/ffmpeg dist/win-arm64-unpacked/resources/ffmpeg
+          dist/win-unpacked/resources/ffmpeg/ffmpeg.exe -hide_banner -version | head -1
+
+      - name: Open the app and load Rendrr
+        run: |
+          OUT="$RUNNER_TEMP/smoke.json"
+          RENDRR_SMOKE_OUT="$(cygpath -w "$OUT")" timeout 180 ./dist/win-unpacked/Rendrr.exe || true
+          cat "$OUT"
+          node -e "const r = require(process.argv[1]); if (!r.ok) { console.error('The app did not load Rendrr properly'); process.exit(1); }" "$(cygpath -w "$OUT")"
+
+      - name: Name the installers
+        run: |
+          V=$(node -p "require('./package.json').version")
+          mkdir -p out
+          cp "dist/Rendrr-$V-x64-setup.exe" out/Rendrr-Windows-x64.exe
+          cp "dist/Rendrr-$V-arm64-setup.exe" out/Rendrr-Windows-Arm.exe
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rendrr-Windows
+          path: desktop/out/*.exe
+          retention-days: 30
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          V=$(node -p "require('./package.json').version")
+          gh release create "win-v$V" out/Rendrr-Windows-x64.exe out/Rendrr-Windows-Arm.exe \
+            --target "$GITHUB_SHA" --title "Rendrr for Windows $V" --notes-file RELEASE_NOTES_WINDOWS.md --latest=false
+
+      # The public download link (api.rendrr.live/download/windows, app.rendrr.live/download on a PC): the installers go
+      # to Rendrr's storage, signed in with this workflow's GitHub OIDC token (no stored secret). A fresh token for each
+      # file; the API may still be deploying, so each upload is tried a few times.
+      - name: Put the installers on Rendrr's download link
+        run: |
+          V=$(node -p "require('./package.json').version")
+          for pair in x64:Rendrr-Windows-x64.exe arm64:Rendrr-Windows-Arm.exe; do
+            chip=${pair%%:*}; file=${pair#*:}
+            for try in 1 2 3 4 5 6; do
+              TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=rendrr-downloads" | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).value")
+              if curl -fsS --max-time 900 -X PUT -H "Authorization: Bearer $TOKEN" -H "content-type: application/octet-stream" -T "out/$file" "https://api.rendrr.live/download/windows/$chip?version=$V"; then echo; break; fi
+              if [ "$try" = 6 ]; then echo "Could not put $file on the download link"; exit 1; fi
+              echo "Upload of $file failed (try $try), trying again in 60 s"; sleep 60
+            done
+          done
+          echo "Download page: https://api.rendrr.live/download/windows"

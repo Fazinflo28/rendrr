@@ -91,7 +91,7 @@ async function followRender(started: any, label: string, minutes: number, onProg
   // Live stream first; if it drops, fall back to polling until the render ends.
   try {
     await readEvents(`/renders/${enc(id)}/events`, (ev, data) => {
-      if (ev === "progress") report?.({ step: data.step, steps: data.steps?.length ? data.steps : steps, percent: data.percent, etaSec: data.etaSec ?? null, quality: started.quality, on: data.on || "cloud", device: data.device ?? null });
+      if (ev === "progress") report?.({ step: data.step, steps: data.steps?.length ? data.steps : steps, percent: data.percent, etaSec: data.etaSec ?? null, quality: started.quality, on: data.on || "cloud", device: data.device ?? null, platform: data.platform || null });
       if (ev === "done" || ev === "failed") { final = data; return true; }
     });
   } catch { /* poll below */ }
@@ -103,7 +103,7 @@ async function followRender(started: any, label: string, minutes: number, onProg
     // Still waiting its turn behind other renders: its own limit starts when it starts, so the app keeps waiting.
     if (s.status === "queued") wait0 = Math.max(wait0, Date.now() + (Number(started.limitMs) || minutes * 60_000));
     if (s.status === "done" || s.status === "failed") final = s;
-    else report?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent, etaSec: s.etaSec ?? null, quality: started.quality, on: s.where?.renders || "cloud", device: s.where?.device ?? null });
+    else report?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent, etaSec: s.etaSec ?? null, quality: started.quality, on: s.where?.renders || "cloud", device: s.where?.device ?? null, platform: s.where?.platform || null });
   }
   if (!final) throw fail(label + " took too long. Try again.", "timeout");
   if (final.status === "failed") throw fail(final.error || "Render did not finish. Nothing was lost. Try again.", final.code);
@@ -431,10 +431,11 @@ export const api: any = {
   },
   // The Rendrr Mac app: it is open (every 20 s, with what it can render), the finals your AI exported to it, and
   // taking one to save.
-  macPing: (version: string, device = "", render: any = null) => post("/desktop/ping", { version, device, ...(render ? { render } : {}) }),
+  // platform: "windows" from the Rendrr Windows app (a Mac app sends "mac").
+  macPing: (version: string, device = "", render: any = null, platform = "mac") => post("/desktop/ping", { version, device, platform, ...(render ? { render } : {}) }),
   // Renders waiting for this Mac, and taking one (its files, runs and token come back for the Mac app to make it).
   macTasks: async () => { try { return ((await get("/desktop/tasks")) as any).tasks || []; } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },
-  macClaimTask: (id: string, device = "") => post(`/desktop/tasks/${enc(id)}/claim`, { device }) as Promise<{ task: any }>,
+  macClaimTask: (id: string, device = "", platform = "mac") => post(`/desktop/tasks/${enc(id)}/claim`, { device, platform }) as Promise<{ task: any }>,
   // Whether the Rendrr Mac app is open (on which Mac), whether renders are made on it, and where the AI's finals go.
   macStatus: async () => { try { return await get("/desktop/status"); } catch (e: any) { if (isMissingRoute(e)) return { online: false, device: null, version: null, seenAt: null }; throw e; } },
   macExports: async () => { try { return await get("/desktop/exports"); } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },

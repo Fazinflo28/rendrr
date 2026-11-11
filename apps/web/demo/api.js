@@ -206,7 +206,7 @@ Object.assign(api, {
     return reference ? api.updateProject(p.id, { reference }) : p;
   },
   // The Mac app's exports (a test fills globalThis.__demoMacExports): one claim per final.
-  macPing: async (version, device, render) => { globalThis.__demoMacPings = (globalThis.__demoMacPings || 0) + 1; globalThis.__demoMacPing = { version, device, render: render || null }; return { ok: true }; },
+  macPing: async (version, device, render, platform) => { globalThis.__demoMacPings = (globalThis.__demoMacPings || 0) + 1; globalThis.__demoMacPing = { version, device, platform: platform || "mac", render: render || null }; return { ok: true }; },
   macStatus: async () => globalThis.__demoMac || { online: false, device: null, version: null, seenAt: null, renders: false, why: null },
   // Renders waiting for this Mac (a test fills globalThis.__demoMacTasks); a claim hands back the task once.
   macTasks: async () => (globalThis.__demoMacTasks || []).filter((t) => !t.claimed),

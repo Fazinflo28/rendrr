@@ -83,7 +83,7 @@ function DesktopLogin() {
   if (state === "cancelled") return card(html`<h1>Cancelled</h1><p>The app was not logged in. You can close this tab.</p>`);
   if (state === "error") return card(html`<h1>That did not work</h1><p>${msg}</p><p class="dl-note">Open the Rendrr app and click <b>Log in with your browser</b> again.</p>`);
   return card(html`<h1>Log in to the Rendrr app?</h1>
-    <p>You are logged in as <b>${user.email || user.name}</b>. Allow the Rendrr app on this Mac to log in to the same account.</p>
+    <p>You are logged in as <b>${user.email || user.name}</b>. Allow the Rendrr app on this computer to log in to the same account.</p>
     <div class="dl-row"><${Btn} id="dl-allow" disabled=${state === "allowing"} onClick=${allow}>${state === "allowing" ? "One moment…" : "Allow"}<//><${Btn} kind="secondary" id="dl-cancel" onClick=${() => setState("cancelled")}>Cancel<//></div>
     <p class="dl-note">Only click Allow if you just clicked <b>Log in with your browser</b> in the Rendrr app.</p>`);
 }
@@ -281,7 +281,7 @@ function App() {
   <//><//>`;
 }
 
-// In the Mac app: tell Rendrr the app is open (so your AI exports finals to this Mac), and save each final your AI
+// In the Mac or Windows app: tell Rendrr the app is open (so your AI exports finals to this computer), and save each final your AI
 // exported here to Downloads as soon as it is done (the app saves file links straight to Downloads, with the Dock's
 // progress). One window takes each final, so two windows do not save it twice.
 function useMacExports(user, toast) {
@@ -291,7 +291,7 @@ function useMacExports(user, toast) {
     let live = true;
     const tick = async () => {
       try {
-        await api.macPing(d.version || "", d.device || "", d.render ? await d.render.info().catch(() => null) : null);
+        await api.macPing(d.version || "", d.device || "", d.render ? await d.render.info().catch(() => null) : null, d.app === "windows" ? "windows" : "mac");
         for (const x of await api.macExports()) {
           if (!live || (!x.url && !x.failed)) continue;
           const { claimed } = await api.macClaim(x.renderId);
@@ -304,12 +304,12 @@ function useMacExports(user, toast) {
     tick();
     const t = setInterval(tick, 20_000);
     // The Mac starting or finishing a render (or rendering turned on or off) is told to Rendrr at once.
-    const off = d.render?.onState ? d.render.onState((info) => { api.macPing(d.version || "", d.device || "", info || null).catch(() => {}); }) : null;
+    const off = d.render?.onState ? d.render.onState((info) => { api.macPing(d.version || "", d.device || "", info || null, d.app === "windows" ? "windows" : "mac").catch(() => {}); }) : null;
     return () => { live = false; clearInterval(t); if (off) off(); };
   }, [user?.id]);
 }
 
-// In the Mac app: renders are made on this Mac. Every few seconds, while it can render and is free, this takes the
+// In the Mac or Windows app: renders are made on this computer. Every few seconds, while it can render and is free, this takes the
 // next render Rendrr is holding for it (the cloud prepared it) and hands it to the app, which fetches the files, runs
 // FFmpeg, uploads the result and reports to Rendrr itself. One window takes each (the claim); one at a time.
 function useMacRenders(user, toast) {
@@ -325,10 +325,10 @@ function useMacRenders(user, toast) {
         if (!info || !info.ready || !info.enabled || info.busy) return;
         const next = (await api.macTasks())[0];
         if (!next) return;
-        const { task } = await api.macClaimTask(next.id, d.device || "");
+        const { task } = await api.macClaimTask(next.id, d.device || "", d.app === "windows" ? "windows" : "mac");
         if (!task) return;
         const r = await d.render.run(task);
-        if (r?.started) toast(`Making ${next.label} on this Mac`, { icon: "laptop", tone: "brand" });
+        if (r?.started) toast(`Making ${next.label} on this ${d.app === "windows" ? "PC" : "Mac"}`, { icon: "laptop", tone: "brand" });
       } catch { /* offline or signed out: the next tick tries again */ }
       finally { busy = false; }
     };

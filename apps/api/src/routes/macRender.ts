@@ -39,7 +39,8 @@ export default async function macRender(app: FastifyInstance) {
     a.get("/desktop/tasks", async (req) => ({ tasks: await listMacTasks(req.user!.id) }));
     a.post("/desktop/tasks/:id/claim", async (req) => {
       const id = idOf(req);
-      const got = id ? await claimMacTask(req.user!.id, id, deviceName(String((req.body as { device?: unknown } | null)?.device ?? ""))) : null;
+      const b = (req.body as { device?: unknown; platform?: unknown } | null) ?? {};
+      const got = id ? await claimMacTask(req.user!.id, id, deviceName(String(b.device ?? "")), String(b.platform ?? "")) : null;
       return { task: got ? await macManifest(got.task, got.token, env().PUBLIC_API_URL) : null };
     });
   });

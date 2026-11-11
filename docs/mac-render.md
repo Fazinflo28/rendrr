@@ -1,6 +1,9 @@
-# Renders on the user's Mac
+# Renders on the user's Mac or Windows PC
 
-While Rendrr for Mac is open, signed in and able to render, previews, finals and samples are made on that Mac. With
+While Rendrr for Mac or Rendrr for Windows is open, signed in and able to render, previews, finals and samples are made
+on that computer. (Inside Rendrr the computer is "mac" whichever it is: task keys, `Render.made.on`; the app's ping,
+the claim, `Render.made`, `delivery` and `Video.macOriginal` carry `platform: "mac" | "windows"`, and every text says
+"Mac" or "PC" by it: `packages/shared/src/where.ts` `machineWord`, `desktopAppName`.) With
 the app closed, or when the Mac cannot take a render, Rendrr's cloud server makes it as before. Nothing ever waits on a
 Mac that has gone.
 
@@ -36,6 +39,12 @@ Mac goes, it fails with "need-original" and the original is asked for once, as b
 
 FFmpeg 7 and later read a graph file with `-/filter_complex` (FFmpeg 9 dropped `-filter_complex_script`): the app
 adapts the cloud's runs to its own FFmpeg (`render.adaptArgs`).
+
+## Windows
+
+The same app and protocol. The Windows build bundles FFmpeg from BtbN/FFmpeg-Builds (`ffmpeg.exe` in Resources);
+`render.js` links files with hard links (symbolic links need Developer Mode), copies the caption fonts, names an
+original on another drive by its path, and also refuses drive (`C:`) and network (`\\\\server`) paths in a task.
 
 ## Where it says so
 

@@ -3,7 +3,7 @@
 // tables as the editor's (the Comments tab and the markers show them, and get_comments reads them for the AI).
 import { AppError, applyTimelineChange, notFound, signGet } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
-import { whereShort, type AppComment, type AppFolderCard, type AppOpen, type AppProjectCard, type AppProjectsPage, type AppProjectView } from "@rendrr/shared";
+import { desktopAppName, machineWord, whereShort, type RenderWhere, type AppComment, type AppFolderCard, type AppOpen, type AppProjectCard, type AppProjectsPage, type AppProjectView } from "@rendrr/shared";
 import { macStatus, renderWhere } from "./macExport";
 import { getOwnedProject } from "./projects";
 import { renderResult, renderStatus, startRender } from "./render";
@@ -11,6 +11,9 @@ import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
 import { createReviewLink } from "../routes/reviews";
 import { samplesView } from "./samples";
 import type { ToolCtx, ToolOut } from "../tools";
+
+/** "Mac" or "PC" when a render was made on the user's computer (the card's chip says "PC render"), else nothing. */
+const machineOf = (w: RenderWhere | null | undefined) => (w && w.renders === "mac" ? machineWord(w.platform) : undefined);
 
 const WEB = () => (process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "") || null;
 const LINK_SECONDS = 6 * 3600;
@@ -105,10 +108,10 @@ export async function appProject(userId: string, projectId: string, renderId?: s
   ].sort((a, b) => a.time - b.time || a.at - b.at);
   return {
     project: { id: p.id, name: p.name, folder: folder?.name ?? "", folderId: p.folderId, aspect: p.aspect, status: p.status, version, updated: p.updatedAt.getTime(), seconds: p.outputSeconds || null, editorUrl: WEB() ? `${WEB()}/editor/${p.id}` : null },
-    preview: shown?.outputKey && res ? { renderId: shown.id, version: shown.version, kind: shown.kind === "final" ? "final" : "preview", url: await signGet(shown.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), download: res.downloadUrl!, fileName: res.fileName, seconds: shown.seconds, quality: shown.quality ?? (shown.kind === "final" ? "1080p" : "540p"), at: shown.createdAt.getTime(), where: whereShort(renderWhere(shown), shown.kind) } : null,
+    preview: shown?.outputKey && res ? { renderId: shown.id, version: shown.version, kind: shown.kind === "final" ? "final" : "preview", url: await signGet(shown.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), download: res.downloadUrl!, fileName: res.fileName, seconds: shown.seconds, quality: shown.quality ?? (shown.kind === "final" ? "1080p" : "540p"), at: shown.createdAt.getTime(), where: whereShort(renderWhere(shown), shown.kind), machine: machineOf(renderWhere(shown)) } : null,
     versions: versions.map((r) => ({ renderId: r.id, version: r.version, kind: r.kind === "final" ? "final" as const : "preview" as const, quality: r.quality ?? (r.kind === "final" ? "1080p" : "540p"), at: r.createdAt.getTime() })),
-    rendering: live && st ? { renderId: live.id, version: live.version, percent: Math.round(st.percent ?? 0), step: st.steps[st.step] ?? null, etaSec: st.etaSec, queued: st.status === "queued", kind: live.kind === "final" ? "final" : "preview", where: whereShort(st.where, live.kind) } : null,
-    mac: { online: mac.online, device: mac.device, renders: !!mac.renders },
+    rendering: live && st ? { renderId: live.id, version: live.version, percent: Math.round(st.percent ?? 0), step: st.steps[st.step] ?? null, etaSec: st.etaSec, queued: st.status === "queued", kind: live.kind === "final" ? "final" : "preview", where: whereShort(st.where, live.kind), machine: machineOf(st.where) } : null,
+    mac: { online: mac.online, device: mac.device, renders: !!mac.renders, platform: mac.platform ?? "mac" },
     // A failed render is only news while nothing newer worked.
     failed: failed && (!done || failed.createdAt > done.createdAt) && (!live || failed.createdAt > live.createdAt) ? { version: failed.version, error: failed.error || "The render failed." } : null,
     comments,
@@ -128,7 +131,7 @@ function openText(page: AppProjectsPage | null, open: AppProjectView | null): st
   const nf = page?.folders?.length ?? 0;
   if (!open) return `Showing the Rendrr app: ${nf} ${nf === 1 ? "project" : "projects"}, ${page?.total ?? 0} ${page?.total === 1 ? "edit" : "edits"} (the user opens a project to see its videos). Newest: ${(page?.projects ?? []).slice(0, 5).map((p) => `${p.name} (${p.id}, v${p.version}${p.openComments ? `, ${p.openComments} open comments` : ""})`).join("; ") || "none"}.`;
   const o = open.comments.filter((c) => !c.resolved).length;
-  return `Showing "${open.project.name}" (${open.project.id}) in the Rendrr app, v${open.project.version}; ${open.preview ? `preview v${open.preview.version}` : "no preview yet"}${open.rendering ? `, rendering ${open.rendering.kind === "final" ? "the final of " : ""}v${open.rendering.version} (${open.rendering.percent}%) on Rendrr's cloud server` : ""}; ${o} open ${o === 1 ? "comment" : "comments"} (get_comments reads them). The Rendrr Mac app is ${open.mac?.online ? `open${open.mac.device ? ` on "${open.mac.device}"` : ""}: finals go to that Mac's Downloads` : "not open: finals go to Google Drive or a download"}.`;
+  return `Showing "${open.project.name}" (${open.project.id}) in the Rendrr app, v${open.project.version}; ${open.preview ? `preview v${open.preview.version}` : "no preview yet"}${open.rendering ? `, rendering ${open.rendering.kind === "final" ? "the final of " : ""}v${open.rendering.version} (${open.rendering.percent}%) on Rendrr's cloud server` : ""}; ${o} open ${o === 1 ? "comment" : "comments"} (get_comments reads them). ${open.mac?.online ? `The ${desktopAppName(open.mac.platform)} is open${open.mac.device ? ` on "${open.mac.device}"` : ""}: finals go to that ${machineWord(open.mac.platform)}'s Downloads` : "The Rendrr app (Mac or Windows) is not open: finals go to Google Drive or a download"}.`;
 }
 
 /**

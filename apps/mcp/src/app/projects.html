@@ -832,12 +832,15 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     // Rendrr's cloud server; a final says where its file went; and whether the Mac app is open (renders then run there,
     // and the AI's finals land in that Mac's Downloads).
     const macOn = v.mac && v.mac.online;
-    const macWords = macOn ? "The Rendrr Mac app is open" + (v.mac.device ? " on " + v.mac.device : "") + (v.mac.renders ? ": renders are made on that Mac and finals saved to its Downloads." : ": finals your AI exports are saved to that Mac's Downloads.") : "The Rendrr Mac app is not open: renders run on Rendrr's cloud server, and finals your AI exports go to Google Drive or a download.";
+    // "Mac" or "PC": the computer the Rendrr app runs on (the Windows app says so), or the one that made the render shown.
+    const M = macOn && v.mac.platform === "windows" ? "PC" : "Mac", APP = M === "PC" ? "Rendrr Windows app" : "Rendrr Mac app";
+    const macWords = macOn ? "The " + APP + " is open" + (v.mac.device ? " on " + v.mac.device : "") + (v.mac.renders ? ": renders are made on that " + M + " and finals saved to its Downloads." : ": finals your AI exports are saved to that " + M + "'s Downloads.") : "The Rendrr app (Mac or Windows) is not open: renders run on Rendrr's cloud server, and finals your AI exports go to Google Drive or a download.";
     const shownWhere = shownV && shownV.where ? shownV.where : "Made on Rendrr's cloud server";
     const madeOnMac = /^Made on (?!Rendrr's cloud server)/.test(shownWhere);
-    const whereChip = h("span", { class: "chip mini", id: "where-chip", title: shownWhere + ". " + (madeOnMac ? "Made by the Rendrr Mac app on that Mac. " : "Made on Rendrr's cloud server, not on your computer. ") + macWords },
-      madeOnMac ? (shownV.kind === "final" ? "Mac → Downloads" : "Mac render") : shownV && shownV.kind === "final" && shownV.where ? shownWhere.replace("Made in the cloud · ", "Cloud → ") : "Cloud render");
-    const mac = macOn ? h("span", { class: "chip mini ok", id: "mac-chip", title: macWords }, h("i", {}), "Mac connected") : null;
+    const madeM = (shownV && shownV.machine) || M;
+    const whereChip = h("span", { class: "chip mini", id: "where-chip", title: shownWhere + ". " + (madeOnMac ? "Made by the Rendrr app on that " + madeM + ". " : "Made on Rendrr's cloud server, not on your computer. ") + macWords },
+      madeOnMac ? (shownV.kind === "final" ? madeM + " → Downloads" : madeM + " render") : shownV && shownV.kind === "final" && shownV.where ? shownWhere.replace("Made in the cloud · ", "Cloud → ") : "Cloud render");
+    const mac = macOn ? h("span", { class: "chip mini ok", id: "mac-chip", title: macWords }, h("i", {}), M + " connected") : null;
     const top = h("div", { class: "row top" }, back,
       h("div", { class: "grow" }, name, h("div", { class: "meta row" }, h("span", { class: "what" }, [p.folder, "v" + p.version, p.status, p.aspect].filter(Boolean).join(" · ")), whereChip, mac)),
       h("div", { class: "acts" }, pick,
