@@ -21,17 +21,23 @@ const NAME_CHARS = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
 const NAME = { test: (n) => typeof n === "string" && NAME_CHARS.test(n) && !n.split("/").some((p) => p === "." || p === "..") };
 const FILE = /^[^/\\:\0]{1,200}$/;
 
+/** Which kind of thing each feature is, so FFmpeg can be asked about it by name (the same on every FFmpeg version). */
+const KIND = { libx264: "encoder", libx265: "encoder", prores_ks: "encoder", ffv1: "encoder", "libvpx-vp9": "decoder" };
+
 /** What this Mac's FFmpeg is: its version and which FEATURES it has (ok false: it does not run). */
 async function probeFfmpeg(ffmpeg) {
-  const out = (args) => new Promise((resolve) => execFile(ffmpeg, args, { maxBuffer: 8 << 20, timeout: 20000 }, (e, so) => resolve(e ? null : String(so))));
+  const out = (args) => new Promise((resolve) => execFile(ffmpeg, args, { maxBuffer: 8 << 20, timeout: 20000 }, (e, so, se) => resolve(e && !so && !se ? null : `${so || ""}\n${se || ""}`)));
   const v = await out(["-hide_banner", "-version"]);
-  if (!v) return { ok: false, version: null, have: [], why: "FFmpeg is missing from this app" };
-  const names = new Set();
-  for (const list of await Promise.all([out(["-hide_banner", "-filters"]), out(["-hide_banner", "-encoders"]), out(["-hide_banner", "-decoders"])])) {
-    for (const line of String(list || "").split("\n")) { const m = line.match(/^\s*[A-Z.|]{3,6}\s+([A-Za-z0-9_-]+)\s/); if (m) names.add(m[1]); }
-  }
+  if (!v || !/ffmpeg version/.test(v)) return { ok: false, version: null, have: [], why: "FFmpeg is missing from this app" };
+  // "-h filter=lut3d" answers "Filter lut3d ..." when it has it, "Unknown filter" when not.
+  const have = [];
+  await Promise.all(FEATURES.map(async (f) => {
+    const kind = KIND[f] || "filter";
+    const t = await out(["-hide_banner", "-h", `${kind}=${f}`]);
+    if (t && new RegExp(`^${kind[0].toUpperCase()}${kind.slice(1)} ${f.replace(/-/g, "\\-")}\\b`, "m").test(t)) have.push(f);
+  }));
   const version = (v.match(/ffmpeg version (\S+)/) || [])[1] || null;
-  return { ok: true, version, have: FEATURES.filter((f) => names.has(f)), why: null };
+  return { ok: true, version, have: FEATURES.filter((f) => have.includes(f)), why: null };
 }
 
 function bad(why) { const e = new Error(why); e.badTask = true; return e; }
