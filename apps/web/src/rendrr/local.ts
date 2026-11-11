@@ -258,6 +258,18 @@ export function filesFromDrop(dt: DataTransfer | null | undefined): Promise<File
   return Promise.all(entries.map((e: any) => walk(e, ""))).then(() => out);
 }
 
+/**
+ * In the Rendrr Mac app: the original stays on this Mac. The app remembers where the file is and reads what it is;
+ * Rendrr is told (its size, picture and sound), so a final made on this Mac reads it there and it is never uploaded.
+ */
+function keepOnMac(videoId: string, file: File) {
+  const d = isBrowser ? (window as any).rendrrDesktop : null;
+  if (!d?.keepOriginal) return;
+  d.keepOriginal(videoId, file)
+    .then((info: any) => (info ? post(`/videos/${enc(videoId)}/mac-original`, { device: d.device || "", ...info }) : null))
+    .catch(() => { /* an older server or a file the app cannot read: the original is asked for once, as before */ });
+}
+
 export const localJobs = {
   /** Call synchronously inside a drop event: remembers file handles where the browser offers them. */
   capture(dt: DataTransfer | null | undefined) {
@@ -270,6 +282,7 @@ export const localJobs = {
   },
   hold(videoId: string, file: File) {
     files.set(videoId, file);
+    keepOnMac(videoId, file);
     Promise.all(pendingHandles).then((hs) => { const h = hs.find((x) => x && x.name === file.name); if (h) saveHandle(videoId, h); });
   },
   has: (videoId: string) => files.has(videoId) || handles.has(videoId),
@@ -293,6 +306,7 @@ export const localJobs = {
     const { file, handle } = await pickFile();
     if (expectedName && file.name !== expectedName) throw fail(`That is not the same file. We need '${expectedName}'.`);
     files.set(videoId, file);
+    keepOnMac(videoId, file);
     if (handle) saveHandle(videoId, handle);
     return file;
   },

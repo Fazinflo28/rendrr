@@ -1,6 +1,6 @@
 import { AppError, deleteObjects, deletePrefix, drive, enqueue, env, features, headObject, notFound, redis, signGet, signPut, type ProxyJob, type AnalyzeJob, encrypt } from "@rendrr/core";
 import { prisma, type Video } from "@rendrr/db";
-import { breakdownAsText, BUSY_STATUSES, DAY_MS, DriveAddInput, DriveFolderImportInput, LIBRARY_FOLDER_MAX_DEPTH, FolderProjectInput, LibraryFolderInput, LibraryFolderPatchInput, MoveVideosInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
+import { breakdownAsText, BUSY_STATUSES, deviceName, macOriginalOf, DAY_MS, DriveAddInput, DriveFolderImportInput, LIBRARY_FOLDER_MAX_DEPTH, FolderProjectInput, LibraryFolderInput, LibraryFolderPatchInput, MoveVideosInput, LocalCompleteInput, LocalFilesInput, LocalProgressInput, PREFIX, PREVIEW_RETENTION_DAYS, ReconnectInput, SampleAddInput, VideoPatchInput, fmtSize, orientationOf, type Breakdown, type Transcript, type VideoKind } from "@rendrr/shared";
 import { createHmac } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { isWebOrigin } from "../origins";
@@ -233,6 +233,18 @@ export default async function library(app: FastifyInstance) {
       } });
       await enqueue<ProxyJob>("proxy", { videoId: v.id });
       return [await videoOut(v)];
+    });
+
+    // ---------------- the original kept on the user's Mac (added in the Rendrr Mac app, never uploaded) ----------------
+    a.post("/videos/:id/mac-original", async (req) => {
+      const v = await prisma.video.findFirst({ where: { id: (req.params as { id: string }).id, userId: req.user!.id } });
+      if (!v) throw notFound("video");
+      if (v.source !== "local") return { kept: false };
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      const mo = macOriginalOf({ macOriginal: { ...b, device: deviceName(String(b.device ?? "")), at: Date.now() } });
+      if (!mo) throw new AppError("That does not describe a video file.", 400, "bad-request");
+      await prisma.video.update({ where: { id: v.id }, data: { macOriginal: mo } });
+      return { kept: true };
     });
 
     // ---------------- local files: the browser makes the preview, we only receive it ----------------

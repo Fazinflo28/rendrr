@@ -150,6 +150,42 @@ describe("renders made on the user's Mac", { skip: !ready && "needs DATABASE_URL
     assert.equal(macRes.status === "fulfilled" && macRes.value.stopped, "stopped", "the Mac stopped when told");
   });
 
+  it("a final from an original that stays on the Mac: planned from the preview copy, made from the Mac's own file, nothing uploaded", async () => {
+    // The Mac's disk: the original, at 1280x720 (its preview copy in the cloud is 640x360).
+    const disk = await mkdtemp(join(tmpdir(), "mac-disk-")), job = await mkdtemp(join(tmpdir(), "mac-job2-"));
+    const original = join(disk, "Talk original.mov");
+    await ff(["-f", "lavfi", "-i", `testsrc2=s=1280x720:r=30:d=${SECONDS}`, "-f", "lavfi", "-i", `sine=f=440:d=${SECONDS}`, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-f", "mov", original]);
+    const osize = (await stat(original)).size;
+    await ff(["-i", original, "-vf", "scale=640:360", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-f", "mp4", join(job, "source")]);
+    core.noteOrigin(join(job, "source"), `${PREFIX.tests}mac-${run}/proxy.mp4`, { size: (await stat(join(job, "source"))).size });
+    const big = { width: 1280, height: 720, fps: 30, seconds: SECONDS, hasAudio: true };
+    const ctx = { videoId: "v", transcript: [], silences: [], sceneCuts: [], duration: SECONDS, getStyle: () => undefined, getVideo: () => undefined, getGraphic: () => undefined } as never;
+    const snap = applyOp({ timeline: buildInitialTimeline([], SECONDS, "clean", [], "v"), name: "e", aspect: "16:9", styleId: "s2" } as never, { op: "batch", ops: [{ op: "set_captions", on: false }, { op: "set_audio", loudness: null }] } as never, ctx).snap;
+    const fplan = planRender({ kind: "final", snapshot: snap, transcript: [], source: big, videoId: "v" });
+    const ffiles = { source: join(job, "source"), output: join(job, "out.mp4"), broll: {}, graphics: {}, graphicSeconds: {}, audio: {}, videos: {}, under: {}, looks: {} };
+    const a = ffmpegArgs(fplan, ffiles as never, big, { threads: 4, filterThreads: 2, inputThreads: 8 });
+    const key = `${PREFIX.tests}mac-${run}/final.mp4`;
+    keys.push(key);
+    const macSources = new Map([[join(job, "source"), { videoId: "vid-orig", size: osize }]]);
+    const { spec } = await macTaskFor({ renderId: `r5-${run}`, userId, kind: "final", label: "Final v1", dir: job, runs: [{ args: a.args, graph: a.filterGraph, seconds: fplan.outputSeconds }], outputs: [{ path: join(job, "out.mp4"), key, type: "video/mp4" }], macSources });
+    const src = spec.inputs.find((x) => x.name === "source");
+    assert.deepEqual(src, { name: "source", local: { videoId: "vid-orig", size: osize } }, "the Mac reads its own original: not the preview copy, nothing sent");
+    const localFile = async (id: string, size: number) => (id === "vid-orig" && size === osize ? original : null);
+    const [res, macRes] = await Promise.all([runOnMac(spec, { signal: new AbortController().signal, pollMs: 100, onClaim: () => {}, onDownload: () => {}, onRender: () => {}, onUpload: () => {} }), macTakes({ localFile })]);
+    assert.equal(macRes.ok, true, macRes.error);
+    assert.equal(res.ok, true);
+    const got = join(work, "final-from-mac.mp4");
+    await core.downloadFile(key, got);
+    const probe = (await sh("ffmpeg", ["-hide_banner", "-i", got]).catch((e) => e)).stderr as string;
+    assert.match(probe, new RegExp(`${fplan.width}x${fplan.height}`), `the final at its size (${fplan.width}x${fplan.height})`);
+    // The original changed on the Mac (re-saved): the Mac says so; the final is not made from another file.
+    const { spec: spec2 } = await macTaskFor({ renderId: `r6-${run}`, userId, kind: "final", label: "Final v2", dir: job, runs: [{ args: a.args, graph: a.filterGraph, seconds: fplan.outputSeconds }], outputs: [{ path: join(job, "out.mp4"), key, type: "video/mp4" }], macSources: new Map([[join(job, "source"), { videoId: "vid-orig", size: osize + 1 }]]) });
+    const [res2] = await Promise.all([runOnMac(spec2, { signal: new AbortController().signal, pollMs: 100, onClaim: () => {}, onDownload: () => {}, onRender: () => {}, onUpload: () => {} }), macTakes({ localFile })]);
+    assert.equal(res2.ok, false);
+    assert.match((res2 as { why: string }).why, /original of this video is no longer where it was on this Mac/);
+    await rm(disk, { recursive: true, force: true }); await rm(job, { recursive: true, force: true });
+  });
+
   it("the API: a wrong token or another user's claim gets nothing", async () => {
     const id = await core.createMacTask({ renderId: "x", userId, kind: "preview", label: "x", inputs: [], commands: [{ args: ["-version"] }], outputs: [{ name: "out.mp4", key: outKey, type: "video/mp4" }], needs: [] });
     assert.equal(await core.claimMacTask(`someone-else-${run}`, id, null), null);

@@ -1,7 +1,7 @@
 import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, forgetOrigins, getBytes, getText, macExportsKey, macForRender, noteCost, publishRender, queueDriveSave, recordUsage, redis, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
-import { bestResolution, fmtClock, formatFile, isBestQuality, lengthTolerance, renderLimitMs, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
+import { bestResolution, fmtClock, formatFile, isBestQuality, lengthTolerance, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSideFiles } from "../lib/deliver";
 import { dropTemps, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
 import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
@@ -20,7 +20,7 @@ import { closeIdleBrowsers, renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
 import { writeMoving } from "../lib/moving";
 import { morphFaces } from "../lib/morph";
-import { detectShake, makeStableCopy } from "../lib/stabilize";
+import { detectShake, detectShakeArgs, makeStableCopy, stableCopyArgs } from "../lib/stabilize";
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
 import { measureSound } from "../lib/sound";
@@ -114,6 +114,11 @@ export async function renderJob(ctx: Ctx) {
     let tempOriginalIds: string[] = [];
     // The original read from the user's Drive: a render on their Mac fetches it there itself.
     let driveSource: { path: string; fileId: string } | null = null;
+    // Originals that stay on the user's Mac (footage added in the Rendrr Mac app, never uploaded): the plan is made from
+    // their preview copies at the originals' size, and only that Mac can make the final (it reads the files itself).
+    const macSources = new Map<string, { videoId: string; size: number }>();
+    let macMain: MacOriginal | null = null;
+    const macPre: MacRun[] = []; // runs the Mac makes before the encode (the shake measured on the original)
     if (kind !== "final") {
       if (!video.proxyKey) throw new JobError("The preview copy of this footage expired. Rebuild it from your Library, then render again.", "expired", false);
       await cachedCopy(video.proxyKey, src);
@@ -140,11 +145,18 @@ export async function renderJob(ctx: Ctx) {
       i = 1;
     } else {
       const orig = await prisma.tempOriginal.findFirst({ where: { projectId: project.id, videoId: video.id, completed: true, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } });
-      if (!orig) throw new JobError("Full quality needs your original file once.", "need-original", false);
-      await downloadFile(orig.key, src);
-      tempOriginalIds = [orig.id];
+      if (orig) { await downloadFile(orig.key, src); tempOriginalIds = [orig.id]; }
+      else {
+        const mo = macOriginalOf(video);
+        if (!mo || !video.proxyKey) throw new JobError("Full quality needs your original file once.", "need-original", false);
+        await cachedCopy(video.proxyKey, src);
+        macSources.set(src, { videoId: video.id, size: mo.size });
+        macMain = mo;
+      }
     }
     let info = await probe(src, { signal });
+    // Kept on the Mac: the picture, rate and sound of the original (what the Mac will read), not of its preview copy.
+    if (macMain) info = { ...info, width: macMain.width, height: macMain.height, fps: macMain.fps || info.fps, seconds: macMain.seconds || info.seconds, hasAudio: macMain.hasAudio, hdr: !!macMain.transfer, transfer: macMain.transfer ?? undefined };
     if (!info.hasVideo) throw new JobError("The footage file looks damaged. Try adding it again.", "damaged", false);
     // The original the user gave may be renamed or re-saved; it must still be the same video, or the edit's times would
     // land on other moments. A different one is deleted, so the next export asks for the file again.
@@ -202,14 +214,19 @@ export async function renderJob(ctx: Ctx) {
       await Promise.all(others.map(async (o) => {
         const key = kind === "final" && o.sourceKey ? o.sourceKey : o.proxyKey;
         if (!key) return;
-        if (kind === "final" && !o.sourceKey) copies.push(o.name);
+        // A final made from originals on the Mac: the other videos kept there too are read there, at full quality.
+        const omo = kind === "final" && macMain && !o.sourceKey ? macOriginalOf(o) : null;
+        if (kind === "final" && !o.sourceKey && !omo) copies.push(o.name);
         const p = join(ctx.dir, `video-${o.id}`);
         await cachedCopy(key, p);
         const oi = await probe(p, { signal });
         if (!oi.hasVideo) throw new JobError(`"${o.name}" on V1 looks damaged. Remove it from the edit or add it again.`, "damaged", false);
         files.videos![o.id] = p;
         budgets[o.id] = windowBudget(oi);
-        sources[o.id] = { width: oi.width, height: oi.height, fps: oi.fps, seconds: oi.seconds || o.seconds, hasAudio: oi.hasAudio, hdr: !!oi.hdr, ...(oi.transfer ? { transfer: oi.transfer } : {}) };
+        sources[o.id] = omo
+          ? { width: omo.width, height: omo.height, fps: omo.fps || oi.fps, seconds: omo.seconds || oi.seconds || o.seconds, hasAudio: omo.hasAudio, hdr: !!omo.transfer, ...(omo.transfer ? { transfer: omo.transfer } : {}) }
+          : { width: oi.width, height: oi.height, fps: oi.fps, seconds: oi.seconds || o.seconds, hasAudio: oi.hasAudio, hdr: !!oi.hdr, ...(oi.transfer ? { transfer: oi.transfer } : {}) };
+        if (omo) macSources.set(p, { videoId: o.id, size: omo.size });
         if (o.hdr) hdrFootage[o.id] = o.hdr as HdrTransfer;
         transcripts[o.id] = (o.analysis?.transcript as unknown as Transcript) || [];
       }));
@@ -294,7 +311,9 @@ export async function renderJob(ctx: Ctx) {
       const src = st.videoId === video.id ? files.source : files.videos?.[st.videoId];
       if (!src) continue;
       const p = join(ctx.dir, st.file);
-      await detectShake(src, st, plan.rate || String(plan.fps || 30), p, signal);
+      // From an original on the Mac: measured there, on the original's own pixels.
+      if (macSources.has(src)) macPre.push({ args: detectShakeArgs(src, st, plan.rate || String(plan.fps || 30), p) });
+      else await detectShake(src, st, plan.rate || String(plan.fps || 30), p, signal);
       (files.stabilize ??= {})[key] = p;
     }
     // Phase 21: b-roll and clips at other speeds: the shake measured over the clip's footage, then its stabilized copy.
@@ -302,8 +321,11 @@ export async function renderJob(ctx: Ctx) {
       const src = st.broll ? (files.broll?.[clipId] ?? files.under?.[clipId]) : st.videoId === video.id ? files.source : files.videos?.[st.videoId];
       if (!src) continue;
       const trf = join(ctx.dir, st.file), copy = join(ctx.dir, st.copy);
-      await detectShake(src, st, plan.rate || String(plan.fps || 30), trf, signal);
-      await makeStableCopy(src, st, plan.rate || String(plan.fps || 30), trf, copy, { deep: !!plan.hdr, signal });
+      if (macSources.has(src)) macPre.push({ args: detectShakeArgs(src, st, plan.rate || String(plan.fps || 30), trf) }, { args: stableCopyArgs(src, st, plan.rate || String(plan.fps || 30), trf, copy, !!plan.hdr) });
+      else {
+        await detectShake(src, st, plan.rate || String(plan.fps || 30), trf, signal);
+        await makeStableCopy(src, st, plan.rate || String(plan.fps || 30), trf, copy, { deep: !!plan.hdr, signal });
+      }
       (files.stableCopies ??= {})[clipId] = copy;
     }
     // Face-aware Morph Cut: the face either side of each morph (a cut with no face found keeps the plain morph).
@@ -380,7 +402,7 @@ export async function renderJob(ctx: Ctx) {
     };
     const onMac = async (mac: { have: string[] }, runs: MacRun[], outputs: MacOut[], onRender: (cmd: number, seconds: number) => void): Promise<MacDone | null> => {
       let task: Awaited<ReturnType<typeof macTaskFor>>;
-      try { task = await macTaskFor({ renderId: r.id, userId: video.userId, kind, label, dir: ctx.dir, fontsDir: FONTS_DIR, runs, outputs, driveSource }); }
+      try { task = await macTaskFor({ renderId: r.id, userId: video.userId, kind, label, dir: ctx.dir, fontsDir: FONTS_DIR, runs, outputs, driveSource, macSources }); }
       catch (e) {
         // Whatever stops the hand-off (a render the Mac cannot be given, storage refusing a file): the cloud makes it.
         if (signal.aborted) throw e;
@@ -617,6 +639,9 @@ export async function renderJob(ctx: Ctx) {
     const finalPath = fmt === "overlay" ? join(ctx.dir, "out.mov") : fmt === "gif" ? join(ctx.dir, "out.gif") : files.output;
     let macDone: MacDone | null = null;
     const mac = await macCpus();
+    // Made from originals that stay on the user's Mac: only that Mac can make it; otherwise the original is asked for.
+    const needMac = () => new JobError(`This final is made from your original, which stays on your Mac${macMain?.device ? ` ("${macMain.device}")` : ""}. Open the Rendrr Mac app there and export again, or give the original file once${where.why ? ` (${where.why})` : ""}.`, "need-original", false);
+    if (macSources.size && !mac) throw needMac();
     if (mac) {
       const mArgs = (output: string, pictureAs?: "black" | "white") => {
         const o = { threads: mac.cpus, inputThreads: mac.cpus * 2, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, ...(fmt === "overlay" ? { pictureAs: pictureAs ?? "black" } : {}) };
@@ -624,14 +649,15 @@ export async function renderJob(ctx: Ctx) {
         return ffmpegArgs(plan, f, sourceInfo, { ...o, filterThreads: filterThreads(ffmpegArgs(plan, f, sourceInfo, { ...o, filterThreads: 4 }).filterGraph) });
       };
       const a0 = mArgs(files.output);
-      const runs: MacRun[] = [{ args: a0.args, graph: a0.filterGraph, seconds: plan.outputSeconds }];
+      const runs: MacRun[] = [...macPre, { args: a0.args, graph: a0.filterGraph, seconds: plan.outputSeconds }];
       if (fmt === "overlay") {
         const wPass = mArgs(join(ctx.dir, "out-w.mkv"), "white");
         runs.push({ args: wPass.args, graph: wPass.filterGraph, seconds: plan.outputSeconds }, { args: mergeOverlayArgs(files.output, join(ctx.dir, "out-w.mkv"), finalPath) });
       } else if (fmt === "gif") runs.push({ args: gifArgs(files.output, finalPath, plan.width, plan.height, plan.outputSeconds) });
       est.encStart = Date.now();
-      macDone = await onMac(mac, runs, [{ path: finalPath, key: outKey, type: ff.type, ...(kind === "final" ? { save: `${stem}.${ff.ext}` } : {}) }], (cmd, sec) => { if (cmd === 0) onProgress(sec); });
+      macDone = await onMac(mac, runs, [{ path: finalPath, key: outKey, type: ff.type, ...(kind === "final" ? { save: `${stem}.${ff.ext}` } : {}) }], (cmd, sec) => { if (cmd === macPre.length) onProgress(sec); });
       if (macDone) { await downloadFile(outKey, finalPath); files.output = finalPath; }
+      else if (macSources.size) throw needMac();
     }
     if (!macDone) {
       est.encStart = Date.now();

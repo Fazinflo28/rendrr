@@ -85,6 +85,13 @@ test("a task naming anything outside its own folder, a protocol, or a plain-http
   assert.doesNotThrow(() => checkTask(task({ commands: [{ args: ["-i", "source", "out.mp4"], graph: "[0:v]scale=iw/2:-2,overlay=x='(W-w)/2':y=H/2[v]" }] }), { allowHttp: true }));
 });
 
+test("the cloud's runs are said the way this Mac's FFmpeg reads them (FFmpeg 7 and later: -/filter_complex)", () => {
+  const { adaptArgs } = require("../render");
+  const a = ["-i", "source", "-filter_complex_script", "graph-0.txt", "out.mp4"];
+  assert.deepEqual(adaptArgs(a, 6), a);
+  assert.deepEqual(adaptArgs(a, 9), ["-i", "source", "-/filter_complex", "graph-0.txt", "out.mp4"]);
+});
+
 test("this Mac's FFmpeg says its version and what it can do", async () => {
   const p = await probeFfmpeg(FFMPEG);
   assert.equal(p.ok, true);

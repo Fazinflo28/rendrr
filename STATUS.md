@@ -1418,4 +1418,9 @@ on the Mac goes to its Downloads and Rendrr keeps a copy (download elsewhere, Dr
 Not taken within 20 s, quiet for 60 s, or failed: the cloud makes it. Settings > Where renders run says where, with an
 on/off switch in the Mac app; the Export window, the Claude card and the AI's answers say where each render was made.
 Details: docs/mac-render.md. Needs the new Mac app (built by the Mac workflow with FFmpeg for each chip).
-Next: originals stay on the Mac (a final made on the Mac reads the file from disk; nothing uploaded).
+
+Originals stay on the Mac: footage added in the Mac app is never uploaded (only the small preview copy). The app
+remembers where the file is; Rendrr knows its size, picture and sound (`Video.macOriginal`, never the path). A final
+then starts with no upload while that Mac is open and can render, and is made there from the file on disk; with the
+app closed, or on another Mac, the original is asked for once, as before, and the AI is told which Mac has it.
+The Mac app's FFmpeg 9 reads a graph from a file with `-/filter_complex`; the app adapts the cloud's runs to it.

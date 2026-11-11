@@ -69,6 +69,29 @@ ipcMain.handle("rendrr:render-enable", (e, on) => {
   tellWindows();
   return renderInfo();
 });
+// Originals kept on this Mac: footage added in the app stays here (never uploaded); Rendrr knows it by its video and
+// size, and a final made here reads the file where it is. Kept in originals.json; one that moved or changed is not used.
+const originalsFile = () => path.join(app.getPath("userData"), "originals.json");
+let originals = {};
+try { originals = JSON.parse(fs.readFileSync(originalsFile(), "utf8")) || {}; } catch { /* none yet */ }
+const saveOriginals = () => { try { fs.writeFileSync(originalsFile(), JSON.stringify(originals)); } catch { /* kept for this run */ } };
+ipcMain.handle("rendrr:keep-original", async (e, videoId, file) => {
+  if (!fromApp(e) || !/^[A-Za-z0-9_-]{1,64}$/.test(String(videoId)) || typeof file !== "string" || !path.isAbsolute(file)) return null;
+  const st = await fs.promises.stat(file).catch(() => null);
+  if (!st || !st.isFile()) return null;
+  const info = await render.probeFile(ffmpegPath(), file);
+  if (!info) return null;
+  originals[videoId] = { path: file, size: st.size, mtimeMs: st.mtimeMs, name: path.basename(file) };
+  saveOriginals();
+  return { size: st.size, name: path.basename(file), ...info };
+});
+const localFile = async (videoId, size) => {
+  const o = originals[videoId];
+  if (!o) return null;
+  const st = await fs.promises.stat(o.path).catch(() => null);
+  return st && st.isFile() && st.size === o.size && st.size === size ? o.path : null;
+};
+
 // A render Rendrr handed this Mac (the web app took it for this user): made in the background, one at a time.
 ipcMain.handle("rendrr:render-run", (e, task) => {
   if (!fromApp(e) || !renders.ready || !renders.enabled || renders.busy) return { started: false };
@@ -79,7 +102,7 @@ ipcMain.handle("rendrr:render-run", (e, task) => {
     const v = st.phase === "download" ? 0.1 * (st.frac || 0) : st.phase === "render" ? 0.1 + 0.85 * (st.frac || 0) : 0.95 + 0.05 * (st.frac || 0);
     for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setProgressBar(Math.max(0, Math.min(1, v)));
   };
-  render.runTask(task, { ffmpeg: ffmpegPath(), cacheDir: path.join(app.getPath("cache"), "Rendrr"), workDir: os.tmpdir(), saveDir: app.getPath("downloads"), onState: progress })
+  render.runTask(task, { ffmpeg: ffmpegPath(), cacheDir: path.join(app.getPath("cache"), "Rendrr"), workDir: os.tmpdir(), saveDir: app.getPath("downloads"), onState: progress, localFile })
     .then((r) => {
       if (r.ok && r.savedPath) {
         if (app.dock) app.dock.downloadFinished(r.savedPath);

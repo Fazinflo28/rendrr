@@ -1,5 +1,5 @@
-import { chapterProblems, chaptersText, type Chapter } from "@rendrr/shared";
-import { AppError, enqueue, publishRender, queue, readRender, redis, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
+import { chapterProblems, chaptersText, macOriginalOf, type Chapter } from "@rendrr/shared";
+import { AppError, enqueue, macForRender, publishRender, queue, readRender, redis, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, isFourKQuality, PREVIEW_STEPS, qualityLabel } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
@@ -12,7 +12,15 @@ export function stepsFor(kind: "preview" | "final", source: string, sample: bool
   return source === "drive" && !sample ? [...FINAL_DRIVE_STEPS] : [...FINAL_RENDER_STEPS];
 }
 
-/** Starts a render. Local footage needs its original once for a final (code "need-original", as the UI expects). */
+/** The video's original is kept on the user's Mac, and that Mac's Rendrr app is open and can make the final now. */
+export async function originalOnMac(userId: string, video: { macOriginal?: unknown }): Promise<boolean> {
+  const mo = macOriginalOf(video);
+  if (!mo) return false;
+  const m = await macForRender(userId, []);
+  return !!m.info && !m.why && (!mo.device || !m.info.device || mo.device === m.info.device);
+}
+
+/** Starts a render. Local footage needs its original once for a final (code "need-original", as the UI expects), unless it is kept on the user's Mac and that Mac makes the final. */
 export async function startRender(userId: string, projectId: string, kind: "preview" | "final", opts: { version?: number; by?: string; best?: boolean } = {}) {
   const p = await getOwnedProject(userId, projectId);
   const video = await prisma.video.findUniqueOrThrow({ where: { id: p.videoId } });
@@ -21,7 +29,8 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   }
   if (kind === "final" && video.source === "local" && !video.sample) {
     const orig = await prisma.tempOriginal.findFirst({ where: { projectId, videoId: video.id, completed: true, expiresAt: { gt: new Date() } } });
-    if (!orig) throw new AppError("Full quality needs your original file once.", 409, "need-original");
+    // The original kept on the user's Mac: the final is made there (the Mac app open, able, and the same Mac).
+    if (!orig && !(await originalOnMac(userId, video))) throw new AppError("Full quality needs your original file once.", 409, "need-original");
   }
   if (kind === "final" && video.status === "missing") {
     throw new AppError("We could not reach your Drive file. Reconnect it and try again.", 409, "drive");

@@ -1,7 +1,7 @@
 // Runs in each Rendrr page before the site's own code. It tells the web app it is inside the Mac app (html.desktop
 // moves the top bar clear of the window buttons; styles.css) and lets it open its login page in the browser.
 // The page gets no Node or file access.
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 const arg = (name) => (process.argv.find((a) => a.startsWith("--" + name + "=")) || "").slice(name.length + 3);
 contextBridge.exposeInMainWorld("rendrrDesktop", Object.freeze({
@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld("rendrrDesktop", Object.freeze({
   device: (() => { try { return decodeURIComponent(arg("rendrr-device")); } catch { return ""; } })(),
   // Google refuses to sign in inside apps: the login Allow page and Drive consent open in the default browser.
   openInBrowser: (url) => ipcRenderer.send("rendrr:open-browser", String(url)),
+  // Footage added here keeps its original on this Mac: the app remembers where the file is (by its video) and reads
+  // what it is; finals made on this Mac use it, so it is never uploaded. Only the file the user picked or dropped.
+  keepOriginal: (videoId, file) => { let p = ""; try { p = webUtils.getPathForFile(file); } catch { /* not a file from this Mac */ } return p ? ipcRenderer.invoke("rendrr:keep-original", String(videoId), p) : Promise.resolve(null); },
   // Renders on this Mac: what it can make, turning it on or off, making one Rendrr handed it, and hearing when it
   // starts or finishes one. The page never touches the files or FFmpeg itself.
   render: Object.freeze({

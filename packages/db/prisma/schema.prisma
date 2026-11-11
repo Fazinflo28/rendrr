@@ -127,6 +127,7 @@ model Video {
   art              String    @default("a")
   proxyKey         String?
   hdr              String?   // pq | hlg: the original is HDR (null: SDR or not known yet)
+  macOriginal Json?   // the original kept on the user's Mac (added there, never uploaded): { device, size, name, width, height, fps, seconds, hasAudio, transfer, at }
   timecode         String?   // Phase 22: start timecode HH:MM:SS:FF ("" = read, none; null = not read yet)
   audioKey         String?
   thumbKey         String?

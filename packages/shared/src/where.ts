@@ -62,3 +62,19 @@ export function nextExportText(mac: MacStatus): string {
     ? `Renders run on ${CLOUD}${mac.why ? ` (${mac.why})` : ""}. The Rendrr Mac app is open${on}, so finals your AI exports go to that Mac's Downloads.`
     : `Renders run on ${CLOUD}. The Rendrr Mac app is not open, so finals your AI exports go to Google Drive (or a download link).`;
 }
+
+/**
+ * The original of footage added in the Rendrr Mac app stays on that Mac (never uploaded): what Rendrr knows of it, so
+ * a final made on that Mac reads the file itself, at full quality, while the cloud keeps only the preview copy.
+ * width x height: the picture as shown (turned upright); transfer: HDR (pq, hlg) or null.
+ */
+export type MacOriginal = { device: string | null; size: number; name: string; width: number; height: number; fps: number; seconds: number; hasAudio: boolean; transfer: "pq" | "hlg" | null; at: number };
+
+/** A video's original on a Mac, when one is kept there and what was kept reads right (null otherwise). */
+export function macOriginalOf(v: { macOriginal?: unknown } | null | undefined): MacOriginal | null {
+  const m = v?.macOriginal as Partial<MacOriginal> | null | undefined;
+  if (!m || typeof m !== "object") return null;
+  const n = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x > 0 ? x : 0);
+  if (!n(m.size) || !n(m.width) || !n(m.height)) return null;
+  return { device: typeof m.device === "string" && m.device ? m.device : null, size: n(m.size), name: typeof m.name === "string" ? m.name.slice(0, 200) : "", width: Math.round(n(m.width)), height: Math.round(n(m.height)), fps: n(m.fps) || 30, seconds: n(m.seconds), hasAudio: m.hasAudio !== false, transfer: m.transfer === "pq" || m.transfer === "hlg" ? m.transfer : null, at: n(m.at) };
+}

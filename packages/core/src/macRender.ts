@@ -27,8 +27,9 @@ const PING_FRESH_MS = 45_000;
 /** What the Mac app says it can do, sent with its ping. have: the FFmpeg filters, encoders and decoders it has. */
 export type MacRenderInfo = { protocol: number; ready: boolean; enabled: boolean; busy: boolean; cpus: number; have: string[]; ffmpeg: string | null; why: string | null };
 
-/** A file the Mac needs: from storage (key), inline (data, base64) or the user's Google Drive (drive). */
-export type MacInput = { name: string; key?: string; size?: number; etag?: string; data?: string; drive?: { fileId: string } };
+/** A file the Mac needs: from storage (key), inline (data, base64), the user's Google Drive (drive), or the original that
+ *  stays on that Mac (local: the Mac app knows where it keeps it, by its video, and checks it is the same size). */
+export type MacInput = { name: string; key?: string; size?: number; etag?: string; data?: string; drive?: { fileId: string }; local?: { videoId: string; size: number } };
 /** One FFmpeg run: its arguments ("__FILTER_SCRIPT__" stands for the graph's file) with paths relative to the job's folder. */
 export type MacCommand = { args: string[]; graph?: string; seconds?: number };
 /** A file the Mac uploads when done (to key); save: also kept in the Mac's Downloads under this name. */
@@ -188,6 +189,7 @@ export async function macManifest(task: MacTask, token: string, api: string) {
   const life = MAC_TASK_TTL_S;
   const inputs = await Promise.all(task.inputs.map(async (i) => {
     if (i.data != null) return { name: i.name, data: i.data };
+    if (i.local) return { name: i.name, local: { videoId: i.local.videoId, size: i.local.size } };
     if (i.drive) { const m = await mediaRequest(task.userId, i.drive.fileId); return { name: i.name, url: m.url, headers: { authorization: m.headers.authorization }, size: i.size }; }
     return { name: i.name, url: await signGet(i.key!, life), size: i.size, cache: `${i.key}#${i.etag || i.size || ""}` };
   }));

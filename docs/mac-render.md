@@ -23,6 +23,20 @@ Mac that has gone.
 - **FFmpeg**: a static build per chip in the app's Resources (`.github/workflows/desktop-mac.yml` downloads it,
   `scripts/check-ffmpeg.js` checks it, `test/render.test.js` renders with it on the Mac build machine). GPL, ffmpeg.org.
 
+## Originals that stay on the Mac
+
+Footage added in the Mac app keeps its original there: the web app (`local.ts` `keepOnMac`) asks the app to remember
+the file it was given (`rendrrDesktop.keepOriginal`, the path from the dropped or picked file only), the app reads what
+it is (`render.probeFile`: size, picture, rotation, frame rate, sound, HDR) and keeps `{video: path, size, mtime}` in
+`originals.json`; Rendrr stores only the description (`POST /videos/:id/mac-original`, `Video.macOriginal`, no path).
+A final then needs no upload while that Mac is open and renders (`services/render.ts` `originalOnMac`): the worker plans
+from the preview copy at the original's size and hands the Mac a `local` input (`{videoId, size}`), stabilizing included;
+the app links its file in, or fails with "moved, renamed or changed". Nothing in the cloud can make that final: if the
+Mac goes, it fails with "need-original" and the original is asked for once, as before.
+
+FFmpeg 7 and later read a graph file with `-/filter_complex` (FFmpeg 9 dropped `-filter_complex_script`): the app
+adapts the cloud's runs to its own FFmpeg (`render.adaptArgs`).
+
 ## Where it says so
 
 `Render.made` (`{ on: "mac" | "cloud", device, why }`), the live progress (`on`, `device`), and `packages/shared/src/where.ts`
@@ -37,4 +51,4 @@ In the Mac app: Settings > Where renders run > Render on this Mac. On the server
 
 `desktop/test/render.test.js` (the Mac's code against a stand-in Rendrr), `apps/api/test/mac-render.test.ts` (worker,
 API, storage and the Mac's code end to end; the Mac's file matches the cloud's own render), `apps/api/test/mac-export.test.ts`,
-`apps/web/demo/render-where.mjs`, `apps/mcp/test/app-browser.mjs`, `packages/shared/test/where.test.ts`.
+`apps/api/test/mac-original.test.ts`, `apps/web/demo/render-where.mjs`, `apps/mcp/test/app-browser.mjs`, `packages/shared/test/where.test.ts`.

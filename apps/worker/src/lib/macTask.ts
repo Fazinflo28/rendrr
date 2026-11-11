@@ -69,6 +69,8 @@ async function fontsFor(fontsDir: string): Promise<{ name: string; key: string; 
 export async function macTaskFor(o: {
   renderId: string; userId: string; kind: string; label: string; dir: string; fontsDir?: string;
   runs: MacRun[]; outputs: MacOut[]; driveSource?: { path: string; fileId: string } | null;
+  /** Files here that stand for originals kept on the user's Mac (their preview copies): the Mac reads the original. */
+  macSources?: Map<string, { videoId: string; size: number }>;
 }): Promise<{ spec: MacTaskSpec; temps: string[] }> {
   const dir = o.dir.replace(/\/+$/, "");
   const outPaths = new Set(o.outputs.map((x) => x.path));
@@ -118,7 +120,9 @@ export async function macTaskFor(o: {
       }
     }
     const origin = originOf(path);
-    if (o.driveSource && o.driveSource.path === path) inputs.set(name, { name, drive: { fileId: o.driveSource.fileId }, size });
+    const local = o.macSources?.get(path);
+    if (local) inputs.set(name, { name, local: { videoId: local.videoId, size: local.size } });
+    else if (o.driveSource && o.driveSource.path === path) inputs.set(name, { name, drive: { fileId: o.driveSource.fileId }, size });
     else if (!body && origin && (origin.size == null || origin.size === size)) inputs.set(name, { name, key: origin.key, size, ...(origin.etag ? { etag: origin.etag } : {}) });
     else if ((body?.length ?? size) <= INLINE_MAX) inputs.set(name, { name, data: (body ?? (await readFile(path))).toString("base64") });
     else {

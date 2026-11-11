@@ -40,6 +40,26 @@ async function probeFfmpeg(ffmpeg) {
   return { ok: true, version, have: FEATURES.filter((f) => have.includes(f)), why: null };
 }
 
+/**
+ * What a video file on this Mac is, read with FFmpeg: its picture as shown (turned upright), frame rate, length, sound,
+ * and HDR (pq, hlg). Null: not a video FFmpeg can read.
+ */
+async function probeFile(ffmpeg, file) {
+  const text = await new Promise((resolve) => execFile(ffmpeg, ["-hide_banner", "-i", file], { maxBuffer: 4 << 20, timeout: 30000 }, (_e, so, se) => resolve(`${so || ""}\n${se || ""}`)));
+  const video = text.split("\n").find((l) => /Stream #\S+.*: Video: /.test(l) && !/attached pic/.test(l));
+  if (!video) return null;
+  const dims = video.match(/, (\d{2,5})x(\d{2,5})[ ,]/);
+  if (!dims) return null;
+  let width = Number(dims[1]), height = Number(dims[2]);
+  const rot = Number((text.match(/rotation of (-?[\d.]+) degrees/) || text.match(/rotate\s*:\s*(-?\d+)/) || [])[1] || 0);
+  if (Math.abs(Math.round(rot)) % 180 === 90) [width, height] = [height, width];
+  const fps = Number((video.match(/([\d.]+) fps/) || video.match(/([\d.]+) tbr/) || [])[1] || 0);
+  const d = text.match(/Duration: (\d+):(\d+):([\d.]+)/);
+  const seconds = d ? Number(d[1]) * 3600 + Number(d[2]) * 60 + Number(d[3]) : 0;
+  const transfer = /smpte2084/.test(video) ? "pq" : /arib-std-b67/.test(video) ? "hlg" : null;
+  return { width, height, fps: fps || 30, seconds, hasAudio: /Stream #\S+.*: Audio: /.test(text), transfer };
+}
+
 function bad(why) { const e = new Error(why); e.badTask = true; return e; }
 const linkOk = (u, allowHttp) => { try { const x = new URL(u); return x.protocol === "https:" || (allowHttp && x.protocol === "http:"); } catch { return false; } };
 
@@ -51,6 +71,8 @@ function checkTask(t, { allowHttp = false } = {}) {
     if (!NAME.test(i.name) || i.name === "fonts" || i.name.startsWith("fonts/") || names.has(i.name)) throw bad(`bad input name ${i.name}`);
     names.add(i.name);
     if (i.data != null) { if (typeof i.data !== "string") throw bad("bad inline data"); continue; }
+    // An original kept on this Mac: named by its video, never by a path (the app knows where it is).
+    if (i.local != null) { if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(i.local.videoId)) || !(Number(i.local.size) > 0)) throw bad("bad original"); continue; }
     if (!linkOk(i.url, allowHttp)) throw bad(`bad link for ${i.name}`);
     for (const h of Object.keys(i.headers || {})) if (h.toLowerCase() !== "authorization") throw bad("bad header");
   }
@@ -177,6 +199,22 @@ function runFfmpeg(ffmpeg, args, { cwd, onSeconds, signal, stallSec = 120 }) {
   });
 }
 
+/** The FFmpeg's major version (7, 9...), read once per binary. */
+const majors = new Map();
+function ffmpegMajor(ffmpeg) {
+  if (!majors.has(ffmpeg)) majors.set(ffmpeg, new Promise((resolve) => execFile(ffmpeg, ["-hide_banner", "-version"], { timeout: 15000 }, (_e, so) => resolve(Number((String(so || "").match(/ffmpeg version n?(\d+)/) || [])[1] || 0)))));
+  return majors.get(ffmpeg);
+}
+
+/**
+ * Rendrr's runs written for the cloud's FFmpeg, said the way this Mac's FFmpeg reads them: since FFmpeg 7 a graph comes
+ * from a file with "-/filter_complex" (FFmpeg 9 no longer has "-filter_complex_script").
+ */
+function adaptArgs(args, major) {
+  if (major < 7) return args;
+  return args.map((a) => (a === "-filter_complex_script" ? "-/filter_complex" : a === "-filter_script" ? "-/filter" : a));
+}
+
 /** A free name in a folder: "name.mp4", then "name (2).mp4"... */
 function freeName(dir, name) {
   const ext = path.extname(name), stem = name.slice(0, name.length - ext.length);
@@ -185,7 +223,8 @@ function freeName(dir, name) {
 
 /**
  * Runs a task to the end and tells Rendrr how it went. o: ffmpeg (its path), cacheDir, workDir (the render's folder
- * goes in it), saveDir (where a final is kept: Downloads), allowHttp (tests), cacheBytes, onState ({phase, frac}).
+ * goes in it), saveDir (where a final is kept: Downloads), allowHttp (tests), cacheBytes, onState ({phase, frac}),
+ * localFile(videoId, size): where this Mac keeps that video's original (null when it no longer has that file).
  * Rendrr may answer a report with stop (the user stopped it, or the cloud took over): it stops at once and says nothing more.
  */
 async function runTask(t, o) {
@@ -210,6 +249,12 @@ async function runTask(t, o) {
       const dest = path.join(job, i.name);
       await fsp.mkdir(path.dirname(dest), { recursive: true });
       if (i.data != null) await fsp.writeFile(dest, Buffer.from(i.data, "base64"));
+      // The original kept on this Mac, read where it is (it must still be the same file).
+      else if (i.local != null) {
+        const file = o.localFile ? await o.localFile(String(i.local.videoId), Number(i.local.size)) : null;
+        if (!file) throw new Error("the original of this video is no longer where it was on this Mac (moved, renamed or changed)");
+        await fsp.symlink(file, dest);
+      }
       else if (i.cache) await fsp.symlink(await cached(o.cacheDir, i, onBytes, ac.signal), dest);
       else await download(i.url, dest, { headers: i.headers, size: i.size, onBytes, signal: ac.signal });
     }
@@ -225,10 +270,12 @@ async function runTask(t, o) {
       await fsp.symlink(fonts, path.join(job, "fonts"));
     }
     // ---- The runs ----
+    const major = await ffmpegMajor(o.ffmpeg);
     for (const [k, c] of t.commands.entries()) {
       if (stop) break;
       let args = c.args;
       if (c.graph != null) { const g = `graph-${k}.txt`; await fsp.writeFile(path.join(job, g), c.graph); args = args.map((a) => (a === "__FILTER_SCRIPT__" ? g : a)); }
+      args = adaptArgs(args, major);
       state = { phase: "render", frac: 0, cmd: k, seconds: 0 }; say(true);
       await runFfmpeg(o.ffmpeg, args, { cwd: job, signal: ac.signal, stallSec: t.stallSec || 120, onSeconds: (s) => { state = { ...state, seconds: s, frac: c.seconds ? Math.min(1, s / c.seconds) : 0 }; say(); } });
     }
@@ -262,4 +309,4 @@ async function runTask(t, o) {
   }
 }
 
-module.exports = { PROTOCOL, FEATURES, probeFfmpeg, checkTask, runTask, trimCache };
+module.exports = { PROTOCOL, FEATURES, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs };
