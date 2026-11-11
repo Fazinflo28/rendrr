@@ -67,6 +67,8 @@ async function fontsFor(fontsDir: string): Promise<{ name: string; key: string; 
  * from the user's Drive (the Mac fetches it there, never through Rendrr). temps: what was uploaded for this task only.
  */
 export async function macTaskFor(o: {
+  /** The only computer that may take it (its id). */
+  deviceId?: string | null;
   renderId: string; userId: string; kind: string; label: string; dir: string; fontsDir?: string;
   runs: MacRun[]; outputs: MacOut[]; driveSource?: { path: string; fileId: string } | null;
   /** Files here that stand for originals kept on the user's Mac (their preview copies): the Mac reads the original. */
@@ -140,7 +142,7 @@ export async function macTaskFor(o: {
     return { name, key: x.key, type: x.type, ...(x.save ? { save: x.save } : {}) };
   });
   const spec: MacTaskSpec = {
-    renderId: o.renderId, userId: o.userId, kind: o.kind, label: o.label,
+    renderId: o.renderId, userId: o.userId, kind: o.kind, label: o.label, ...(o.deviceId ? { deviceId: o.deviceId } : {}),
     inputs: Array.from(inputs.values()), ...(usesFonts && o.fontsDir ? { fonts: await fontsFor(o.fontsDir) } : {}),
     commands: runs, outputs, needs: needsOf(o.runs), stallSec: 120,
   };

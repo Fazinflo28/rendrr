@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld("rendrrDesktop", Object.freeze({
   app: process.platform === "win32" ? "windows" : "mac", platform: process.platform, version: arg("rendrr-version"),
   // This computer's name, so Rendrr can say which Mac or PC your AI's finals go to.
   device: (() => { try { return decodeURIComponent(arg("rendrr-device")); } catch { return ""; } })(),
+  // This computer's own id (one account can be open on several computers: Rendrr tells them apart by it).
+  deviceId: arg("rendrr-device-id"),
   // Google refuses to sign in inside apps: the login Allow page and Drive consent open in the default browser.
   openInBrowser: (url) => ipcRenderer.send("rendrr:open-browser", String(url)),
   // Footage added here keeps its original on this Mac: the app remembers where the file is (by its video) and reads

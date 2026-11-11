@@ -999,6 +999,8 @@ function ExportsCard() {
     return d.render.onState ? d.render.onState(setHere) : undefined;
   }, []);
   const flip = async () => { const v = await d.render.setEnabled(!(here?.enabled)); setHere(v); setTimeout(mq.reload, 600); };
+  // Several computers can render: which one renders ("" = your AI asks each time), or Rendrr's cloud server.
+  const choose = async (v) => { try { mq.setData(await api.setRenderChoice(v)); } catch { mq.reload(); } };
   return html`<div class="card col" style="gap:12px" id="exports-card">
     <div class="row between"><b class="t-heading">Where renders run</b><${Btn} kind="quiet" size="xs" icon="refresh" aria-label="Refresh" onClick=${mq.reload} /></div>
     <${Async} q=${mq} skeleton=${html`<${Skeleton} card=${false} rows=${2} />`}>${(m) => {
@@ -1008,9 +1010,14 @@ function ExportsCard() {
       const plat = m.online ? (m.platform || "mac") : d ? (d.app === "windows" ? "windows" : "mac") : null;
       const M = plat === "windows" ? "PC" : "Mac", APP = plat === "windows" ? "Windows app" : plat ? "Mac app" : "app";
       const openIt = plat ? `Open the Rendrr ${APP}` : "Open the Rendrr app on your Mac or PC";
+      // The account open on several computers: every one online, and which renders.
+      const all = m.devices || [], able = all.filter((x) => x.renders), many = able.length > 1;
+      const picked = many ? (m.choice === "cloud" ? "cloud" : able.find((x) => x.id === m.choice) || null) : null;
+      const word = (x) => (x.platform === "windows" ? "PC" : "Mac");
       return html`
       <div class="list">
-        <div class="li"><${Chip} tone=${onMac ? "brand" : "neutral"} size="sm" id="render-place"><i class="dot on" />${onMac ? M : "Cloud"}<//><div class="grow"><div class="t" id="render-place-text">${onMac ? `Renders run on ${m.device || `your ${M}`}` : "Renders run on Rendrr's cloud server"}</div><div class="sub">${onMac ? `Previews and finals, while the Rendrr ${APP} is open` : m.online && m.why ? `The ${APP} is open, but ${m.why}` : `${openIt} to render on ${plat ? `your ${M}` : "your computer"}`}</div></div></div>
+        <div class="li"><${Chip} tone=${onMac ? "brand" : "neutral"} size="sm" id="render-place"><i class="dot on" />${many ? `${able.length} computers` : onMac ? M : "Cloud"}<//><div class="grow"><div class="t" id="render-place-text">${many ? (picked === "cloud" ? "Renders run on Rendrr's cloud server" : picked ? `Renders run on ${picked.name || `your ${word(picked)}`}` : "Your AI asks which computer renders") : onMac ? `Renders run on ${m.device || `your ${M}`}` : "Renders run on Rendrr's cloud server"}</div><div class="sub">${many ? `${able.map((x) => x.name || word(x)).join(" and ")} can render now` : onMac ? `Previews and finals, while the Rendrr ${APP} is open` : m.online && m.why ? `The ${APP} is open, but ${m.why}` : `${openIt} to render on ${plat ? `your ${M}` : "your computer"}`}</div></div>${many && html`<select class="input sm" id="render-choice" aria-label="Which computer renders" value=${picked === "cloud" ? "cloud" : picked ? picked.id : ""} onChange=${(e) => choose(e.target.value)}><option value="">Ask each time</option>${able.map((x) => html`<option key=${x.id} value=${x.id}>${x.name || word(x)}</option>`)}<option value="cloud">Rendrr's cloud server</option></select>`}</div>
+        ${all.length > 1 && html`<div id="devices" class="col" style="gap:4px">${all.map((x) => html`<div key=${x.id} class="li" data-device=${x.id}><${Chip} tone=${x.renders ? "brand" : "neutral"} size="sm"><i class=${"dot " + (x.renders ? "on" : "")} />${word(x)}<//><div class="grow"><div class="t">${x.name || `This ${word(x)}`}</div><div class="sub">${x.busy ? "Rendering now" : x.renders ? "Ready to render" : x.why || "Connected"}</div></div></div>`)}</div>`}
         <div class="li"><${Chip} tone=${m.online ? "brand" : "neutral"} size="sm" id="mac-status"><i class=${"dot " + (m.online ? "on" : "")} />${m.online ? `${M} connected` : plat ? `${APP[0].toUpperCase() + APP.slice(1)} closed` : "App closed"}<//><div class="grow"><div class="t" id="exports-to">${m.online ? "Finals go to " + (m.device ? m.device : `your ${M}`) : "Finals from your AI go to Google Drive"}</div><div class="sub">${m.online ? "Saved to Downloads" : `${openIt} to get them in Downloads`}</div></div></div>
         ${here && html`<div class="li" id="render-here"><div class="grow"><div class="t">Render on this ${d.app === "windows" ? "PC" : "Mac"}</div><div class="sub" id="render-here-sub">${!here.ready ? (here.why || "Getting ready") : here.busy ? `Rendering now${here.label ? `: ${here.label}` : ""}` : here.enabled ? `On · FFmpeg ${here.ffmpeg || ""}`.trim() : "Off: renders run on Rendrr's cloud server"}</div></div><${Toggle} id="render-here-toggle" on=${!!here.enabled} onChange=${flip} label=${`Render on this ${d.app === "windows" ? "PC" : "Mac"}`} /></div>`}
       </div>`;

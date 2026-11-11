@@ -1,10 +1,10 @@
-import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, drive, features, finalType, notFound, planWithoutFiles, readRender, redis, renderChannel, renderFileKeys, signGet, signPart } from "@rendrr/core";
+import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, drive, features, finalType, notFound, planWithoutFiles, readRender, redis, renderChannel, renderFileKeys, setRenderChoice, signGet, signPart } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { notOriginalMessage, OriginalCompleteInput, OriginalUploadInput, PREFIX, renderLimitMs, sameOriginal, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth";
 import { getOwnedProject } from "../services/projects";
-import { renderResult, renderStatus, startRender, stopRender } from "../services/render";
+import { renderResult, renderStatus, startRender, stopRender, targetFromApp } from "../services/render";
 import { listen, openSse } from "../live";
 import { samplesView, startSamples } from "../services/samples";
 import { claimMacExport, macExports, macPing, macStatus } from "../services/macExport";
@@ -15,7 +15,8 @@ export default async function render(app: FastifyInstance) {
 
   app.post("/projects/:id/renders", async (req) => {
     const kind = (req.body as { kind?: string })?.kind === "final" ? "final" : "preview";
-    const r = await startRender(req.user!.id, (req.params as { id: string }).id, kind, { best: (req.body as { best?: unknown })?.best === true });
+    const b = (req.body ?? {}) as { best?: unknown; device?: unknown };
+    const r = await startRender(req.user!.id, (req.params as { id: string }).id, kind, { best: b.best === true, target: await targetFromApp(req.user!.id, b.device) });
     // Phase 7: the server's time limit for this render, so the app waits as long as the server does (no less).
     const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { timeline: true, video: { select: { seconds: true } } } });
     return { renderId: r.id, kind, steps: r.steps, status: r.status, quality: r.quality, limitMs: renderLimitMs(kind, v?.video.seconds ?? 0, r.quality, v?.timeline) };
@@ -24,7 +25,7 @@ export default async function render(app: FastifyInstance) {
   // Samples: a few frames and short clips of the edit, drawn as the export draws them (the editor's Samples window).
   app.post("/projects/:id/samples", async (req) => {
     const body = SampleRequestSchema.parse(req.body ?? {});
-    const r = await startSamples(req.user!.id, (req.params as { id: string }).id, body);
+    const r = await startSamples(req.user!.id, (req.params as { id: string }).id, body, await targetFromApp(req.user!.id, (req.body as { device?: unknown } | null)?.device));
     const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { timeline: true, video: { select: { seconds: true } } } });
     return { renderId: r.id, kind: "sample", steps: r.steps, status: r.status, quality: r.quality, limitMs: renderLimitMs("preview", v?.video.seconds ?? 0, r.quality, v?.timeline) };
   });
@@ -44,11 +45,19 @@ export default async function render(app: FastifyInstance) {
   app.get("/renders/:id", async (req) => renderStatus(await ownedRender(req.user!.id, (req.params as { id: string }).id)));
 
   // The Rendrr Mac app: it is open (every 20 s), the finals queued for it, and taking one to save to Downloads.
-  app.post("/desktop/ping", async (req) => { const b = (req.body as { version?: unknown; device?: unknown; render?: unknown; platform?: unknown } | null) ?? {}; await macPing(req.user!.id, String(b.version ?? ""), String(b.device ?? ""), b.render, String(b.platform ?? "")); return { ok: true }; });
+  app.post("/desktop/ping", async (req) => { const b = (req.body as { version?: unknown; device?: unknown; render?: unknown; platform?: unknown; deviceId?: unknown } | null) ?? {}; await macPing(req.user!.id, String(b.version ?? ""), String(b.device ?? ""), b.render, String(b.platform ?? ""), typeof b.deviceId === "string" ? b.deviceId : undefined); return { ok: true }; });
   // Whether the Rendrr Mac app is open (and on which Mac): where the AI's next final goes.
   app.get("/desktop/status", async (req) => macStatus(req.user!.id));
-  app.get("/desktop/exports", async (req) => macExports(req.user!.id));
-  app.post("/desktop/exports/:id/claim", async (req) => ({ claimed: await claimMacExport(req.user!.id, (req.params as { id: string }).id) }));
+  // Which computer asks: its app's id (?device=, or the claim's deviceId); a final queued for another computer is left for it.
+  app.get("/desktop/exports", async (req) => macExports(req.user!.id, String((req.query as { device?: unknown }).device ?? "") || null));
+  app.post("/desktop/exports/:id/claim", async (req) => ({ claimed: await claimMacExport(req.user!.id, (req.params as { id: string }).id, String((req.body as { deviceId?: unknown } | null)?.deviceId ?? "") || null) }));
+  // The computer the user picks to render on in the web app ("cloud", a computer's id), remembered as Claude's is.
+  // Nothing picked ("" or null): Claude asks again when several can render.
+  app.post("/desktop/choice", async (req) => {
+    const c = (req.body as { device?: unknown } | null)?.device;
+    if (typeof c === "string" && c.trim()) await targetFromApp(req.user!.id, c); else await setRenderChoice(req.user!.id, null);
+    return macStatus(req.user!.id);
+  });
 
   // "Stop export" in the export window.
   app.post("/renders/:id/stop", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => stopRender(await ownedRender(req.user!.id, (req.params as { id: string }).id)));

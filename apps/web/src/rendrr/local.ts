@@ -266,7 +266,7 @@ function keepOnMac(videoId: string, file: File) {
   const d = isBrowser ? (window as any).rendrrDesktop : null;
   if (!d?.keepOriginal) return;
   d.keepOriginal(videoId, file)
-    .then((info: any) => (info ? post(`/videos/${enc(videoId)}/mac-original`, { device: d.device || "", platform: d.app === "windows" ? "windows" : "mac", ...info }) : null))
+    .then((info: any) => (info ? post(`/videos/${enc(videoId)}/mac-original`, { device: d.device || "", deviceId: d.deviceId || "", platform: d.app === "windows" ? "windows" : "mac", ...info }) : null))
     .catch(() => { /* an older server or a file the app cannot read: the original is asked for once, as before */ });
 }
 

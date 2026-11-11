@@ -395,15 +395,17 @@ export async function renderJob(ctx: Ctx) {
     // they read go by link, what they make is uploaded by the Mac to this render's keys). Null: the cloud makes them
     // (the app is closed, cannot take these, did not pick them up in time, went quiet or failed: where.why says).
     const label = `${kind === "final" ? "Final" : kind === "sample" ? "Samples" : "Preview"} v${r.version} of ${project.name}`;
-    const macCpus = async (): Promise<{ cpus: number; have: string[]; platform: "mac" | "windows" } | null> => {
-      const m = await macForRender(video.userId, []).catch(() => ({ info: null, why: null }));
-      if (m.info && m.why) where.why = m.why;
-      return m.info && !m.why ? { cpus: m.info.cpus, have: m.info.have, platform: m.info.platform } : null;
+    // Which computer: the one keeping the original (only it can read it), else the one the user picked (r.target: its
+    // id, or "cloud"), else the best one free.
+    const macCpus = async (): Promise<{ cpus: number; have: string[]; platform: "mac" | "windows"; id: string } | null> => {
+      const m = await macForRender(video.userId, [], macMain?.deviceId ?? r.target ?? null).catch(() => ({ info: null, why: null }));
+      if (m.why && (m.info || (r.target && r.target !== "cloud"))) where.why = m.why; // (no computer open: nothing to say)
+      return m.info && !m.why ? { cpus: m.info.cpus, have: m.info.have, platform: m.info.platform, id: m.info.id } : null;
     };
-    const onMac = async (mac: { have: string[]; platform?: "mac" | "windows" }, runs: MacRun[], outputs: MacOut[], onRender: (cmd: number, seconds: number) => void): Promise<MacDone | null> => {
+    const onMac = async (mac: { have: string[]; platform?: "mac" | "windows"; id?: string }, runs: MacRun[], outputs: MacOut[], onRender: (cmd: number, seconds: number) => void): Promise<MacDone | null> => {
       const W = machineWord(mac.platform); // "Mac" or "PC"
       let task: Awaited<ReturnType<typeof macTaskFor>>;
-      try { task = await macTaskFor({ renderId: r.id, userId: video.userId, kind, label, dir: ctx.dir, fontsDir: FONTS_DIR, runs, outputs, driveSource, macSources }); }
+      try { task = await macTaskFor({ deviceId: mac.id ?? null, renderId: r.id, userId: video.userId, kind, label, dir: ctx.dir, fontsDir: FONTS_DIR, runs, outputs, driveSource, macSources }); }
       catch (e) {
         // Whatever stops the hand-off (a render the Mac cannot be given, storage refusing a file): the cloud makes it.
         if (signal.aborted) throw e;

@@ -27,6 +27,15 @@ const DARK = "#0b0c0e";
 const SMOKE_OUT = process.env.RENDRR_SMOKE_OUT; // set by the build check on GitHub: load the app, report, quit
 
 app.setName("Rendrr");
+// This computer's own id for Rendrr (one account can be open on several computers; Rendrr tells them apart by it and
+// hands each render to the one the user picked). Made once, kept in the app's data.
+const deviceId = (() => {
+  const f = path.join(app.getPath("userData"), "device.json");
+  try { const j = JSON.parse(fs.readFileSync(f, "utf8")); if (/^[A-Za-z0-9_-]{8,64}$/.test(j.id)) return j.id; } catch { /* first run */ }
+  const id = require("node:crypto").randomUUID().replace(/-/g, "");
+  try { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify({ id })); } catch { /* a new id next time */ }
+  return id;
+})();
 // Windows: notifications and the taskbar know the app by the id its installer gave its shortcut (electron-builder's appId).
 if (IS_WIN) app.setAppUserModelId("live.rendrr.mac");
 // Google refuses to sign in apps whose user agent says "Electron"; to Google this is plain Chrome.
@@ -166,7 +175,7 @@ const appWindowOptions = (extra = {}) => ({
     spellcheck: true,
     // Uploads and the browser-side proxy keep going at full speed while the window is hidden or minimised.
     backgroundThrottling: false,
-    additionalArguments: ["--rendrr-version=" + app.getVersion(), "--rendrr-device=" + encodeURIComponent(deviceName)],
+    additionalArguments: ["--rendrr-version=" + app.getVersion(), "--rendrr-device=" + encodeURIComponent(deviceName), "--rendrr-device-id=" + deviceId],
   },
   ...extra,
 });

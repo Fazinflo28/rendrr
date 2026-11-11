@@ -61,7 +61,7 @@ const folderRoute = async <T,>(fn: () => Promise<T>): Promise<T> => {
   catch (e: any) { if (isMissingRoute(e)) throw fail("Folders are not on the server yet: it is still being updated. Try again in a few minutes.", "server-old"); throw e; }
 };
 
-async function runRender(kind: "preview" | "final", projectId: string, onProgress?: (p: any) => void, opts: { best?: boolean } = {}) {
+async function runRender(kind: "preview" | "final", projectId: string, onProgress?: (p: any) => void, opts: { best?: boolean; device?: string } = {}) {
   if (DEV && demo.failNextRender) {
     demo.failNextRender = false;
     const steps = kind === "preview" ? ["Reading timeline", "Cutting clips", "Burning captions", "Packing preview"] : ["Reading timeline", "Cutting clips", "Adding zooms", "Mixing music", "Burning captions", "Encoding 1080p", "Cleaning up raw file"];
@@ -73,7 +73,7 @@ async function runRender(kind: "preview" | "final", projectId: string, onProgres
     onProgress?.({ step: 0, steps: ["Fetching raw from Drive"], percent: 10 }); await wait(700);
     throw fail("We could not reach your Drive file. Reconnect it and try again.", "drive");
   }
-  const started = await post(`/projects/${enc(projectId)}/renders`, { kind, ...(kind === "final" && opts.best ? { best: true } : {}) });
+  const started = await post(`/projects/${enc(projectId)}/renders`, { kind, ...(kind === "final" && opts.best ? { best: true } : {}), ...(opts.device ? { device: opts.device } : {}) });
   return followRender(started, kind === "preview" ? "Preview render" : "Final render", kind === "final" ? 17 : 5, onProgress);
 }
 
@@ -432,14 +432,17 @@ export const api: any = {
   // The Rendrr Mac app: it is open (every 20 s, with what it can render), the finals your AI exported to it, and
   // taking one to save.
   // platform: "windows" from the Rendrr Windows app (a Mac app sends "mac").
-  macPing: (version: string, device = "", render: any = null, platform = "mac") => post("/desktop/ping", { version, device, platform, ...(render ? { render } : {}) }),
+  // deviceId: this computer's own id (one account can be open on several computers).
+  macPing: (version: string, device = "", render: any = null, platform = "mac", deviceId = "") => post("/desktop/ping", { version, device, platform, ...(deviceId ? { deviceId } : {}), ...(render ? { render } : {}) }),
   // Renders waiting for this Mac, and taking one (its files, runs and token come back for the Mac app to make it).
-  macTasks: async () => { try { return ((await get("/desktop/tasks")) as any).tasks || []; } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },
-  macClaimTask: (id: string, device = "", platform = "mac") => post(`/desktop/tasks/${enc(id)}/claim`, { device, platform }) as Promise<{ task: any }>,
+  macTasks: async (deviceId = "") => { try { return ((await get(`/desktop/tasks${deviceId ? `?device=${enc(deviceId)}` : ""}`)) as any).tasks || []; } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },
+  macClaimTask: (id: string, device = "", platform = "mac", deviceId = "") => post(`/desktop/tasks/${enc(id)}/claim`, { device, platform, ...(deviceId ? { deviceId } : {}) }) as Promise<{ task: any }>,
+  // The computer to render on, picked in the web app (its id, or "cloud"): remembered as Claude's pick is.
+  setRenderChoice: (device: string) => post("/desktop/choice", { device }),
   // Whether the Rendrr Mac app is open (on which Mac), whether renders are made on it, and where the AI's finals go.
   macStatus: async () => { try { return await get("/desktop/status"); } catch (e: any) { if (isMissingRoute(e)) return { online: false, device: null, version: null, seenAt: null }; throw e; } },
-  macExports: async () => { try { return await get("/desktop/exports"); } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },
-  macClaim: (renderId: string) => post(`/desktop/exports/${enc(renderId)}/claim`, {}) as Promise<{ claimed: boolean }>,
+  macExports: async (deviceId = "") => { try { return await get(`/desktop/exports${deviceId ? `?device=${enc(deviceId)}` : ""}`); } catch (e: any) { if (isMissingRoute(e)) return []; throw e; } },
+  macClaim: (renderId: string, deviceId = "") => post(`/desktop/exports/${enc(renderId)}/claim`, deviceId ? { deviceId } : {}) as Promise<{ claimed: boolean }>,
   // The footage of an edit that was waiting for it (Recreate): the first videos the user adds.
   useFootage: async (id: string, videoIds: string[]) => post(`/projects/${id}/footage`, { videoIds }),
   updateProject: async (id: string, p: any) => {
@@ -506,8 +509,9 @@ export const api: any = {
   countRecreate: (id: string) => post(`/gallery/${enc(id)}/recreate`),
 
   // ---- render ----
-  renderPreview: (projectId: string, onProgress?: (p: any) => void) => runRender("preview", projectId, onProgress),
-  renderFinal: (projectId: string, onProgress?: (p: any) => void, opts?: { best?: boolean }) => runRender("final", projectId, onProgress, opts),
+  renderPreview: (projectId: string, onProgress?: (p: any) => void, opts?: { device?: string }) => runRender("preview", projectId, onProgress, opts),
+  // device: which of the user's computers renders it (its id), or "cloud"; none: the best one free.
+  renderFinal: (projectId: string, onProgress?: (p: any) => void, opts?: { best?: boolean; device?: string }) => runRender("final", projectId, onProgress, opts),
   // Samples: a few frames and short clips drawn as the export draws them; the set once done (its pictures and clips).
   renderSamples: async (projectId: string, ask: { frames?: { at: number; note?: string }[]; clips?: { start: number; end?: number; note?: string }[] }, onProgress?: (p: any) => void) => {
     const started = await post(`/projects/${enc(projectId)}/samples`, ask);

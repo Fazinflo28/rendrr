@@ -7,6 +7,7 @@ import { isWebOrigin } from "../origins";
 import { authenticate } from "../auth";
 import { projectOut, videoOut } from "../serialize";
 import { purgeProjectFiles } from "../services/projects";
+import { deviceIdOf } from "../services/macExport";
 import { DRIVE_SYNC_FRESH_MS, driveConn, folderNamed, importDriveFolder, linkDriveFile, rememberRemoved, syncDriveFolder, syncStaleDriveFolders } from "../services/driveLibrary";
 import { createLibraryFolder, deleteLibraryFolder, folderTree, libraryFolderFull, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, updateLibraryFolder } from "../services/libraryFolders";
 import { assertMayAddFootage } from "../services/billing";
@@ -241,7 +242,8 @@ export default async function library(app: FastifyInstance) {
       if (!v) throw notFound("video");
       if (v.source !== "local") return { kept: false };
       const b = (req.body ?? {}) as Record<string, unknown>;
-      const mo = macOriginalOf({ macOriginal: { ...b, device: deviceName(String(b.device ?? "")), at: Date.now() } });
+      const name = deviceName(String(b.device ?? ""));
+      const mo = macOriginalOf({ macOriginal: { ...b, device: name, deviceId: deviceIdOf(b.deviceId, name), at: Date.now() } });
       if (!mo) throw new AppError("That does not describe a video file.", 400, "bad-request");
       await prisma.video.update({ where: { id: v.id }, data: { macOriginal: mo } });
       return { kept: true };

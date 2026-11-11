@@ -33,7 +33,7 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
   });
   after(async () => {
     for (const j of await queue("render").getJobs(["waiting", "delayed", "prioritized"])) if (await prisma.render.findFirst({ where: { id: (j.data as { renderId: string }).renderId, userId } })) await j.remove().catch(() => {});
-    await redis().del(`mac:on:${userId}`, `mac:exports:${userId}`).catch(() => {});
+    await redis().del(`mac:on:${userId}`, `mac:devices:${userId}`, `mac:choice:${userId}`, `mac:exports:${userId}`).catch(() => {});
     await prisma.render.deleteMany({ where: { userId } });
     await prisma.project.deleteMany({ where: { userId } });
     await prisma.folder.deleteMany({ where: { userId } });
@@ -135,7 +135,7 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
     assert.deepEqual([card.preview?.machine, card.mac?.platform], ["PC", "windows"]);
     await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.1.1", device: "GAMING-PC", platform: "windows", render: { ...render, enabled: false } } });
     assert.equal((await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json().why, "rendering on the PC is turned off in the Windows app");
-    await redis().del(`mac:on:${userId}`);
+    await redis().del(`mac:on:${userId}`, `mac:devices:${userId}`);
   });
 
   it("to: drive goes to the cloud even with the Mac app open", async () => {

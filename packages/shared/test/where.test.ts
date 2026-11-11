@@ -43,6 +43,14 @@ describe("where a render is made and where it goes", () => {
     expect(nextExportText({ online: true, device: "Studio Mac", version: "0.2.0", seenAt: 1, renders: true })).toMatch(/^Renders run on the user's Mac: the Rendrr Mac app is open on "Studio Mac", so previews and finals are made there/);
     expect(nextExportText({ online: true, device: null, version: "0.1.9", seenAt: 1, renders: false, why: "rendering on the Mac is turned off in the Mac app" })).toMatch(/^Renders run on Rendrr's cloud server \(rendering on the Mac is turned off in the Mac app\)\. The Rendrr Mac app is open/);
   });
+  it("several computers: listed, and the next render asks which (or says the one picked)", () => {
+    const d = (id: string, name: string, platform: "mac" | "windows") => ({ id, name, platform, version: "0.2.0", seenAt: 1, renders: true, busy: false, why: null });
+    const devices = [d("a", "M1", "mac"), d("b", "Gaming PC", "windows")];
+    const base = { online: true, device: "M1", version: "0.2.0", seenAt: 1, renders: true, devices };
+    expect(nextExportText({ ...base, choice: null })).toMatch(/^2 of the user's computers can render now: "M1" \(Mac\) and "Gaming PC" \(PC\), or Rendrr's cloud server\. The next render asks which one to use/);
+    expect(nextExportText({ ...base, choice: "b" })).toMatch(/For now the user picked "Gaming PC" \(PC\)/);
+    expect(nextExportText({ ...base, choice: "cloud" })).toMatch(/For now the user picked Rendrr's cloud server/);
+  });
   it("a Windows PC is said as a PC, and the Rendrr Windows app by its name", () => {
     expect(platformOf("win32")).toBe("windows");
     expect(platformOf("windows")).toBe("windows");

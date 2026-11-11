@@ -60,7 +60,7 @@ export type AppProjectView = {
   /** A preview or final being made now; where: where it is made (the user's Mac or the cloud) and where the file goes. */
   rendering: { renderId: string; version: number; percent: number; step: string | null; etaSec: number | null; queued: boolean; kind?: "preview" | "final"; where?: string; machine?: string } | null;
   /** The Rendrr desktop app: open (and on which computer: a Mac, or a Windows PC), so the AI's finals go to its Downloads. */
-  mac?: { online: boolean; device: string | null; renders?: boolean; platform?: "mac" | "windows" };
+  mac?: { online: boolean; device: string | null; renders?: boolean; platform?: "mac" | "windows"; count?: number };
   failed: { version: number; error: string } | null;
   comments: AppComment[];
 };

@@ -59,6 +59,14 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
   await page.locator('#exports-card button[aria-label="Refresh"]').click(); await sleep(500);
   const wide = await page.evaluate(() => { const W = document.documentElement.clientWidth; return [...document.querySelectorAll("#exports-card *")].filter((e) => e.getBoundingClientRect().right > W + 1).length; });
   check(wide === 0, `${tag}: the card fits the screen`);
+  // The account open on two computers that can render (a Mac and a busy PC): both listed; the AI asks, or the one picked.
+  const two = () => ({ online: true, device: "M1", version: "0.2.0", seenAt: Date.now(), renders: true, why: null, deviceId: "a1", choice: null, devices: [{ id: "a1", name: "M1", platform: "mac", version: "0.2.0", seenAt: Date.now(), renders: true, busy: false, why: null }, { id: "b2", name: "Gaming PC", platform: "windows", version: "0.1.2", seenAt: Date.now(), renders: true, busy: true, why: null }] });
+  await page.evaluate(`globalThis.__demoMac = (${two.toString()})(); globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1;`);
+  await page.locator('#exports-card button[aria-label="Refresh"]').click(); await sleep(500);
+  check((await text(page, "#render-place")) === "2 computers" && (await text(page, "#render-place-text")) === "Your AI asks which computer renders" && (await page.locator("#devices [data-device]").count()) === 2 && /Gaming PC[\s\S]*Rendering now/.test(await text(page, "#devices")), `${tag}: two computers: both listed, and the AI asks which renders (${await text(page, "#render-place-text")})`);
+  await page.locator("#render-choice").selectOption("b2"); await sleep(400);
+  check((await page.evaluate(() => globalThis.__demoChoice)) === "b2" && (await text(page, "#render-place-text")) === "Renders run on Gaming PC", `${tag}: picking one in Settings: renders run there (${await text(page, "#render-place-text")})`);
+  await page.evaluate(() => { globalThis.__demoMac = { online: true, device: "Studio Mac", version: "0.2.0", seenAt: Date.now(), renders: true, why: null }; globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1; });
   if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `render-where-connect-${tag}.png`) });
 
   // The Export window: while it runs it says where; when done, that it was made in the cloud.
@@ -79,6 +87,18 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
     await page.locator("#render-done").waitFor({ timeout: 30000 }).catch(() => {});
     check((await text(page, "#render-made")) === "Made on Studio Mac · saved to Downloads", `${tag}: the finished final says it was made on that Mac and is in Downloads (${await text(page, "#render-made")})`);
     await page.evaluate(() => { globalThis.__demoMadeOn = null; });
+    // Two computers can render: the Export window offers them and Rendrr's cloud; the one chosen goes with the export.
+    await page.evaluate(`globalThis.__demoMac = (${two.toString()})(); globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1;`);
+    await page.keyboard.press("Escape"); await sleep(400);
+    await page.locator("#render-final").click(); await page.locator("#export-panel").waitFor();
+    await page.locator("#export-device").waitFor({ timeout: 4000 }).catch(() => {});
+    const opts = await page.locator("#export-device option").allInnerTexts().catch(() => []);
+    check(opts.join(" | ") === "M1 (Mac) | Gaming PC (PC) · busy | Rendrr's cloud server" && (await page.locator("#export-device").inputValue()) === "a1", `${tag}: the Export window offers the computers and the cloud (${opts.join(" | ")})`);
+    await page.locator("#export-device").selectOption("cloud");
+    await page.locator("#export-render").click(); await sleep(600);
+    check((await page.evaluate(() => globalThis.__lastRenderOpts?.device)) === "cloud", `${tag}: the computer chosen goes with the export (${await page.evaluate(() => JSON.stringify(globalThis.__lastRenderOpts))})`);
+    await page.locator("#render-done").waitFor({ timeout: 30000 }).catch(() => {});
+    await page.evaluate(() => { globalThis.__demoMac = null; });
   }
   check(errors.length === 0, `${tag}: no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
   await ctx.close();
@@ -92,7 +112,7 @@ await mctx.addInitScript(([plat, dev]) => {
   const st = { protocol: 1, ready: true, enabled: true, busy: false, cpus: 10, have: ["libx264", "ass"], ffmpeg: "8.0", why: null };
   const subs = new Set();
   globalThis.__runs = [];
-  window.rendrrDesktop = Object.freeze({ app: plat, platform: plat === "windows" ? "win32" : "darwin", version: "0.2.0", device: dev, openInBrowser: () => {},
+  window.rendrrDesktop = Object.freeze({ app: plat, platform: plat === "windows" ? "win32" : "darwin", version: "0.2.0", device: dev, deviceId: plat + "-id-1", openInBrowser: () => {},
     render: Object.freeze({
       info: async () => ({ ...st }),
       setEnabled: async (on) => { st.enabled = !!on; subs.forEach((f) => f({ ...st })); return { ...st }; },
@@ -105,13 +125,13 @@ const mp = await mctx.newPage();
 const merrors = []; mp.on("pageerror", (e) => merrors.push(e.message));
 await mp.goto(base + "/"); await sleep(600); await login(mp); await sleep(800);
 const ping = await mp.evaluate(() => globalThis.__demoMacPing);
-check(ping && ping.device === dev && ping.platform === plat && ping.version === "0.2.0" && ping.render?.protocol === 1 && ping.render?.ready && ping.render?.have?.includes("libx264"), `the ${plat} app sends its name, platform and what it can render with its ping (${JSON.stringify(ping)})`);
+check(ping && ping.device === dev && ping.platform === plat && ping.deviceId === plat + "-id-1" && ping.version === "0.2.0" && ping.render?.protocol === 1 && ping.render?.ready && ping.render?.have?.includes("libx264"), `the ${plat} app sends its name, platform and what it can render with its ping (${JSON.stringify(ping)})`);
 let said = false;
 const sayRe = new RegExp(`Making Preview v3 of Promo on this ${M}`);
 for (let i = 0; i < 40 && !said; i++) { said = sayRe.test(await mp.locator("body").innerText()); if (!said) await sleep(100); }
 await sleep(3500);
 const runs = await mp.evaluate(() => globalThis.__runs.map((t) => t.id));
-check(runs.length === 1 && runs[0] === "t1", `${plat}: a render Rendrr holds for this computer is taken once and handed to the app (${JSON.stringify(runs)})`);
+check(runs.length === 1 && runs[0] === "t1" && (await mp.evaluate(() => globalThis.__demoTasksFor)) === plat + "-id-1", `${plat}: a render Rendrr holds for this computer (asked for by its id) is taken once and handed to the app (${JSON.stringify(runs)})`);
 check(said, `${plat}: it says it is making it on this ${M}`);
 await mp.evaluate(() => globalThis.__rendrrNav.go("/connect")); await mp.locator("#render-here").waitFor({ timeout: 8000 });
 check((await text(mp, "#render-here")).startsWith(`Render on this ${M}`) && (await text(mp, "#render-here-sub")) === "On · FFmpeg 8.0" && (await mp.locator("#render-here-toggle").getAttribute("aria-checked")) === "true", `${plat}: the app's switch: on (${await text(mp, "#render-here-sub")})`);

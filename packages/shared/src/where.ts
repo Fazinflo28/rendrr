@@ -23,9 +23,21 @@ export type MacState = "waiting" | "sent";
 export type Delivery = { to: DeliveryTo; device: string | null; state: MacState | null; folder: string | null; at: number | null; platform?: DesktopPlatform };
 /** renders: where it is (or was) made; device: the computer's name when on the user's computer; platform: which kind. */
 export type RenderWhere = { renders: "cloud" | "mac"; region: string; device: string | null; delivery: Delivery; platform?: DesktopPlatform };
+/** One of the user's computers with the Rendrr app open (one account can be open on several): id (the app's own),
+ *  name, platform; renders: it can render (on, ready, not turned off); busy: rendering now; why: why it cannot. */
+export type DeviceStatus = { id: string; name: string | null; platform: DesktopPlatform; version: string | null; seenAt: number; renders: boolean; busy: boolean; why: string | null };
 /** renders: the desktop app is open and renders there (on, ready, not turned off); why: why not, when it is open but
- *  does not; platform: a Mac or a Windows PC. */
-export type MacStatus = { online: boolean; device: string | null; version: string | null; seenAt: number | null; renders?: boolean; why?: string | null; platform?: DesktopPlatform };
+ *  does not; platform: a Mac or a Windows PC. The top fields are the main computer (the one picked, else the first
+ *  that renders); devices: every computer online; choice: the one the user picked ("cloud": Rendrr's cloud), if any. */
+export type MacStatus = { online: boolean; device: string | null; version: string | null; seenAt: number | null; renders?: boolean; why?: string | null; platform?: DesktopPlatform; deviceId?: string | null; devices?: DeviceStatus[]; choice?: string | null };
+
+/** "Studio Mac" (Mac), or "Gaming PC" (PC). */
+export const deviceLabel = (d: Pick<DeviceStatus, "name" | "platform">) => `"${d.name || "this computer"}" (${machineWord(d.platform)})`;
+/** The computers that can render, for a list: "Studio Mac" (Mac) and "Gaming PC" (PC). */
+export function devicesText(list: Pick<DeviceStatus, "name" | "platform">[]): string {
+  const parts = list.map(deviceLabel);
+  return parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
 
 /** A Mac's name for people: "Ronniis-MacBook-Pro.local" -> "Ronniis MacBook Pro". Nothing usable gives null. */
 export function deviceName(raw?: string | null): string | null {
@@ -68,6 +80,11 @@ export function whereShort(w: RenderWhere, kind: "preview" | "final" | string): 
 
 /** Where the AI's next render is made and where its export goes, for get_project and the Connect page. */
 export function nextExportText(mac: MacStatus): string {
+  const able = (mac.devices || []).filter((d) => d.renders);
+  if (able.length > 1) {
+    const picked = mac.choice === "cloud" ? `the user picked ${CLOUD}` : able.find((d) => d.id === mac.choice) ? `the user picked ${deviceLabel(able.find((d) => d.id === mac.choice)!)}` : "";
+    return `${able.length} of the user's computers can render now: ${devicesText(able)}, or ${CLOUD}. ${picked ? `For now ${picked} (renders go there; pass device to switch).` : "The next render asks which one to use: ask the user, then pass device (its name, or \"cloud\")."} Finals made on a computer are saved to its Downloads.`;
+  }
   const on = mac.device ? ` on "${mac.device}"` : "";
   const m = machineWord(mac.platform), appName = desktopAppName(mac.platform);
   if (mac.online && mac.renders) return `Renders run on the user's ${m}: the ${appName} is open${on}, so previews and finals are made there (graphics, the person's cut-out and checks on ${CLOUD}) and finals are saved to its Downloads. If the ${m} cannot take one, ${CLOUD} makes it.`;
@@ -81,7 +98,7 @@ export function nextExportText(mac: MacStatus): string {
  * it, so a final made on that computer reads the file itself, at full quality, while the cloud keeps only the preview
  * copy. width x height: the picture as shown (turned upright); transfer: HDR (pq, hlg) or null; platform: Mac or PC.
  */
-export type MacOriginal = { device: string | null; size: number; name: string; width: number; height: number; fps: number; seconds: number; hasAudio: boolean; transfer: "pq" | "hlg" | null; at: number; platform: DesktopPlatform };
+export type MacOriginal = { device: string | null; deviceId?: string | null; size: number; name: string; width: number; height: number; fps: number; seconds: number; hasAudio: boolean; transfer: "pq" | "hlg" | null; at: number; platform: DesktopPlatform };
 
 /** A video's original on a Mac, when one is kept there and what was kept reads right (null otherwise). */
 export function macOriginalOf(v: { macOriginal?: unknown } | null | undefined): MacOriginal | null {
@@ -89,5 +106,5 @@ export function macOriginalOf(v: { macOriginal?: unknown } | null | undefined): 
   if (!m || typeof m !== "object") return null;
   const n = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x > 0 ? x : 0);
   if (!n(m.size) || !n(m.width) || !n(m.height)) return null;
-  return { device: typeof m.device === "string" && m.device ? m.device : null, size: n(m.size), name: typeof m.name === "string" ? m.name.slice(0, 200) : "", width: Math.round(n(m.width)), height: Math.round(n(m.height)), fps: n(m.fps) || 30, seconds: n(m.seconds), hasAudio: m.hasAudio !== false, transfer: m.transfer === "pq" || m.transfer === "hlg" ? m.transfer : null, at: n(m.at), platform: platformOf(m.platform) };
+  return { device: typeof m.device === "string" && m.device ? m.device : null, deviceId: typeof m.deviceId === "string" && /^[\w:. -]{1,80}$/.test(m.deviceId) ? m.deviceId : null, size: n(m.size), name: typeof m.name === "string" ? m.name.slice(0, 200) : "", width: Math.round(n(m.width)), height: Math.round(n(m.height)), fps: n(m.fps) || 30, seconds: n(m.seconds), hasAudio: m.hasAudio !== false, transfer: m.transfer === "pq" || m.transfer === "hlg" ? m.transfer : null, at: n(m.at), platform: platformOf(m.platform) };
 }

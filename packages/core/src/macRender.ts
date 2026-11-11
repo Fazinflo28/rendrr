@@ -10,6 +10,11 @@
 //   mac:task:<id>:run     the Mac's side: state, progress, outputs, error (the API writes it)
 //   mac:task:<id>:stop    why the Mac must stop (the worker writes it: stopped by the user, or the Mac went quiet)
 //   mac:tasks:<userId>    the user's tasks still waiting for a Mac
+//
+// Per user (one account can be open on several computers, Macs and Windows PCs, at once):
+//   mac:devices:<userId>  each computer's last ping by its id: name, platform, version, what it can render (7 days)
+//   mac:choice:<userId>   the computer the user picked to render on, or "cloud" (6 hours; Claude asks again after)
+// A task names the one computer that may take it (deviceId): the one the user picked, or the best free one.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mediaRequest } from "./drive";
 import { redis } from "./queue";
@@ -36,6 +41,8 @@ export type MacCommand = { args: string[]; graph?: string; seconds?: number };
 export type MacOutput = { name: string; key: string; type: string; save?: string };
 export type MacTaskSpec = {
   renderId: string; userId: string; kind: string; label: string;
+  /** The only computer that may take it (its id); none: any of the user's computers. */
+  deviceId?: string;
   inputs: MacInput[]; fonts?: { name: string; key: string; size: number }[];
   commands: MacCommand[]; outputs: MacOutput[];
   /** FFmpeg features this task uses (the Mac must have them all, or the cloud makes it). */
@@ -56,31 +63,84 @@ export type MacTaskView = { owner: "mac" | "cloud" | null; run: MacRun | null; s
 const k = {
   task: (id: string) => `mac:task:${id}`, owner: (id: string) => `mac:task:${id}:owner`, run: (id: string) => `mac:task:${id}:run`,
   stop: (id: string) => `mac:task:${id}:stop`, waiting: (userId: string) => `mac:tasks:${userId}`, on: (userId: string) => `mac:on:${userId}`,
+  devices: (userId: string) => `mac:devices:${userId}`, choice: (userId: string) => `mac:choice:${userId}`,
 };
 /** The AI's finals waiting for the Mac app to save (apps/api services/macExport.ts). */
 export const macExportsKey = (userId: string) => `mac:exports:${userId}`;
 const hashOf = (token: string) => createHash("sha256").update(token).digest("hex");
 const parse = <T>(s: string | null): T | null => { if (!s) return null; try { return JSON.parse(s) as T; } catch { return null; } };
 
-/** The Mac app's render abilities from its last ping (null: closed, an older app, or the ping is stale). */
-export async function macRenderInfo(userId: string): Promise<(MacRenderInfo & { device: string | null; platform: "mac" | "windows" }) | null> {
-  const on = parse<{ at?: number; device?: string | null; platform?: string; render?: Partial<MacRenderInfo> }>(await redis().get(k.on(userId)).catch(() => null));
-  const r = on?.render;
-  if (!on || !r || r.protocol !== MAC_RENDER_PROTOCOL || !on.at || Date.now() - on.at > PING_FRESH_MS) return null;
-  return { protocol: r.protocol, ready: !!r.ready, enabled: r.enabled !== false, busy: !!r.busy, cpus: Math.max(1, Math.min(64, Math.round(Number(r.cpus) || 4))), have: Array.isArray(r.have) ? r.have.map(String) : [], ffmpeg: r.ffmpeg ? String(r.ffmpeg) : null, why: r.why ? String(r.why) : null, device: on.device ?? null, platform: on.platform === "windows" ? "windows" : "mac" };
+/** One of the user's computers with the Rendrr app open: its id, name, platform, app version, last ping and what it
+ *  can render (null: an app too old to render). */
+export type MacDevice = { id: string; name: string | null; platform: "mac" | "windows"; version: string | null; at: number; render: MacRenderInfo | null };
+/** A computer that can be handed a render: what it can do, with its id, name and platform. */
+export type MacTarget = MacRenderInfo & { id: string; device: string | null; platform: "mac" | "windows" };
+/** The app pings every 20 s: a computer silent for longer than this counts as closed. */
+export const DEVICE_ONLINE_MS = 75_000;
+const DEVICE_KEEP_S = 7 * 86400;
+const CHOICE_S = 6 * 3600;
+
+/** A computer's ping (apps/api services/macExport.ts macPing): kept by its id. */
+export async function noteMacDevice(userId: string, d: Omit<MacDevice, "at">) {
+  const r = redis(), at = Date.now();
+  await r.hset(k.devices(userId), d.id, JSON.stringify({ ...d, at }));
+  await r.expire(k.devices(userId), DEVICE_KEEP_S);
+  // The single-computer key older servers read (kept while one may still be running).
+  await r.set(k.on(userId), JSON.stringify({ at, version: d.version, device: d.name, platform: d.platform, ...(d.render ? { render: d.render } : {}) }), "EX", 75);
 }
 
-/** The Mac that can make a render with these FFmpeg features now, or why not (null reason: it can). */
-export async function macForRender(userId: string, needs: string[]): Promise<{ info: MacRenderInfo & { device: string | null; platform: "mac" | "windows" } | null; why: string | null }> {
+/** The user's computers that pinged within freshMs, the most recent first (ones silent for a day are forgotten). */
+export async function macDevices(userId: string, freshMs = DEVICE_ONLINE_MS): Promise<MacDevice[]> {
+  const r = redis();
+  const all = await r.hgetall(k.devices(userId)).catch(() => ({} as Record<string, string>));
+  const now = Date.now(), out: MacDevice[] = [];
+  for (const [id, raw] of Object.entries(all)) {
+    const d = parse<MacDevice>(raw);
+    if (!d || !d.at || now - d.at > 86400_000) { await r.hdel(k.devices(userId), id).catch(() => {}); continue; }
+    if (now - d.at > freshMs) continue;
+    const ri = d.render && d.render.protocol === MAC_RENDER_PROTOCOL ? d.render : null;
+    out.push({ id, name: d.name ?? null, platform: d.platform === "windows" ? "windows" : "mac", version: d.version ?? null, at: d.at,
+      render: ri ? { protocol: ri.protocol, ready: !!ri.ready, enabled: ri.enabled !== false, busy: !!ri.busy, cpus: Math.max(1, Math.min(64, Math.round(Number(ri.cpus) || 4))), have: Array.isArray(ri.have) ? ri.have.map(String) : [], ffmpeg: ri.ffmpeg ? String(ri.ffmpeg) : null, why: ri.why ? String(ri.why) : null } : null });
+  }
+  return out.sort((x, y) => y.at - x.at);
+}
+
+/** Why this computer cannot make a render needing these FFmpeg features now (null: it can). */
+export function deviceWhy(d: MacDevice, needs: string[] = []): string | null {
+  const m = d.platform === "windows" ? "PC" : "Mac", app = d.platform === "windows" ? "Windows app" : "Mac app";
+  const r = d.render;
+  if (!r) return `this ${app} cannot render yet: update it`;
+  if (!r.enabled) return `rendering on the ${m} is turned off in the ${app}`;
+  if (!r.ready) return r.why || `the ${app} is not ready to render`;
+  if (r.busy) return `the ${m} is busy with another render`;
+  const missing = needs.filter((n) => !r.have.includes(n));
+  return missing.length ? `the ${m}'s FFmpeg lacks ${missing.join(", ")}` : null;
+}
+const targetOf = (d: MacDevice): MacTarget => ({ ...(d.render as MacRenderInfo), id: d.id, device: d.name, platform: d.platform });
+
+/** The computer the user picked to render on ("cloud": Rendrr's cloud server), while the pick lasts. */
+export async function renderChoice(userId: string): Promise<string | null> { return (await redis().get(k.choice(userId)).catch(() => null)) || null; }
+export async function setRenderChoice(userId: string, choice: string | null) {
+  if (choice) await redis().set(k.choice(userId), choice, "EX", CHOICE_S); else await redis().del(k.choice(userId));
+}
+
+/** The best computer for a render now (null: none; why says why not): one the user picked (target: its id), "cloud"
+ *  (none), or with no target the free computer that can make it with the most cores. */
+export async function macForRender(userId: string, needs: string[], target?: string | null): Promise<{ info: MacTarget | null; why: string | null }> {
   if (process.env.MAC_RENDER === "off") return { info: null, why: "off on this server" };
-  const info = await macRenderInfo(userId);
-  if (!info) return { info: null, why: "the Mac app is not open" };
-  if (!info.enabled) return { info, why: "rendering on the Mac is turned off in the Mac app" };
-  if (!info.ready) return { info, why: info.why || "the Mac app is not ready to render" };
-  if (info.busy) return { info, why: "the Mac is busy with another render" };
-  const missing = needs.filter((n) => !info.have.includes(n));
-  if (missing.length) return { info, why: `the Mac's FFmpeg lacks ${missing.join(", ")}` };
-  return { info, why: null };
+  if (target === "cloud") return { info: null, why: "the user chose Rendrr's cloud server" };
+  const devices = await macDevices(userId, PING_FRESH_MS);
+  if (target) {
+    const d = devices.find((x) => x.id === target);
+    if (!d) return { info: null, why: "the computer picked for it is not connected" };
+    const why = deviceWhy(d, needs);
+    return { info: d.render ? targetOf(d) : null, why };
+  }
+  const able = devices.filter((d) => !deviceWhy(d, needs)).sort((x, y) => (y.render!.cpus - x.render!.cpus));
+  if (able.length) return { info: targetOf(able[0]), why: null };
+  if (!devices.length) return { info: null, why: "the Rendrr app is not open" };
+  const d = devices[0];
+  return { info: d.render ? targetOf(d) : null, why: deviceWhy(d, needs) };
 }
 
 /** A new task for the user's Mac; its id. */
@@ -100,14 +160,16 @@ export async function viewMacTask(id: string): Promise<MacTaskView> {
   return { owner: owner === "mac" || owner === "cloud" ? owner : null, run: parse<MacRun>(run), stop: stop || null };
 }
 
-/** The user's tasks still waiting for a Mac (newest last), for the Mac app to take. */
-export async function listMacTasks(userId: string): Promise<{ id: string; renderId: string; kind: string; label: string; createdAt: number }[]> {
+/** The user's tasks still waiting for a computer (newest last), for the app to take; deviceId: only those this
+ *  computer may take (a task for another computer is left for it). */
+export async function listMacTasks(userId: string, deviceId?: string | null): Promise<{ id: string; renderId: string; kind: string; label: string; createdAt: number }[]> {
   const r = redis();
   const ids = await r.smembers(k.waiting(userId));
   const out: { id: string; renderId: string; kind: string; label: string; createdAt: number }[] = [];
   for (const id of ids) {
     const [t, owner] = await Promise.all([readMacTask(id), r.get(k.owner(id))]);
     if (!t || owner) { await r.srem(k.waiting(userId), id); continue; }
+    if (t.deviceId && deviceId && t.deviceId !== deviceId) continue;
     out.push({ id, renderId: t.renderId, kind: t.kind, label: t.label, createdAt: t.createdAt });
   }
   return out.sort((a, b) => a.createdAt - b.createdAt);
@@ -115,10 +177,12 @@ export async function listMacTasks(userId: string): Promise<{ id: string; render
 
 /** The Mac app takes a task (only the first to ask gets it, and only while the cloud has not given up on it).
  *  platform: the computer the app runs on (a Windows PC says "windows"). */
-export async function claimMacTask(userId: string, id: string, device: string | null, platform?: string | null): Promise<{ task: MacTask; token: string } | null> {
+export async function claimMacTask(userId: string, id: string, device: string | null, platform?: string | null, deviceId?: string | null): Promise<{ task: MacTask; token: string } | null> {
   const r = redis();
   const task = await readMacTask(id);
   if (!task || task.userId !== userId) return null;
+  // A task for one computer is only that computer's to take.
+  if (task.deviceId && deviceId && task.deviceId !== deviceId) return null;
   if ((await r.set(k.owner(id), "mac", "EX", MAC_TASK_TTL_S, "NX")) !== "OK") return null;
   await r.srem(k.waiting(userId), id);
   const token = randomBytes(32).toString("base64url"), now = Date.now();

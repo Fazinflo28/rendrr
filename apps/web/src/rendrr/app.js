@@ -281,6 +281,10 @@ function App() {
   <//><//>`;
 }
 
+// This computer's own id (from the desktop app; an older app is known by its name). One account can be open on several
+// computers: Rendrr tells them apart by it, and hands each render, and each final to save, to the one it is for.
+const deviceIdOf = (d) => d.deviceId || `name:${d.device || "this computer"}`;
+
 // In the Mac or Windows app: tell Rendrr the app is open (so your AI exports finals to this computer), and save each final your AI
 // exported here to Downloads as soon as it is done (the app saves file links straight to Downloads, with the Dock's
 // progress). One window takes each final, so two windows do not save it twice.
@@ -291,10 +295,10 @@ function useMacExports(user, toast) {
     let live = true;
     const tick = async () => {
       try {
-        await api.macPing(d.version || "", d.device || "", d.render ? await d.render.info().catch(() => null) : null, d.app === "windows" ? "windows" : "mac");
-        for (const x of await api.macExports()) {
+        await api.macPing(d.version || "", d.device || "", d.render ? await d.render.info().catch(() => null) : null, d.app === "windows" ? "windows" : "mac", deviceIdOf(d));
+        for (const x of await api.macExports(deviceIdOf(d))) {
           if (!live || (!x.url && !x.failed)) continue;
-          const { claimed } = await api.macClaim(x.renderId);
+          const { claimed } = await api.macClaim(x.renderId, deviceIdOf(d));
           if (!claimed) continue;
           if (x.url) { window.open(x.url, "_blank"); toast(`Your AI's export "${x.fileName}" is saving to Downloads`, { icon: "download", tone: "brand" }); }
           else toast(`Your AI's export "${x.fileName}" did not finish: ${x.failed}`, { icon: "alert" });
@@ -304,7 +308,7 @@ function useMacExports(user, toast) {
     tick();
     const t = setInterval(tick, 20_000);
     // The Mac starting or finishing a render (or rendering turned on or off) is told to Rendrr at once.
-    const off = d.render?.onState ? d.render.onState((info) => { api.macPing(d.version || "", d.device || "", info || null, d.app === "windows" ? "windows" : "mac").catch(() => {}); }) : null;
+    const off = d.render?.onState ? d.render.onState((info) => { api.macPing(d.version || "", d.device || "", info || null, d.app === "windows" ? "windows" : "mac", deviceIdOf(d)).catch(() => {}); }) : null;
     return () => { live = false; clearInterval(t); if (off) off(); };
   }, [user?.id]);
 }
@@ -323,9 +327,9 @@ function useMacRenders(user, toast) {
       try {
         const info = await d.render.info();
         if (!info || !info.ready || !info.enabled || info.busy) return;
-        const next = (await api.macTasks())[0];
+        const next = (await api.macTasks(deviceIdOf(d)))[0];
         if (!next) return;
-        const { task } = await api.macClaimTask(next.id, d.device || "", d.app === "windows" ? "windows" : "mac");
+        const { task } = await api.macClaimTask(next.id, d.device || "", d.app === "windows" ? "windows" : "mac", deviceIdOf(d));
         if (!task) return;
         const r = await d.render.run(task);
         if (r?.started) toast(`Making ${next.label} on this ${d.app === "windows" ? "PC" : "Mac"}`, { icon: "laptop", tone: "brand" });

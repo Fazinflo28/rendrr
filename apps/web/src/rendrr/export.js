@@ -1,7 +1,8 @@
 // Phase 7: the Export window before a final. Shape, resolution, codec and (for HDR footage) HDR; the frame rate is the
 // footage's and is shown, not chosen. Every control sends the connector's own op (set_aspect, set_export), so the
 // choice is part of the edit, undoable, and what the AI sees in get_project.
-import { html, Btn, Modal, useState } from "./ui";
+import { html, Btn, Modal, useState, useEffect } from "./ui";
+import { api } from "./api";
 import { outputRate, outputSize, rateText } from "@rendrr/shared/renderPlan";
 import { ASPECT_RATIO, chapterProblems, chaptersText, srtText, vttText } from "@rendrr/shared";
 
@@ -63,6 +64,19 @@ export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, r
   const row = (label, child) => html`<div class="row between" style="gap:12px;align-items:center"><span class="t-label">${label}</span>${child}</div>`;
   // Best quality is for this export only (not kept with the edit).
   const [best, setBest] = useState(false);
+  // Render on: the user's computers that can render now (the Rendrr app open on each), or Rendrr's cloud server. The
+  // one picked last (here or with the AI) comes first; the pick is remembered for the next few hours.
+  const [where, setWhere] = useState(null);
+  useEffect(() => {
+    let live = true;
+    api.macStatus().then((m) => {
+      const able = (m?.devices || []).filter((d) => d.renders);
+      if (!live || !able.length) return;
+      const value = m.choice === "cloud" ? "cloud" : (able.find((d) => d.id === m.choice) || able.find((d) => d.id === m.deviceId) || able[0]).id;
+      setWhere({ able, value });
+    }).catch(() => {});
+    return () => { live = false; };
+  }, []);
   return html`<${Modal} title="Export" sub="The final is made from your original at these settings." onClose=${onClose}>
     <div class="col" style="gap:14px" id="export-panel">
       ${row("Shape", html`<${Seg} id="export-aspect" value=${snap.aspect} options=${SHAPES} onPick=${(v) => doOp({ op: "set_aspect", aspect: v })} />`)}
@@ -78,6 +92,7 @@ export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, r
       ${best && (!ex.format || ex.format === "mp4") && html`<p class="t-small muted" id="export-best-note">Best: the largest size your footage fills in this shape (4K from 4K footage), a slower, finer encode and 320k sound. About twice as long to render.</p>`}
       ${(!ex.format || ex.format === "mp4") && row("Bitrate", html`<label class="row t-small" style="gap:6px;align-items:center"><input class="input sm mono" type="number" min="1" max="200" step="1" id="export-bitrate" placeholder="Auto" value=${ex.bitrate ?? ""} style="width:80px" onChange=${(e) => doOp({ op: "set_export", bitrate: e.target.value ? Number(e.target.value) : null })} />Mbit/s</label>`)}
       ${ex.format === "overlay" && html`<p class="t-small muted" id="export-overlay-note">The graphics, text and captions alone, on transparency, to lay over footage in another editor. Footage, b-roll and zooms are left out.</p>`}
+      ${where && row("Render on", html`<select class="input sm" id="export-device" value=${where.value} onChange=${(e) => setWhere({ ...where, value: e.target.value })}>${where.able.map((d) => html`<option key=${d.id} value=${d.id}>${(d.name || "This computer") + (d.platform === "windows" ? " (PC)" : " (Mac)") + (d.busy ? " · busy" : "")}</option>`)}<option value="cloud">Rendrr's cloud server</option></select>`)}
       <p class="t-small muted" id="export-summary">${exportSummary(snap, video)}</p>
       ${plan && html`<div class="col" style="gap:6px" id="export-files">
         <span class="t-label">Captions and chapters</span>
@@ -89,7 +104,7 @@ export function ExportModal({ snap, video, doOp, onRender, onClose, onReframe, r
         <span class="t-small muted" id="export-chapters-note">${plan.chapters?.length ? `${plan.chapters.length} chapters from your chapter marks${chapterProblems(plan.chapters, plan.outputSeconds).length ? `. YouTube shows none until there are: ${chapterProblems(plan.chapters, plan.outputSeconds).join("; ")}` : "."}` : "Chapters come from chapter marks (your AI adds them with add_marks, kind chapter)."}</span>
       </div>`}
       <p class="t-small muted">${(ex.resolution === "4k" || ex.codec === "hevc") ? "4K and HEVC take longer to render; the window shows the time left." : "Frame rate: the final keeps your footage's. Previews are 30 fps."}</p>
-      <div class="row"><${Btn} icon="film" id="export-render" onClick=${() => onRender({ best: best && (!ex.format || ex.format === "mp4") })}>Export final<//><${Btn} kind="ghost" onClick=${onClose}>Cancel<//></div>
+      <div class="row"><${Btn} icon="film" id="export-render" onClick=${() => onRender({ best: best && (!ex.format || ex.format === "mp4"), ...(where ? { device: where.value } : {}) })}>Export final<//><${Btn} kind="ghost" onClick=${onClose}>Cancel<//></div>
     </div>
   <//>`;
 }

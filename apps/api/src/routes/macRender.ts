@@ -6,6 +6,7 @@ import { claimMacTask, env, failMacTask, finishMacTask, listMacTasks, macManifes
 import { deviceName } from "@rendrr/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authenticate } from "../auth";
+import { deviceIdOf } from "../services/macExport";
 
 const ID = /^[0-9a-f-]{36}$/;
 const tokenOf = (req: FastifyRequest) => String(req.headers["x-rendrr-task-token"] || "");
@@ -36,11 +37,13 @@ export default async function macRender(app: FastifyInstance) {
   // ---- The web app in the Mac app, signed in ----
   await app.register(async (a) => {
     a.addHook("preHandler", authenticate);
-    a.get("/desktop/tasks", async (req) => ({ tasks: await listMacTasks(req.user!.id) }));
+    // ?device=: this computer's id (from its app): a render meant for another of the user's computers is left for it.
+    a.get("/desktop/tasks", async (req) => ({ tasks: await listMacTasks(req.user!.id, String((req.query as { device?: unknown }).device ?? "") || null) }));
     a.post("/desktop/tasks/:id/claim", async (req) => {
       const id = idOf(req);
-      const b = (req.body as { device?: unknown; platform?: unknown } | null) ?? {};
-      const got = id ? await claimMacTask(req.user!.id, id, deviceName(String(b.device ?? "")), String(b.platform ?? "")) : null;
+      const b = (req.body as { device?: unknown; platform?: unknown; deviceId?: unknown } | null) ?? {};
+      const name = deviceName(String(b.device ?? ""));
+      const got = id ? await claimMacTask(req.user!.id, id, name, String(b.platform ?? ""), b.deviceId != null ? deviceIdOf(b.deviceId, name) : null) : null;
       return { task: got ? await macManifest(got.task, got.token, env().PUBLIC_API_URL) : null };
     });
   });

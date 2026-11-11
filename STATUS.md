@@ -1435,3 +1435,13 @@ features checked, a real render in the tests, the app opened and its login check
 to Downloads, renders made on the PC while the app is open (the cloud otherwise), originals kept on the PC. Rendrr says
 "PC" and "Rendrr Windows app" for a Windows PC everywhere it said Mac (Settings, the Export window, the Claude card,
 the AI's answers). Not signed with a certificate yet: Windows SmartScreen asks once (More info > Run anyway).
+
+## Several computers on one account (11 November)
+
+Logged in on several Macs or PCs at once, Rendrr sees every computer with the app open and online. When two or more can
+render, Claude asks which one before rendering (for example "M1" or "M3", or Rendrr's cloud server) and passes the
+answer as `device`; the pick is kept for the next 6 hours, so Claude asks again only after that or when the user wants
+a switch. The render goes to that computer alone. A final made from an original kept on one computer always goes to
+that computer. In the web app: Settings > Where renders run lists every computer (ready, rendering now, or why not)
+with "Ask each time / a computer / Rendrr's cloud server", and the Export window has "Render on". Needs the newest
+Mac or Windows app (it sends the computer's id). Details: docs/mac-render.md.

@@ -111,7 +111,7 @@ export async function appProject(userId: string, projectId: string, renderId?: s
     preview: shown?.outputKey && res ? { renderId: shown.id, version: shown.version, kind: shown.kind === "final" ? "final" : "preview", url: await signGet(shown.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), download: res.downloadUrl!, fileName: res.fileName, seconds: shown.seconds, quality: shown.quality ?? (shown.kind === "final" ? "1080p" : "540p"), at: shown.createdAt.getTime(), where: whereShort(renderWhere(shown), shown.kind), machine: machineOf(renderWhere(shown)) } : null,
     versions: versions.map((r) => ({ renderId: r.id, version: r.version, kind: r.kind === "final" ? "final" as const : "preview" as const, quality: r.quality ?? (r.kind === "final" ? "1080p" : "540p"), at: r.createdAt.getTime() })),
     rendering: live && st ? { renderId: live.id, version: live.version, percent: Math.round(st.percent ?? 0), step: st.steps[st.step] ?? null, etaSec: st.etaSec, queued: st.status === "queued", kind: live.kind === "final" ? "final" : "preview", where: whereShort(st.where, live.kind), machine: machineOf(st.where) } : null,
-    mac: { online: mac.online, device: mac.device, renders: !!mac.renders, platform: mac.platform ?? "mac" },
+    mac: { online: mac.online, device: mac.device, renders: !!mac.renders, platform: mac.platform ?? "mac", ...((mac.devices?.length ?? 0) > 1 ? { count: mac.devices!.length } : {}) },
     // A failed render is only news while nothing newer worked.
     failed: failed && (!done || failed.createdAt > done.createdAt) && (!live || failed.createdAt > live.createdAt) ? { version: failed.version, error: failed.error || "The render failed." } : null,
     comments,

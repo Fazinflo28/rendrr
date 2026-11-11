@@ -40,6 +40,23 @@ Mac goes, it fails with "need-original" and the original is asked for once, as b
 FFmpeg 7 and later read a graph file with `-/filter_complex` (FFmpeg 9 dropped `-filter_complex_script`): the app
 adapts the cloud's runs to its own FFmpeg (`render.adaptArgs`).
 
+## Several computers on one account
+
+One account can be open on several computers at once (Macs and Windows PCs). Each app has its own id
+(`desktop/main.js`, `device.json` in its data; the web app sends it with the ping, the task list, the claim, the
+finals queue and kept originals; an older app is known as `name:<its name>`). Redis keeps each computer's last ping
+(`mac:devices:<user>`, `noteMacDevice`, `macDevices`); `/desktop/status` lists every one online (`devices`) with the
+main one on top.
+
+Which computer renders (`apps/api/src/services/macExport.ts` `pickTarget`): the one keeping the footage's original;
+else the one the user picked (`mac:choice:<user>`, 6 hours: `device` on render_preview, render_final and
+render_samples, the Export window's "Render on", Settings' "Ask each time / a computer / Rendrr's cloud"); else the
+only one that can render; else, with two or more, the tool renders nothing and tells the AI to ask the user which
+(their names, or "cloud"). The pick is stored on the render (`Render.target`); the worker hands the task to that
+computer alone (`MacTaskSpec.deviceId`: other computers neither list nor claim it), and with no pick to the free one
+with the most cores. A final made in the cloud is saved by the computer it is for. Tests:
+`apps/api/test/mac-devices.test.ts`.
+
 ## Windows
 
 The same app and protocol. The Windows build bundles FFmpeg from BtbN/FFmpeg-Builds (`ffmpeg.exe` in Resources);

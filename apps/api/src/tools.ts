@@ -6,7 +6,7 @@ import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
-  ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip, CLOUD, CLOUD_REGION, desktopAppName, machineWord, macOriginalOf, nextExportText, whereText } from "@rendrr/shared";
+  ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip, CLOUD, CLOUD_REGION, desktopAppName, deviceLabel, machineWord, macOriginalOf, nextExportText, whereText } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
 import { samplesOut, samplesView, startSamples } from "./services/samples";
@@ -15,7 +15,7 @@ import { createCanvas } from "./services/canvas";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
-import { macStatus, queueMacExport, renderWhere } from "./services/macExport";
+import { macStatus, pickTarget, queueMacExport, renderWhere } from "./services/macExport";
 import { pendingLine, sentLines } from "./services/handoff";
 import { elementFromSource, elementsText, elementText } from "./services/elements";
 import { redeemLinkCode } from "./services/logins";
@@ -1159,14 +1159,20 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const running = latest ? await prisma.render.findFirst({ where: { projectId: p.id, kind: "preview", version: latest.v, status: { in: ["queued", "running"] } }, select: { id: true } }) : null;
     const gate = i.newRequest || running ? null : await previewGate(p.id);
     if (gate) return { text: gate };
-    const r = await startRender(c.userId, i.projectId, "preview", { by: c.ai ?? "claude" });
+    // Which computer renders it (several of the user's computers online: the one picked, else ask), or the cloud.
+    const pick = await pickTarget(c.userId, i.device, { tool: "render_preview" });
+    if (pick.ask) return { text: pick.ask };
+    const r = await startRender(c.userId, i.projectId, "preview", { by: c.ai ?? "claude", target: pick.target });
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     const out = await renderOut(r.id);
-    return had ? { ...out, text: `${changed.map((g) => `"${g.name}" (${g.id})`).join(", ")} changed since preview v${had.version}: rendering it again.\n${out.text}` } : out;
+    const lead = [pick.note, had ? `${changed.map((g) => `"${g.name}" (${g.id})`).join(", ")} changed since preview v${had.version}: rendering it again.` : null].filter(Boolean).join("\n");
+    return lead ? { ...out, text: `${lead}\n${out.text}` } : out;
   },
   async render_samples(c, i) {
+    const pick = await pickTarget(c.userId, i.device, { tool: "render_samples" });
+    if (pick.ask) return { text: pick.ask };
     let r;
-    try { r = await startSamples(c.userId, i.projectId, { frames: i.frames, clips: i.clips }); } catch (e) {
+    try { r = await startSamples(c.userId, i.projectId, { frames: i.frames, clips: i.clips }, pick.target); } catch (e) {
       const err = e as AppError;
       if (err.code === "samples" || err.code === "expired") return { text: `${err.message} Nothing was rendered.` };
       throw e;
@@ -1189,11 +1195,17 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const mac = !wantsDrive && macNow.online;
     const target = i.driveFolder != null || i.saveToDrive ? await driveTargetOrText(c.userId, i.driveFolder, i.createFolders) : null;
     if (typeof target === "string") return { text: target };
+    // Which computer makes it: the one that keeps the footage's original (only it can read it), the one the user
+    // picked, the only one online, or (several) ask; else the cloud.
+    const mo = macOriginalOf(await prisma.video.findFirst({ where: { projects: { some: { id: i.projectId } }, userId: c.userId }, select: { macOriginal: true } }));
+    const pick = await pickTarget(c.userId, i.device, { tool: "render_final", prefer: mo?.deviceId });
+    if (pick.ask) return { text: pick.ask };
     let r;
-    try { r = await startRender(c.userId, i.projectId, "final", { by: c.ai ?? "claude", best: i.quality === "best" }); } catch (e) {
+    try { r = await startRender(c.userId, i.projectId, "final", { by: c.ai ?? "claude", best: i.quality === "best", target: pick.target }); } catch (e) {
       const code = (e as AppError).code;
       if (code === "need-original") {
-        const mo = macOriginalOf(await prisma.video.findFirst({ where: { projects: { some: { id: i.projectId } }, userId: c.userId }, select: { macOriginal: true } }));
+        const holder = mo?.deviceId ? macNow.devices?.find((d) => d.id === mo.deviceId && d.renders) : undefined;
+        if (holder) return { text: `The original of this footage stays on ${deviceLabel(holder)} (added in the Rendrr app there, never uploaded), so only that computer can make this final. Call render_final again with device "${holder.name}", or ask the user to open this edit in Rendrr and press Export final to give the file once.` };
         if (mo) { const m = machineWord(mo.platform), appName = desktopAppName(mo.platform); return { text: `The original of this footage stays on the user's ${m}${mo.device ? ` ("${mo.device}")` : ""} (added in the ${appName}, never uploaded), and that ${m}'s Rendrr app is not open and rendering. Ask the user to open the ${appName} there and export again (the final is made on that ${m}), or to open this edit in Rendrr and press Export final to give the file once.` }; }
         return { text: "This footage is on the user's computer. Full quality needs the original file once: ask the user to open this edit in Rendrr and press Export final. The app will ask for the file and delete it within 24 hours." };
       }
@@ -1201,15 +1213,19 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       throw e;
     }
     if (target) await askDriveSave(r, target, fileNameFor(i.fileName, (await renderResult(r)).fileName));
-    if (mac) await queueMacExport(c.userId, r.id, fileNameFor(i.fileName, (await renderResult(r)).fileName), macNow.device, macNow.platform);
+    // The file goes to the computer that makes it, else the main one (made in the cloud, saved to its Downloads).
+    const to = pick.device ?? macNow.devices?.find((d) => d.id === macNow.deviceId) ?? null;
+    if (mac && to) await queueMacExport(c.userId, r.id, fileNameFor(i.fileName, (await renderResult(r)).fileName), to.name, to.platform, to.id);
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     const out = await renderOut(r.id);
-    const M = machineWord(macNow.platform), APP = desktopAppName(macNow.platform);
-    const onMac = macNow.device ? `the ${APP} on "${macNow.device}"` : `the ${APP}`;
-    const where = mac && macNow.renders ? `Exporting on the user's ${M}: ${onMac} is open, so the final is made on that ${M} (graphics and checks on ${CLOUD_WORDS}) and kept in its Downloads folder. Tell the user in those words. If the ${M} cannot take it, ${CLOUD_WORDS} makes it and the ${APP.replace("Rendrr ", "")} still saves it to Downloads.`
-      : mac ? `Exporting to the user's ${M}. It renders on ${CLOUD_WORDS}${macNow.why ? ` (${macNow.why})` : ""}; ${onMac} is open and saves the final to that ${M}'s Downloads folder by itself the moment it is done. Tell the user in those words: it renders in Rendrr's cloud and lands in their ${M}'s Downloads.`
+    const M = machineWord(to?.platform ?? macNow.platform), APP = desktopAppName(to?.platform ?? macNow.platform);
+    const toName = to?.name ?? macNow.device;
+    const onMac = toName ? `the ${APP} on "${toName}"` : `the ${APP}`;
+    const where0 = mac && pick.device ? `Exporting on the user's ${M}: ${onMac} is open, so the final is made on that ${M} (graphics and checks on ${CLOUD_WORDS}) and kept in its Downloads folder. Tell the user in those words. If the ${M} cannot take it, ${CLOUD_WORDS} makes it and the ${APP.replace("Rendrr ", "")} still saves it to Downloads.`
+      : mac ? `Exporting to the user's ${M}. It renders on ${CLOUD_WORDS}${pick.target === "cloud" ? " (the user chose it)" : macNow.why ? ` (${macNow.why})` : ""}; ${onMac} is open and saves the final to that ${M}'s Downloads folder by itself the moment it is done. Tell the user in those words: it renders in Rendrr's cloud and lands in their ${M}'s Downloads.`
       : target ? null
       : `${i.to === "mac" ? "The Rendrr app (Mac or Windows) is not open, so the final cannot go to the user's computer now. " : "The Rendrr app (Mac or Windows) is not open. "}Switching to Rendrr's cloud server: the final renders there and is saved to Google Drive. Tell the user you are switching to the cloud server, and ask which Google Drive folder to export it to (a folder link or a name). Then call save_to_drive with it: it saves the moment the render is done.`;
+    const where = [pick.note, where0].filter(Boolean).join("\n") || null;
     return where ? { ...out, text: `${where}\n${out.text}` } : out;
   },
   async save_to_drive(c, i) {

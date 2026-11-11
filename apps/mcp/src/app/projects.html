@@ -840,7 +840,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const madeM = (shownV && shownV.machine) || M;
     const whereChip = h("span", { class: "chip mini", id: "where-chip", title: shownWhere + ". " + (madeOnMac ? "Made by the Rendrr app on that " + madeM + ". " : "Made on Rendrr's cloud server, not on your computer. ") + macWords },
       madeOnMac ? (shownV.kind === "final" ? madeM + " → Downloads" : madeM + " render") : shownV && shownV.kind === "final" && shownV.where ? shownWhere.replace("Made in the cloud · ", "Cloud → ") : "Cloud render");
-    const mac = macOn ? h("span", { class: "chip mini ok", id: "mac-chip", title: macWords }, h("i", {}), M + " connected") : null;
+    const mac = macOn ? h("span", { class: "chip mini ok", id: "mac-chip", title: macWords }, h("i", {}), v.mac.count > 1 ? v.mac.count + " computers connected" : M + " connected") : null;
     const top = h("div", { class: "row top" }, back,
       h("div", { class: "grow" }, name, h("div", { class: "meta row" }, h("span", { class: "what" }, [p.folder, "v" + p.version, p.status, p.aspect].filter(Boolean).join(" · ")), whereChip, mac)),
       h("div", { class: "acts" }, pick,

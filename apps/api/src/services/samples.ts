@@ -17,7 +17,7 @@ const same = (a: SamplePlan["items"], b: SamplePlan["items"]) => JSON.stringify(
  * Starts a set of samples of the edit's latest version. The same samples of the same version already rendering are
  * joined, and already rendered are returned (with the new notes), instead of rendering again.
  */
-export async function startSamples(userId: string, projectId: string, req: SampleRequest): Promise<Render> {
+export async function startSamples(userId: string, projectId: string, req: SampleRequest, target: string | null = null): Promise<Render> {
   const p = await getOwnedProject(userId, projectId);
   const video = await prisma.video.findUniqueOrThrow({ where: { id: p.videoId } });
   if (!video.proxyKey || video.status === "expired") throw new AppError("The preview copy of this footage expired. Rebuild it from your Library, then render again.", 409, "expired");
@@ -47,7 +47,7 @@ export async function startSamples(userId: string, projectId: string, req: Sampl
     return { joined: await tx.render.findUniqueOrThrow({ where: { id: r.id } }) };
   }
   const steps = [...SAMPLE_STEPS];
-  return { made: await tx.render.create({ data: { projectId, userId, kind: "sample", version, status: "queued", steps, quality: "540p", plan: { samples: { items } } as never } }), steps };
+  return { made: await tx.render.create({ data: { projectId, userId, kind: "sample", version, status: "queued", steps, quality: "540p", target, plan: { samples: { items } } as never } }), steps };
   }, { timeout: 15_000, maxWait: 10_000 });
   if ("joined" in made && made.joined) return made.joined;
   const { made: r, steps } = made as { made: Render; steps: string[] };

@@ -35,7 +35,7 @@ describe("originals kept on the Mac", { skip: !ready && "needs DATABASE_URL, RED
   });
   after(async () => {
     for (const j of await queue("render").getJobs(["waiting", "delayed", "prioritized"])) if (await prisma.render.findFirst({ where: { id: (j.data as { renderId: string }).renderId, userId } })) await j.remove().catch(() => {});
-    await redis().del(`mac:on:${userId}`, `mac:exports:${userId}`).catch(() => {});
+    await redis().del(`mac:on:${userId}`, `mac:devices:${userId}`, `mac:choice:${userId}`, `mac:exports:${userId}`).catch(() => {});
     await prisma.render.deleteMany({ where: { userId } });
     await prisma.project.deleteMany({ where: { userId } });
     await prisma.folder.deleteMany({ where: { userId } });
@@ -66,7 +66,7 @@ describe("originals kept on the Mac", { skip: !ready && "needs DATABASE_URL, RED
   });
 
   it("the Mac app closed, or another Mac open: the original is asked for once, and the AI is told where it is", async () => {
-    await redis().del(`mac:on:${userId}`);
+    await redis().del(`mac:on:${userId}`, `mac:devices:${userId}`);
     const closed = await TOOL_HANDLERS.render_final(c(), { projectId });
     assert.match(closed.text, /The original of this footage stays on the user's Mac \("Studio Mac"\)/);
     await ping("Office-iMac.local");

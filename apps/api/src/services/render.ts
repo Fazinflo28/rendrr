@@ -5,23 +5,34 @@ import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, isFourK
 import { getOwnedProject } from "./projects";
 import { samplesView } from "./samples";
 import { assertMay } from "./billing";
-import { renderWhere } from "./macExport";
+import { pickTarget, renderWhere } from "./macExport";
 
 export function stepsFor(kind: "preview" | "final", source: string, sample: boolean): string[] {
   if (kind === "preview") return [...PREVIEW_STEPS];
   return source === "drive" && !sample ? [...FINAL_DRIVE_STEPS] : [...FINAL_RENDER_STEPS];
 }
 
-/** The video's original is kept on the user's Mac, and that Mac's Rendrr app is open and can make the final now. */
-export async function originalOnMac(userId: string, video: { macOriginal?: unknown }): Promise<boolean> {
+/** The video's original is kept on one of the user's computers, that computer's Rendrr app is open and can make the
+ *  final now, and the render may go there (target: none, or that computer; "cloud" or another computer cannot read it). */
+export async function originalOnMac(userId: string, video: { macOriginal?: unknown }, target?: string | null): Promise<boolean> {
   const mo = macOriginalOf(video);
-  if (!mo) return false;
-  const m = await macForRender(userId, []);
-  return !!m.info && !m.why && (!mo.device || !m.info.device || mo.device === m.info.device);
+  if (!mo || target === "cloud") return false;
+  if (target && mo.deviceId && target !== mo.deviceId) return false;
+  const m = await macForRender(userId, [], mo.deviceId ?? target ?? null);
+  return !!m.info && !m.why && (mo.deviceId ? m.info.id === mo.deviceId : (!mo.device || !m.info.device || mo.device === m.info.device));
+}
+
+/** Where the web app asks a render to be made (its Export window's "Render on"): a computer's id or name, or "cloud";
+ *  nothing: the computer picked earlier, the only one, else the best one free. A computer not there is refused. */
+export async function targetFromApp(userId: string, device: unknown): Promise<string | null> {
+  if (typeof device !== "string" || !device.trim()) { const p = await pickTarget(userId, null, { tool: "the export" }); return p.ask ? null : p.target; }
+  const pick = await pickTarget(userId, device, { tool: "the export" });
+  if (pick.ask) throw new AppError(pick.ask.replace(/ Nothing was rendered.*$/, ""), 409, "device");
+  return pick.target;
 }
 
 /** Starts a render. Local footage needs its original once for a final (code "need-original", as the UI expects), unless it is kept on the user's Mac and that Mac makes the final. */
-export async function startRender(userId: string, projectId: string, kind: "preview" | "final", opts: { version?: number; by?: string; best?: boolean } = {}) {
+export async function startRender(userId: string, projectId: string, kind: "preview" | "final", opts: { version?: number; by?: string; best?: boolean; target?: string | null } = {}) {
   const p = await getOwnedProject(userId, projectId);
   const video = await prisma.video.findUniqueOrThrow({ where: { id: p.videoId } });
   if (kind === "preview" && (!video.proxyKey || video.status === "expired")) {
@@ -30,7 +41,7 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   if (kind === "final" && video.source === "local" && !video.sample) {
     const orig = await prisma.tempOriginal.findFirst({ where: { projectId, videoId: video.id, completed: true, expiresAt: { gt: new Date() } } });
     // The original kept on the user's Mac: the final is made there (the Mac app open, able, and the same Mac).
-    if (!orig && !(await originalOnMac(userId, video))) throw new AppError("Full quality needs your original file once.", 409, "need-original");
+    if (!orig && !(await originalOnMac(userId, video, opts.target))) throw new AppError("Full quality needs your original file once.", 409, "need-original");
   }
   if (kind === "final" && video.status === "missing") {
     throw new AppError("We could not reach your Drive file. Reconnect it and try again.", 409, "drive");
@@ -56,7 +67,7 @@ export async function startRender(userId: string, projectId: string, kind: "prev
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"render:" + projectId + ":" + kind}))`;
     const running = await tx.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, ...(kind === "final" ? { quality: best ? { contains: "best" } : { not: { contains: "best" } } } : {}) }, orderBy: { createdAt: "desc" } });
     if (running) return { r: running, joined: true };
-    return { r: await tx.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality, by: opts.by ?? "user" } }), joined: false };
+    return { r: await tx.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality, by: opts.by ?? "user", target: opts.target ?? null } }), joined: false };
   });
   if (made.joined) return made.r;
   const r = made.r;
