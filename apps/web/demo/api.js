@@ -206,8 +206,11 @@ Object.assign(api, {
     return reference ? api.updateProject(p.id, { reference }) : p;
   },
   // The Mac app's exports (a test fills globalThis.__demoMacExports): one claim per final.
-  macPing: async (version, device) => { globalThis.__demoMacPings = (globalThis.__demoMacPings || 0) + 1; globalThis.__demoMacPing = { version, device }; return { ok: true }; },
-  macStatus: async () => globalThis.__demoMac || { online: false, device: null, version: null, seenAt: null },
+  macPing: async (version, device, render) => { globalThis.__demoMacPings = (globalThis.__demoMacPings || 0) + 1; globalThis.__demoMacPing = { version, device, render: render || null }; return { ok: true }; },
+  macStatus: async () => globalThis.__demoMac || { online: false, device: null, version: null, seenAt: null, renders: false, why: null },
+  // Renders waiting for this Mac (a test fills globalThis.__demoMacTasks); a claim hands back the task once.
+  macTasks: async () => (globalThis.__demoMacTasks || []).filter((t) => !t.claimed),
+  macClaimTask: async (id, device) => { const t = (globalThis.__demoMacTasks || []).find((x) => x.id === id && !x.claimed); if (!t) return { task: null }; t.claimed = device || true; return { task: t.task }; },
   // "Send to Claude" (a test sets globalThis.__demoConnect): the message and chat link come from the shared helper.
   getConnectStatus: ((before) => async () => (globalThis.__demoConnect ? { ...(await before()), ...globalThis.__demoConnect } : before()))(api.getConnectStatus),
   sendComments: async (projectId, ai, ids) => {
@@ -507,3 +510,13 @@ api.listGallery = async (...a) => {
   const m = globalThis.__demoGalleryVideo;
   return m ? list.map((g, i) => (i === 0 ? { ...g, ori: "9:16", video: m.video, poster: m.poster ?? null } : g)) : list;
 };
+
+// Where a demo render is made (a test sets globalThis.__demoMadeOn = { on: "mac", device }): its progress and result say so.
+for (const name of ["renderPreview", "renderFinal"]) {
+  const run0 = api[name];
+  api[name] = async (projectId, onProgress, opts) => {
+    const m = globalThis.__demoMadeOn || null;
+    const r = await run0(projectId, (p) => onProgress?.(m ? { ...p, on: m.on, device: m.device ?? null } : p), opts);
+    return m && r ? { ...r, where: { renders: m.on, device: m.device ?? null, region: "US East", delivery: { to: m.on === "mac" && name === "renderFinal" ? "mac" : "download", device: m.device ?? null, state: m.on === "mac" ? "sent" : null, folder: null, at: null } } } : r;
+  };
+}

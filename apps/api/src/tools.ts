@@ -1,7 +1,7 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
 // Every response is small text; images only when asked for (images: true, get_frames, get_preview_frames).
 // Every write goes through applyTimelineChange.
-import { AppError, applyTimelineChange, clearVariantErrors, enqueue, graphicFailedOnServer, notFound, prewarmGraphics, putObject, readGraphic, recordGraphicAgain, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
+import { AppError, applyTimelineChange, readRender, clearVariantErrors, enqueue, graphicFailedOnServer, notFound, prewarmGraphics, putObject, readGraphic, recordGraphicAgain, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
@@ -324,13 +324,13 @@ const CLOUD_WORDS = `${CLOUD} (${CLOUD_REGION})`;
 async function renderOut(renderId: string): Promise<ToolOut> {
   const r = await prisma.render.findUniqueOrThrow({ where: { id: renderId } });
   if (r.kind === "sample") return samplesAnswer(r.userId, r.id, false);
-  if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Export final; the app will ask for the original file." : ""}${driveLine(r) ? `\n${driveLine(r)}` : ""}\nWhere: ${CLOUD_WORDS} (the render ran there, not on the user's computer).` };
+  if (r.status === "failed") return { text: `The ${r.kind} render failed: ${r.error || "unknown error"}${r.errorCode === "need-original" ? "\nAsk the user to open the edit in Rendrr and press Export final; the app will ask for the original file." : ""}${driveLine(r) ? `\n${driveLine(r)}` : ""}\nWhere: ${renderWhere(r).renders === "mac" ? "the user's Mac (the Rendrr Mac app)" : CLOUD_WORDS}; nothing was lost.` };
   if (r.status !== "done") {
     // Phase 7: where it is and the time left (the worker's estimate), so the AI can say when to look again.
     const st = await renderStatus(r);
     const left = st.etaSec != null ? `, about ${fmtLeft(st.etaSec)} left` : ", estimating the time left";
     const dl = driveLine(r);
-    return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). get_render {renderId: "${r.id}", wait_seconds: 120} waits for it.\nWhere: ${whereText(renderWhere(r), r.kind, false)}${dl ? `\n${dl}` : ""}` };
+    return { text: `The ${r.kind} render is ${st.status === "queued" ? "queued" : `at ${st.percent}% (${st.steps[st.step] ?? "starting"})${left}`} (render id ${r.id}, ${r.quality ?? ""}). get_render {renderId: "${r.id}", wait_seconds: 120} waits for it.\nWhere: ${whereText(renderWhere(r, await readRender(r.id).catch(() => null)), r.kind, false)}${dl ? `\n${dl}` : ""}` };
   }
   const res = await renderResult(r);
   const took = res.renderSeconds != null ? `, rendered in ${res.renderSeconds < 60 ? `${Math.round(res.renderSeconds)} s` : `${Math.floor(res.renderSeconds / 60)} min ${Math.round(res.renderSeconds % 60)} s`}` : "";
@@ -1181,8 +1181,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return samplesAnswer(c.userId, r.id, i.images !== false);
   },
   async render_final(c, i) {
-    // Where the final goes: the user's Mac when the Rendrr Mac app is open (it saves it to Downloads), else Rendrr's
-    // cloud server renders it into Google Drive (the folder given, or asked for). Saving into Drive: the folder is found
+    // Where the final goes: the user's Mac when the Rendrr Mac app is open (made there when it can render, and saved to
+    // Downloads), else Rendrr's cloud server renders it into Google Drive (the folder given, or asked for). Saving into Drive: the folder is found
     // and checked first, so a wrong name or a refused folder is said now, not after the render.
     const wantsDrive = i.driveFolder != null || !!i.saveToDrive || i.to === "drive";
     const macNow = await macStatus(c.userId);
@@ -1201,7 +1201,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     const out = await renderOut(r.id);
     const onMac = macNow.device ? `the Rendrr Mac app on "${macNow.device}"` : "the Rendrr Mac app";
-    const where = mac ? `Exporting to the user's Mac. It renders on ${CLOUD_WORDS}, not on the Mac; ${onMac} is open and saves the final to that Mac's Downloads folder by itself the moment it is done. Tell the user in those words: it renders in Rendrr's cloud and lands in their Mac's Downloads.`
+    const where = mac && macNow.renders ? `Exporting on the user's Mac: ${onMac} is open, so the final is made on that Mac (graphics and checks on ${CLOUD_WORDS}) and kept in its Downloads folder. Tell the user in those words. If the Mac cannot take it, ${CLOUD_WORDS} makes it and the Mac app still saves it to Downloads.`
+      : mac ? `Exporting to the user's Mac. It renders on ${CLOUD_WORDS}${macNow.why ? ` (${macNow.why})` : ""}; ${onMac} is open and saves the final to that Mac's Downloads folder by itself the moment it is done. Tell the user in those words: it renders in Rendrr's cloud and lands in their Mac's Downloads.`
       : target ? null
       : `${i.to === "mac" ? "The Rendrr Mac app is not open, so the final cannot go to the Mac now. " : "The Rendrr Mac app is not open. "}Switching to Rendrr's cloud server: the final renders there and is saved to Google Drive. Tell the user you are switching to the cloud server, and ask which Google Drive folder to export it to (a folder link or a name). Then call save_to_drive with it: it saves the moment the render is done.`;
     return where ? { ...out, text: `${where}\n${out.text}` } : out;

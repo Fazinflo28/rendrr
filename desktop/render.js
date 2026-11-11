@@ -1,0 +1,259 @@
+// Renders on this Mac. While Rendrr for Mac is open, Rendrr hands it the encode of each render: a task with the files
+// to fetch (signed links, or small files inline), the FFmpeg runs to make (every path inside the task's own folder),
+// and where to upload what they make. This file checks a task is safe to run, fetches its files (footage kept in a
+// cache, so the next render of the same edit fetches nothing), runs FFmpeg in a fresh folder, reports how far it is,
+// uploads the result and keeps a final in Downloads. Pure Node: the app's main process runs it, and so do the tests.
+"use strict";
+const fs = require("node:fs");
+const fsp = require("node:fs/promises");
+const path = require("node:path");
+const os = require("node:os");
+const crypto = require("node:crypto");
+const http = require("node:http");
+const https = require("node:https");
+const { spawn, execFile } = require("node:child_process");
+
+const PROTOCOL = 1;
+/** FFmpeg features a render may need (the same list as the worker's MAC_FEATURES). */
+const FEATURES = ["ass", "lut3d", "zscale", "tonemap", "vidstabtransform", "minterpolate", "afir", "sendcmd", "libvpx-vp9", "libx264", "libx265", "prores_ks", "ffv1", "palettegen", "paletteuse", "alphamerge"];
+const NAME_CHARS = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
+/** A name inside the render's folder: plain parts, none of them "." or "..". */
+const NAME = { test: (n) => typeof n === "string" && NAME_CHARS.test(n) && !n.split("/").some((p) => p === "." || p === "..") };
+const FILE = /^[^/\\:\0]{1,200}$/;
+
+/** What this Mac's FFmpeg is: its version and which FEATURES it has (ok false: it does not run). */
+async function probeFfmpeg(ffmpeg) {
+  const out = (args) => new Promise((resolve) => execFile(ffmpeg, args, { maxBuffer: 8 << 20, timeout: 20000 }, (e, so) => resolve(e ? null : String(so))));
+  const v = await out(["-hide_banner", "-version"]);
+  if (!v) return { ok: false, version: null, have: [], why: "FFmpeg is missing from this app" };
+  const names = new Set();
+  for (const list of await Promise.all([out(["-hide_banner", "-filters"]), out(["-hide_banner", "-encoders"]), out(["-hide_banner", "-decoders"])])) {
+    for (const line of String(list || "").split("\n")) { const m = line.match(/^\s*[A-Z.|]{3,6}\s+([A-Za-z0-9_-]+)\s/); if (m) names.add(m[1]); }
+  }
+  const version = (v.match(/ffmpeg version (\S+)/) || [])[1] || null;
+  return { ok: true, version, have: FEATURES.filter((f) => names.has(f)), why: null };
+}
+
+function bad(why) { const e = new Error(why); e.badTask = true; return e; }
+const linkOk = (u, allowHttp) => { try { const x = new URL(u); return x.protocol === "https:" || (allowHttp && x.protocol === "http:"); } catch { return false; } };
+
+/** Throws unless the task is one this app may run: names inside its folder, no path or protocol outside it, links over https. */
+function checkTask(t, { allowHttp = false } = {}) {
+  if (!t || t.v !== PROTOCOL || typeof t.id !== "string" || typeof t.token !== "string" || !linkOk(t.api, allowHttp)) throw bad("not a Rendrr render task");
+  const names = new Set();
+  for (const i of t.inputs || []) {
+    if (!NAME.test(i.name) || i.name === "fonts" || i.name.startsWith("fonts/") || names.has(i.name)) throw bad(`bad input name ${i.name}`);
+    names.add(i.name);
+    if (i.data != null) { if (typeof i.data !== "string") throw bad("bad inline data"); continue; }
+    if (!linkOk(i.url, allowHttp)) throw bad(`bad link for ${i.name}`);
+    for (const h of Object.keys(i.headers || {})) if (h.toLowerCase() !== "authorization") throw bad("bad header");
+  }
+  for (const f of t.fonts || []) if (!/^[A-Za-z0-9._-]+$/.test(f.name) || !linkOk(f.url, allowHttp)) throw bad(`bad font ${f.name}`);
+  if (!Array.isArray(t.commands) || !t.commands.length || t.commands.length > 200) throw bad("no runs");
+  for (const c of t.commands) {
+    if (!Array.isArray(c.args) || c.args.some((a) => typeof a !== "string")) throw bad("bad arguments");
+    for (const a of c.args) {
+      if (a.startsWith("/") || a.startsWith("~") || a.includes("\0") || a.split("/").includes("..")) throw bad(`an argument names a path outside the render: ${a.slice(0, 60)}`);
+      // A protocol (concat:, http:, file:...) could reach outside the render's folder; only FFmpeg's progress pipe.
+      if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(a) && a !== "pipe:1" && a !== "pipe:2") throw bad(`an argument names a protocol: ${a.slice(0, 40)}`);
+    }
+    if (c.graph != null) {
+      if (typeof c.graph !== "string" || c.graph.length > 16 << 20) throw bad("bad graph");
+      if (/(^|[='":,\s])\/[A-Za-z]/.test(c.graph) || c.graph.includes("://") || c.graph.includes("..")) throw bad("the graph names a path outside the render");
+    }
+  }
+  for (const o of t.outputs || []) {
+    if (!NAME.test(o.name) || !linkOk(o.url, allowHttp) || typeof o.type !== "string") throw bad(`bad output ${o.name}`);
+    if (o.save != null && !FILE.test(o.save)) throw bad("bad file name");
+  }
+  if (!(t.outputs || []).length) throw bad("nothing to make");
+}
+
+/** POST to Rendrr with the task's token; the answer's JSON (null on failure). */
+async function report(t, what, body) {
+  try {
+    const r = await fetch(`${t.api}/desktop/tasks/${encodeURIComponent(t.id)}/${what}`, { method: "POST", headers: { "content-type": "application/json", "x-rendrr-task-token": t.token }, body: JSON.stringify(body || {}), signal: AbortSignal.timeout(20000) });
+    return r.ok ? await r.json().catch(() => ({})) : null;
+  } catch { return null; }
+}
+
+/** Downloads a link to a file (via a .part file, size checked). onBytes: each chunk's length. */
+async function download(url, dest, { headers, size, onBytes, signal } = {}) {
+  let last;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const part = `${dest}.${process.pid}.${Date.now()}.part`;
+    try {
+      const r = await fetch(url, { headers: headers || {}, signal });
+      if (!r.ok || !r.body) throw new Error(`download failed (${r.status})`);
+      const out = fs.createWriteStream(part);
+      let got = 0;
+      for await (const chunk of r.body) {
+        got += chunk.length; if (onBytes) onBytes(chunk.length);
+        if (!out.write(chunk)) await new Promise((res) => out.once("drain", res));
+      }
+      await new Promise((res, rej) => out.end((e) => (e ? rej(e) : res())));
+      if (size && got !== size) throw new Error(`download incomplete (${got} of ${size} bytes)`);
+      await fsp.rename(part, dest);
+      return got;
+    } catch (e) {
+      last = e;
+      await fsp.rm(part, { force: true });
+      if (signal && signal.aborted) throw e;
+      await new Promise((res) => setTimeout(res, 1000 * (attempt + 1)));
+    }
+  }
+  throw last;
+}
+
+/** Uploads a file to a signed link with a PUT (its length set: storage refuses a stream without one). */
+function putOnce(url, file, type, onBytes, signal) {
+  return new Promise((resolve, reject) => {
+    const size = fs.statSync(file).size;
+    const u = new URL(url);
+    const req = (u.protocol === "http:" ? http : https).request(u, { method: "PUT", headers: { "content-type": type, "content-length": size }, signal }, (res) => {
+      let text = ""; res.on("data", (c) => { if (text.length < 2000) text += c; });
+      res.on("end", () => (res.statusCode >= 200 && res.statusCode < 300 ? resolve(size) : reject(Object.assign(new Error(`upload failed (${res.statusCode}): ${text.slice(0, 300)}`), { status: res.statusCode }))));
+    });
+    req.on("error", reject);
+    const rs = fs.createReadStream(file);
+    rs.on("data", (c) => onBytes && onBytes(c.length));
+    rs.on("error", reject);
+    rs.pipe(req);
+  });
+}
+async function upload(url, file, type, onBytes, signal) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await putOnce(url, file, type, onBytes, signal); }
+    catch (e) { if ((signal && signal.aborted) || attempt >= 2 || (e.status && e.status < 500)) throw e; await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); }
+  }
+}
+
+/** A file in the cache by its key (the storage key and version): fetched once, then linked into each render. */
+async function cached(cacheDir, input, onBytes, signal) {
+  const dir = path.join(cacheDir, "media");
+  await fsp.mkdir(dir, { recursive: true });
+  const file = path.join(dir, crypto.createHash("sha256").update(String(input.cache)).digest("hex"));
+  const st = await fsp.stat(file).catch(() => null);
+  if (st && (!input.size || st.size === input.size)) { const now = new Date(); await fsp.utimes(file, now, now).catch(() => {}); onBytes && onBytes(input.size || st.size); return file; }
+  await download(input.url, file, { size: input.size, onBytes, signal });
+  return file;
+}
+
+/** The cache kept under capBytes: the least recently used footage goes first. */
+async function trimCache(cacheDir, capBytes) {
+  const dir = path.join(cacheDir, "media");
+  const names = await fsp.readdir(dir).catch(() => []);
+  const files = (await Promise.all(names.filter((n) => !n.endsWith(".part")).map(async (n) => { const p = path.join(dir, n); const s = await fsp.stat(p).catch(() => null); return s && { p, size: s.size, at: s.mtimeMs }; }))).filter(Boolean);
+  let total = files.reduce((a, f) => a + f.size, 0);
+  for (const f of files.sort((a, b) => a.at - b.at)) { if (total <= capBytes) break; await fsp.rm(f.p, { force: true }); total -= f.size; }
+}
+
+/** One FFmpeg run in the render's folder; onSeconds: its output time (from -progress). Frozen too long: stopped. */
+function runFfmpeg(ffmpeg, args, { cwd, onSeconds, signal, stallSec = 120 }) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(ffmpeg, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let err = "", moved = Date.now(), at = -1, froze = false;
+    const kill = () => { try { p.kill("SIGKILL"); } catch { /* gone */ } };
+    if (signal) signal.addEventListener("abort", kill, { once: true });
+    const watches = args.includes("-progress");
+    const watch = watches ? setInterval(() => { if (Date.now() - moved > stallSec * 1000) { froze = true; kill(); } }, 5000) : null;
+    p.stdout.on("data", (d) => { for (const m of String(d).matchAll(/out_time_(?:us|ms)=(\d+)/g)) { const s = Number(m[1]) / 1e6; if (s > at) { at = s; moved = Date.now(); } if (onSeconds) onSeconds(s); } });
+    p.stderr.on("data", (d) => { if (err.length < 60000) err += d; });
+    p.on("error", (e) => { if (watch) clearInterval(watch); reject(e); });
+    p.on("close", (code) => {
+      if (watch) clearInterval(watch);
+      if (signal) signal.removeEventListener("abort", kill);
+      if (signal && signal.aborted) return reject(Object.assign(new Error("stopped"), { stopped: true }));
+      if (froze) return reject(new Error(`FFmpeg froze at ${Math.max(0, at).toFixed(1)} s`));
+      if (code === 0) return resolve();
+      reject(new Error(`FFmpeg failed (${code}): ${err.length > 1500 ? `${err.slice(0, 900)} … ${err.slice(-600)}` : err}`.trim()));
+    });
+  });
+}
+
+/** A free name in a folder: "name.mp4", then "name (2).mp4"... */
+function freeName(dir, name) {
+  const ext = path.extname(name), stem = name.slice(0, name.length - ext.length);
+  for (let n = 1; ; n++) { const p = path.join(dir, n === 1 ? name : `${stem} (${n})${ext}`); if (!fs.existsSync(p)) return p; }
+}
+
+/**
+ * Runs a task to the end and tells Rendrr how it went. o: ffmpeg (its path), cacheDir, workDir (the render's folder
+ * goes in it), saveDir (where a final is kept: Downloads), allowHttp (tests), cacheBytes, onState ({phase, frac}).
+ * Rendrr may answer a report with stop (the user stopped it, or the cloud took over): it stops at once and says nothing more.
+ */
+async function runTask(t, o) {
+  checkTask(t, { allowHttp: !!o.allowHttp });
+  const ac = new AbortController();
+  let stop = null, state = { phase: "download", frac: 0, cmd: 0, seconds: 0 }, sent = 0, pending = null;
+  const say = (force) => {
+    if (o.onState) o.onState(state);
+    if (!force && Date.now() - sent < 1000) return;
+    sent = Date.now();
+    pending = report(t, "progress", state).then((r) => { if (r && r.stop && !stop) { stop = r.stop; ac.abort(); } });
+  };
+  const beat = setInterval(() => say(true), 10000); // a long step still says it is alive
+  const job = await fsp.mkdtemp(path.join(o.workDir || os.tmpdir(), "rendrr-render-"));
+  try {
+    say(true);
+    // ---- The files ----
+    const total = (t.inputs || []).reduce((a, i) => a + (i.data == null ? i.size || 0 : 0), 0) + (t.fonts || []).reduce((a, f) => a + (f.size || 0), 0);
+    let got = 0;
+    const onBytes = (n) => { got += n; state = { ...state, phase: "download", frac: total ? Math.min(1, got / total) : 0 }; say(); };
+    for (const i of t.inputs || []) {
+      const dest = path.join(job, i.name);
+      await fsp.mkdir(path.dirname(dest), { recursive: true });
+      if (i.data != null) await fsp.writeFile(dest, Buffer.from(i.data, "base64"));
+      else if (i.cache) await fsp.symlink(await cached(o.cacheDir, i, onBytes, ac.signal), dest);
+      else await download(i.url, dest, { headers: i.headers, size: i.size, onBytes, signal: ac.signal });
+    }
+    if ((t.fonts || []).length) {
+      const fonts = path.join(o.cacheDir, "fonts");
+      await fsp.mkdir(fonts, { recursive: true });
+      for (const f of t.fonts) {
+        const p = path.join(fonts, f.name);
+        const st = await fsp.stat(p).catch(() => null);
+        if (st && st.size === f.size) { onBytes(f.size); continue; }
+        await download(f.url, p, { size: f.size, onBytes, signal: ac.signal });
+      }
+      await fsp.symlink(fonts, path.join(job, "fonts"));
+    }
+    // ---- The runs ----
+    for (const [k, c] of t.commands.entries()) {
+      if (stop) break;
+      let args = c.args;
+      if (c.graph != null) { const g = `graph-${k}.txt`; await fsp.writeFile(path.join(job, g), c.graph); args = args.map((a) => (a === "__FILTER_SCRIPT__" ? g : a)); }
+      state = { phase: "render", frac: 0, cmd: k, seconds: 0 }; say(true);
+      await runFfmpeg(o.ffmpeg, args, { cwd: job, signal: ac.signal, stallSec: t.stallSec || 120, onSeconds: (s) => { state = { ...state, seconds: s, frac: c.seconds ? Math.min(1, s / c.seconds) : 0 }; say(); } });
+    }
+    if (stop) throw Object.assign(new Error("stopped"), { stopped: true });
+    // ---- What they made ----
+    const outputs = {}, upTotal = t.outputs.reduce((a, x) => a + (fs.statSync(path.join(job, x.name), { throwIfNoEntry: false })?.size || 0), 0);
+    let up = 0;
+    state = { phase: "upload", frac: 0, cmd: t.commands.length - 1, seconds: state.seconds }; say(true);
+    let savedPath = null;
+    for (const x of t.outputs) {
+      const file = path.join(job, x.name);
+      if (!fs.existsSync(file)) throw new Error(`FFmpeg made no ${x.name}`);
+      outputs[x.name] = await upload(x.url, file, x.type, (n) => { up += n; state = { ...state, frac: upTotal ? up / upTotal : 1 }; say(); }, ac.signal);
+      // A final is kept on this Mac: in Downloads, under its name.
+      if (x.save && o.saveDir) { savedPath = freeName(o.saveDir, x.save); await fsp.copyFile(file, savedPath); }
+    }
+    await pending;
+    if (stop) throw Object.assign(new Error("stopped"), { stopped: true });
+    const ok = await report(t, "done", { outputs, saved: savedPath ? path.basename(savedPath) : null });
+    if (!ok) throw new Error("Rendrr did not take the finished render");
+    return { ok: true, outputs, savedPath };
+  } catch (e) {
+    if (stop || e.stopped) return { ok: false, stopped: stop || "stopped" };
+    const error = String((e && e.message) || e).slice(0, 480);
+    await report(t, "failed", { error: `the Mac could not render it: ${error}` });
+    return { ok: false, error };
+  } finally {
+    clearInterval(beat);
+    await fsp.rm(job, { recursive: true, force: true }).catch(() => {});
+    if (o.cacheDir) await trimCache(o.cacheDir, o.cacheBytes || 20e9).catch(() => {});
+  }
+}
+
+module.exports = { PROTOCOL, FEATURES, probeFfmpeg, checkTask, runTask, trimCache };

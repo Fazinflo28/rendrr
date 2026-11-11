@@ -16,3 +16,4 @@ export * from "./maintenance";
 export * from "./assets";
 export * from "./supabaseAuth";
 export * from "./supabaseSetup";
+export * from "./macRender";

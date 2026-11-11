@@ -8,9 +8,13 @@ import { run } from "./ffmpeg";
 
 /** A GIF of the rendered file: its frame rate and width for its length (gifSpec: 15 fps and 640 px wide up to a minute,
  *  fewer and smaller beyond), its own 256-colour palette, looping. */
-export async function makeGif(src: string, out: string, w: number, h: number, signal?: AbortSignal, seconds = 0): Promise<void> {
+/** The GIF made from the MP4 (its own palette, dithered). */
+export function gifArgs(src: string, out: string, w: number, h: number, seconds = 0): string[] {
   const g = gifSpec(seconds, w, h);
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", src, "-filter_complex", `[0:v]fps=${g.fps},scale=${g.width}:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff:max_colors=256[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle`, "-loop", "0", out], { signal });
+  return ["-hide_banner", "-loglevel", "error", "-y", "-i", src, "-filter_complex", `[0:v]fps=${g.fps},scale=${g.width}:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff:max_colors=256[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle`, "-loop", "0", out];
+}
+export async function makeGif(src: string, out: string, w: number, h: number, signal?: AbortSignal, seconds = 0): Promise<void> {
+  await run("ffmpeg", gifArgs(src, out, w, h, seconds), { signal });
 }
 
 /**
@@ -18,10 +22,13 @@ export async function makeGif(src: string, out: string, w: number, h: number, si
  * agree; where it is see-through they differ by how much: alpha = 1 - (white - black). The colour is the black pass
  * divided by alpha (it was laid over black: colour x alpha). The sound comes from the black pass.
  */
-export async function mergeOverlay(black: string, white: string, out: string, signal?: AbortSignal): Promise<void> {
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-i", black, "-i", white, "-filter_complex",
+export function mergeOverlayArgs(black: string, white: string, out: string): string[] {
+  return ["-hide_banner", "-loglevel", "error", "-y", "-i", black, "-i", white, "-filter_complex",
     "[0:v]format=gbrp,split[bk][bc];[1:v]format=gbrp[wh];[wh][bk]blend=all_expr='255-(A-B)',extractplanes=g,split[a1][a2];[bc][a1]unpremultiply=inplace=0[col];[col][a2]alphamerge,format=yuva444p10le[v]",
-    "-map", "[v]", "-map", "0:a?", "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-vendor", "apl0", "-c:a", "pcm_s16le", out], { signal });
+    "-map", "[v]", "-map", "0:a?", "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-vendor", "apl0", "-c:a", "pcm_s16le", out];
+}
+export async function mergeOverlay(black: string, white: string, out: string, signal?: AbortSignal): Promise<void> {
+  await run("ffmpeg", mergeOverlayArgs(black, white, out), { signal });
 }
 
 /** SRT, WebVTT and YouTube chapters of a plan, written next to the render (only those it has). */

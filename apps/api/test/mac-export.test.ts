@@ -56,16 +56,16 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
     await prisma.render.updateMany({ where: { userId }, data: { status: "done", outputKey: `renders/test-${run}/a.mp4` } });
   });
 
-  it("with the Mac app open: exports to the Mac, which takes the final once it is done", async () => {
+  it("with an older Mac app open (it cannot render): made in the cloud, exported to the Mac, which takes the final once it is done", async () => {
     const ping = await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.1.7", device: "Studio-Mac.local" } });
     assert.equal(ping.statusCode, 200, ping.body);
     const st = (await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json();
     assert.equal(st.online, true); assert.equal(st.device, "Studio Mac", "the Mac's name, readable"); assert.equal(st.version, "0.1.7");
     const proj = await TOOL_HANDLERS.get_project(c(), { projectId });
-    assert.match(proj.text, /Exports: Renders run on Rendrr's cloud server\. The Rendrr Mac app is open on "Studio Mac", so finals your AI exports go to that Mac's Downloads\./);
+    assert.match(proj.text, /Exports: Renders run on Rendrr's cloud server \(this Mac app cannot render yet: update it\)\. The Rendrr Mac app is open on "Studio Mac", so finals your AI exports go to that Mac's Downloads\./);
     const r = await TOOL_HANDLERS.render_final(c(), { projectId });
     assert.match(r.text, /Exporting to the user's Mac/);
-    assert.match(r.text, /It renders on Rendrr's cloud server \(US East\), not on the Mac; the Rendrr Mac app on "Studio Mac" is open/, "the AI is told it renders in the cloud, not on the Mac");
+    assert.match(r.text, /It renders on Rendrr's cloud server \(US East\) \(this Mac app cannot render yet: update it\); the Rendrr Mac app on "Studio Mac" is open/, "the AI is told it renders in the cloud, and why");
     assert.match(r.text, /Where: Rendering on Rendrr's cloud server \(US East\), not on your computer\. Goes to the Rendrr Mac app on "Studio Mac": it saves the file to Downloads the moment it is done\./);
     const renderId = (r.data as { renderId?: string })?.renderId ?? (await prisma.render.findFirstOrThrow({ where: { userId, status: { in: ["queued", "running"] } } })).id;
     let list = (await app.inject({ method: "GET", url: "/desktop/exports", headers: headers() })).json();
@@ -87,8 +87,32 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
     assert.deepEqual([web.where.renders, web.where.delivery.to, web.where.delivery.state], ["cloud", "mac", "sent"]);
     const { appProject } = await import("../src/services/claudeApp");
     const view = await appProject(userId, projectId, renderId);
-    assert.deepEqual(view.mac, { online: true, device: "Studio Mac" });
+    assert.deepEqual(view.mac, { online: true, device: "Studio Mac", renders: false });
     assert.equal(view.preview?.where, 'Made in the cloud · Saved to "Studio Mac"');
+  });
+
+  it("with a Mac app that renders: the final is made on that Mac and kept in its Downloads, and every answer says so", async () => {
+    await prisma.render.updateMany({ where: { userId, status: { in: ["queued", "running"] } }, data: { status: "done", outputKey: `renders/test-${run}/m.mp4` } });
+    const render = { protocol: 1, ready: true, enabled: true, busy: false, cpus: 10, have: ["libx264", "ass", "lut3d"], ffmpeg: "8.0" };
+    await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.2.0", device: "Studio-Mac.local", render } });
+    const st = (await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json();
+    assert.deepEqual([st.online, st.renders, st.why], [true, true, null]);
+    const proj = await TOOL_HANDLERS.get_project(c(), { projectId });
+    assert.match(proj.text, /Exports: Renders run on the user's Mac: the Rendrr Mac app is open on "Studio Mac", so previews and finals are made there/);
+    const r = await TOOL_HANDLERS.render_final(c(), { projectId });
+    assert.match(r.text, /Exporting on the user's Mac: the Rendrr Mac app on "Studio Mac" is open, so the final is made on that Mac/);
+    // The worker hands it to the Mac and the Mac makes it (as core/macRender.ts records): the render says so.
+    const renderId = (r.data as { renderId?: string })?.renderId ?? (await prisma.render.findFirstOrThrow({ where: { userId, status: { in: ["queued", "running"] } } })).id;
+    await prisma.render.update({ where: { id: renderId }, data: { status: "done", outputKey: `renders/test-${run}/n.mp4`, made: { on: "mac", device: "Studio Mac", why: null }, delivery: { to: "mac", device: "Studio Mac", state: "sent", at: Date.now(), saved: "Promo final v1.mp4" } } });
+    const after = await TOOL_HANDLERS.get_render(c(), { renderId });
+    assert.match(after.text, /Where: Rendered on your Mac \("Studio Mac"\) by the Rendrr Mac app \(graphics and checks on Rendrr's cloud server\)\. Saved in that Mac's Downloads folder; it downloads from Rendrr too\./);
+    const web = (await app.inject({ method: "GET", url: `/renders/${renderId}`, headers: headers() })).json();
+    assert.deepEqual([web.where.renders, web.where.device], ["mac", "Studio Mac"]);
+    const { appProject } = await import("../src/services/claudeApp");
+    assert.equal((await appProject(userId, projectId, renderId)).preview?.where, 'Made on "Studio Mac" · Saved to Downloads');
+    // Turned off in the Mac app: back to the cloud, saying why.
+    await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.2.0", device: "Studio-Mac.local", render: { ...render, enabled: false } } });
+    assert.equal((await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json().why, "rendering on the Mac is turned off in the Mac app");
   });
 
   it("to: drive goes to the cloud even with the Mac app open", async () => {

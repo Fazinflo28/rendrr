@@ -187,6 +187,7 @@ function App() {
   useEffect(() => { applyTheme(theme); }, []);
   const toast = useToast();
   useMacExports(user, toast);
+  useMacRenders(user, toast);
   useClientErrors(user);
   // A plan limit reached anywhere (a render, an upload): one dialog says what ran out and where to top up.
   const [limit, setLimit] = useState(null);
@@ -290,7 +291,7 @@ function useMacExports(user, toast) {
     let live = true;
     const tick = async () => {
       try {
-        await api.macPing(d.version || "", d.device || "");
+        await api.macPing(d.version || "", d.device || "", d.render ? await d.render.info().catch(() => null) : null);
         for (const x of await api.macExports()) {
           if (!live || (!x.url && !x.failed)) continue;
           const { claimed } = await api.macClaim(x.renderId);
@@ -302,7 +303,38 @@ function useMacExports(user, toast) {
     };
     tick();
     const t = setInterval(tick, 20_000);
-    return () => { live = false; clearInterval(t); };
+    // The Mac starting or finishing a render (or rendering turned on or off) is told to Rendrr at once.
+    const off = d.render?.onState ? d.render.onState((info) => { api.macPing(d.version || "", d.device || "", info || null).catch(() => {}); }) : null;
+    return () => { live = false; clearInterval(t); if (off) off(); };
+  }, [user?.id]);
+}
+
+// In the Mac app: renders are made on this Mac. Every few seconds, while it can render and is free, this takes the
+// next render Rendrr is holding for it (the cloud prepared it) and hands it to the app, which fetches the files, runs
+// FFmpeg, uploads the result and reports to Rendrr itself. One window takes each (the claim); one at a time.
+function useMacRenders(user, toast) {
+  useEffect(() => {
+    const d = typeof window !== "undefined" ? window.rendrrDesktop : null;
+    if (!d?.render || !user) return;
+    let busy = false;
+    const tick = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const info = await d.render.info();
+        if (!info || !info.ready || !info.enabled || info.busy) return;
+        const next = (await api.macTasks())[0];
+        if (!next) return;
+        const { task } = await api.macClaimTask(next.id, d.device || "");
+        if (!task) return;
+        const r = await d.render.run(task);
+        if (r?.started) toast(`Making ${next.label} on this Mac`, { icon: "laptop", tone: "brand" });
+      } catch { /* offline or signed out: the next tick tries again */ }
+      finally { busy = false; }
+    };
+    tick();
+    const t = setInterval(tick, 3000);
+    return () => clearInterval(t);
   }, [user?.id]);
 }
 

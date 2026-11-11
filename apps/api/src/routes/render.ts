@@ -44,7 +44,7 @@ export default async function render(app: FastifyInstance) {
   app.get("/renders/:id", async (req) => renderStatus(await ownedRender(req.user!.id, (req.params as { id: string }).id)));
 
   // The Rendrr Mac app: it is open (every 20 s), the finals queued for it, and taking one to save to Downloads.
-  app.post("/desktop/ping", async (req) => { const b = (req.body as { version?: unknown; device?: unknown } | null) ?? {}; await macPing(req.user!.id, String(b.version ?? ""), String(b.device ?? "")); return { ok: true }; });
+  app.post("/desktop/ping", async (req) => { const b = (req.body as { version?: unknown; device?: unknown; render?: unknown } | null) ?? {}; await macPing(req.user!.id, String(b.version ?? ""), String(b.device ?? ""), b.render); return { ok: true }; });
   // Whether the Rendrr Mac app is open (and on which Mac): where the AI's next final goes.
   app.get("/desktop/status", async (req) => macStatus(req.user!.id));
   app.get("/desktop/exports", async (req) => macExports(req.user!.id));
@@ -92,14 +92,14 @@ export default async function render(app: FastifyInstance) {
     let stop = () => {};
     const end = async () => { if (ended) return; ended = true; stop(); await finish(); };
     stop = await listen(renderChannel(r.id), (msg) => {
-      const p = JSON.parse(msg) as { status: string; step: number; steps: string[]; percent: number; etaSec?: number | null };
+      const p = JSON.parse(msg) as { status: string; step: number; steps: string[]; percent: number; etaSec?: number | null; on?: string; device?: string | null };
       if (p.status === "done" || p.status === "failed") { void end(); return; }
-      s.send("progress", { step: p.step, steps: p.steps, percent: p.percent, etaSec: p.etaSec ?? null });
+      s.send("progress", { step: p.step, steps: p.steps, percent: p.percent, etaSec: p.etaSec ?? null, on: p.on ?? "cloud", device: p.device ?? null });
     });
     s.onClose(() => stop());
     if (ended) stop();
     const cur = await readRender(r.id);
-    if (cur) s.send("progress", { step: cur.step, steps: cur.steps, percent: cur.percent, etaSec: cur.etaSec ?? null });
+    if (cur) s.send("progress", { step: cur.step, steps: cur.steps, percent: cur.percent, etaSec: cur.etaSec ?? null, on: cur.on ?? "cloud", device: cur.device ?? null });
     // A job that already finished between the first read and the subscribe.
     const again = await prisma.render.findUniqueOrThrow({ where: { id: r.id } });
     if (again.status === "done" || again.status === "failed") await end();

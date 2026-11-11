@@ -1,6 +1,9 @@
-// Where a render runs and where finals go, in the web app: the Export window says the render runs on Rendrr's cloud
-// server (not this computer) and the final was made there; Connect AI says renders run in the cloud and where the AI's
-// finals go (this Mac when the Rendrr Mac app is open, by name; else Google Drive); the Mac app sends its name.
+// Where a render runs and where finals go, in the web app. Connect AI: with the Rendrr Mac app closed, renders run on
+// Rendrr's cloud server and the AI's finals go to Google Drive; open but unable to render (an older app), still the
+// cloud, saying why, finals to that Mac; open and able, renders run on that Mac, by name. The Export window says where
+// the render is made (the cloud, or "Studio Mac") and the finished final where it was made. In the Mac app: its name
+// and what it can render go with its ping, a switch turns rendering on this Mac off and on, and a render Rendrr holds
+// for this Mac is taken and handed to the app.
 // Runs on the demo build (node demo/build.mjs first).   node demo/render-where.mjs   (from apps/web)
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -36,13 +39,18 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
 
   // Connect AI with the Mac app closed: renders in the cloud, finals to Google Drive.
   await page.evaluate(() => globalThis.__rendrrNav.go("/connect")); await page.locator("#exports-card #mac-status").waitFor({ timeout: 8000 });
-  check(/Renders run on Rendrr's cloud server/.test(await text(page, "#exports-card")) && /never on your computer/.test(await text(page, "#exports-card")), `${tag}: Connect AI says renders run on Rendrr's cloud server, never on your computer`);
+  check((await text(page, "#render-place-text")) === "Renders run on Rendrr's cloud server" && /Open the Rendrr Mac app to render on your Mac/.test(await text(page, "#exports-card")), `${tag}: Connect AI says renders run on Rendrr's cloud server while the Mac app is closed`);
   check((await text(page, "#mac-status")) === "Mac app closed" && /go to Google Drive/.test(await text(page, "#exports-to")), `${tag}: with the Mac app closed, the AI's finals go to Google Drive`);
 
-  // The Mac app opens on "Studio Mac": refresh shows it connected, by name.
-  await page.evaluate(() => { globalThis.__demoMac = { online: true, device: "Studio Mac", version: "0.2.0", seenAt: Date.now() }; globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1; });
+  // An older Mac app opens on "Studio Mac" (it cannot render): connected, by name, renders still in the cloud, saying why.
+  await page.evaluate(() => { globalThis.__demoMac = { online: true, device: "Studio Mac", version: "0.1.9", seenAt: Date.now(), renders: false, why: "this Mac app cannot render yet: update it" }; globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1; });
   await page.locator('#exports-card button[aria-label="Refresh"]').click(); await sleep(500);
-  check((await text(page, "#mac-status")) === "Mac connected" && (await text(page, "#exports-to")) === "Finals from your AI go to Studio Mac" && /saves them to Downloads/.test(await text(page, "#exports-card")), `${tag}: with the Mac app open, finals go to that Mac by name (${await text(page, "#exports-to")})`);
+  check((await text(page, "#mac-status")) === "Mac connected" && (await text(page, "#exports-to")) === "Finals go to Studio Mac" && /Saved to Downloads/.test(await text(page, "#exports-card")), `${tag}: with the Mac app open, finals go to that Mac by name (${await text(page, "#exports-to")})`);
+  check((await text(page, "#render-place-text")) === "Renders run on Rendrr's cloud server" && /The Mac app is open, but this Mac app cannot render yet: update it/.test(await text(page, "#exports-card")), `${tag}: an older Mac app: renders stay in the cloud, and it says why`);
+  // The new Mac app, able to render: renders run on that Mac.
+  await page.evaluate(() => { globalThis.__demoMac = { online: true, device: "Studio Mac", version: "0.2.0", seenAt: Date.now(), renders: true, why: null }; globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1; });
+  await page.locator('#exports-card button[aria-label="Refresh"]').click(); await sleep(500);
+  check((await text(page, "#render-place")) === "Mac" && (await text(page, "#render-place-text")) === "Renders run on Studio Mac", `${tag}: with the Mac app open and able, renders run on that Mac (${await text(page, "#render-place-text")})`);
   const wide = await page.evaluate(() => { const W = document.documentElement.clientWidth; return [...document.querySelectorAll("#exports-card *")].filter((e) => e.getBoundingClientRect().right > W + 1).length; });
   check(wide === 0, `${tag}: the card fits the screen`);
   if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `render-where-connect-${tag}.png`) });
@@ -55,18 +63,54 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
     check((await text(page, "#render-where")) === "Rendering on Rendrr's cloud server, not on this computer", `${tag}: the Export window says it renders on Rendrr's cloud server, not this computer`);
     await page.locator("#render-done").waitFor({ timeout: 30000 }).catch(() => {});
     check((await text(page, "#render-made")) === "Made on Rendrr's cloud server", `${tag}: the finished final says it was made on Rendrr's cloud server`);
+    // Made on the Mac: the window says so while it runs, and the final where it was made.
+    await page.evaluate(() => { globalThis.__demoMadeOn = { on: "mac", device: "Studio Mac" }; });
+    await page.keyboard.press("Escape"); await sleep(400);
+    await page.locator("#render-final").click(); await page.locator("#export-panel").waitFor();
+    await page.locator("#export-render").click(); await page.locator("#export-run").waitFor({ timeout: 6000 });
+    await sleep(700);
+    check((await text(page, "#render-where")) === "Rendering on Studio Mac by the Rendrr Mac app", `${tag}: made on the Mac, the Export window says so (${await text(page, "#render-where")})`);
+    await page.locator("#render-done").waitFor({ timeout: 30000 }).catch(() => {});
+    check((await text(page, "#render-made")) === "Made on Studio Mac · saved to Downloads", `${tag}: the finished final says it was made on that Mac and is in Downloads (${await text(page, "#render-made")})`);
+    await page.evaluate(() => { globalThis.__demoMadeOn = null; });
   }
   check(errors.length === 0, `${tag}: no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
   await ctx.close();
 }
 
-// The Mac app: its name goes with the ping.
+// The Mac app: its name and what it can render go with the ping; the switch; a held render taken and handed over.
 const mctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-await mctx.addInitScript(() => { window.rendrrDesktop = Object.freeze({ app: "mac", platform: "darwin", version: "0.2.0", device: "Studio Mac", openInBrowser: () => {} }); });
+await mctx.addInitScript(() => {
+  const st = { protocol: 1, ready: true, enabled: true, busy: false, cpus: 10, have: ["libx264", "ass"], ffmpeg: "8.0", why: null };
+  const subs = new Set();
+  globalThis.__runs = [];
+  window.rendrrDesktop = Object.freeze({ app: "mac", platform: "darwin", version: "0.2.0", device: "Studio Mac", openInBrowser: () => {},
+    render: Object.freeze({
+      info: async () => ({ ...st }),
+      setEnabled: async (on) => { st.enabled = !!on; subs.forEach((f) => f({ ...st })); return { ...st }; },
+      run: async (task) => { globalThis.__runs.push(task); return { started: true }; },
+      onState: (cb) => { subs.add(cb); return () => subs.delete(cb); },
+    }) });
+  globalThis.__demoMacTasks = [{ id: "t1", label: "Preview v3 of Promo", claimed: false, task: { v: 1, id: "t1", label: "Preview v3 of Promo" } }];
+});
 const mp = await mctx.newPage();
+const merrors = []; mp.on("pageerror", (e) => merrors.push(e.message));
 await mp.goto(base + "/"); await sleep(600); await login(mp); await sleep(800);
 const ping = await mp.evaluate(() => globalThis.__demoMacPing);
-check(ping && ping.device === "Studio Mac" && ping.version === "0.2.0", `the Mac app sends its name with its ping (${JSON.stringify(ping)})`);
+check(ping && ping.device === "Studio Mac" && ping.version === "0.2.0" && ping.render?.protocol === 1 && ping.render?.ready && ping.render?.have?.includes("libx264"), `the Mac app sends its name and what it can render with its ping (${JSON.stringify(ping)})`);
+let said = false;
+for (let i = 0; i < 40 && !said; i++) { said = /Making Preview v3 of Promo on this Mac/.test(await mp.locator("body").innerText()); if (!said) await sleep(100); }
+await sleep(3500);
+const runs = await mp.evaluate(() => globalThis.__runs.map((t) => t.id));
+check(runs.length === 1 && runs[0] === "t1", `a render Rendrr holds for this Mac is taken once and handed to the app (${JSON.stringify(runs)})`);
+check(said, "it says it is making it on this Mac");
+await mp.evaluate(() => globalThis.__rendrrNav.go("/connect")); await mp.locator("#render-here").waitFor({ timeout: 8000 });
+check((await text(mp, "#render-here-sub")) === "On · FFmpeg 8.0" && (await mp.locator("#render-here-toggle").getAttribute("aria-checked")) === "true", `the Mac app's switch: on (${await text(mp, "#render-here-sub")})`);
+const before = await mp.evaluate(() => globalThis.__demoMacPings);
+await mp.locator("#render-here-toggle").click(); await sleep(500);
+check((await mp.locator("#render-here-toggle").getAttribute("aria-checked")) === "false" && /Off: renders run on Rendrr's cloud server/.test(await text(mp, "#render-here-sub")), "turned off: renders run on the cloud");
+check((await mp.evaluate(() => globalThis.__demoMacPings)) > before && (await mp.evaluate(() => globalThis.__demoMacPing.render?.enabled)) === false, "Rendrr is told at once");
+check(merrors.length === 0, `the Mac app: no page errors${merrors.length ? ": " + merrors.join(" | ") : ""}`);
 await mctx.close();
 
 await browser.close(); server.close();

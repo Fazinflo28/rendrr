@@ -1,4 +1,4 @@
-import { downloadFile, headObject, uploadFile } from "@rendrr/core";
+import { downloadFile, headObject, noteOrigin, uploadFile } from "@rendrr/core";
 import { copyFile, link, mkdir, readdir, rename, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -27,7 +27,10 @@ export async function cachedAsset(key: string, copyTo?: string): Promise<string>
     pending.set(local, p);
   }
   await p;
-  if (copyTo) { await copyFile(local, copyTo); return copyTo; }
+  // Where it came from, so a render on the user's Mac fetches the same file by link.
+  const size = (await stat(local).catch(() => null))?.size;
+  noteOrigin(local, key, { size });
+  if (copyTo) { await copyFile(local, copyTo); noteOrigin(copyTo, key, { size }); return copyTo; }
   return local;
 }
 
@@ -39,6 +42,7 @@ const CAP = () => Math.max(0, Number(process.env.PROXY_CACHE_GB || 3)) * 1e9;
 export async function cachedCopy(key: string, dest: string): Promise<void> {
   const head = await headObject(key);
   if (!head || !CAP() || head.size > CAP() / 2) { await downloadFile(key, dest); return; }
+  noteOrigin(dest, key, { size: head.size, etag: head.etag });
   const local = join(PROXIES, `${key.replace(/[^\w.\-]+/g, "_")}.${(head.etag || String(head.size)).replace(/[^\w]+/g, "")}`);
   let p = pending.get(local);
   if (!p) {

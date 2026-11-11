@@ -57,6 +57,14 @@ export async function cleanup() {
     console.warn("[cleanup] tests sweep:", (e as Error).message);
   }
 
+  // Files sent up for renders on users' Macs: a day (the caption fonts, mac/fonts/, are kept for every Mac).
+  try {
+    const mac = (await listPrefix(PREFIX.mac, 5000)).filter((o) => !o.key.startsWith(`${PREFIX.mac}fonts/`) && o.lastModified < new Date(now.getTime() - DAY_MS)).map((o) => o.key);
+    await deleteObjects(mac);
+  } catch (e) {
+    console.warn("[cleanup] mac sweep:", (e as Error).message);
+  }
+
   const oldPreviews = await prisma.render.findMany({ where: { kind: "preview", outputKey: { not: null }, createdAt: { lt: new Date(now.getTime() - PREVIEW_RETENTION_DAYS * DAY_MS) } } });
   for (const r of oldPreviews) {
     await deleteObjects(renderFileKeys(r));

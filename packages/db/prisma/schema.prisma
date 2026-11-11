@@ -385,7 +385,8 @@ model Render {
   errorCode  String?
   plan       Json?
   driveSave  Json?     // a copy into the user's Google Drive: { state, folderId, path, name, fileId, link, error, ... }
-  delivery   Json?     // where an AI's final goes besides Drive: { to: "mac", device, state: waiting | sent, at } (it is always made in the cloud)
+  delivery   Json?     // where an AI's final goes besides Drive: { to: "mac", device, state: waiting | sent, at }
+  made       Json?     // where it was made: { on: "mac" | "cloud", device, why } (the Mac app renders while it is open; null: the cloud, before this was kept)
   startedAt  DateTime?
   finishedAt DateTime?
   createdAt  DateTime  @default(now())

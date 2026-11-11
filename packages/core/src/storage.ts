@@ -88,8 +88,17 @@ export async function uploadFile(key: string, path: string, contentType: string)
 export async function downloadFile(key: string, path: string): Promise<number> {
   const r = await s3().send(new GetObjectCommand({ Bucket: Bucket(), Key: key }));
   await pipeline(r.Body as Readable, createWriteStream(path));
-  return (await stat(path)).size;
+  const size = (await stat(path)).size;
+  noteOrigin(path, key, { size, etag: r.ETag?.replace(/"/g, "") });
+  return size;
 }
+
+// Where a local file came from in storage (its key), so a render handed to the user's Mac gives the Mac the same file
+// by link instead of sending it up again. Kept per file path; a job forgets its own folder when it ends.
+const origins = new Map<string, { key: string; size?: number; etag?: string }>();
+export function noteOrigin(path: string, key: string, meta: { size?: number; etag?: string } = {}) { origins.set(path, { key, ...meta }); }
+export const originOf = (path: string) => origins.get(path) ?? null;
+export function forgetOrigins(prefix: string) { for (const k of origins.keys()) if (k.startsWith(prefix)) origins.delete(k); }
 export async function getText(key: string): Promise<string> {
   const r = await s3().send(new GetObjectCommand({ Bucket: Bucket(), Key: key }));
   return await (r.Body as { transformToString(): Promise<string> }).transformToString();

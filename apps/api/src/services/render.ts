@@ -95,8 +95,8 @@ export async function renderStatus(r: Render) {
     step: base.step, steps: base.steps.length ? base.steps : steps, percent: r.status === "done" ? 100 : base.percent, etaSec: r.status === "done" || r.status === "failed" ? null : base.etaSec ?? null,
     error: r.error ?? base.error ?? undefined, code: r.errorCode ?? base.code ?? undefined,
     result: r.status === "done" ? (r.kind === "sample" ? { renderId: r.id, samples: await samplesView(r.userId, r.id) } : await renderResult(r)) : undefined,
-    // Where it is made (always Rendrr's cloud server) and where the file goes.
-    where: renderWhere(r),
+    // Where it is made (the user's Mac while its Rendrr app makes it, else Rendrr's cloud server) and where the file goes.
+    where: renderWhere(r, live),
   };
 }
 

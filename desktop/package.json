@@ -9,7 +9,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/links.test.js",
+    "test": "node --test test/links.test.js test/render.test.js",
     "dist:mac": "electron-builder --mac dmg --arm64 --x64 --publish never"
   },
   "devDependencies": {
@@ -21,7 +21,8 @@
     "productName": "Rendrr",
     "copyright": "Rendrr",
     "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "preload.js", "links.js", "offline.html", "package.json"],
+    "files": ["main.js", "preload.js", "links.js", "render.js", "offline.html", "package.json"],
+    "extraResources": [{ "from": "vendor/ffmpeg-${arch}", "to": "ffmpeg", "filter": ["ffmpeg", "LICENSE*", "README*"] }],
     "artifactName": "Rendrr-${version}-${arch}.${ext}",
     "protocols": [{ "name": "Rendrr", "schemes": ["rendrr"] }],
     "mac": {

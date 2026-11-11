@@ -17,6 +17,7 @@ import assets from "./routes/assets";
 import { importUsersToSupabase } from "./services/supabaseImport";
 import projects from "./routes/projects";
 import render from "./routes/render";
+import macRender from "./routes/macRender";
 import color from "./routes/color";
 import lutUpload from "./routes/lutUpload";
 import soundUpload from "./routes/soundUpload";
@@ -56,7 +57,7 @@ export async function buildServer() {
       cb(null, isWebOrigin(origin, origins));
     },
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["authorization", "content-type", "x-review-key"],
+    allowedHeaders: ["authorization", "content-type", "x-review-key", "x-rendrr-task-token"],
     maxAge: 600,
   });
   // Review pages are public, so they get a tighter limit. This hook must be added before the rate limit
@@ -129,6 +130,7 @@ export async function buildServer() {
   await app.register(assets);
   await app.register(projects);
   await app.register(render);
+  await app.register(macRender);
   await app.register(color);
   await app.register(lutUpload);
   await app.register(soundUpload);

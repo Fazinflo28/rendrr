@@ -279,11 +279,15 @@ function runCapture(cmd: string, args: string[], signal?: AbortSignal): Promise<
 }
 
 /** stamp: text burned into the frame's bottom left (get_frames writes the time and frame number there). */
-export async function frameAt(input: string, t: number, out: string, width = 640, signal?: AbortSignal, hdr = false, stamp?: string) {
+/** One frame of a file as a JPEG (the arguments: a render on the user's Mac makes its samples' stills with them too). */
+export function frameArgs(input: string, t: number, out: string, width = 640, hdr = false, stamp?: string): string[] {
   // An HDR file's frame is tone-mapped like the preview copies, so the picture looks as it should on any screen.
   const tone = hdr ? "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p," : "";
   const text = stamp ? `,drawtext=fontfile=${STAMP_FONT}:text='${stamp.replace(/[\\':%]/g, (c) => "\\" + c)}':x=12:y=h-th-12:fontsize=h/20:fontcolor=white:box=1:boxcolor=black@0.65:boxborderw=8` : "";
-  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", Math.max(0, t).toFixed(3), "-i", input, "-frames:v", "1", "-vf", `${tone}scale=${width}:-2${text}`, "-q:v", "4", out], { signal });
+  return ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", Math.max(0, t).toFixed(3), "-i", input, "-frames:v", "1", "-vf", `${tone}scale=${width}:-2${text}`, "-q:v", "4", out];
+}
+export async function frameAt(input: string, t: number, out: string, width = 640, signal?: AbortSignal, hdr = false, stamp?: string) {
+  await run("ffmpeg", frameArgs(input, t, out, width, hdr, stamp), { signal });
 }
 const STAMP_FONT = process.env.STAMP_FONT || "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 

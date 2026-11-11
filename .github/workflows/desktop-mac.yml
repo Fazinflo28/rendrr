@@ -35,8 +35,31 @@ jobs:
       - name: Install
         run: npm ci --no-audit --no-fund
 
-      - name: Test the link rules
-        run: npm test
+      # The app renders on the Mac with its own FFmpeg (render.js): a static build for each chip, signed for this Mac,
+      # with its licence note. FFmpeg is GPL; its source is at ffmpeg.org.
+      - name: Get FFmpeg for each chip
+        run: |
+          set -uo pipefail
+          get() {
+            rm -rf "vendor/ffmpeg-$1" "$RUNNER_TEMP/ff-$1"; mkdir -p "vendor/ffmpeg-$1" "$RUNNER_TEMP/ff-$1"
+            curl -fsSL --retry 3 -o "$RUNNER_TEMP/ff-$1.zip" "$2" || return 1
+            unzip -o -q "$RUNNER_TEMP/ff-$1.zip" -d "$RUNNER_TEMP/ff-$1" || return 1
+            f=$(find "$RUNNER_TEMP/ff-$1" -type f -name ffmpeg | head -1); [ -n "$f" ] || return 1
+            cp "$f" "vendor/ffmpeg-$1/ffmpeg" && chmod +x "vendor/ffmpeg-$1/ffmpeg"
+            codesign --force -s - "vendor/ffmpeg-$1/ffmpeg"
+            printf 'FFmpeg (GPL) from %s\nFFmpeg source: https://ffmpeg.org/download.html\n' "$2" > "vendor/ffmpeg-$1/README.txt"
+          }
+          get arm64 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" || { echo "No Apple Silicon FFmpeg"; exit 1; }
+          get x64 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip" || get x64 "https://evermeet.cx/ffmpeg/getrelease/zip" || { echo "No Intel FFmpeg"; exit 1; }
+          echo "Apple Silicon: $(lipo -archs vendor/ffmpeg-arm64/ffmpeg)  Intel: $(lipo -archs vendor/ffmpeg-x64/ffmpeg)"
+
+      - name: Check FFmpeg has what renders use
+        run: |
+          node scripts/check-ffmpeg.js vendor/ffmpeg-arm64/ffmpeg
+          arch -x86_64 vendor/ffmpeg-x64/ffmpeg -hide_banner -version | head -1 || echo "(no Rosetta here to run the Intel FFmpeg)"
+
+      - name: Test the link rules, and rendering on this Mac with the app's FFmpeg
+        run: RENDRR_FFMPEG="$PWD/vendor/ffmpeg-arm64/ffmpeg" npm test
 
       - name: Set the version (0.1.<build number>)
         run: npm version "0.1.${{ github.run_number }}" --no-git-tag-version

@@ -10,6 +10,14 @@ contextBridge.exposeInMainWorld("rendrrDesktop", Object.freeze({
   device: (() => { try { return decodeURIComponent(arg("rendrr-device")); } catch { return ""; } })(),
   // Google refuses to sign in inside apps: the login Allow page and Drive consent open in the default browser.
   openInBrowser: (url) => ipcRenderer.send("rendrr:open-browser", String(url)),
+  // Renders on this Mac: what it can make, turning it on or off, making one Rendrr handed it, and hearing when it
+  // starts or finishes one. The page never touches the files or FFmpeg itself.
+  render: Object.freeze({
+    info: () => ipcRenderer.invoke("rendrr:render-info"),
+    setEnabled: (on) => ipcRenderer.invoke("rendrr:render-enable", !!on),
+    run: (task) => ipcRenderer.invoke("rendrr:render-run", task),
+    onState: (cb) => { const f = (_e, info) => cb(info); ipcRenderer.on("rendrr:render-state", f); return () => ipcRenderer.removeListener("rendrr:render-state", f); },
+  }),
 }));
 
 const mark = () => document.documentElement && document.documentElement.classList.add("desktop");

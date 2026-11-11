@@ -1409,3 +1409,13 @@ From before:
 - The AI connector logs in through Supabase's OAuth 2.1 server (dynamic client registration; Rendrr's consent page);
   the Mac app logs in through the browser with a one-time magic link token. Invite-only sign ups (`SIGNUP_ALLOWLIST`)
   are now enforced for every new account.
+
+## Renders on the user's Mac (11 November)
+
+While Rendrr for Mac is open (and can render), previews, finals and samples are made on that Mac with the app's own
+FFmpeg; the cloud still prepares them (graphics, the person's cut-out, loudness) and checks the result. A final made
+on the Mac goes to its Downloads and Rendrr keeps a copy (download elsewhere, Drive, review links, the Claude card).
+Not taken within 20 s, quiet for 60 s, or failed: the cloud makes it. Settings > Where renders run says where, with an
+on/off switch in the Mac app; the Export window, the Claude card and the AI's answers say where each render was made.
+Details: docs/mac-render.md. Needs the new Mac app (built by the Mac workflow with FFmpeg for each chip).
+Next: originals stay on the Mac (a final made on the Mac reads the file from disk; nothing uploaded).

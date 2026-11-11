@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { deviceName, nextExportText, whereShort, whereText, type RenderWhere } from "../src/where";
 
-const w = (delivery: Partial<RenderWhere["delivery"]>): RenderWhere => ({ renders: "cloud", region: "US East", delivery: { to: "download", device: null, state: null, folder: null, at: null, ...delivery } });
+const w = (delivery: Partial<RenderWhere["delivery"]>): RenderWhere => ({ renders: "cloud", region: "US East", device: null, delivery: { to: "download", device: null, state: null, folder: null, at: null, ...delivery } });
+const mac = (device: string | null): RenderWhere => ({ renders: "mac", region: "US East", device, delivery: { to: "mac", device, state: "sent", folder: null, at: null } });
 
 describe("where a render is made and where it goes", () => {
-  it("every render is made on the cloud server, never on the computer", () => {
+  it("made on the user's Mac (the Mac app open): says so, names the Mac, and a final is in its Downloads", () => {
+    expect(whereText(mac("Studio Mac"), "preview", false)).toBe(`Rendering on your Mac ("Studio Mac") by the Rendrr Mac app (graphics and checks on Rendrr's cloud server). It plays in Rendrr and in the chat's card.`);
+    expect(whereText(mac(null), "final", true)).toMatch(/^Rendered on your Mac by the Rendrr Mac app .* Saved in that Mac's Downloads folder; it downloads from Rendrr too\.$/);
+    expect(whereText(mac(null), "final", false)).toMatch(/It is saved in that Mac's Downloads folder the moment it is done/);
+    expect(whereShort(mac("Studio Mac"), "preview")).toBe('Made on "Studio Mac"');
+    expect(whereShort(mac(null), "final")).toBe("Made on your Mac · Saved to Downloads");
+    expect(whereText(mac(null), "final", true)).not.toMatch(/cloud server \(US East\), not on your computer/);
+  });
+  it("made on the cloud server when the Mac does not render it", () => {
     for (const d of [w({}), w({ to: "mac", device: "Studio Mac", state: "waiting" }), w({ to: "drive", folder: "Clients/Acme" })]) {
       expect(whereText(d, "final", false)).toMatch(/^Rendering on Rendrr's cloud server \(US East\), not on your computer\./);
       expect(whereText(d, "final", true)).toMatch(/^Rendered on Rendrr's cloud server/);
@@ -31,5 +40,7 @@ describe("where a render is made and where it goes", () => {
   it("where the next export goes", () => {
     expect(nextExportText({ online: true, device: "Studio Mac", version: "0.2.0", seenAt: 1 })).toMatch(/Mac app is open on "Studio Mac", so finals your AI exports go to that Mac's Downloads/);
     expect(nextExportText({ online: false, device: null, version: null, seenAt: null })).toMatch(/not open, so finals your AI exports go to Google Drive/);
+    expect(nextExportText({ online: true, device: "Studio Mac", version: "0.2.0", seenAt: 1, renders: true })).toMatch(/^Renders run on the user's Mac: the Rendrr Mac app is open on "Studio Mac", so previews and finals are made there/);
+    expect(nextExportText({ online: true, device: null, version: "0.1.9", seenAt: 1, renders: false, why: "rendering on the Mac is turned off in the Mac app" })).toMatch(/^Renders run on Rendrr's cloud server \(rendering on the Mac is turned off in the Mac app\)\. The Rendrr Mac app is open/);
   });
 });

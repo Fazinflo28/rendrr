@@ -1,13 +1,15 @@
 // Rendrr for Mac. A native window on the Rendrr web app (app.rendrr.live): the editor is the web app itself, so every
 // UI change on the site shows up here on the next launch or reload, with no new download.
 // The app adds: a Dock icon, Mac menus and shortcuts, files saved straight to Downloads, login through the browser,
-// links to other sites in the default browser, an offline page, and full speed while the window is hidden.
+// links to other sites in the default browser, an offline page, full speed while the window is hidden, and renders
+// made on this Mac (render.js: Rendrr hands the app each render's encode while it is open; its own FFmpeg makes it).
 const { app, BrowserWindow, Menu, Notification, ipcMain, screen, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName } = require("./links");
 const os = require("node:os");
 const { execFileSync } = require("node:child_process");
+const render = require("./render");
 // This Mac's name (System Settings › General › About), sent with the app's ping so Rendrr can say which Mac a final went to.
 const deviceName = (() => { let cn = ""; try { cn = execFileSync("scutil", ["--get", "ComputerName"], { timeout: 1500 }).toString(); } catch { /* not macOS */ } return macName(cn, os.hostname()); })();
 
@@ -41,6 +43,56 @@ ipcMain.on("rendrr:open-browser", (e, url) => {
   if (linkKind(e.senderFrame?.url || "") !== "app" || !browserMayOpen(url)) return;
   if (SMOKE_OUT) browserOpened.push(url);
   else shell.openExternal(url).catch(() => {});
+});
+
+// ---- Renders on this Mac (render.js) ----
+// The app's own FFmpeg (in its Resources; RENDRR_FFMPEG or the one on the PATH when run from source), checked at start:
+// its version and features go with the web app's ping, so Rendrr only hands this Mac renders it can make.
+const ffmpegPath = () => process.env.RENDRR_FFMPEG || (app.isPackaged ? path.join(process.resourcesPath, "ffmpeg", "ffmpeg") : "ffmpeg");
+const renderFile = () => path.join(app.getPath("userData"), "render.json");
+const renders = { ready: false, busy: false, version: null, have: [], why: "Checking this Mac's FFmpeg", enabled: true, current: null };
+try { renders.enabled = JSON.parse(fs.readFileSync(renderFile(), "utf8")).enabled !== false; } catch { /* first run: on */ }
+const renderInfo = () => ({ protocol: render.PROTOCOL, ready: renders.ready, enabled: renders.enabled, busy: renders.busy, cpus: os.availableParallelism ? os.availableParallelism() : os.cpus().length, have: renders.have, ffmpeg: renders.version, why: renders.why, label: renders.current });
+// Every Rendrr window hears when this Mac starts or finishes a render (it tells Rendrr straight away).
+const tellWindows = () => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("rendrr:render-state", renderInfo()); };
+async function checkFfmpeg() {
+  const p = await render.probeFfmpeg(ffmpegPath());
+  Object.assign(renders, { ready: p.ok && p.have.includes("libx264"), version: p.version, have: p.have, why: p.ok ? (p.have.includes("libx264") ? null : "this Mac's FFmpeg cannot make H.264") : p.why });
+  tellWindows();
+}
+const fromApp = (e) => linkKind(e.senderFrame?.url || "") === "app";
+ipcMain.handle("rendrr:render-info", (e) => (fromApp(e) ? renderInfo() : null));
+ipcMain.handle("rendrr:render-enable", (e, on) => {
+  if (!fromApp(e)) return null;
+  renders.enabled = !!on;
+  try { fs.writeFileSync(renderFile(), JSON.stringify({ enabled: renders.enabled })); } catch { /* kept for this run */ }
+  tellWindows();
+  return renderInfo();
+});
+// A render Rendrr handed this Mac (the web app took it for this user): made in the background, one at a time.
+ipcMain.handle("rendrr:render-run", (e, task) => {
+  if (!fromApp(e) || !renders.ready || !renders.enabled || renders.busy) return { started: false };
+  try { render.checkTask(task); } catch (err) { return { started: false, error: String(err.message || err) }; }
+  renders.busy = true; renders.current = String(task.label || "A render").slice(0, 120);
+  tellWindows();
+  const progress = (st) => {
+    const v = st.phase === "download" ? 0.1 * (st.frac || 0) : st.phase === "render" ? 0.1 + 0.85 * (st.frac || 0) : 0.95 + 0.05 * (st.frac || 0);
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setProgressBar(Math.max(0, Math.min(1, v)));
+  };
+  render.runTask(task, { ffmpeg: ffmpegPath(), cacheDir: path.join(app.getPath("cache"), "Rendrr"), workDir: os.tmpdir(), saveDir: app.getPath("downloads"), onState: progress })
+    .then((r) => {
+      if (r.ok && r.savedPath) {
+        if (app.dock) app.dock.downloadFinished(r.savedPath);
+        notify("Made on this Mac", `${path.basename(r.savedPath)} is in Downloads`, () => shell.showItemInFolder(r.savedPath));
+      } else if (!r.ok && !r.stopped) notify("Made on Rendrr's cloud instead", "This Mac could not make it, so Rendrr's cloud server is making it.");
+    })
+    .catch(() => { /* runTask reports its own failures */ })
+    .finally(() => {
+      renders.busy = false; renders.current = null;
+      for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setProgressBar(-1);
+      tellWindows();
+    });
+  return { started: true };
 });
 
 // ---- Windows ----
@@ -239,6 +291,7 @@ function smokeTest(win) {
 }
 
 app.whenReady().then(() => {
+  checkFfmpeg().catch(() => { renders.why = "FFmpeg could not be checked"; });
   app.setAboutPanelOptions({ applicationName: "Rendrr", applicationVersion: app.getVersion(), copyright: "Edit videos with Claude." });
   buildMenu();
   watchDownloads(session.defaultSession);

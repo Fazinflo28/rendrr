@@ -131,6 +131,7 @@ export const PREFIX = {
   luts: "luts/",
   fonts: "fonts/",
   tests: "tests/", // test_graphic clips and frames, swept after a day
+  mac: "mac/", // files a render on the user's Mac needs (per render, swept after a day; mac/fonts/ kept)
   canvas: "canvas/", // the blank canvas of an edit made from scratch (no footage)
   sounds: "sounds/", // the user's own audio files (add_audio): a voice made better outside Rendrr, their own music
   uploads: "uploads/", // videos and images the AI brought in from the chat (add_footage): kept as the raw file

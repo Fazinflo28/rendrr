@@ -1,18 +1,19 @@
-import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, getBytes, getText, noteCost, publishRender, queueDriveSave, recordUsage, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
+import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, forgetOrigins, getBytes, getText, macExportsKey, macForRender, noteCost, publishRender, queueDriveSave, recordUsage, redis, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
 import { bestResolution, fmtClock, formatFile, isBestQuality, lengthTolerance, renderLimitMs, sampleWindow, type SampleDone, type SamplePlan } from "@rendrr/shared";
-import { joinPieces, makeGif, mergeOverlay, writeSideFiles } from "../lib/deliver";
+import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSideFiles } from "../lib/deliver";
+import { dropTemps, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
 import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { COVER_SIZE, cpuBudget, filterThreads, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, stalled, windowBudget } from "../lib/ffmpeg";
+import { COVER_SIZE, cpuBudget, filterThreads, frameArgs, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, stalled, windowBudget } from "../lib/ffmpeg";
 import { cachedAsset, cachedCopy } from "../lib/assets";
 import { matchFacing } from "../lib/orient";
 import { closeIdleBrowsers, renderGraphicClip } from "../lib/graphics";
@@ -66,6 +67,9 @@ export async function renderJob(ctx: Ctx) {
   const samples = kind === "sample" ? ((r.plan as { samples?: SamplePlan } | null)?.samples ?? null) : null;
   if (kind === "sample" && !samples?.items?.length) throw new JobError("These samples have nothing to render. Ask for them again.", "empty", false);
   const planKind: "preview" | "final" = kind === "final" ? "final" : "preview";
+  // Where it is being made: Rendrr's cloud server until the user's Mac app takes the encode (then that Mac); why: why
+  // the Mac did not make it, when the app was open.
+  const where: { on: "mac" | "cloud"; device: string | null; why: string | null } = { on: "cloud", device: null, why: null };
 
   // Preview has a tighter limit than the queue's 15 minutes.
   const ac = new AbortController();
@@ -97,7 +101,7 @@ export async function renderJob(ctx: Ctx) {
     }
     return prior != null ? Math.max(5, Math.round(prior * est.outSeconds - (now - t0) / 1000)) : null;
   };
-  const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)), etaSec: etaSec() });
+  const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)), etaSec: etaSec(), on: where.on, device: where.device });
   const sendThrottled = throttle(send, 400);
   const claimed = await prisma.render.updateMany({ where: { id: r.id, status: { in: ["queued", "running"] } }, data: { status: "running", startedAt: new Date(), error: null, errorCode: null } });
   if (!claimed.count) return;
@@ -108,6 +112,8 @@ export async function renderJob(ctx: Ctx) {
     // ---- Source: the preview copy for previews, the original for finals ----
     const src = join(ctx.dir, "source");
     let tempOriginalIds: string[] = [];
+    // The original read from the user's Drive: a render on their Mac fetches it there itself.
+    let driveSource: { path: string; fileId: string } | null = null;
     if (kind !== "final") {
       if (!video.proxyKey) throw new JobError("The preview copy of this footage expired. Rebuild it from your Library, then render again.", "expired", false);
       await cachedCopy(video.proxyKey, src);
@@ -130,6 +136,7 @@ export async function renderJob(ctx: Ctx) {
       const body = Readable.fromWeb(res.body as never);
       body.on("data", (c: Buffer) => { got += c.length; if (total) sendThrottled(0, got / total); });
       await pipeline(body, createWriteStream(src));
+      driveSource = { path: src, fileId: video.driveFileId! };
       i = 1;
     } else {
       const orig = await prisma.tempOriginal.findFirst({ where: { projectId: project.id, videoId: video.id, completed: true, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } });
@@ -362,6 +369,46 @@ export async function renderJob(ctx: Ctx) {
     await send(i, 1);
     i++;
 
+    // ---- On the user's Mac: while its Rendrr app is open and able, the encode's FFmpeg runs are made there (the files
+    // they read go by link, what they make is uploaded by the Mac to this render's keys). Null: the cloud makes them
+    // (the app is closed, cannot take these, did not pick them up in time, went quiet or failed: where.why says).
+    const label = `${kind === "final" ? "Final" : kind === "sample" ? "Samples" : "Preview"} v${r.version} of ${project.name}`;
+    const macCpus = async (): Promise<{ cpus: number; have: string[] } | null> => {
+      const m = await macForRender(video.userId, []).catch(() => ({ info: null, why: null }));
+      if (m.info && m.why) where.why = m.why;
+      return m.info && !m.why ? { cpus: m.info.cpus, have: m.info.have } : null;
+    };
+    const onMac = async (mac: { have: string[] }, runs: MacRun[], outputs: MacOut[], onRender: (cmd: number, seconds: number) => void): Promise<MacDone | null> => {
+      let task: Awaited<ReturnType<typeof macTaskFor>>;
+      try { task = await macTaskFor({ renderId: r.id, userId: video.userId, kind, label, dir: ctx.dir, fontsDir: FONTS_DIR, runs, outputs, driveSource }); }
+      catch (e) {
+        // Whatever stops the hand-off (a render the Mac cannot be given, storage refusing a file): the cloud makes it.
+        if (signal.aborted) throw e;
+        console.error(`[render] ${r.id}: made on the cloud, not the Mac: ${(e as Error).message}`);
+        where.why = e instanceof NotForMac ? "this render cannot be made on a Mac yet" : "its files could not be readied for the Mac";
+        return null;
+      }
+      const missing = task.spec.needs.filter((n) => !mac.have.includes(n));
+      if (missing.length) { where.why = `the Mac's FFmpeg lacks ${missing.join(", ")}`; await dropTemps(task.temps); return null; }
+      const at = i, was = steps[at];
+      try {
+        const res = await runOnMac(task.spec, {
+          signal,
+          onClaim: (device) => { where.on = "mac"; where.device = device; where.why = null; steps[at] = "Getting the files to your Mac"; void send(at, 0); },
+          onDownload: (f) => sendThrottled(at, 0.98 * f),
+          onRender: (cmd, sec) => { if (steps[at] !== was) steps[at] = was; onRender(cmd, sec); },
+          onUpload: () => { if (steps[at] !== was) steps[at] = was; },
+        }).catch((e) => { if (signal.aborted) throw e; return { ok: false as const, why: `the hand-off to your Mac broke (${(e as Error).message.slice(0, 120)})` }; });
+        steps[at] = was;
+        if (res.ok) { console.log(`[render] ${r.id}: made on the user's Mac${res.device ? ` "${res.device}"` : ""}`); return res; }
+        console.error(`[render] ${r.id}: the Mac did not make it (${res.why}): making it on the cloud`);
+        where.on = "cloud"; where.device = null; where.why = res.why;
+        plan.operations.push(`Made on Rendrr's cloud server: ${res.why}`);
+        await send(at, 0);
+        return null;
+      } finally { steps[at] = was; await dropTemps(task.temps); }
+    };
+
     // ---- Measuring loudness: the mix, audio only, so the render can set it to the target exactly ----
     let mixLoudness: MixLoudness | null = null;
     const measuring = steps[i] === "Measuring loudness";
@@ -384,8 +431,39 @@ export async function renderJob(ctx: Ctx) {
       let spent = 0, bytes = 0;
       await closeIdleBrowsers().catch(() => {}); // the browsers kept from recording its graphics are not needed now
       est.encStart = Date.now();
+      // On the user's Mac: each sample's run (a clip's first frame made there too, as its still), uploaded by the Mac.
+      const mac = await macCpus();
+      let macMade = false;
+      if (mac) {
+        const runs: MacRun[] = [], outs: MacOut[] = [], cmdItem: number[] = [], made: SampleDone[] = [];
+        for (const [k, it] of items.entries()) {
+          const w = sampleWindow(it, fps), sub = windowPlan(plan, w.from, w.to), still = it.kind === "frame";
+          const out = join(ctx.dir, still ? `sample-${k}.jpg` : `sample-${k}.mp4`), stillPath = still ? out : join(ctx.dir, `sample-${k}.jpg`);
+          const o = { threads: mac.cpus, inputThreads: mac.cpus * 2, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, still };
+          const f = { ...files, output: out };
+          const a = ffmpegArgs(sub, f, sourceInfo, { ...o, filterThreads: filterThreads(ffmpegArgs(sub, f, sourceInfo, { ...o, filterThreads: 4 }).filterGraph) });
+          runs.push({ args: a.args, graph: a.filterGraph, seconds: Math.max(0.04, w.to - w.from) }); cmdItem.push(k);
+          const stillKey = `${base}-s${k}.jpg`, clipKey = still ? undefined : `${base}-c${k}.mp4`;
+          if (!still) { runs.push({ args: frameArgs(out, 0, stillPath, plan.width) }); cmdItem.push(k); }
+          outs.push({ path: stillPath, key: stillKey, type: "image/jpeg" });
+          if (clipKey) outs.push({ path: out, key: clipKey, type: "video/mp4" });
+          made.push({ ...it, still: stillKey, ...(clipKey ? { clip: clipKey } : {}) });
+        }
+        const before = items.map((_, k) => items.slice(0, k).reduce((acc, x) => acc + weightOf(x), 0));
+        const res = await onMac(mac, runs, outs, (cmd, sec) => {
+          const k = cmdItem[cmd] ?? 0, it = items[k], w = sampleWindow(it, fps);
+          const f = (before[k] + Math.min(1, sec / Math.max(0.05, w.to - w.from)) * weightOf(it)) / total;
+          est.encFrac = f; sendThrottled(i, f);
+        });
+        if (res) {
+          macMade = true;
+          done.push(...made);
+          keys.push(...outs.map((x) => x.key));
+          bytes = outs.reduce((acc, x) => acc + (res.outputs[relative(ctx.dir, x.path)] ?? 0), 0);
+        }
+      }
       try {
-      for (const [k, it] of items.entries()) {
+      if (!macMade) for (const [k, it] of items.entries()) {
         const w = sampleWindow(it, fps), sub = windowPlan(plan, w.from, w.to), still = it.kind === "frame";
         const out = join(ctx.dir, still ? `sample-${k}.jpg` : `sample-${k}.mp4`);
         const argsOf = (ft: number, decode = cpus * 2) => ffmpegArgs(sub, { ...files, output: out }, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, still });
@@ -425,7 +503,7 @@ export async function renderJob(ctx: Ctx) {
       const seconds = Math.round(items.reduce((acc, it) => acc + (it.kind === "clip" ? it.end! - it.at : 0), 0) * 1000) / 1000;
       if (signal.aborted) { await deleteObjects(keys).catch(() => {}); throw new JobError("Stopped."); }
       await prisma.render.updateMany({ where: { id: r.id, status: "running" }, data: {
-        status: "done", outputKey: null, sizeBytes: BigInt(bytes), seconds, framesKeys: keys, finishedAt: new Date(), quality: "540p",
+        status: "done", outputKey: null, sizeBytes: BigInt(bytes), seconds, framesKeys: keys, finishedAt: new Date(), quality: "540p", made: { on: where.on, device: where.device, why: where.why },
         plan: { samples: { items: noted(items), done: noted(done), width: plan.width, height: plan.height }, operations: plan.operations, outputSeconds: plan.outputSeconds, mix: mixLoudness } as unknown as Prisma.InputJsonValue,
       } });
       await usage(video.userId, "render_preview", Math.round((Math.max(seconds, items.length / fps) / 60) * 100) / 100, { projectId: project.id, renderId: r.id });
@@ -433,7 +511,7 @@ export async function renderJob(ctx: Ctx) {
       const sampleMin = Math.round((Math.max(seconds, items.length / fps) / 60) * 1000) / 1000;
       noteCost({ kind: "render_samples", refId: r.id, outputBytes: bytes });
       if (r.by !== "gallery") await recordUsage({ userId: video.userId, metric: "preview", quantity: sampleMin, refId: r.id, meta: { projectId: project.id, samples: true } });
-      await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100 });
+      await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100, on: where.on, device: where.device });
       return { samples: done.length };
     }
     // Phase 12: what the final is made as. Sound only goes straight to its file; the overlay export renders over black
@@ -442,6 +520,12 @@ export async function renderJob(ctx: Ctx) {
     if (fmt === "overlay") files.output = join(ctx.dir, "out-b.mkv");
     else if (fmt === "audio") files.output = join(ctx.dir, "out.m4a");
     else if (fmt === "wav") files.output = join(ctx.dir, "out.wav");
+    // Where the file goes in storage (the Mac uploads it there itself when it makes it) and its name for people.
+    const prefix = kind === "final" ? PREFIX.finals : PREFIX.previews;
+    const base = `${prefix}${video.userId}/${project.id}/${r.id}`;
+    const ff = formatFile(fmt);
+    const outKey = `${base}.${ff.ext}`;
+    const stem = `${(project.name || "rendrr").replace(/[^\w\- ]+/g, "").trim() || "rendrr"} ${kind === "final" ? "final" : "preview"} v${r.version}`;
     const argsFor = (ft: number, decode = cpus * 2, pictureAs?: "black" | "white") => ffmpegArgs(plan, files, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, ...(fmt === "overlay" ? { pictureAs: pictureAs ?? "black" } : {}) });
     // The browsers kept from recording this edit's graphics (about 80 threads each) are not needed for the encode.
     await closeIdleBrowsers().catch(() => {});
@@ -528,82 +612,101 @@ export async function renderJob(ctx: Ctx) {
       await joinPieces(ctx.dir, made, files.output, kind === "preview" ? "96k" : best ? "320k" : "192k", signal, soundPath);
       console.log(`[render] ${r.id}: made in ${made.length} pieces and joined`);
     };
-    est.encStart = Date.now();
-    try {
-      // A very heavy final (dozens of sources at once) is made in pieces from the start: in one pass it fills the
-      // container's memory slowly and is killed only after many minutes (then made in pieces anyway).
-      const heavy = canPiece && piecesFirst(kind, fit);
-      // A nearly full container (other jobs hold its threads): wait up to a minute for room; still full, start small.
-      const room = heavy || (await waitForThreads(fit.need, 60_000, signal));
+    // ---- On the user's Mac first (its Rendrr app open and able): the same runs, with its own number of threads; the
+    // overlay's second pass and merge, or the GIF, made there too. The file comes back here to be checked. ----
+    const finalPath = fmt === "overlay" ? join(ctx.dir, "out.mov") : fmt === "gif" ? join(ctx.dir, "out.gif") : files.output;
+    let macDone: MacDone | null = null;
+    const mac = await macCpus();
+    if (mac) {
+      const mArgs = (output: string, pictureAs?: "black" | "white") => {
+        const o = { threads: mac.cpus, inputThreads: mac.cpus * 2, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, ...(fmt === "overlay" ? { pictureAs: pictureAs ?? "black" } : {}) };
+        const f = { ...files, output };
+        return ffmpegArgs(plan, f, sourceInfo, { ...o, filterThreads: filterThreads(ffmpegArgs(plan, f, sourceInfo, { ...o, filterThreads: 4 }).filterGraph) });
+      };
+      const a0 = mArgs(files.output);
+      const runs: MacRun[] = [{ args: a0.args, graph: a0.filterGraph, seconds: plan.outputSeconds }];
+      if (fmt === "overlay") {
+        const wPass = mArgs(join(ctx.dir, "out-w.mkv"), "white");
+        runs.push({ args: wPass.args, graph: wPass.filterGraph, seconds: plan.outputSeconds }, { args: mergeOverlayArgs(files.output, join(ctx.dir, "out-w.mkv"), finalPath) });
+      } else if (fmt === "gif") runs.push({ args: gifArgs(files.output, finalPath, plan.width, plan.height, plan.outputSeconds) });
+      est.encStart = Date.now();
+      macDone = await onMac(mac, runs, [{ path: finalPath, key: outKey, type: ff.type, ...(kind === "final" ? { save: `${stem}.${ff.ext}` } : {}) }], (cmd, sec) => { if (cmd === 0) onProgress(sec); });
+      if (macDone) { await downloadFile(outKey, finalPath); files.output = finalPath; }
+    }
+    if (!macDone) {
+      est.encStart = Date.now();
       try {
-        if (heavy) await renderInPieces(`a heavy final (${fit.inputs} inputs, ${fit.scalers} scalers)`);
-        else await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS });
-      } catch (e) {
-        if (canPiece && killed(e)) await renderInPieces();
-        else if (stalled(e)) {
-          // Frozen in one pass: made in pieces (each with its own freeze watch), or once more with one thread each.
-          console.error(`[render] ${r.id}: the one pass froze at ${e.at.toFixed(2)} s. Threads: ${e.threads}`);
-          if (canPiece) await renderInPieces("the one pass froze");
-          else {
+        // A very heavy final (dozens of sources at once) is made in pieces from the start: in one pass it fills the
+        // container's memory slowly and is killed only after many minutes (then made in pieces anyway).
+        const heavy = canPiece && piecesFirst(kind, fit);
+        // A nearly full container (other jobs hold its threads): wait up to a minute for room; still full, start small.
+        const room = heavy || (await waitForThreads(fit.need, 60_000, signal));
+        try {
+          if (heavy) await renderInPieces(`a heavy final (${fit.inputs} inputs, ${fit.scalers} scalers)`);
+          else await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS });
+        } catch (e) {
+          if (canPiece && killed(e)) await renderInPieces();
+          else if (stalled(e)) {
+            // Frozen in one pass: made in pieces (each with its own freeze watch), or once more with one thread each.
+            console.error(`[render] ${r.id}: the one pass froze at ${e.at.toFixed(2)} s. Threads: ${e.threads}`);
+            if (canPiece) await renderInPieces("the one pass froze");
+            else {
+              try { await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS }); }
+              catch (e2) { if (stalled(e2)) throw frozenAt(e2.at); throw e2; }
+            }
+          } else {
+            // Out of threads (a container limit): once more with one filter thread, which needs far fewer, when there is room.
+            if (signal.aborted || !outOfThreads(e)) throw e;
+            console.error("[render] ffmpeg ran out of threads; waiting for room, then trying again with one filter thread and one per decoder");
+            await waitForThreads(150, 60_000, signal);
             try { await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS }); }
-            catch (e2) { if (stalled(e2)) throw frozenAt(e2.at); throw e2; }
-          }
-        } else {
-          // Out of threads (a container limit): once more with one filter thread, which needs far fewer, when there is room.
-          if (signal.aborted || !outOfThreads(e)) throw e;
-          console.error("[render] ffmpeg ran out of threads; waiting for room, then trying again with one filter thread and one per decoder");
-          await waitForThreads(150, 60_000, signal);
-          try { await run("ffmpeg", withGraph(argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS }); }
-          catch (e2) {
-            if (canPiece && (killed(e2) || stalled(e2))) await renderInPieces(stalled(e2) ? "the one-thread pass froze" : undefined);
-            else if (stalled(e2)) throw frozenAt(e2.at);
-            else throw e2;
+            catch (e2) {
+              if (canPiece && (killed(e2) || stalled(e2))) await renderInPieces(stalled(e2) ? "the one-thread pass froze" : undefined);
+              else if (stalled(e2)) throw frozenAt(e2.at);
+              else throw e2;
+            }
           }
         }
+      } catch (e) {
+        if (signal.aborted) throw e;
+        if (e instanceof JobError && e.code === "ffmpeg-frozen") throw e;
+        console.error("[render] ffmpeg failed:", (e as Error).message.slice(0, 2600));
+        throw new JobError(`Render failed at '${steps[Math.min(endStep - 1, i)]}'. Nothing was lost. Try again.`, "ffmpeg", true);
       }
-    } catch (e) {
-      if (signal.aborted) throw e;
-      if (e instanceof JobError && e.code === "ffmpeg-frozen") throw e;
-      console.error("[render] ffmpeg failed:", (e as Error).message.slice(0, 2600));
-      throw new JobError(`Render failed at '${steps[Math.min(endStep - 1, i)]}'. Nothing was lost. Try again.`, "ffmpeg", true);
-    }
-    try {
-      if (fmt === "overlay") {
-        // The same edit over white, then the two merged into ProRes 4444 with the alpha their difference gives.
-        const black = files.output;
-        files.output = join(ctx.dir, "out-w.mkv");
-        const w = argsFor(filterThreads(argsFor(4, cpus * 2, "white").filterGraph), cpus * 2, "white");
-        const wPath = join(ctx.dir, "graph-w.txt");
-        await writeFile(wPath, w.filterGraph);
-        await run("ffmpeg", w.args.map((x) => (x === "__FILTER_SCRIPT__" ? wPath : x)), { signal, stallMs: STALL_MS });
-        files.output = join(ctx.dir, "out.mov");
-        await mergeOverlay(black, join(ctx.dir, "out-w.mkv"), files.output, signal);
-      } else if (fmt === "gif") {
-        const gif = join(ctx.dir, "out.gif");
-        await makeGif(files.output, gif, plan.width, plan.height, signal, plan.outputSeconds);
-        files.output = gif;
+      try {
+        if (fmt === "overlay") {
+          // The same edit over white, then the two merged into ProRes 4444 with the alpha their difference gives.
+          const black = files.output;
+          files.output = join(ctx.dir, "out-w.mkv");
+          const w = argsFor(filterThreads(argsFor(4, cpus * 2, "white").filterGraph), cpus * 2, "white");
+          const wPath = join(ctx.dir, "graph-w.txt");
+          await writeFile(wPath, w.filterGraph);
+          await run("ffmpeg", w.args.map((x) => (x === "__FILTER_SCRIPT__" ? wPath : x)), { signal, stallMs: STALL_MS });
+          files.output = join(ctx.dir, "out.mov");
+          await mergeOverlay(black, join(ctx.dir, "out-w.mkv"), files.output, signal);
+        } else if (fmt === "gif") {
+          const gif = join(ctx.dir, "out.gif");
+          await makeGif(files.output, gif, plan.width, plan.height, signal, plan.outputSeconds);
+          files.output = gif;
+        }
+      } catch (e) {
+        if (signal.aborted) throw e;
+        if (stalled(e)) throw frozenAt(e.at, "transparent");
+        console.error("[render] making the deliverable failed:", (e as Error).message.slice(0, 1600));
+        throw new JobError(`Making the ${fmt === "gif" ? "GIF" : "transparent file"} failed. Nothing was lost. Try again, or export MP4.`, "ffmpeg", true);
       }
-    } catch (e) {
-      if (signal.aborted) throw e;
-      if (stalled(e)) throw frozenAt(e.at, "transparent");
-      console.error("[render] making the deliverable failed:", (e as Error).message.slice(0, 1600));
-      throw new JobError(`Making the ${fmt === "gif" ? "GIF" : "transparent file"} failed. Nothing was lost. Try again, or export MP4.`, "ffmpeg", true);
     }
     i = endStep;
     est.encEnd = Date.now();
     await send(i, 0.1);
 
     // ---- Packing: upload, check frames, clean up ----
-    const prefix = kind === "final" ? PREFIX.finals : PREFIX.previews;
-    const base = `${prefix}${video.userId}/${project.id}/${r.id}`;
     const outInfo = await probe(files.output, { signal });
     // The rendered file, measured once here so the AI's after-render check compares the file with the edit.
     // A failed measurement is reported in the check (never silently left out).
     let measured: FileMeasure;
     // The upload and the check frames go while the file is measured (they only read it).
-    const ff = formatFile(fmt);
-    const outKey = `${base}.${ff.ext}`;
-    const uploaded = uploadFile(outKey, files.output, ff.type);
+    const uploaded = macDone ? stat(files.output).then((x) => x.size) : uploadFile(outKey, files.output, ff.type);
     // Phase 12: captions (SRT, WebVTT) and YouTube chapters next to a final.
     const sideKeys: Record<string, string> = {};
     if (kind === "final") {
@@ -680,7 +783,9 @@ export async function renderJob(ctx: Ctx) {
     // it made is removed and nothing else changes (no "Final ready", no Drive copy, the original kept).
     if (signal.aborted) throw new JobError("Stopped.");
     const won = await prisma.render.updateMany({ where: { id: r.id, status: "running" }, data: {
-      status: "done", outputKey: outKey, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(),
+      status: "done", outputKey: outKey, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(), made: { on: where.on, device: where.device, why: where.why },
+      // A final made on the Mac is already in its Downloads (the app kept it there).
+      ...(kind === "final" && macDone?.saved ? { delivery: { to: "mac", device: where.device, state: "sent", at: Date.now(), saved: macDone.saved } } : {}),
       quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr, best }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}) } as unknown as Prisma.InputJsonValue,
     } });
     if (!won.count) {
@@ -688,6 +793,8 @@ export async function renderJob(ctx: Ctx) {
       console.log(`[render] ${r.id}: it was stopped as it finished; what it made was removed`);
       return { stopped: true };
     }
+    // A final the Mac kept in Downloads is not fetched again by its app (the AI's exports queue for the Mac).
+    if (kind === "final" && macDone?.saved) await redis().hdel(macExportsKey(video.userId), r.id).catch(() => {});
     // Final: the original is deleted straight away, unless another final of this edit still waits for it (two finals
     // asked for back to back); the daily cleanup is the safety net.
     if (kind === "final" && tempOriginalIds.length) {
@@ -714,7 +821,7 @@ export async function renderJob(ctx: Ctx) {
       const fourK = kind === "final" && isFourKQuality(r.quality), heavy = isHeavyPlan(plan);
       await recordUsage({ userId: video.userId, metric: kind === "final" ? "export" : "preview", quantity: minutes, billable: kind === "final" ? minutes * exportMultiplier({ fourK, heavy }) : minutes, refId: r.id, meta: { projectId: project.id, quality: r.quality, fourK, heavy } });
     }
-    await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100 });
+    await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100, on: where.on, device: where.device });
     // A final the user asked to be saved into their Google Drive (render_final driveFolder): the copy starts now.
     const save = kind === "final" ? driveSaveOf(await prisma.render.findUniqueOrThrow({ where: { id: r.id }, select: { driveSave: true } })) : null;
     if (save?.state === "waiting") await queueDriveSave(r.id, save).catch((e) => console.error("[render] Drive copy not queued:", (e as Error).message));
@@ -725,6 +832,7 @@ export async function renderJob(ctx: Ctx) {
     throw e;
   } finally {
     if (pt) clearTimeout(pt);
+    forgetOrigins(ctx.dir);
   }
 }
 

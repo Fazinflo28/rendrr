@@ -13,4 +13,12 @@ Rendrr for Mac. The app opens the Rendrr editor in its own window, so every Rend
 
 Updating from an older Rendrr app: drag the new one into Applications and choose Replace.
 
+**Renders on your Mac**
+While the app is open, previews and finals are made on this Mac with its own FFmpeg; graphics, the person's cut-out and
+the checks still use Rendrr's cloud. Finals made here go straight to Downloads (and Rendrr keeps a copy to share). If
+this Mac cannot take a render, or you close the app, Rendrr's cloud makes it. Turn it off in Rendrr > Settings >
+Where renders run. Footage this Mac fetches is kept in ~/Library/Caches/Rendrr (up to 20 GB).
+
 Finals you save go straight to your Downloads folder. Links to other sites open in your browser.
+
+Rendrr for Mac includes FFmpeg (GPL, ffmpeg.org).

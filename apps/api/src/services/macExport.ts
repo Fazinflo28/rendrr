@@ -1,41 +1,64 @@
-import { driveSaveOf, finalType, redis, signGet } from "@rendrr/core";
+import { driveSaveOf, finalType, MAC_RENDER_PROTOCOL, macExportsKey, redis, signGet, type MacRenderInfo, type RenderProgress } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { CLOUD_REGION, deviceName, type Delivery, type MacStatus, type RenderWhere } from "@rendrr/shared";
 
-// Finals on the user's Mac: while the Rendrr Mac app is open it says so every few seconds (macPing), and a final the
-// AI exports then is queued for it (queueMacExport). The app collects each one as soon as it is done (macExports) and
-// saves it to the Mac's Downloads folder; a claim makes sure only one window saves it. The render itself runs on
-// Rendrr's cloud server either way (renderWhere says so wherever a render is shown). With the app closed, the AI renders on Rendrr's cloud server and saves to Google Drive.
+// The user's Mac: while the Rendrr Mac app is open it says so every few seconds (macPing), with what it can render.
+// Renders are then made on that Mac (core/macRender.ts: the worker hands it the encode; routes/macRender.ts); a final
+// it makes is kept in its Downloads. A final the AI exports is also queued for it (queueMacExport): one made on the
+// cloud (the Mac could not take it) is collected as soon as it is done (macExports) and saved to Downloads; a claim
+// makes sure only one window saves it. With the app closed, renders run on Rendrr's cloud server and the AI's finals
+// go to Google Drive. renderWhere says where each render was made, wherever a render is shown.
 
 const ONLINE_S = 75; // the app pings every 20 s: three missed pings and it counts as closed
 const KEEP_S = 7 * 86400;
 const onKey = (userId: string) => `mac:on:${userId}`;
-const queueKey = (userId: string) => `mac:exports:${userId}`;
+const queueKey = macExportsKey;
 
-/** The Mac app is open (and signed in as this user); device: the Mac's name, when the app sends it. */
-export async function macPing(userId: string, version?: string, device?: string) {
-  await redis().set(onKey(userId), JSON.stringify({ at: Date.now(), version: (version || "").slice(0, 20), device: deviceName(device) }), "EX", ONLINE_S);
+/** What a ping says the Mac can render, kept only in a known shape (an older app sends none). */
+export function cleanRenderInfo(x: unknown): MacRenderInfo | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Record<string, unknown>;
+  if (Number(r.protocol) !== MAC_RENDER_PROTOCOL) return null;
+  const have = Array.isArray(r.have) ? r.have.filter((h): h is string => typeof h === "string" && /^[\w.-]{1,32}$/.test(h)).slice(0, 64) : [];
+  return { protocol: MAC_RENDER_PROTOCOL, ready: r.ready === true, enabled: r.enabled !== false, busy: r.busy === true, cpus: Math.max(1, Math.min(64, Math.round(Number(r.cpus) || 4))), have, ffmpeg: typeof r.ffmpeg === "string" ? r.ffmpeg.slice(0, 40) : null, why: typeof r.why === "string" ? r.why.slice(0, 200) : null };
+}
+
+/** The Mac app is open (and signed in as this user); device: the Mac's name, when the app sends it; render: what it can render. */
+export async function macPing(userId: string, version?: string, device?: string, render?: unknown) {
+  const info = cleanRenderInfo(render);
+  await redis().set(onKey(userId), JSON.stringify({ at: Date.now(), version: (version || "").slice(0, 20), device: deviceName(device), ...(info ? { render: info } : {}) }), "EX", ONLINE_S);
 }
 export async function macOnline(userId: string): Promise<boolean> {
   return !!(await redis().get(onKey(userId)).catch(() => null));
 }
-/** Whether the Mac app is open, on which Mac, and when it last said so. */
+/** Whether the Mac app is open, on which Mac, when it last said so, and whether renders are made on it. */
 export async function macStatus(userId: string): Promise<MacStatus> {
   const raw = await redis().get(onKey(userId)).catch(() => null);
-  if (!raw) return { online: false, device: null, version: null, seenAt: null };
-  try { const j = JSON.parse(raw) as { at?: number; version?: string; device?: string | null }; return { online: true, device: j.device || null, version: j.version || null, seenAt: j.at ?? null }; }
-  catch { return { online: true, device: null, version: null, seenAt: null }; }
+  if (!raw) return { online: false, device: null, version: null, seenAt: null, renders: false, why: null };
+  try {
+    const j = JSON.parse(raw) as { at?: number; version?: string; device?: string | null; render?: MacRenderInfo };
+    const r = j.render;
+    const renders = !!r && r.ready && r.enabled;
+    const why = renders ? null : !r ? "this Mac app cannot render yet: update it" : !r.enabled ? "rendering on the Mac is turned off in the Mac app" : r.why || "the Mac app is not ready to render";
+    return { online: true, device: j.device || null, version: j.version || null, seenAt: j.at ?? null, renders, why };
+  } catch { return { online: true, device: null, version: null, seenAt: null, renders: false, why: null }; }
 }
 
-/** Where a render is made (always Rendrr's cloud server) and where its file goes: the Mac app, Google Drive or a download. */
-export function renderWhere(r: Pick<Render, "delivery" | "driveSave">): RenderWhere {
+/**
+ * Where a render is (or was) made, the user's Mac or Rendrr's cloud server, and where its file goes: the Mac app,
+ * Google Drive or a download. live: its progress now (the Mac's name while the Mac app makes it).
+ */
+export function renderWhere(r: Pick<Render, "delivery" | "driveSave" | "made">, live?: Pick<RenderProgress, "on" | "device"> | null): RenderWhere {
+  const made = r.made && typeof r.made === "object" ? (r.made as { on?: string; device?: string | null }) : null;
+  const on: "mac" | "cloud" = made ? (made.on === "mac" ? "mac" : "cloud") : live?.on === "mac" ? "mac" : "cloud";
+  const madeOn = on === "mac" ? (made?.device ?? live?.device ?? null) : null;
   const mac = r.delivery && typeof r.delivery === "object" ? (r.delivery as { to?: string; device?: string | null; state?: string; at?: number }) : null;
   const drive = driveSaveOf(r);
   const delivery: Delivery = mac?.to === "mac"
     ? { to: "mac", device: mac.device || null, state: mac.state === "sent" ? "sent" : "waiting", folder: null, at: mac.at ?? null }
     : drive ? { to: "drive", device: null, state: null, folder: drive.path || null, at: null }
     : { to: "download", device: null, state: null, folder: null, at: null };
-  return { renders: "cloud", region: CLOUD_REGION, delivery };
+  return { renders: on, region: CLOUD_REGION, device: madeOn, delivery };
 }
 
 /** A final for the Mac app to save when it is done; the render remembers it goes to that Mac. */
