@@ -143,5 +143,5 @@ test("a run that fails is reported, with FFmpeg's reason", async () => {
   const r = await runTask(task({ commands: [{ args: ["-hide_banner", "-nostdin", "-y", "-i", "source", "-filter_complex_script", "__FILTER_SCRIPT__", "-map", "[vout]", "out.mp4"], graph: "[0:v]nosuchfilter[vout]" }] }), opts());
   assert.equal(r.ok, false);
   const failed = got.reports.filter((x) => x.what === "failed").at(-1);
-  assert.match(failed.body.error, /^the Mac could not render it: FFmpeg failed/);
+  assert.match(failed.body.error, /^the (Mac|PC) could not render it: FFmpeg failed/);
 });
