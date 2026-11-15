@@ -1445,3 +1445,11 @@ a switch. The render goes to that computer alone. A final made from an original 
 that computer. In the web app: Settings > Where renders run lists every computer (ready, rendering now, or why not)
 with "Ask each time / a computer / Rendrr's cloud server", and the Export window has "Render on". Needs the newest
 Mac or Windows app (it sends the computer's id). Details: docs/mac-render.md.
+
+## Log in with a code from email (15 November)
+
+The login window has "Log in with a code from email instead": type your email, get a code, type it, logged in (no
+password; only existing accounts; works inside the Mac and Windows apps too). Forgot password stays as it was (a reset
+email with a link and a code). Errors are said plainly: no account with that email, a wrong or expired code, too
+many emails, or an address Rendrr cannot email yet. Owner step (docs/supabase-auth.md step 7): Supabase only emails
+its own team until it sends through your own sender (Resend with rendrr.live), and the email templates need the code line.

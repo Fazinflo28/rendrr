@@ -27,6 +27,12 @@ export const lastSupaToken = () => last;
 /** Supabase's error, said for people. */
 export function supaMessage(e: unknown, fallback: string): string {
   const m = String((e as { message?: string })?.message || "");
+  const code = String((e as { code?: string })?.code || "");
+  // Email that could not go out: Supabase's built-in sender only mails its own team (until Rendrr's own email is set up).
+  if (code === "email_address_not_authorized" || /not authori[sz]ed/i.test(m)) return "Rendrr cannot email that address yet. Log in with your password or Google, or try again later.";
+  if (code === "over_email_send_rate_limit" || /email rate limit/i.test(m)) return "Too many emails were sent just now. Wait a few minutes and try again.";
+  // A login code for an email with no account (codes only log in; they never make an account).
+  if (code === "otp_disabled" || /signups not allowed for otp|user not found/i.test(m)) return "There is no Rendrr account with that email. Check the spelling, or sign up.";
   if (/invalid login credentials/i.test(m)) return "That email or password is not right. Used Rendrr before the new login? Click Forgot password to set one, or continue with Google.";
   if (/email not confirmed/i.test(m)) return "Confirm your email first: open the link we sent you.";
   if (/user already registered/i.test(m)) return "An account with that email already exists. Log in instead.";

@@ -52,6 +52,7 @@ if (SUPABASE_AUTH) setTokenSource(supaToken);
 const sbFail = (e: unknown, fallback: string, code?: string) => fail(supaMessage(e, fallback), code);
 const here = () => (typeof window !== "undefined" ? window.location.origin : "");
 let resetEmail = "";
+let codeEmail = ""; // the email a login code was sent to
 
 // ---------------- render: start, follow live progress, resolve with the result ----------------
 // A route the server does not have (it answers "That page does not exist."): the server is an older version.
@@ -193,6 +194,25 @@ export const api: any = {
       resetSignIn = await c.client.signIn.create({ strategy: "reset_password_email_code", identifier: email });
     } catch (e) { throw clerkMsg(e, "We could not send a reset code to that email."); }
     return { sent: true };
+  },
+  // Log in with a one-time code from email, no password (Supabase login only). Only an existing account: a code never
+  // makes one. The email also has a link that logs in this browser; the code works on any device.
+  codeLogin: SUPABASE_AUTH,
+  sendLoginCode: async (email: string) => {
+    if (!email?.trim()) throw fail("Enter your email and we will send a code.");
+    if (!SUPABASE_AUTH) throw fail("Email codes are not on yet. Log in with your password or Google.");
+    const { error } = await supa().auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: false, emailRedirectTo: here() + "/auth/callback" } });
+    if (error) throw sbFail(error, "We could not send a code. Try again.", "code");
+    codeEmail = email.trim();
+    return { sent: true };
+  },
+  loginWithCode: async (code: string) => {
+    if (!codeEmail) throw fail("Ask for a code first.");
+    const token = String(code || "").replace(/\s+/g, "");
+    if (!/^\d{6,10}$/.test(token)) throw fail("Enter the code from the email.");
+    const { error } = await supa().auth.verifyOtp({ email: codeEmail, token, type: "email" });
+    if (error) throw sbFail(error, "That code did not work. Check the email and try again.", "code");
+    return api.getProfile();
   },
   completeReset: async (code: string, password: string) => {
     if (SUPABASE_AUTH) {

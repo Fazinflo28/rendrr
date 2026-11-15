@@ -106,6 +106,21 @@ Object.assign(api, {
   login: track(api.login), signup: track(api.signup), loginWithGoogle: track(api.loginWithGoogle),
   logout: async () => { signedIn = false; return logout(); },
   hasSession: async () => signedIn,
+  // Log in with a code from email: the demo's code is 123456; any other email than the demo account has no account.
+  codeLogin: true,
+  sendLoginCode: async (email) => {
+    await wait(300);
+    if (!email?.trim()) throw Object.assign(new Error("Enter your email and we will send a code."), { friendly: true });
+    if (email.trim().toLowerCase() !== "you@example.com") throw Object.assign(new Error("There is no Rendrr account with that email. Check the spelling, or sign up."), { friendly: true });
+    globalThis.__demoCodeSentTo = email.trim(); globalThis.__demoCodesSent = (globalThis.__demoCodesSent || 0) + 1;
+    return { sent: true };
+  },
+  loginWithCode: async (code) => {
+    await wait(300);
+    if (!globalThis.__demoCodeSentTo) throw Object.assign(new Error("Ask for a code first."), { friendly: true });
+    if (String(code).replace(/\s+/g, "") !== "123456") throw Object.assign(new Error("That code has expired or is not right. Ask for a new one."), { friendly: true });
+    return track(api.login)("you@example.com", "x");
+  },
   completeReset: async (code, password) => {
     await wait(500);
     if (!code) throw Object.assign(new Error("Enter the code from the email."), { friendly: true });

@@ -14,7 +14,7 @@ const SHOWCASE = [["s1", "TALKING HEAD", "Punchy cuts, big captions, zero dead a
 const SOCIAL_ICON = { google: "M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.4Z M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22Z M6.4 14a6 6 0 0 1 0-3.9V7.5H3.1a10 10 0 0 0 0 9L6.4 14Z M12 5.9c1.5 0 2.8.5 3.8 1.5l2.8-2.8A10 10 0 0 0 3.1 7.5L6.4 10c.8-2.3 3-4.1 5.6-4.1Z", apple: "M16.4 12.6c0-2.4 2-3.6 2.1-3.7-1.1-1.7-2.9-1.9-3.5-1.9-1.5-.2-2.9.9-3.7.9-.8 0-1.9-.9-3.2-.8-1.6 0-3.1 1-4 2.4-1.7 3-.4 7.3 1.2 9.7.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.2-.8s1.9.8 3.2.8 2.1-1.2 2.9-2.4c.9-1.3 1.3-2.6 1.3-2.7 0 0-2.5-1-2.5-3.9ZM14 5.6c.7-.8 1.1-1.9 1-3-1 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1 2.9 1.1.1 2.2-.5 2.8-1.3Z", ms: "M3 3h8.5v8.5H3z M12.5 3H21v8.5h-8.5z M3 12.5h8.5V21H3z M12.5 12.5H21V21h-8.5z" };
 function LoginPage({ onClose, after, initialMode = "login" }) {
   const { setUser } = useApp();
-  const [mode, setMode] = useState(initialMode); // login | signup | reset
+  const [mode, setMode] = useState(initialMode); // login | signup | reset | code (log in with a code from email)
   const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [name, setName] = useState("");
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(null); const [sent, setSent] = useState(false); const [slide, setSlide] = useState(0);
   const [code, setCode] = useState(""); const [newPw, setNewPw] = useState("");
@@ -26,9 +26,12 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
   useEffect(() => { const k = (e) => e.key === "Escape" && onClose?.(); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
   useEffect(() => { const t = setInterval(() => setSlide((i) => (i + 1) % SHOWCASE.length), 4000); return () => clearInterval(t); }, []);
   // Reset is two steps with Clerk: the emailed code, then the code with a new password (which also logs you in).
-  const run = async (fn, done) => { setBusy(true); setErr(null); try { const u = await fn(); if (mode === "reset" && !done) setSent(true); else { setUser(u); if (after) after(u); else onClose?.(); } } catch (e) { setErr(e.message); } finally { setBusy(false); } };
-  const submit = (e) => { e.preventDefault(); if (mode === "reset") return sent ? run(() => api.completeReset(code, newPw), true) : run(() => api.sendReset(email)); run(() => (mode === "login" ? api.login(email, pw) : api.signup(name, email, pw))); };
-  const title = mode === "login" ? "Welcome back" : mode === "signup" ? "Welcome to Rendrr" : "Reset your password";
+  const to = (m) => { setMode(m); setErr(null); setSent(false); setCode(""); };
+  const run = async (fn, done) => { setBusy(true); setErr(null); try { const u = await fn(); if ((mode === "reset" || mode === "code") && !done) setSent(true); else { setUser(u); if (after) after(u); else onClose?.(); } } catch (e) { setErr(e.message); } finally { setBusy(false); } };
+  const submit = (e) => { e.preventDefault(); if (mode === "reset") return sent ? run(() => api.completeReset(code, newPw), true) : run(() => api.sendReset(email));
+    if (mode === "code") return sent ? run(() => api.loginWithCode(code), true) : run(() => api.sendLoginCode(email)); run(() => (mode === "login" ? api.login(email, pw) : api.signup(name, email, pw))); };
+  const title = mode === "login" ? "Welcome back" : mode === "signup" ? "Welcome to Rendrr" : mode === "code" ? "Log in with a code" : "Reset your password";
+  const inForm = mode === "login" || mode === "signup"; // Google, the app's browser login and the password
   const social = (label, icon) => html`<${Btn} kind="secondary" type="button" id=${icon === "google" ? "google" : undefined} disabled=${busy} onClick=${() => run(() => api.loginWithGoogle())}><svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d=${SOCIAL_ICON[icon]} /></svg>${label}<//>`;
   const sc = SHOWCASE[slide]; const st = sq.data?.find((x) => x.id === sc[0]);
   return html`<div class="scrim login-scrim" onMouseDown=${(e) => e.target === e.currentTarget && onClose?.()}>
@@ -43,8 +46,8 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
         <${Btn} kind="quiet" icon="x" id="login-close" aria-label="Close" type="button" onClick=${onClose} style="position:absolute;top:14px;right:14px;width:36px" />
         <div class="logo" style="padding:0;margin:0 auto 8px;justify-content:center"><${AppIcon} size=${56} /></div>
         <h1 class="t-title" style="text-align:center;font-size:28px;line-height:34px">${title}</h1>
-        <p class="muted" style="text-align:center;margin-bottom:6px">${mode === "login" ? html`Log in and keep editing. New here? <a href="#" onClick=${(e) => { e.preventDefault(); setMode("signup"); setErr(null); }}>Sign up</a>.` : mode === "signup" ? html`Sign up and edit for free. <a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); }}>Back to log in</a>` : html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); setSent(false); }}>Back to log in</a>`}</p>
-        ${mode !== "reset" && html`
+        <p class="muted" style="text-align:center;margin-bottom:6px">${mode === "login" ? html`Log in and keep editing. New here? <a href="#" onClick=${(e) => { e.preventDefault(); setMode("signup"); setErr(null); }}>Sign up</a>.` : mode === "signup" ? html`Sign up and edit for free. <a href="#" onClick=${(e) => { e.preventDefault(); setMode("login"); setErr(null); }}>Back to log in</a>` : html`${mode === "code" ? "We email you a code. No password needed. " : ""}<a href="#" id="back-to-login" onClick=${(e) => { e.preventDefault(); to("login"); }}>Back to log in</a>`}</p>
+        ${inForm && html`
           ${mode === "signup" && html`<div class="hpromo"><${Icon} name="spark" size="16" /> Sign up with work email and get 3 free renders</div>`}
           ${inApp ? html`<${Btn} kind="secondary" type="button" icon="globe" id="browser-login" disabled=${busy} onClick=${browserLogin}>Log in with your browser<//>
             ${bl?.link && html`<p class="bl-note" id="browser-login-wait">Click <b>Allow</b> in your browser. Rendrr logs in here by itself.<br />Browser did not open? <a href="#" id="browser-login-copy" onClick=${(e) => { e.preventDefault(); copyText(bl.link, toast); }}>Copy the link</a> and paste it into your browser.</p>`}
@@ -54,12 +57,16 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
           <div class="or">or</div>`}
         ${mode === "signup" && html`<${Field} label="Name" id="name"><input id="name" class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Ronnii K" /><//>`}
         <${Field} label="Work email" id="email"><input id="email" class="input" type="email" value=${email} onInput=${(e) => setEmail(e.target.value)} placeholder="name@company.com" autocomplete="email" /><//>
-        ${mode !== "reset" && html`<${Field} label="Password" id="password" hint=${mode === "login" ? html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("reset"); setErr(null); }}>Forgot password?</a>` : null}><input id="password" class="input" type="password" value=${pw} onInput=${(e) => setPw(e.target.value)} placeholder="••••••••" autocomplete="current-password" /><//>`}
+        ${inForm && html`<${Field} label="Password" id="password" hint=${mode === "login" ? html`<a href="#" onClick=${(e) => { e.preventDefault(); setMode("reset"); setErr(null); }}>Forgot password?</a>` : null}><input id="password" class="input" type="password" value=${pw} onInput=${(e) => setPw(e.target.value)} placeholder="••••••••" autocomplete="current-password" /><//>`}
+        ${mode === "login" && api.codeLogin && html`<button type="button" class="dlink t-small" id="code-login" style="justify-self:start;padding-left:4px" onClick=${() => to("code")}>Log in with a code from email instead</button>`}
         ${err && html`<p role="alert" class="t-small" style="padding-left:4px">${err}</p>`}
+        ${sent && mode === "code" && html`<div class="card flat" id="code-sent"><b>Check your inbox.</b><p class="muted t-small">We sent a code to ${email}. Type it below, or open the link in the email on this device.</p></div>
+        <${Field} label="Code" id="login-code"><input id="login-code" class="input" value=${code} onInput=${(e) => setCode(e.target.value)} placeholder="123456" autocomplete="one-time-code" inputmode="numeric" autoFocus /><//>
+        <p class="t-small muted" style="padding-left:4px">No email? Check spam, or <a href="#" id="code-resend" onClick=${(e) => { e.preventDefault(); setSent(false); run(() => api.sendLoginCode(email)); }}>send a new code</a>.</p>`}
         ${sent && mode === "reset" && html`<div class="card flat"><b>Check your inbox.</b><p class="muted t-small">${api.authProvider === "supabase" ? html`We sent an email to ${email}. Open its link to set a new password, or type its code below with your new password.` : html`We sent a reset code to ${email}. Type it below with your new password.`}</p></div>
         <${Field} label="Code" id="reset-code"><input id="reset-code" class="input" value=${code} onInput=${(e) => setCode(e.target.value)} placeholder="123456" autocomplete="one-time-code" inputmode="numeric" /><//>
         <${Field} label="New password" id="new-password"><input id="new-password" class="input" type="password" value=${newPw} onInput=${(e) => setNewPw(e.target.value)} placeholder="••••••••" autocomplete="new-password" /><//>`}
-        <${Btn} type="submit" id="submit" disabled=${busy}>${busy ? "One moment…" : mode === "reset" ? (sent ? "Set new password" : "Send reset code") : "Continue"}<//>
+        <${Btn} type="submit" id="submit" disabled=${busy}>${busy ? "One moment…" : mode === "reset" ? (sent ? "Set new password" : "Send reset code") : mode === "code" ? (sent ? "Log in" : "Email me a code") : "Continue"}<//>
         <p class="t-small muted" style="text-align:center;margin-top:4px">By continuing you agree to our <a href="#" onClick=${(e) => e.preventDefault()}>Terms</a> and <a href="#" onClick=${(e) => e.preventDefault()}>Privacy Policy</a>.</p>
       </form>
     </div>

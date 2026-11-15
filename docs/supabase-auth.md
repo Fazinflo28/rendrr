@@ -57,10 +57,19 @@ asymmetric one (ES256). The Claude/ChatGPT connector login needs it.
 - **Authorization path**: `/oauth/consent`
 - **Allow dynamic client registration**: on (Claude and ChatGPT register themselves).
 
-### 7. (Optional) Supabase > Authentication > Emails > Reset password
+### 7. Email that reaches everyone: your own sender, and codes in the emails
 
-Add a line `Your code: {{ .Token }}` to the template. Then the reset code also works inside the Mac app
-(the link works everywhere either way).
+Supabase's built-in email only delivers to members of your Supabase team (anyone else gets
+`email_address_not_authorized`) and only a few an hour. Reset emails and login codes need your own sender:
+
+1. Resend > Domains > Add `rendrr.live`, add the DNS records it shows at your domain host, wait for Verified.
+2. Resend > API Keys > create one with Sending access (copy it straight into the next step; do not paste it anywhere else).
+3. Supabase > Authentication > Emails > SMTP Settings > Enable custom SMTP: host `smtp.resend.com`, port `465`,
+   username `resend`, password the API key, sender `no-reply@rendrr.live`, name `Rendrr`.
+4. Supabase > Authentication > Rate Limits: raise "emails sent per hour" (for example to 100).
+5. Supabase > Authentication > Emails > Templates: in **Magic Link** and **Reset Password**, add a line
+   `Your code: {{ .Token }}`. The login window's "Log in with a code from email" and the reset code use it; the link in
+   the email still works too (in the same browser).
 
 ### 8. Flip the switch
 
