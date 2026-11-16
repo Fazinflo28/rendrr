@@ -69,7 +69,8 @@ export type AppProjectCard = {
   thumb: string | null; previewVersion: number | null; rendering: boolean; openComments: number;
 };
 /** A project (a folder of edits, one per client or campaign) on the app's first page. */
-export type AppFolderCard = { id: string; name: string; edits: number; updated: number; thumb: string | null; aspect: string | null; openComments: number; rendering: boolean };
+/** thumb: the newest video's picture; thumbs: the newest videos' pictures, up to 4 (the card shows them as a grid). */
+export type AppFolderCard = { id: string; name: string; edits: number; updated: number; thumb: string | null; thumbs?: string[]; aspect: string | null; openComments: number; rendering: boolean };
 /** folders: every project of the user (sent with the first page); folder: the project the edits are of, when one was asked for. */
 export type AppProjectsPage = { projects: AppProjectCard[]; total: number; offset: number; folders?: AppFolderCard[]; folder?: { id: string; name: string } | null };
 /** Samples (render_samples): a few frames and short clips of an edit, shown as a storyboard to ask changes on. */

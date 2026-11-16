@@ -1463,3 +1463,10 @@ marked deleted; `restore: true` brings them back. `permanent: true` deletes for 
 element in edits, a project folder with edits) is named and left alone unless `force: true`. `trash: "list"` and
 `"empty"`. The web app's video delete uses the same code (`apps/api/src/services/deleting.ts`). Test:
 `apps/api/test/delete-items.test.ts`.
+
+## Project cards show their videos (16 November)
+
+On the Projects page each project's card shows the pictures of its newest edits (the latest render's first frame, else
+the footage's): one fills the card, two side by side, three or four as a 2x2 grid, never more than four, with the name on
+a shade at the bottom. A project with no edits keeps its grey cover. The Claude card's project cards do the same.
+Tests: `apps/web/demo/project-cards.mjs`, `apps/api/test/folder-cards.test.ts`, `apps/mcp/test/app-browser.mjs`.

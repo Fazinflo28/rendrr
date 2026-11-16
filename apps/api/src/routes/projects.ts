@@ -44,9 +44,15 @@ export default async function projects(app: FastifyInstance) {
     if ((req.query as { lite?: string }).lite) return fs.map((f) => ({ id: f.id, name: f.name }));
     const counts = await prisma.project.groupBy({ by: ["folderId"], where: { userId, deletedAt: null }, _count: true });
     const reviews = await prisma.review.findMany({ where: { userId }, select: { folderId: true, projectId: true, project: { select: { folderId: true } } } });
+    // The card's pictures: the newest edits' (their latest render's first frame, else their footage's), up to 4 per project.
+    const edits = await prisma.project.findMany({ where: { userId, deletedAt: null }, orderBy: { updatedAt: "desc" }, select: { id: true, folderId: true, videoId: true } });
+    const newest = new Map<string, typeof edits>();
+    for (const e of edits) { const l = newest.get(e.folderId) ?? []; if (l.length < 8) { l.push(e); newest.set(e.folderId, l); } }
+    const pics = await editThumbs([...newest.values()].flat());
     return fs.map((f) => folderOut(f, {
       count: counts.find((c) => c.folderId === f.id)?._count ?? 0,
       shares: reviews.filter((r) => r.folderId === f.id || r.project?.folderId === f.id).length,
+      thumbs: (newest.get(f.id) ?? []).map((e) => pics.get(e.id)).filter((u): u is string => !!u).slice(0, 4),
     }));
   });
 

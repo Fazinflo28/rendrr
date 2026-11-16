@@ -49,7 +49,7 @@ const M = `http://127.0.0.1:${media.address().port}`;
 const now = Date.now();
 const db = {
   folders: [
-    { id: "f1", name: "Spine clinic", edits: 2, updated: now - 3600e3, thumb: `${M}/thumb.jpg?X-Amz-Credential=tid%2F20261029%2Fiad&X-Amz-Signature=a`, aspect: "9:16", openComments: 1, rendering: false },
+    { id: "f1", name: "Spine clinic", edits: 2, updated: now - 3600e3, thumb: `${M}/thumb.jpg?X-Amz-Credential=tid%2F20261029%2Fiad&X-Amz-Signature=a`, thumbs: [`${M}/thumb.jpg?X-Amz-Credential=tid%2F20261029%2Fiad&X-Amz-Signature=a`, `${M}/thumb.jpg?X-Amz-Credential=tid%2F20261029%2Fiad&X-Amz-Signature=b`, `${M}/thumb.jpg?X-Amz-Credential=tid%2F20261029%2Fiad&X-Amz-Signature=c`], aspect: "9:16", openComments: 1, rendering: false },
     { id: "f2", name: "New client", edits: 0, updated: now - 86400e3 * 5, thumb: null, aspect: null, openComments: 0, rendering: false },
   ],
   projects: [
@@ -164,6 +164,7 @@ check((await app.locator(".card.proj").count()) === 2 && !(await app.locator("[d
 const f1Text = await app.locator('[data-folder="f1"]').innerText();
 check(/Spine clinic/.test(f1Text) && /2 videos/.test(f1Text) && /1 open comment/.test(f1Text), `a project card names it, counts its videos and open comments (${f1Text.replace(/\s+/g, " ")})`);
 check(/0 videos/.test(await app.locator('[data-folder="f2"]').innerText()) && /No videos yet/.test(await app.locator('[data-folder="f2"]').innerText()), "an empty project says so");
+check((await app.locator('[data-folder="f1"] .pics.n3 img').count()) === 3 && (await app.locator('[data-folder="f2"] .pics img').count()) === 0, "a project card shows its newest videos' pictures as a grid (3 here); an empty one has none");
 await app.locator('[data-folder="f1"]').click();
 await app.locator("[data-edit]").first().waitFor({ timeout: 5000 });
 check(calls.some((c) => c.name === "app_list_projects" && c.args.folderId === "f1") && /Spine clinic/i.test(await app.locator("#list-title").innerText()), "opening a project asks Rendrr for its videos and names it");

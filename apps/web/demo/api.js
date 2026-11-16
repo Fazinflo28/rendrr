@@ -499,6 +499,15 @@ Object.assign(api, {
   oauthDecide: async (id, allow) => { (globalThis.__demoOAuthDecisions ||= []).push({ id, allow }); return { redirect_url: (globalThis.__demoOAuth?.redirect || "https://claude.ai/api/mcp/auth_callback") + (allow ? "?code=demo" : "?error=access_denied") }; },
 });
 
+// Project cards show their newest edits' pictures (the server sends up to 4 per project): drawn frames here, a different
+// number per project so a test sees one, two, three and four; a project with no edits keeps its grey cover.
+const listFolders0 = api.listFolders;
+const demoPic = (seed) => { const hue = (seed * 67) % 360; return "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="90" height="160" viewBox="0 0 90 160"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${hue},45%,58%)"/><stop offset="1" stop-color="hsl(${(hue + 40) % 360},40%,22%)"/></linearGradient></defs><rect width="90" height="160" fill="url(#g)"/><circle cx="45" cy="62" r="20" fill="rgba(255,255,255,.55)"/><rect x="18" y="92" width="54" height="60" rx="26" fill="rgba(255,255,255,.4)"/></svg>`); };
+api.listFolders = async (...a) => (await listFolders0(...a)).map((f, i) => {
+  const n = globalThis.__demoFolderPics ? globalThis.__demoFolderPics[i % globalThis.__demoFolderPics.length] : Math.min(f.count || 0, 4);
+  return { ...f, thumbs: Array.from({ length: Math.min(n, 4) }, (_, k) => demoPic(i * 5 + k + 1)) };
+});
+
 export { api };
 export const API_BASE = "";
 

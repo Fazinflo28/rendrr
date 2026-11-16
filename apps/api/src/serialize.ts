@@ -35,7 +35,7 @@ export function styleOut(s: Style) {
   return { id: s.id, name: s.name, type: s.type, vibe: s.vibe, ori: s.ori, platforms: s.platforms, captionLook: s.captionLook, cutPace: s.cutPace, captionRule: s.captionRule, zoomRules: s.zoomRules, musicVibe: s.musicVibe, art: s.art, rules: s.rules, mine: !!s.ownerId };
 }
 
-export function folderOut(f: Folder, extra: { count?: number; shares?: number } = {}) {
+export function folderOut(f: Folder, extra: { count?: number; shares?: number; thumbs?: string[] } = {}) {
   return { id: f.id, name: f.name, workspace: f.workspace, cover: f.cover, members: f.members, updated: f.updatedAt.getTime(), ...extra };
 }
 

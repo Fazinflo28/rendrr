@@ -43,8 +43,11 @@ export async function appFolders(userId: string): Promise<AppFolderCard[]> {
   for (const r of running) { const f = by.get(folderOf.get(r.projectId) ?? ""); if (f) f.rendering = true; }
   const cards = await Promise.all([...by.values()].map(async ({ f, edits: es, open, rendering }) => {
     const newest = es[0];
+    // Up to 4 of the newest videos' pictures (one per footage: two edits of the same video show it once).
+    const keys = [...new Set(es.map((e) => e.video?.thumbKey).filter((k): k is string => !!k))].slice(0, 4);
+    const thumbs = await Promise.all(keys.map((k) => signGet(k, LINK_SECONDS)));
     return { id: f.id, name: f.name, edits: es.length, updated: Math.max(f.updatedAt.getTime(), newest?.updatedAt.getTime() ?? 0), aspect: newest?.aspect ?? null,
-      thumb: newest?.video?.thumbKey ? await signGet(newest.video.thumbKey, LINK_SECONDS) : null, openComments: open, rendering };
+      thumb: newest?.video?.thumbKey ? await signGet(newest.video.thumbKey, LINK_SECONDS) : null, thumbs, openComments: open, rendering };
   }));
   return cards.sort((a, b) => b.updated - a.updated);
 }
