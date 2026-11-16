@@ -1453,3 +1453,13 @@ password; only existing accounts; works inside the Mac and Windows apps too). Fo
 email with a link and a code). Errors are said plainly: no account with that email, a wrong or expired code, too
 many emails, or an address Rendrr cannot email yet. Owner step (docs/supabase-auth.md step 7): Supabase only emails
 its own team until it sends through your own sender (Resend with rendrr.live), and the email templates need the code line.
+
+## Claude can delete and restore (16 November)
+
+New connector tool `delete_items` (marked as deleting to the AI app): footage (videos and pictures), edits, project
+folders, library folders, elements, audio, fonts, LUTs and saved styles, several at once, only when the user asks.
+Footage, elements and audio go to the Trash first (Assets > Trash, 30 days; edits using them keep working) and edits are
+marked deleted; `restore: true` brings them back. `permanent: true` deletes for good; anything in use (footage or an
+element in edits, a project folder with edits) is named and left alone unless `force: true`. `trash: "list"` and
+`"empty"`. The web app's video delete uses the same code (`apps/api/src/services/deleting.ts`). Test:
+`apps/api/test/delete-items.test.ts`.

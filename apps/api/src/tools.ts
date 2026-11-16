@@ -16,6 +16,7 @@ import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
 import { lutSource, lutsText, lutUploadLink, resolveLutRefs, saveLut } from "./services/luts";
 import { renderResult, renderStatus, startRender } from "./services/render";
 import { macStatus, pickTarget, queueMacExport, renderWhere } from "./services/macExport";
+import { deleteItems, emptyTrash, restoreItems, trashList } from "./services/deleting";
 import { pendingLine, sentLines } from "./services/handoff";
 import { elementFromSource, elementsText, elementText } from "./services/elements";
 import { redeemLinkCode } from "./services/logins";
@@ -1185,6 +1186,23 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     if (!r || r.userId !== c.userId || r.kind !== "sample") throw notFound("Those samples do not exist.");
     if (i.wait_seconds) await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id }, select: { status: true } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, Math.min(120, i.wait_seconds) * 1000, 1000);
     return samplesAnswer(c.userId, r.id, i.images !== false);
+  },
+  // Deleting and restoring the user's things (services/deleting.ts): the Trash first, for good only when asked.
+  async delete_items(c, i) {
+    if (i.trash === "list") {
+      const t = await trashList(c.userId);
+      if (!t.length) return { text: "The Trash is empty." };
+      return { text: `In the Trash (${t.length}):\n${t.map((x) => `- ${x.what} "${x.name}" (kind ${x.kind}, id ${x.id})${x.daysLeft != null ? `: ${x.daysLeft} days left` : ": deleted edit"}`).join("\n")}\nrestore: true with these items brings them back.`, data: { trash: t } };
+    }
+    if (i.trash === "empty") {
+      const r = await emptyTrash(c.userId);
+      return { text: `Trash emptied: ${r.deleted} ${r.deleted === 1 ? "item" : "items"} deleted for good.${r.kept.length ? ` Kept, because edits still use them: ${r.kept.map((k) => `"${k.name}" (in ${k.edits.slice(0, 3).map((e) => `"${e}"`).join(", ")})`).join("; ")}.` : ""}`, data: r };
+    }
+    const items = i.items ?? [];
+    if (!items.length) return { text: "Nothing to do: pass items ({ kind, id }), or trash: \"list\" / \"empty\"." };
+    const out = i.restore ? await restoreItems(c.userId, items) : await deleteItems(c.userId, items, { permanent: i.permanent, force: i.force });
+    const done = out.filter((x) => x.done).length;
+    return { text: `${i.restore ? "Restored" : "Deleted"} ${done} of ${out.length}:\n${out.map((x) => `- ${x.text}`).join("\n")}`, data: { results: out } };
   },
   async render_final(c, i) {
     // Where the final goes: the user's Mac when the Rendrr Mac app is open (made there when it can render, and saved to

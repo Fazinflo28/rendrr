@@ -77,7 +77,7 @@ export function buildServer(w: Who, base = process.env.PUBLIC_MCP_URL || "") {
       description: def.description,
       // Strict: a field the tool does not have is an error the AI sees (it was dropped silently, e.g. "ops" for "edits").
       inputSchema: def.input.strict(),
-      annotations: { readOnlyHint: !def.write && !def.long, destructiveHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: !def.write && !def.long, destructiveHint: !!def.destructive, openWorldHint: false },
       ...(metaOf(def) ? { _meta: metaOf(def) } : {}),
     }, async (args: Record<string, unknown>, extra) => {
       // Long tools (renders, graphics) keep the client's timeout alive with progress notifications.

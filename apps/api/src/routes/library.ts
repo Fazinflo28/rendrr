@@ -11,6 +11,7 @@ import { deviceIdOf } from "../services/macExport";
 import { DRIVE_SYNC_FRESH_MS, driveConn, folderNamed, importDriveFolder, linkDriveFile, rememberRemoved, syncDriveFolder, syncStaleDriveFolders } from "../services/driveLibrary";
 import { createLibraryFolder, deleteLibraryFolder, folderTree, libraryFolderFull, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, updateLibraryFolder } from "../services/libraryFolders";
 import { assertMayAddFootage } from "../services/billing";
+import { deleteVideoForGood } from "../services/deleting";
 
 /** The folder new videos go in: the user's own, or none. */
 async function intoFolder(userId: string, id?: string | null): Promise<string | null> {
@@ -181,23 +182,7 @@ export default async function library(app: FastifyInstance) {
     // ?edits=delete: the edits made from it go too (the app asks first, naming them). Without it, footage in use stays.
     a.delete("/videos/:id", async (req) => {
       const v = await ownedVideo(req.user!.id, (req.params as { id: string }).id);
-      // Edits made from it, and edits that play it on V1 (one of the parts of a several-video edit, an added clip).
-      const onV1 = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Project" WHERE "userId" = ${v.userId} AND "deletedAt" IS NULL AND jsonb_path_exists(timeline, '$.tracks.v1[*] ? (@.sourceVideoId == $vid)', jsonb_build_object('vid', ${v.id}::text))`;
-      const edits = await prisma.project.findMany({ where: { OR: [{ videoId: v.id }, { id: { in: onV1.map((r) => r.id) } }], deletedAt: null }, select: { id: true, name: true }, orderBy: { updatedAt: "desc" } });
-      if (edits.length && (req.query as { edits?: string }).edits !== "delete") {
-        const names = edits.slice(0, 5).map((p) => `"${p.name}"`).join(", ") + (edits.length > 5 ? ` and ${edits.length - 5} more` : "");
-        throw new AppError(`"${v.name}" is used by ${edits.length} ${edits.length === 1 ? "edit" : "edits"}: ${names}. Deleting it deletes ${edits.length === 1 ? "that edit" : "those edits"} too.`, 409, "in-use");
-      }
-      if (edits.length) await prisma.project.updateMany({ where: { id: { in: edits.map((p) => p.id) } }, data: { deletedAt: new Date() } });
-      const an = await prisma.footageAnalysis.findUnique({ where: { videoId: v.id } });
-      // Footage brought in from the chat: Rendrr kept its raw, so that goes too.
-      await deleteObjects([v.proxyKey, v.audioKey, v.thumbKey, v.source === "upload" ? v.sourceKey : null, ...(((an?.keyFrames as { key: string }[]) || []).map((k) => k.key))]);
-      await deletePrefix(framesPrefix(v)); // key frames, contact sheets, frames taken for the AI
-      await purgeProjectFiles({ videoId: v.id, deletedAt: { not: null } });
-      await prisma.project.deleteMany({ where: { videoId: v.id, deletedAt: { not: null } } });
-      await prisma.video.delete({ where: { id: v.id } });
-      // From a Drive folder the Library syncs with: the sync must not link it again (it is still in the Drive folder).
-      if (v.source === "drive") await rememberRemoved(v.userId, v.driveFileId);
+      await deleteVideoForGood(v, (req.query as { edits?: string }).edits === "delete");
       return { ok: true };
     });
 
