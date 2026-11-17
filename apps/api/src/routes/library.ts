@@ -337,15 +337,19 @@ export default async function library(app: FastifyInstance) {
       const real = c && !c.stub ? c : null;
       // saveAnywhere: Google lets Rendrr add files to the user's own folders (finals saved where they say), not only to
       // folders Rendrr made.
-      return { connected: !!real, email: real?.googleEmail || null, stub: false, available: features().drive, saveAnywhere: !!real && drive.canSaveAnywhere(real.scopes) };
+      return { connected: !!real, email: real?.googleEmail || null, stub: false, available: features().drive, saveAnywhere: !!real && drive.canSaveAnywhere(real.scopes), photos: !!real && drive.canPickPhotos(real.scopes) };
     });
     a.post("/drive/connect", async (req) => {
       const userId = req.user!.id;
       if (features().drive) {
         const origin = webOrigin(req);
         if (!origin) throw new AppError("Open Rendrr from its own address to connect Google Drive.", 400, "drive");
-        // write: also ask to add files to the user's own folders (saving finals where they say in their Drive).
-        return { connected: false, authUrl: drive.authUrl(signState(userId, origin), (req.body as { write?: unknown } | undefined)?.write === true) };
+        // write: also ask to add files to the user's own folders (saving finals where they say in their Drive);
+        // photos: also ask to choose from Google Photos. What was allowed before is kept (include_granted_scopes).
+        const b = (req.body || {}) as { write?: unknown; photos?: unknown };
+        const had = await prisma.driveConnection.findUnique({ where: { userId } });
+        const keep = had && !had.stub ? had.scopes : "";
+        return { connected: false, authUrl: drive.authUrl(signState(userId, origin), { write: b.write === true || drive.canSaveAnywhere(keep), photos: b.photos === true || drive.canPickPhotos(keep) }) };
       }
       // TODO(key): GOOGLE_CLIENT_ID/SECRET unset. No fake Drive: the user is told Drive is not set up yet.
       throw new AppError(DRIVE_OFF, 409, "drive-off");

@@ -1,9 +1,10 @@
 // The page the user opens from their AI's link (/add/<pick>): add the videos and pictures the AI asked for, from this
-// computer (any size: a video stays here, its preview is made in this tab). What arrives is told to the AI (it reads it
+// computer (any size: a video stays here, its preview is made in this tab), their Dropbox or their Google Photos. What
+// arrives is told to the AI (it reads it
 // with add_footage pickId) and goes in the edit it asked for. A link made for another account says so and takes nothing.
 import { useState, useEffect, useRef, html, Icon, Btn, StatusChip, EmptyState, useToast } from "./ui";
 import { api } from "./api";
-import { DropboxPanel } from "./cloudSources";
+import { DropboxPanel, GooglePhotosPanel } from "./cloudSources";
 
 const isImage = (f) => /^image\//.test(f.type || "") || /\.(png|jpe?g|webp|gif)$/i.test(f.name || "");
 const isVideo = (f) => /^video\//.test(f.type || "") || /\.(mp4|mov|m4v|webm|mkv|avi|mts|m2ts|3gp|wmv|mpg|mpeg)$/i.test(f.name || "");
@@ -46,8 +47,9 @@ export function AddPickPage({ id }) {
   if (view.expired && !view.videos.length) return html`<div class="page"><${EmptyState} icon="clock" title="This link has expired" text=${`Ask ${ai} for a new one.`} /></div>`;
   return html`<div class="page add-pick" id="add-pick">
     <h1 class="t-title">Add files for ${ai}</h1>
-    <p class="muted" id="pick-for">${ai} asked for videos or pictures from ${view.source === "dropbox" ? "your Dropbox" : "this computer"}${view.project ? html`, for the edit <b>${view.project.name}</b>` : ""}.</p>
+    <p class="muted" id="pick-for">${ai} asked for videos or pictures from ${{ dropbox: "your Dropbox", google_photos: "your Google Photos" }[view.source] || "this computer"}${view.project ? html`, for the edit <b>${view.project.name}</b>` : ""}.</p>
     ${!view.expired && !view.done && view.source === "dropbox" && html`<div style="margin-top:16px"><${DropboxPanel} pickId=${id} onArrived=${() => load()} /></div>`}
+    ${!view.expired && !view.done && view.source === "google_photos" && html`<div style="margin-top:16px"><${GooglePhotosPanel} pickId=${id} onArrived=${() => load()} /></div>`}
     ${!view.expired && !view.done && view.source === "computer" && html`
       <input type="file" accept="video/*,image/*" multiple ref=${fileRef} class="hide" id="pick-input" onChange=${(e) => { add(e.target.files); e.target.value = ""; }} />
       <div class=${"drop" + (over ? " over" : "")} id="pick-drop" style="padding:40px 24px;margin-top:16px" onClick=${() => !busy && fileRef.current.click()}
@@ -56,7 +58,7 @@ export function AddPickPage({ id }) {
         <p class="t-small muted">Any size. A video stays on this computer: Rendrr makes a light preview here.</p>
         <div class="row" style="gap:8px"><${Btn} id="pick-choose" disabled=${busy} onClick=${(e) => { e.stopPropagation(); fileRef.current.click(); }}>Choose files<//></div>
       </div>`}
-    ${view.videos.length > 0 && view.source !== "dropbox" && html`<div class="col" id="pick-list" style="gap:8px;margin-top:20px">
+    ${view.videos.length > 0 && view.source === "computer" && html`<div class="col" id="pick-list" style="gap:8px;margin-top:20px">
       <b class="t-label">${view.videos.length} ${view.videos.length === 1 ? "file" : "files"} added</b>
       ${view.videos.map((v) => html`<div key=${v.id} class="row between card flat" data-pick-video=${v.id} style="gap:10px;padding:10px 14px"><span class="row" style="gap:8px;min-width:0"><${Icon} name=${v.still ? "image" : "film"} size="16" /><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v.name}</span></span><${StatusChip} status=${v.status} /></div>`)}
     </div>`}

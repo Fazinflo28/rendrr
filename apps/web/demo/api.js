@@ -533,10 +533,35 @@ const pickOf = (id) => {
 const pickView = async (p) => {
   const videos = [];
   for (const id of p.ids) { const v = await api.getVideo(id).catch(() => null); videos.push(v ? { id, name: v.name, status: v.status === "ready" || !v.status ? "ready" : v.status, still: !!v.still } : { id, name: globalThis.__demoPickNames?.[id] || "Picture", status: "ready", still: true }); }
-  const { ids, ...rest } = p; return { ...rest, videos };
+  const { ids, ...rest } = p; return { ...rest, videos, ...(p.source === "google_photos" ? { photosReady: !!globalThis.__demoPhotosOk } : {}) };
 };
+// Google Photos: the test says when the user has "chosen" (__demoPhotosChosen: file names; one named "processing" fails)
+// or when the choice expired (__demoPhotosExpire); looking at the pick then brings them in, as Rendrr asking Google does.
+let photoSessions = 0;
+const photosLook = (p) => {
+  const ph = p.photos, chosen = globalThis.__demoPhotosChosen;
+  if (!ph || ph.imported || ph.error) return;
+  if (globalThis.__demoPhotosExpire) { ph.error = "That Google Photos choice has expired. Choose again."; globalThis.__demoPhotosExpire = false; return; }
+  if (!chosen) return;
+  ph.imported = true; p.pending = (p.pending || 0) + chosen.length; p.errors ||= [];
+  chosen.forEach((name, k) => setTimeout(async () => {
+    if (/processing/i.test(name)) p.errors.push({ name, message: "Google Photos is still processing this video: add it again in a few minutes." });
+    else { const [v] = await api.addFromComputer([new File([new Uint8Array(4096)], /\.\w+$/.test(name) ? name : name + ".mp4", { type: "video/mp4" })]); p.ids.push(v.id); }
+    p.pending = Math.max(0, p.pending - 1);
+  }, 500 + k * 300));
+};
+const driveStatus0 = api.getDriveStatus, connectDrive0 = api.connectDrive;
 Object.assign(api, {
-  getPick: async (id) => { await wait(150); return pickView(pickOf(id)); },
+  getDriveStatus: async () => ({ ...(await driveStatus0()), photos: !!globalThis.__demoPhotosOk }),
+  connectDrive: async (write, photos) => { const d = await connectDrive0(write); if (photos) globalThis.__demoPhotosOk = true; return { ...d, photos: !!globalThis.__demoPhotosOk }; },
+  startPhotos: async (id) => {
+    await wait(200);
+    const p = pickOf(id);
+    if (!globalThis.__demoPhotosOk) throw Object.assign(new Error("Connect Google Photos in Rendrr first (the Google Photos tab asks for it once)."), { code: "photos-connect", friendly: true });
+    if (!p.photos || p.photos.imported || p.photos.error) { p.photos = { pickerUri: `https://photos.google.com/picker/demo${++photoSessions}`, imported: false, error: null }; globalThis.__demoPhotosChosen = null; }
+    return pickView(p);
+  },
+  getPick: async (id) => { await wait(150); const p = pickOf(id); photosLook(p); return pickView(p); },
   reportPick: async (id, videoIds) => { const p = pickOf(id); for (const v of videoIds) if (!p.ids.includes(v)) p.ids.push(v); (globalThis.__demoPickReports ||= []).push(videoIds); return pickView(p); },
   finishPick: async (id) => { const p = pickOf(id); p.done = true; return pickView(p); },
   // The Library's and the editor's Dropbox tab make their own pick; links come in after a moment (a folder link fails).

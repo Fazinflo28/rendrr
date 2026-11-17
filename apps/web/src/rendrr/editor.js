@@ -18,7 +18,7 @@ function linkified(text) {
 }
 import { CreateLinkModal, DrivePicker } from "./screens";
 import { api } from "./api";
-import { DropboxPanel } from "./cloudSources";
+import { DropboxPanel, GooglePhotosPanel } from "./cloudSources";
 import { OpColor, OpSlider } from "./controls";
 import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./color";
 import { MulticamTab } from "./multicam";
@@ -892,6 +892,8 @@ function AddClipModal({ main, at, onAdd, onClose, waiting = false }) {
   const toggle = (id) => setIds((xs) => (xs.includes(id) ? xs.filter((i) => i !== id) : [...xs, id]));
   const pickAll = (vs) => setIds((xs) => [...xs, ...vs.map((x) => x.id).filter((id) => !xs.includes(id))]);
   // New footage: picked at once, and the Library shows it while it is prepared.
+  // From Dropbox or Google Photos: picked as they arrive, without leaving the tab (more may still be coming).
+  const cloudArrived = (vs) => { setExtra((e) => [...e, ...vs]); pickAll(vs); window.dispatchEvent(new Event("rendrr:library")); };
   const added = (vs) => { if (!vs?.length) return; setExtra((e) => [...e, ...vs]); pickAll(vs); setSrc("library"); setCur(null); window.dispatchEvent(new Event("rendrr:library")); };
   const fromDrive = async (fileIds) => { setBusy(true); try { added(await api.addFromDrive(fileIds)); } catch (e) { toast(e.message, { icon: "alert" }); } finally { setBusy(false); } };
   const fromFiles = async (files) => { if (!files?.length) return; setBusy(true); try { added(await api.addFromComputer(files)); } catch (e) { toast(e.message, { icon: "alert" }); } finally { setBusy(false); } };
@@ -925,8 +927,9 @@ function AddClipModal({ main, at, onAdd, onClose, waiting = false }) {
     <div class="col" style="gap:12px" id="add-clip-form">
       ${!waiting && html`<div class="row" style="gap:12px">${[["whole", "Whole videos"], ["part", "A part of a video"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-mode" data-mode=${k} checked=${mode === k} onChange=${() => setMode(k)} />${l}</label>`)}</div>`}
       ${mode === "whole" ? html`
-      <div class="add-tabs" role="tablist" aria-label="Where from">${[["library", "Library", "library"], ["drive", "Google Drive", "drive"], ["local", "This computer", "laptop"], ["dropbox", "Dropbox", "folder"]].map(([k, l, ic]) => html`<button key=${k} type="button" role="tab" id=${"add-src-" + k} aria-selected=${src === k} class=${src === k ? "on" : ""} onClick=${() => setSrc(k)}><${Icon} name=${ic} size="15" />${l}</button>`)}</div>
-      ${src === "dropbox" ? html`<div id="add-dropbox"><${DropboxPanel} onArrived=${(vs) => { setExtra((e) => [...e, ...vs]); pickAll(vs); window.dispatchEvent(new Event("rendrr:library")); }} /></div>`
+      <div class="add-tabs" role="tablist" aria-label="Where from">${[["library", "Library", "library"], ["drive", "Google Drive", "drive"], ["local", "This computer", "laptop"], ["dropbox", "Dropbox", "folder"], ["gphotos", "Google Photos", "image"]].map(([k, l, ic]) => html`<button key=${k} type="button" role="tab" id=${"add-src-" + k} aria-selected=${src === k} class=${src === k ? "on" : ""} onClick=${() => setSrc(k)}><${Icon} name=${ic} size="15" />${l}</button>`)}</div>
+      ${src === "dropbox" ? html`<div id="add-dropbox"><${DropboxPanel} onArrived=${cloudArrived} /></div>`
+      : src === "gphotos" ? html`<div id="add-gphotos"><${GooglePhotosPanel} onArrived=${cloudArrived} /></div>`
       : src === "drive" ? html`<div id="add-drive"><${DrivePicker} addLabel="Add these videos" onAdd=${fromDrive} onLocal=${() => setSrc("local")} /></div>`
       : src === "local" ? html`<div class="col" style="gap:12px" id="add-local">
           <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) fromFiles(Array.from(fs)); e.target.value = ""; }} />

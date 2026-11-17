@@ -142,6 +142,20 @@ export async function footageFromSource(userId: string, i: { url?: string; drive
   } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
 }
 
+/**
+ * A file another service hands over with its own sign-in (Google Photos: the file's link plus the user's Google token,
+ * sent to the first address only): downloaded and kept as an upload, like a share link.
+ */
+export async function footageFromDownload(userId: string, src: { url: string; headers?: Record<string, string>; name: string }, i: FootageOpts): Promise<Video> {
+  const dir = await mkdtemp(join(tmpdir(), "footage-"));
+  const path = join(dir, "src");
+  try {
+    const got = await fetchPublicTo(src.url, path, { max: FOOTAGE_UPLOAD_MAX_BYTES, what: "footage", code: "bad-footage", timeoutMs: 20 * 60_000, headers: src.headers });
+    if (/^text\/html/i.test(got.type)) throw err("That gave a web page, not a video or a picture.");
+    return await keepFootage(userId, path, src.name || got.name || "Video", i);
+  } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
+}
+
 /** A Dropbox folder share link (with dl=1 Dropbox sends the whole folder as a zip, which is not a video). */
 export function isDropboxFolder(url: string): boolean {
   try { const u = new URL(url); return /(^|\.)dropbox\.com$/.test(u.hostname) && /^\/(scl\/fo|sh)\//.test(u.pathname); } catch { return false; }

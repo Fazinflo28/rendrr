@@ -1532,3 +1532,23 @@ arrives goes in the library, is picked in Add clips, and goes in the edit when t
 **Owner step for the Dropbox window (the link box works without it):** create an app at dropbox.com/developers (Chooser),
 add `app.rendrr.live` to its Chooser domains, and set its app key (public, not a secret) as
 `NEXT_PUBLIC_DROPBOX_APP_KEY` on the web service.
+
+## Videos and pictures from Google Photos (17 November)
+
+The Library's Add footage window, the editor's Add clips window and the page an AI's link opens
+(`add_footage from: "google_photos"`) each have a Google Photos tab, through Google's Photos Picker API: Rendrr sees
+only what the user chooses. The first time, the tab asks to connect Google Photos (the Google sign-in Rendrr already
+uses for Drive, with one more permission; Drive's own permissions are always kept). Then Choose from Google Photos opens
+Google Photos' own page (a window opened on the click, so browsers do not block it; in the Mac or Windows app, in the
+browser). Rendrr asks Google whether the user is done, no more often than Google says, and both the page and the AI's
+`add_footage pickId` ask, so closing Rendrr right after choosing still works. What was chosen is brought in once, two
+at a time, each with the user's Google token: a photo as a JPEG at its own size (so an iPhone HEIC comes in too), a video
+as its file. A video Google is still processing says so; a file link Google refuses (they last about an hour) is fetched
+again from a fresh listing; an expired choice says so and offers to choose again. Code:
+`apps/api/src/services/googlePhotos.ts` (Google's addresses and link forms), `apps/api/src/services/picks.ts`
+(`startPhotos`, `checkPhotos`), `apps/web/src/rendrr/cloudSources.js` (`GooglePhotosPanel`). Tests:
+`apps/api/test/google-photos.test.ts`, `apps/web/demo/google-photos.mjs`. To check live: an iPhone (HEIC) photo comes in.
+
+**Owner steps (Google Cloud project of the Rendrr Google sign-in):** enable the Photos Picker API; add the scope
+`https://www.googleapis.com/auth/photospicker.mediaitems.readonly` to the OAuth consent screen (Google may ask to verify
+it before people outside the test users can use it).

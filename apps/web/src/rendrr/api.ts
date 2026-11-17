@@ -322,8 +322,8 @@ export const api: any = {
   // ---- Google Drive ----
   getDriveStatus: () => get("/drive/status"),
   // write: also allow saving into the user's own Drive folders (finals saved where they tell their AI).
-  connectDrive: async (write = false) => {
-    const r = await post("/drive/connect", write ? { write: true } : undefined);
+  connectDrive: async (write = false, photos = false) => {
+    const r = await post("/drive/connect", write || photos ? { ...(write ? { write: true } : {}), ...(photos ? { photos: true } : {}) } : undefined);
     if (!r.authUrl) return r;
     // Real Google consent in a popup; the API's callback page tells us when it is done.
     // The popup hands the Google code back here and we finish with our own login (see /drive/complete).
@@ -590,6 +590,7 @@ export const api: any = {
   // The Library's and the editor's Dropbox tab: a pick to track its files, and share links brought in in the background.
   createPick: (source: string, projectId?: string | null, kind?: string | null) => post("/picks", { source, ...(projectId ? { projectId } : {}), ...(kind ? { kind } : {}) }),
   importLinks: (id: string, urls: string[]) => post(`/picks/${enc(id)}/links`, { urls }),
+  startPhotos: (id: string) => post(`/picks/${enc(id)}/photos`),
   // The newest Mac and Windows apps ({ mac: { version, link }, windows: { version, link } }): an older app is offered the update.
   latestDesktop: () => get("/downloads/latest", { auth: false }),
   getReview: (t: string) => get(`/public/reviews/${enc(t)}`, { auth: false, headers: reviewHeaders(t) }),

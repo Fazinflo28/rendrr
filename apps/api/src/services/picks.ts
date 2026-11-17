@@ -3,10 +3,11 @@
 // Google Photos. What arrives is recorded on the pick, so the AI learns exactly which videos came (add_footage pickId),
 // and goes in the edit's Media panel when the pick was made for one. A pick belongs to one account: opened in another,
 // it says so and takes nothing.
-import { AppError, notFound, redis } from "@rendrr/core";
+import { AppError, drive, notFound, redis } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { randomBytes } from "node:crypto";
-import { footageFromSource, intoEdit } from "./footage";
+import { footageFromDownload, footageFromSource, intoEdit } from "./footage";
+import { createSession, deleteSession, downloadOf, durationSeconds, getSession, listPicked, photosReady, type PickedItem } from "./googlePhotos";
 
 export const PICK_SOURCES = ["computer", "dropbox", "google_photos"] as const;
 export type PickSource = (typeof PICK_SOURCES)[number];
@@ -16,8 +17,9 @@ export type Pick = {
   ai: "claude" | "chatgpt"; aiName?: string; videoIds: string[]; at: number; until: number; done: boolean;
   /** Links being brought in (a Dropbox link, files chosen in Dropbox), and the ones that could not be. */
   pending?: number; errors?: { name: string; message: string }[];
-  /** Google Photos: the picker session the user chooses in, once made. */
-  photos?: { sessionId: string; pickerUri: string; imported?: boolean; error?: string | null } | null;
+  /** Google Photos: the picker session the user chooses in, once made; when Google was last asked, how often it may be,
+   *  and when the choice times out. */
+  photos?: { sessionId: string; pickerUri: string; imported?: boolean; error?: string | null; checkedAt?: number; pollSeconds?: number; timeoutAt?: number } | null;
 };
 const key = (id: string) => `pick:${id}`;
 const WEB = () => (process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "");
@@ -81,7 +83,8 @@ export async function pickView(userId: string, id: string) {
   ]);
   const byId = new Map(videos.map((v) => [v.id, v]));
   return { id: p.id, source: p.source, ai: p.ai, aiName: p.aiName ?? null, project, kind: p.kind, until: p.until, expired: Date.now() > p.until, done: p.done,
-    videos: p.videoIds.map((v) => byId.get(v)).filter((v): v is NonNullable<typeof v> => !!v), pending: p.pending ?? 0, errors: p.errors ?? [], photos: p.photos ? { pickerUri: p.photos.pickerUri, imported: !!p.photos.imported, error: p.photos.error ?? null } : null };
+    videos: p.videoIds.map((v) => byId.get(v)).filter((v): v is NonNullable<typeof v> => !!v), pending: p.pending ?? 0, errors: p.errors ?? [], photos: p.photos ? { pickerUri: p.photos.pickerUri, imported: !!p.photos.imported, error: p.photos.error ?? null } : null,
+    ...(p.source === "google_photos" ? { photosReady: await photosReady(userId) } : {}) };
 }
 
 /** Reads the pick again, changes it and saves it (work in the background meets the page's own changes). */
@@ -108,14 +111,75 @@ export async function importLinks(userId: string, id: string, urls: string[]): P
   await mutatePick(id, (x) => { x.pending = (x.pending ?? 0) + list.length; });
   void (async () => {
     for (const url of list) {
-      try {
-        const v = await footageFromSource(userId, { url, kind: (p.kind as "footage" | "reference" | null) ?? null, ai: p.ai, aiName: p.aiName });
-        if (p.projectId) await intoEdit(userId, p.projectId, v.id, { ai: p.ai, aiName: p.aiName }).catch(() => {});
-        await mutatePick(id, (x) => { if (!x.videoIds.includes(v.id)) x.videoIds.push(v.id); x.pending = Math.max(0, (x.pending ?? 1) - 1); });
-      } catch (e) {
-        await mutatePick(id, (x) => { x.errors = [...(x.errors ?? []), { name: linkName(url), message: (e as Error).message }].slice(-20); x.pending = Math.max(0, (x.pending ?? 1) - 1); });
-      }
+      try { await arrived(p, await footageFromSource(userId, { url, ...optsOf(p) })); } catch (e) { await failed(p, linkName(url), e); }
     }
   })();
   return (await ownPick(userId, id));
+}
+
+const optsOf = (p: Pick) => ({ kind: (p.kind as "footage" | "reference" | null) ?? null, ai: p.ai, aiName: p.aiName });
+/** One file brought in for the pick: recorded, and put in the edit when the pick has one. */
+async function arrived(p: Pick, v: { id: string }) {
+  if (p.projectId) await intoEdit(p.userId, p.projectId, v.id, { ai: p.ai, aiName: p.aiName }).catch(() => {}); // the edit gone meanwhile: the library keeps it
+  await mutatePick(p.id, (x) => { if (!x.videoIds.includes(v.id)) x.videoIds.push(v.id); x.pending = Math.max(0, (x.pending ?? 1) - 1); });
+}
+async function failed(p: Pick, name: string, e: unknown) {
+  await mutatePick(p.id, (x) => { x.errors = [...(x.errors ?? []), { name, message: (e as Error).message }].slice(-20); x.pending = Math.max(0, (x.pending ?? 1) - 1); });
+}
+
+// ---------------- Google Photos ----------------
+
+/** A Google Photos choice for the pick: the page sends the user to its pickerUri. One still open (not chosen in yet) is
+ *  given again; after a choice came in (or failed), choosing again makes a new one. */
+export async function startPhotos(userId: string, id: string): Promise<Pick> {
+  const p = await ownPick(userId, id, { open: true });
+  if (p.source !== "google_photos") throw new AppError("This link is not for Google Photos.", 400, "pick-source");
+  if (p.photos && !p.photos.imported && !p.photos.error && Date.now() < (p.photos.timeoutAt ?? 0)) return p;
+  const s = await createSession(userId);
+  const now = Date.now();
+  await mutatePick(id, (x) => { x.photos = { sessionId: s.id, pickerUri: s.pickerUri, imported: false, error: null, checkedAt: now, pollSeconds: Math.max(2, durationSeconds(s.pollingConfig?.pollInterval, 5)), timeoutAt: now + durationSeconds(s.pollingConfig?.timeoutIn, 1800) * 1000 }; });
+  return ownPick(userId, id);
+}
+
+/**
+ * Asks Google whether the user has chosen (no more often than Google says), and once they have, brings what they chose in
+ * the background, two at a time. The page and the AI both call it (the user may close Rendrr the moment they finish in
+ * Google Photos); a claim makes sure a choice is brought in once.
+ */
+export async function checkPhotos(userId: string, id: string): Promise<void> {
+  const p = await ownPick(userId, id);
+  const ph = p.photos;
+  if (p.source !== "google_photos" || !ph || ph.imported || ph.error) return;
+  if (Date.now() - (ph.checkedAt ?? 0) < (ph.pollSeconds ?? 5) * 1000) return;
+  await mutatePick(id, (x) => { if (x.photos) x.photos.checkedAt = Date.now(); });
+  const stop = (error: string) => mutatePick(id, (x) => { if (x.photos?.sessionId === ph.sessionId) x.photos.error = error; });
+  let set = false;
+  try { set = !!(await getSession(userId, ph.sessionId)).mediaItemsSet; } catch (e) { if (["photos-expired", "photos-connect"].includes((e as AppError).code ?? "")) await stop((e as Error).message); return; }
+  if (!set) { if (Date.now() > (ph.timeoutAt ?? Infinity)) await stop("Nothing was chosen in Google Photos in time. Choose again."); return; }
+  if (!(await redis().set(`${key(id)}:photos:${ph.sessionId}`, "1", "EX", 7200, "NX"))) return;
+  let items: PickedItem[];
+  try { items = await listPicked(userId, ph.sessionId); } catch (e) { await stop((e as Error).message); return; }
+  await mutatePick(id, (x) => { if (x.photos?.sessionId === ph.sessionId) x.photos.imported = true; x.pending = (x.pending ?? 0) + items.length; });
+  void importPhotos(p, ph.sessionId, items);
+}
+
+async function importPhotos(p: Pick, sessionId: string, items: PickedItem[]) {
+  // A picked file's link lasts about an hour: when one is refused (many big videos), the choice is listed again once for
+  // fresh links.
+  let fresh: Promise<Map<string, PickedItem>> | null = null;
+  const relist = () => (fresh ||= listPicked(p.userId, sessionId).then((xs) => new Map(xs.map((x) => [x.id, x]))).catch(() => new Map()));
+  const one = async (it: PickedItem, retried = false): Promise<void> => {
+    const d = downloadOf(it);
+    if ("error" in d) return failed(p, d.name, new Error(d.error));
+    try {
+      const token = await drive.accessTokenFor(p.userId);
+      await arrived(p, await footageFromDownload(p.userId, { url: d.url, headers: { authorization: `Bearer ${token}` }, name: d.name }, optsOf(p)));
+    } catch (e) {
+      const again = !retried && /answered 40[13]\b/.test((e as Error).message) ? (await relist()).get(it.id) : null;
+      return again ? one(again, true) : failed(p, d.name, e);
+    }
+  };
+  const queue = [...items];
+  await Promise.all([0, 1].map(async () => { for (let it = queue.shift(); it; it = queue.shift()) await one(it); }));
+  await deleteSession(p.userId, sessionId);
 }

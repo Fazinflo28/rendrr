@@ -76,7 +76,7 @@ describe("files from Dropbox", { skip: (!ready || !ff) && "needs a database, Red
 
   it("add_footage offers Dropbox in a sentence and takes from: dropbox", () => {
     const t = MCP_TOOLS.find((x) => x.name === "add_footage")!;
-    assert.match(t.description, /\(on their computer, too big to attach; in their Dropbox\): from gives a link to send them/);
+    assert.match(t.description, /\(on their computer, too big to attach; in their Dropbox or Google Photos\): from gives a link to send them/);
     assert.ok(t.input.safeParse({ from: "dropbox" }).success);
     assert.ok(!t.input.safeParse({ from: "box" }).success);
   });

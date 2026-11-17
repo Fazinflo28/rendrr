@@ -9,7 +9,7 @@ import {
   ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip, CLOUD, CLOUD_REGION, desktopAppName, deviceLabel, machineWord, macOriginalOf, nextExportText, whereText } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, findOrMakeFolder, getOwnedProject, graphicPlacements, moveToFolder, resolveReference } from "./services/projects";
-import { createPick, ownPick, pickLink, type Pick, type PickSource } from "./services/picks";
+import { checkPhotos, createPick, ownPick, pickLink, type Pick, type PickSource } from "./services/picks";
 import { samplesOut, samplesView, startSamples } from "./services/samples";
 import type { AppOpen } from "@rendrr/shared";
 import { createCanvas } from "./services/canvas";
@@ -476,7 +476,7 @@ async function pickAnswer(p: Pick, made: boolean): Promise<ToolOut> {
   const vs = p.videoIds.length ? await prisma.video.findMany({ where: { id: { in: p.videoIds }, userId: p.userId } }) : [];
   const left = Date.now() > p.until ? "The link has expired: from: makes a new one." : `The link stays open ${mins} more minutes.`;
   const coming = p.pending ? ` ${p.pending} ${p.pending === 1 ? "file is" : "files are"} still coming in (a big video takes a while: wait_seconds waits).` : "";
-  const failed = p.errors?.length ? `\nCould not be brought in: ${p.errors.map((e) => `"${e.name}": ${e.message}`).join("; ")}` : "";
+  const failed = (p.errors?.length ? `\nCould not be brought in: ${p.errors.map((e) => `"${e.name}": ${e.message}`).join("; ")}` : "") + (p.photos?.error ? `\nGoogle Photos: ${p.photos.error}` : "");
   if (!vs.length) return { text: `Nothing has arrived from ${where} yet${p.done ? " (the user closed the page)" : ""}.${coming} ${left}${failed}`, data: { pickId: p.id, videoIds: [] } };
   const order = new Map(p.videoIds.map((id, k) => [id, k]));
   vs.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
@@ -1079,8 +1079,10 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     // Files the user has elsewhere: a link they open in Rendrr to add them; what arrived is asked for with pickId.
     if (i.from) return pickAnswer(await createPick(c.userId, i.from, { projectId: i.projectId, kind: i.kind, ai: o.ai, aiName: c.aiName }), true);
     if (i.pickId) {
-      const p0 = await ownPick(c.userId, i.pickId);
-      const p = waitMs ? await waitFor(async () => { const x = await ownPick(c.userId, i.pickId); return x.videoIds.length > p0.videoIds.length || x.done || (x.errors?.length ?? 0) > (p0.errors?.length ?? 0) ? x : null; }, waitMs) ?? await ownPick(c.userId, i.pickId) : p0;
+      // Google Photos: the AI's look also asks Google whether the user has chosen (they may have closed Rendrr already).
+      const look = async () => { await checkPhotos(c.userId, i.pickId).catch(() => {}); return ownPick(c.userId, i.pickId); };
+      const p0 = await look();
+      const p = waitMs ? await waitFor(async () => { const x = await look(); return x.videoIds.length > p0.videoIds.length || x.done || (x.errors?.length ?? 0) > (p0.errors?.length ?? 0) ? x : null; }, waitMs) ?? await ownPick(c.userId, i.pickId) : p0;
       return pickAnswer(p, false);
     }
     // A logo or overlay picture kept as an element (Assets > Elements), transparent: placed with add_graphic.

@@ -83,7 +83,7 @@ export async function fetchPublic(url: string, o: { max: number; what: string; c
 }
 
 /** The same, written to a file as it comes (big files: audio), `max` bytes at most, `timeoutMs` for the whole of it. */
-export async function fetchPublicTo(url: string, path: string, o: { max: number; what: string; code: string; timeoutMs: number }): Promise<{ bytes: number; type: string; url: URL; name: string | null }> {
+export async function fetchPublicTo(url: string, path: string, o: { max: number; what: string; code: string; timeoutMs: number; headers?: Record<string, string> }): Promise<{ bytes: number; type: string; url: URL; name: string | null }> {
   const err = (m: string) => new AppError(m, 400, o.code);
   const mb = `${o.what[0].toUpperCase()}${o.what.slice(1)} files are ${Math.round(o.max / 1024 / 1024)} MB at most.`;
   const { r, u } = await openPublic(url, o);

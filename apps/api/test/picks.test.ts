@@ -45,7 +45,7 @@ describe("asking the user for files", { skip: !ready && "needs DATABASE_URL, RED
 
   it("add_footage offers it in a sentence and takes from and pickId", () => {
     const t = MCP_TOOLS.find((x) => x.name === "add_footage")!;
-    assert.match(t.description, /on their computer, too big to attach; in their Dropbox\): from gives a link to send them/);
+    assert.match(t.description, /on their computer, too big to attach; in their Dropbox or Google Photos\): from gives a link to send them/);
     assert.ok(t.input.safeParse({ from: "computer" }).success && t.input.safeParse({ pickId: "abc" }).success);
   });
 

@@ -12,6 +12,9 @@ export const SCOPES = ["https://www.googleapis.com/auth/drive.readonly", "https:
 /** Asked for only when the user allows saving into their own folders: drive.file adds files only to folders Rendrr made. */
 export const WRITE_SCOPE = "https://www.googleapis.com/auth/drive";
 export const canSaveAnywhere = (scopes: string) => scopes.split(/\s+/).includes(WRITE_SCOPE);
+/** Asked for when the user first chooses from Google Photos (the Photos Picker: only what they pick, nothing else). */
+export const PHOTOS_SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
+export const canPickPhotos = (scopes: string) => scopes.split(/\s+/).includes(PHOTOS_SCOPE);
 const API = () => (env().GOOGLE_API_URL || "https://www.googleapis.com").replace(/\/$/, "");
 export const driveRedirectUri = () => env().PUBLIC_API_URL.replace(/\/$/, "") + "/drive/callback";
 
@@ -39,8 +42,11 @@ async function tokenRequest(params: Record<string, string>) {
   if (!r.ok) throw new AppError("Google Drive did not accept the connection. Connect it again.", 400, "drive-auth");
   return j;
 }
-export function authUrl(state: string, write = false) {
-  const p = new URLSearchParams({ client_id: env().GOOGLE_CLIENT_ID!, redirect_uri: driveRedirectUri(), response_type: "code", scope: [...SCOPES, ...(write ? [WRITE_SCOPE] : [])].join(" "), access_type: "offline", prompt: "consent", include_granted_scopes: "true", state });
+/** write: also save into the user's own folders; photos: also choose from Google Photos. Drive's own scopes are always
+ *  asked for, so a connection made for Photos is a working Drive connection too. */
+export function authUrl(state: string, o: boolean | { write?: boolean; photos?: boolean } = false) {
+  const { write = false, photos = false } = typeof o === "boolean" ? { write: o } : o;
+  const p = new URLSearchParams({ client_id: env().GOOGLE_CLIENT_ID!, redirect_uri: driveRedirectUri(), response_type: "code", scope: [...SCOPES, ...(write ? [WRITE_SCOPE] : []), ...(photos ? [PHOTOS_SCOPE] : [])].join(" "), access_type: "offline", prompt: "consent", include_granted_scopes: "true", state });
   return "https://accounts.google.com/o/oauth2/v2/auth?" + p.toString();
 }
 export async function exchangeCode(code: string) {
