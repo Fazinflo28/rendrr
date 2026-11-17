@@ -5,7 +5,7 @@ import { AppError, applyTimelineChange, notFound, signGet } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { desktopAppName, machineWord, whereShort, type RenderWhere, type AppComment, type AppFolderCard, type AppOpen, type AppProjectCard, type AppProjectsPage, type AppProjectView } from "@rendrr/shared";
 import { macStatus, renderWhere } from "./macExport";
-import { getOwnedProject } from "./projects";
+import { getOwnedProject, isWatchableKey } from "./projects";
 import { renderResult, renderStatus, startRender } from "./render";
 import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
 import { createReviewLink } from "../routes/reviews";
@@ -99,10 +99,11 @@ export async function appProject(userId: string, projectId: string, renderId?: s
   const st = live ? await renderStatus(live) : null;
   const mac = await macStatus(userId);
   // The versions to pick from: the newest render of each version and kind.
-  const seen = new Set<string>();
-  const versions = all.filter((r) => { const k = `${r.kind}:${r.version}`; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 40);
+  // Only videos play in the card: a sound-only final (or a GIF, or ProRes on transparency) is left out of the list.
+  const seen = new Set<string>(), watchable = all.filter((r) => isWatchableKey(r.outputKey));
+  const versions = watchable.filter((r) => { const k = `${r.kind}:${r.version}`; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 40);
   // Watching: the render picked (one of this edit's), else the latest preview, else the latest final.
-  const shown = (renderId && all.find((r) => r.id === renderId)) || done || all.find((r) => r.kind === "final") || null;
+  const shown = (renderId && all.find((r) => r.id === renderId)) || done || watchable.find((r) => r.kind === "final") || null;
   const res = shown ? await renderResult(shown) : null;
   const version = latest?.v ?? p.currentVersion;
   const comments: AppComment[] = [

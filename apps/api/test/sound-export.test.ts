@@ -113,6 +113,9 @@ describe("sound-only exports", { skip: !ready && "needs DATABASE_URL, REDIS_URL 
     assert.equal((await latestRender(projectId, "final", v))!.id, soundId);
     assert.equal((await latestRender(projectId, "final", v, true))!.id, videoFinalId, "watchable: the video");
     assert.ok(isWatchableKey("a/b.mp4") && !isWatchableKey("a/b.m4a") && !isWatchableKey("a/b.wav") && !isWatchableKey("a/b.gif") && !isWatchableKey(null));
+    const { appProject } = await import("../src/services/claudeApp");
+    const card = await appProject(userId, projectId);
+    assert.ok(card.versions.every((x) => x.renderId !== soundId), "the Claude card's version list has no sound-only final");
     const share = await TOOL_HANDLERS.create_review_link(c(), { projectId });
     const token = (share.data as { token?: string } | undefined)?.token ?? share.text.match(/\/review\/([\w-]+)/)?.[1];
     assert.ok(token, share.text);
