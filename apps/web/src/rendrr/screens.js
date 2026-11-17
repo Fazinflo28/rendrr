@@ -6,6 +6,7 @@ import {
   Masonry, MasonrySkeleton, MoreMenu, Dropdown, useNav, useApp,
 } from "./ui";
 import { api } from "./api";
+import { DropboxPanel } from "./cloudSources";
 import { AppIcon } from "./logo";
 const IS_PROD = process.env.NODE_ENV === "production";
 
@@ -214,7 +215,7 @@ function DrivePicker({ onAdd, single, addLabel, onLocal, onImportFolder, onImpor
   </div>`;
 }
 function AddFootageModal({ onClose, initialKind = "footage", folder = null }) {
-  const { startUpload, addFromDrive, importDriveFolder, importDriveFolders } = useApp();
+  const { startUpload, addFromDrive, importDriveFolder, importDriveFolders } = useApp(); const toast = useToast();
   const [tab, setTab] = useState("drive"); const [over, setOver] = useState(false); const fileRef = useRef(); const dirRef = useRef();
   const [asRef, setAsRef] = useState(initialKind === "reference"); const kind = asRef ? "reference" : undefined;
   useEffect(() => { api.getDriveStatus().then((s) => { if (!s.connected && s.available === false) setTab("local"); }).catch(() => {}); }, []);
@@ -224,8 +225,10 @@ function AddFootageModal({ onClose, initialKind = "footage", folder = null }) {
     <div class="srcpick">
       <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Google Drive</b></span></button>
       <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="src-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>This computer</b></span></button>
+      <button class=${"srcopt" + (tab === "dropbox" ? " on" : "")} id="src-dropbox" onClick=${() => setTab("dropbox")}><${Icon} name="folder" size="20" /><span><b>Dropbox</b></span></button>
     </div>
-    ${tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind, folder?.id)} onImportFolder=${(f, subs) => importDriveFolder(f, kind, folder?.id, subs)} onImportFolders=${(fs, subs, ids) => importDriveFolders(fs, kind, folder?.id, subs, ids)} importInto=${folder} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
+    ${tab === "dropbox" && html`<${DropboxPanel} kind=${kind} onArrived=${(vs) => { toast(vs.length === 1 ? `"${vs[0].name}" is in your Library` : `${vs.length} files are in your Library`, { icon: "check", tone: "brand" }); window.dispatchEvent(new Event("rendrr:library")); }} />`}
+    ${tab === "dropbox" ? null : tab === "drive" ? html`<${DrivePicker} onAdd=${(ids) => addFromDrive(ids, kind, folder?.id)} onImportFolder=${(f, subs) => importDriveFolder(f, kind, folder?.id, subs)} onImportFolders=${(fs, subs, ids) => importDriveFolders(fs, kind, folder?.id, subs, ids)} importInto=${folder} onLocal=${() => setTab("local")} />` : html`<div class="col" style="gap:12px">
       <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs), kind, folder?.id); e.target.value = ""; }} />
       <input type="file" webkitdirectory="" directory="" multiple ref=${dirRef} class="hide" id="local-folder-input" onChange=${(e) => { const fs = e.target.files; if (fs?.length) startUpload(Array.from(fs), kind, folder?.id); e.target.value = ""; }} />
       <div class=${"drop" + (over ? " over" : "")} id="local-drop" style="padding:40px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); api.captureDrop?.(e.dataTransfer); api.filesFromDrop(e.dataTransfer).then((fs) => { if (fs.length) startUpload(fs, kind, folder?.id); }); }}>

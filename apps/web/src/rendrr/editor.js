@@ -18,6 +18,7 @@ function linkified(text) {
 }
 import { CreateLinkModal, DrivePicker } from "./screens";
 import { api } from "./api";
+import { DropboxPanel } from "./cloudSources";
 import { OpColor, OpSlider } from "./controls";
 import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./color";
 import { MulticamTab } from "./multicam";
@@ -924,8 +925,9 @@ function AddClipModal({ main, at, onAdd, onClose, waiting = false }) {
     <div class="col" style="gap:12px" id="add-clip-form">
       ${!waiting && html`<div class="row" style="gap:12px">${[["whole", "Whole videos"], ["part", "A part of a video"]].map(([k, l]) => html`<label key=${k} class="t-small row" style="gap:6px"><input type="radio" name="add-mode" data-mode=${k} checked=${mode === k} onChange=${() => setMode(k)} />${l}</label>`)}</div>`}
       ${mode === "whole" ? html`
-      <div class="add-tabs" role="tablist" aria-label="Where from">${[["library", "Library", "library"], ["drive", "Google Drive", "drive"], ["local", "This computer", "laptop"]].map(([k, l, ic]) => html`<button key=${k} type="button" role="tab" id=${"add-src-" + k} aria-selected=${src === k} class=${src === k ? "on" : ""} onClick=${() => setSrc(k)}><${Icon} name=${ic} size="15" />${l}</button>`)}</div>
-      ${src === "drive" ? html`<div id="add-drive"><${DrivePicker} addLabel="Add these videos" onAdd=${fromDrive} onLocal=${() => setSrc("local")} /></div>`
+      <div class="add-tabs" role="tablist" aria-label="Where from">${[["library", "Library", "library"], ["drive", "Google Drive", "drive"], ["local", "This computer", "laptop"], ["dropbox", "Dropbox", "folder"]].map(([k, l, ic]) => html`<button key=${k} type="button" role="tab" id=${"add-src-" + k} aria-selected=${src === k} class=${src === k ? "on" : ""} onClick=${() => setSrc(k)}><${Icon} name=${ic} size="15" />${l}</button>`)}</div>
+      ${src === "dropbox" ? html`<div id="add-dropbox"><${DropboxPanel} onArrived=${(vs) => { setExtra((e) => [...e, ...vs]); pickAll(vs); window.dispatchEvent(new Event("rendrr:library")); }} /></div>`
+      : src === "drive" ? html`<div id="add-drive"><${DrivePicker} addLabel="Add these videos" onAdd=${fromDrive} onLocal=${() => setSrc("local")} /></div>`
       : src === "local" ? html`<div class="col" style="gap:12px" id="add-local">
           <input type="file" accept="video/*" multiple ref=${fileRef} class="hide" onChange=${(e) => { const fs = e.target.files; if (fs?.length) fromFiles(Array.from(fs)); e.target.value = ""; }} />
           <div class=${"drop" + (over ? " over" : "")} id="add-drop" style="padding:44px 24px" onClick=${() => fileRef.current.click()} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)} onDrop=${(e) => { e.preventDefault(); setOver(false); const fs = e.dataTransfer.files; if (fs?.length) fromFiles(Array.from(fs)); }}>

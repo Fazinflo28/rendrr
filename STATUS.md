@@ -1516,3 +1516,19 @@ one; `add_footage pickId` (with `wait_seconds`) tells the AI exactly which video
 belongs to one account: opened in another it says so and takes nothing; after an hour it says it expired. Code:
 `apps/api/src/services/picks.ts`, `apps/api/src/routes/picks.ts`, `apps/web/src/rendrr/addPick.js`. Tests:
 `apps/api/test/picks.test.ts`, `apps/web/demo/add-pick.mjs`.
+
+## Videos and pictures from Dropbox (17 November)
+
+The Library's Add footage window, the editor's Add clips window and the page an AI's link opens
+(`add_footage from: "dropbox"`) each have a Dropbox tab. The user pastes a Dropbox share link, or, once the Dropbox app
+key is set, picks files in Dropbox's own window (Chooser; not inside the Mac or Windows app, whose popups open in the
+browser). Rendrr downloads them in the background (`POST /picks/:id/links`), so a big video does not hold the page: the
+tab shows what is coming in, what arrived and what could not be brought in. A folder link says to share each file. What
+arrives goes in the library, is picked in Add clips, and goes in the edit when the link was made for one;
+`add_footage pickId` tells the AI what arrived, what is still coming in and what failed. Code:
+`apps/api/src/services/picks.ts` (`importLinks`), `apps/web/src/rendrr/cloudSources.js`. Tests:
+`apps/api/test/dropbox.test.ts`, `apps/web/demo/dropbox.mjs`.
+
+**Owner step for the Dropbox window (the link box works without it):** create an app at dropbox.com/developers (Chooser),
+add `app.rendrr.live` to its Chooser domains, and set its app key (public, not a secret) as
+`NEXT_PUBLIC_DROPBOX_APP_KEY` on the web service.

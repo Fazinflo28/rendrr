@@ -528,7 +528,7 @@ const pickOf = (id) => {
   const seed = globalThis.__demoPick || {};
   if (seed.other) throw Object.assign(new Error("This link was made for another Rendrr account. Log in with that account to add the files, or ask your AI for a new link."), { code: "pick-other-account", status: 403 });
   if (seed.expired === "gone") throw Object.assign(new Error("This link has expired. Ask your AI for a new one."), { code: "pick-expired", status: 404 });
-  return (demoPicks[id] ||= { id, source: seed.source || "computer", ai: "claude", aiName: seed.aiName || "Claude", project: seed.project || null, kind: null, until: Date.now() + 3600_000, expired: !!seed.expired, done: false, ids: [] });
+  return (demoPicks[id] ||= { id, source: seed.source || "computer", ai: "claude", aiName: seed.aiName || "Claude", project: seed.project || null, kind: null, until: Date.now() + 3600_000, expired: !!seed.expired, done: false, ids: [], pending: 0, errors: [] });
 };
 const pickView = async (p) => {
   const videos = [];
@@ -539,6 +539,19 @@ Object.assign(api, {
   getPick: async (id) => { await wait(150); return pickView(pickOf(id)); },
   reportPick: async (id, videoIds) => { const p = pickOf(id); for (const v of videoIds) if (!p.ids.includes(v)) p.ids.push(v); (globalThis.__demoPickReports ||= []).push(videoIds); return pickView(p); },
   finishPick: async (id) => { const p = pickOf(id); p.done = true; return pickView(p); },
+  // The Library's and the editor's Dropbox tab make their own pick; links come in after a moment (a folder link fails).
+  createPick: async (source, projectId, kind) => { const id = "pk_" + Math.random().toString(36).slice(2, 10); demoPicks[id] = { id, source, ai: "claude", aiName: "Claude", project: null, kind: kind || null, until: Date.now() + 3600_000, expired: false, done: false, ids: [], pending: 0, errors: [] }; return pickView(demoPicks[id]); },
+  importLinks: async (id, urls) => {
+    const p = pickOf(id); p.pending = (p.pending || 0) + urls.length; p.errors ||= [];
+    (globalThis.__demoLinks ||= []).push(...urls);
+    urls.forEach((u, k) => setTimeout(async () => {
+      const name = decodeURIComponent((u.split("?")[0].split("/").filter(Boolean).pop()) || "file");
+      if (/dropbox\.com\/(scl\/fo|sh)\//.test(u)) p.errors.push({ name, message: "That is a link to a Dropbox folder, not a file: share each video's own link, or choose the files with the Dropbox button in Rendrr." });
+      else { const [v] = await api.addFromComputer([new File([new Uint8Array(4096)], name.includes(".") ? name : name + ".mp4", { type: "video/mp4" })]); p.ids.push(v.id); }
+      p.pending = Math.max(0, p.pending - 1);
+    }, 700 + k * 300));
+    return pickView(p);
+  },
 });
 
 export { api };

@@ -587,6 +587,9 @@ export const api: any = {
   getPick: (id: string) => get(`/picks/${enc(id)}`),
   reportPick: (id: string, videoIds: string[]) => post(`/picks/${enc(id)}/items`, { videoIds }),
   finishPick: (id: string) => post(`/picks/${enc(id)}/done`, {}),
+  // The Library's and the editor's Dropbox tab: a pick to track its files, and share links brought in in the background.
+  createPick: (source: string, projectId?: string | null, kind?: string | null) => post("/picks", { source, ...(projectId ? { projectId } : {}), ...(kind ? { kind } : {}) }),
+  importLinks: (id: string, urls: string[]) => post(`/picks/${enc(id)}/links`, { urls }),
   // The newest Mac and Windows apps ({ mac: { version, link }, windows: { version, link } }): an older app is offered the update.
   latestDesktop: () => get("/downloads/latest", { auth: false }),
   getReview: (t: string) => get(`/public/reviews/${enc(t)}`, { auth: false, headers: reviewHeaders(t) }),

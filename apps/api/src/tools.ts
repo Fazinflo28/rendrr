@@ -475,10 +475,12 @@ async function pickAnswer(p: Pick, made: boolean): Promise<ToolOut> {
   }
   const vs = p.videoIds.length ? await prisma.video.findMany({ where: { id: { in: p.videoIds }, userId: p.userId } }) : [];
   const left = Date.now() > p.until ? "The link has expired: from: makes a new one." : `The link stays open ${mins} more minutes.`;
-  if (!vs.length) return { text: `Nothing has arrived from ${where} yet${p.done ? " (the user closed the page)" : ""}. ${left}`, data: { pickId: p.id, videoIds: [] } };
+  const coming = p.pending ? ` ${p.pending} ${p.pending === 1 ? "file is" : "files are"} still coming in (a big video takes a while: wait_seconds waits).` : "";
+  const failed = p.errors?.length ? `\nCould not be brought in: ${p.errors.map((e) => `"${e.name}": ${e.message}`).join("; ")}` : "";
+  if (!vs.length) return { text: `Nothing has arrived from ${where} yet${p.done ? " (the user closed the page)" : ""}.${coming} ${left}${failed}`, data: { pickId: p.id, videoIds: [] } };
   const order = new Map(p.videoIds.map((id, k) => [id, k]));
   vs.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
-  return { text: `From ${where}, ${vs.length} ${vs.length === 1 ? "file" : "files"}${p.done ? " (the user is done)" : " so far"}:\n${vs.map((v) => `- ${footageText(v, { projectId: p.projectId })}`).join("\n")}\n${p.done ? "" : left}`.trim(), data: { pickId: p.id, videoIds: vs.map((v) => v.id), statuses: vs.map((v) => v.status) } };
+  return { text: `From ${where}, ${vs.length} ${vs.length === 1 ? "file" : "files"}${p.done ? " (the user is done)" : " so far"}:\n${vs.map((v) => `- ${footageText(v, { projectId: p.projectId })}`).join("\n")}${coming ? `\n${coming.trim()}` : ""}${failed}\n${p.done ? "" : left}`.trim(), data: { pickId: p.id, videoIds: vs.map((v) => v.id), statuses: vs.map((v) => v.status) } };
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
@@ -1078,7 +1080,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     if (i.from) return pickAnswer(await createPick(c.userId, i.from, { projectId: i.projectId, kind: i.kind, ai: o.ai, aiName: c.aiName }), true);
     if (i.pickId) {
       const p0 = await ownPick(c.userId, i.pickId);
-      const p = waitMs ? await waitFor(async () => { const x = await ownPick(c.userId, i.pickId); return x.videoIds.length > p0.videoIds.length || x.done ? x : null; }, waitMs) ?? await ownPick(c.userId, i.pickId) : p0;
+      const p = waitMs ? await waitFor(async () => { const x = await ownPick(c.userId, i.pickId); return x.videoIds.length > p0.videoIds.length || x.done || (x.errors?.length ?? 0) > (p0.errors?.length ?? 0) ? x : null; }, waitMs) ?? await ownPick(c.userId, i.pickId) : p0;
       return pickAnswer(p, false);
     }
     // A logo or overlay picture kept as an element (Assets > Elements), transparent: placed with add_graphic.

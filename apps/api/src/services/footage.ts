@@ -134,11 +134,17 @@ export async function footageFromSource(userId: string, i: { url?: string; drive
     }
     if (i.driveFileId) throw err("Connect Google Drive in Rendrr first (Settings › Google Drive), or send a share link of the file (Anyone with the link) as url, or upload: true.");
     let url = fileId ? `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t` : i.url!;
+    if (isDropboxFolder(url)) throw err("That is a link to a Dropbox folder, not a file: share each video's own link, or choose the files with the Dropbox button in Rendrr (add_footage from: dropbox gives the user a link to it).");
     try { const u = new URL(url); if (/(^|\.)dropbox\.com$/.test(u.hostname)) { u.searchParams.set("dl", "1"); url = u.href; } } catch { /* fetchPublicTo says why */ }
     const got = await fetchPublicTo(url, path, { max: FOOTAGE_UPLOAD_MAX_BYTES, what: "footage", code: "bad-footage", timeoutMs: 20 * 60_000 });
     if (/^text\/html/i.test(got.type)) throw err(fileId ? "Google Drive did not give the file: it is not shared as Anyone with the link. Share it that way, or connect Google Drive in Rendrr and send its driveFileId." : "That link gives a web page, not a video or a picture. Send a direct link to the file.");
     return await keepFootage(userId, path, got.name || decodeURIComponent(got.url.pathname.split("/").pop() || "") || "Video", i);
   } finally { await rm(dir, { recursive: true, force: true }).catch(() => {}); }
+}
+
+/** A Dropbox folder share link (with dl=1 Dropbox sends the whole folder as a zip, which is not a video). */
+export function isDropboxFolder(url: string): boolean {
+  try { const u = new URL(url); return /(^|\.)dropbox\.com$/.test(u.hostname) && /^\/(scl\/fo|sh)\//.test(u.pathname); } catch { return false; }
 }
 
 /** A one-time link the AI's code workspace sends a file to (curl -T), for 30 minutes. */

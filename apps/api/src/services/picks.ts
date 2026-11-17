@@ -6,7 +6,7 @@
 import { AppError, notFound, redis } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { randomBytes } from "node:crypto";
-import { intoEdit } from "./footage";
+import { footageFromSource, intoEdit } from "./footage";
 
 export const PICK_SOURCES = ["computer", "dropbox", "google_photos"] as const;
 export type PickSource = (typeof PICK_SOURCES)[number];
@@ -14,6 +14,8 @@ export const PICK_SECONDS = 3600;
 export type Pick = {
   id: string; userId: string; source: PickSource; projectId: string | null; kind: string | null;
   ai: "claude" | "chatgpt"; aiName?: string; videoIds: string[]; at: number; until: number; done: boolean;
+  /** Links being brought in (a Dropbox link, files chosen in Dropbox), and the ones that could not be. */
+  pending?: number; errors?: { name: string; message: string }[];
   /** Google Photos: the picker session the user chooses in, once made. */
   photos?: { sessionId: string; pickerUri: string; imported?: boolean; error?: string | null } | null;
 };
@@ -79,5 +81,41 @@ export async function pickView(userId: string, id: string) {
   ]);
   const byId = new Map(videos.map((v) => [v.id, v]));
   return { id: p.id, source: p.source, ai: p.ai, aiName: p.aiName ?? null, project, kind: p.kind, until: p.until, expired: Date.now() > p.until, done: p.done,
-    videos: p.videoIds.map((v) => byId.get(v)).filter((v): v is NonNullable<typeof v> => !!v), photos: p.photos ? { pickerUri: p.photos.pickerUri, imported: !!p.photos.imported, error: p.photos.error ?? null } : null };
+    videos: p.videoIds.map((v) => byId.get(v)).filter((v): v is NonNullable<typeof v> => !!v), pending: p.pending ?? 0, errors: p.errors ?? [], photos: p.photos ? { pickerUri: p.photos.pickerUri, imported: !!p.photos.imported, error: p.photos.error ?? null } : null };
+}
+
+/** Reads the pick again, changes it and saves it (work in the background meets the page's own changes). */
+async function mutatePick(id: string, fn: (p: Pick) => void) {
+  const raw = await redis().get(key(id));
+  if (!raw) return;
+  const p = JSON.parse(raw) as Pick;
+  fn(p);
+  await save(p);
+}
+
+/** A short name for a link the user gave (its file name when it has one). */
+export const linkName = (url: string) => { try { const u = new URL(url); return decodeURIComponent(u.pathname.split("/").filter(Boolean).pop() || u.hostname).slice(0, 120); } catch { return url.slice(0, 120); } };
+
+/**
+ * Share links (a Dropbox link, files chosen in Dropbox) brought in for the pick, in the background: a large video takes a
+ * while to download, so the page polls the pick for what arrived and what could not be. Each arrival goes in the edit.
+ */
+export async function importLinks(userId: string, id: string, urls: string[]): Promise<Pick> {
+  const p = await ownPick(userId, id, { open: true });
+  const list = Array.from(new Set(urls.map((u) => u.trim()).filter(Boolean))).slice(0, 50);
+  if (!list.length) throw new AppError("Paste a link to a video or a picture.", 400, "bad-footage");
+  for (const u of list) { try { if (new URL(u).protocol !== "https:") throw 0; } catch { throw new AppError(`That is not a link: ${u.slice(0, 80)}`, 400, "bad-footage"); } }
+  await mutatePick(id, (x) => { x.pending = (x.pending ?? 0) + list.length; });
+  void (async () => {
+    for (const url of list) {
+      try {
+        const v = await footageFromSource(userId, { url, kind: (p.kind as "footage" | "reference" | null) ?? null, ai: p.ai, aiName: p.aiName });
+        if (p.projectId) await intoEdit(userId, p.projectId, v.id, { ai: p.ai, aiName: p.aiName }).catch(() => {});
+        await mutatePick(id, (x) => { if (!x.videoIds.includes(v.id)) x.videoIds.push(v.id); x.pending = Math.max(0, (x.pending ?? 1) - 1); });
+      } catch (e) {
+        await mutatePick(id, (x) => { x.errors = [...(x.errors ?? []), { name: linkName(url), message: (e as Error).message }].slice(-20); x.pending = Math.max(0, (x.pending ?? 1) - 1); });
+      }
+    }
+  })();
+  return (await ownPick(userId, id));
 }
