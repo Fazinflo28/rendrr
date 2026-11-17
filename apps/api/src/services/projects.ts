@@ -256,9 +256,13 @@ export async function listProjects(userId: string) {
 }
 
 /** Latest finished render of each kind for a project version (or any version). */
-export async function latestRender(projectId: string, kind: "preview" | "final", version?: number) {
-  return prisma.render.findFirst({ where: { projectId, kind, status: "done", outputKey: { not: null }, ...(version ? { version } : {}) }, orderBy: { createdAt: "desc" } });
+export async function latestRender(projectId: string, kind: "preview" | "final", version?: number, watchable = false) {
+  // watchable: a video to play (a sound-only, GIF or transparent final does not count).
+  return prisma.render.findFirst({ where: { projectId, kind, status: "done", outputKey: watchable ? { endsWith: ".mp4" } : { not: null }, ...(version ? { version } : {}) }, orderBy: { createdAt: "desc" } });
 }
+
+/** A render file a video player plays (not a sound-only final, a GIF or ProRes on transparency). */
+export const isWatchableKey = (key: string | null | undefined) => /\.(mp4|m4v|webm)$/i.test(key || "");
 
 /** The videos measured as filmed sideways, with the clockwise turn that makes them upright (the editor offers it). */
 async function sidewaysOf(ids: string[]): Promise<Record<string, number>> {

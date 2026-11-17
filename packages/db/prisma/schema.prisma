@@ -390,6 +390,9 @@ model Render {
   made       Json?     // where it was made: { on: "mac" | "cloud", device, why } (the Mac app renders while it is open; null: the cloud, before this was kept)
   /// The computer the user picked to render on (its id from the desktop app), "cloud", or null: the best one free.
   target    String?
+  /// A final's file type (mp4 | audio | wav | gif | overlay): the edit's export setting, or a one-off asked for this
+  /// export only (render_final format: sound only without changing the edit). null: older renders (the file says it).
+  format    String?
   startedAt  DateTime?
   finishedAt DateTime?
   createdAt  DateTime  @default(now())

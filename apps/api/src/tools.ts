@@ -4,7 +4,7 @@
 import { AppError, applyTimelineChange, readRender, clearVariantErrors, enqueue, graphicFailedOnServer, notFound, prewarmGraphics, putObject, readGraphic, recordGraphicAgain, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
 import {
-  AddFontInput, AddLutInput, allWords, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
+  AddFontInput, AddLutInput, allWords, isSoundFormat, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
   ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip, CLOUD, CLOUD_REGION, desktopAppName, deviceLabel, machineWord, macOriginalOf, nextExportText, whereText } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
@@ -335,7 +335,8 @@ async function renderOut(renderId: string): Promise<ToolOut> {
   }
   const res = await renderResult(r);
   const took = res.renderSeconds != null ? `, rendered in ${res.renderSeconds < 60 ? `${Math.round(res.renderSeconds)} s` : `${Math.floor(res.renderSeconds / 60)} min ${Math.round(res.renderSeconds % 60)} s`}` : "";
-  const head = `${r.kind === "final" ? "Final" : "Preview"} v${r.version} ready: ${res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s${took}. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
+  const sound = r.kind === "final" && (res.ext === "m4a" || res.ext === "wav");
+  const head = `${r.kind === "final" ? (sound ? "Sound-only final" : "Final") : "Preview"} v${r.version} ready: ${sound ? `${res.fileName} (no picture)` : res.quality}, ${res.size}, ${res.seconds.toFixed(1)}s${took}. ${r.kind === "final" ? "The user downloads it" : "Watch"} in Rendrr: ${WEB()}/editor/${r.projectId}`;
   const dl = driveLine(r);
   // Phase 12: the captions files and YouTube chapters made with a final.
   const extra = [res.files.srt ? `Captions: SRT ${res.files.srt} , WebVTT ${res.files.vtt}` : "", res.chapters ? `YouTube chapters (paste into the description${res.chapterNote.length ? `; YouTube shows none until there are: ${res.chapterNote.join("; ")}` : ""}):\n${res.chapters}` : ""].filter(Boolean).join("\n");
@@ -1226,7 +1227,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const pick = await pickTarget(c.userId, i.device, { tool: "render_final", prefer: mo?.deviceId });
     if (pick.ask) return { text: pick.ask };
     let r;
-    try { r = await startRender(c.userId, i.projectId, "final", { by: c.ai ?? "claude", best: i.quality === "best", target: pick.target }); } catch (e) {
+    try { r = await startRender(c.userId, i.projectId, "final", { by: c.ai ?? "claude", best: i.quality === "best", target: pick.target, format: i.format }); } catch (e) {
       const code = (e as AppError).code;
       if (code === "need-original") {
         const holder = mo?.deviceId ? macNow.devices?.find((d) => d.id === mo.deviceId && d.renders) : undefined;
@@ -1256,11 +1257,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async save_to_drive(c, i) {
     await getOwnedProject(c.userId, i.projectId);
     // The newest final: one still rendering (newer than the last finished one) is saved when it is done.
-    const running = await prisma.render.findFirst({ where: { projectId: i.projectId, userId: c.userId, kind: "final", status: { in: ["queued", "running"] }, ...(i.version ? { version: i.version } : {}) }, orderBy: { createdAt: "desc" } });
-    const done = await latestFinal(c.userId, i.projectId, i.version);
+    // format: the newest final of that file type (the sound-only one, not the video made before or after it).
+    const running = await prisma.render.findFirst({ where: { projectId: i.projectId, userId: c.userId, kind: "final", status: { in: ["queued", "running"] }, ...(i.version ? { version: i.version } : {}), ...(i.format ? { format: i.format } : {}) }, orderBy: { createdAt: "desc" } });
+    const done = await latestFinal(c.userId, i.projectId, i.version, i.format);
     const r = running && (!done || running.createdAt > done.createdAt) ? null : done;
     if (!r) {
-      if (!running) return { text: `This edit has no finished final${i.version ? ` of v${i.version}` : ""} yet. render_final with driveFolder renders it and saves it there when it is done.` };
+      if (!running) return { text: `This edit has no finished ${i.format && isSoundFormat(i.format) ? "sound-only " : i.format ? `${i.format} ` : ""}final${i.version ? ` of v${i.version}` : ""} yet. render_final${i.format ? ` format "${i.format}"` : ""} with driveFolder renders it and saves it there when it is done.` };
       const t = await driveTargetOrText(c.userId, i.folder, i.createFolders);
       if (typeof t === "string") return { text: t };
       await askDriveSave(running, t, fileNameFor(i.fileName, (await renderResult(running)).fileName));

@@ -5,7 +5,7 @@ import { createHmac } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { authenticate } from "../auth";
 import { commentOut, galleryOut, reviewOut } from "../serialize";
-import { latestRender } from "../services/projects";
+import { isWatchableKey, latestRender } from "../services/projects";
 import { startRender } from "../services/render";
 import { deleteGalleryMedia, galleryMedia, prepareGalleryMedia } from "../services/galleryMedia";
 
@@ -48,7 +48,8 @@ async function reviewMedia(r: Review, projects: Project[]) {
     const top = r.projectId ? r.version : p.currentVersion;
     const best = new Map<number, (typeof renders)[number]>();
     for (const rr of renders) {
-      if (rr.projectId !== p.id || rr.version > top) continue;
+      // Only a video plays here: a sound-only, GIF or transparent final is left out (its version's preview shows).
+      if (rr.projectId !== p.id || rr.version > top || !isWatchableKey(rr.outputKey)) continue;
       const have = best.get(rr.version);
       if (!have || (have.kind !== "final" && rr.kind === "final")) best.set(rr.version, rr);
     }
@@ -96,7 +97,7 @@ async function setStatus(r: Review, status: string) {
 async function ensureRendered(userId: string, projects: Project[], version?: number, publicReviewId?: string) {
   for (const p of projects) {
     const v = version ?? p.currentVersion;
-    const done = (await latestRender(p.id, "final", v)) || (await latestRender(p.id, "preview", v));
+    const done = (await latestRender(p.id, "final", v, true)) || (await latestRender(p.id, "preview", v));
     if (done) continue;
     if (publicReviewId) {
       const busy = await prisma.render.count({ where: { projectId: p.id, version: v, kind: "preview", OR: [{ status: { in: ["queued", "running"] } }, { status: "failed", finishedAt: { gt: new Date(Date.now() - 30 * 60_000) } }] } });

@@ -1482,3 +1482,15 @@ found"). A whole-project share link shows the edits in that project now. On the 
 project" in each video's menu and Move for the selected ones: pick a project or make one, and Undo puts them back.
 Code: `moveToFolder` and `findOrMakeFolder` in `apps/api/src/services/projects.ts`, `POST /projects/move`. Tests:
 `apps/api/test/move-to-project.test.ts`, `apps/web/demo/move-edits.mjs`.
+
+## Claude exports the sound only (17 November)
+
+`render_final` takes `format`: `"audio"` (AAC .m4a) or `"wav"` makes a sound-only final for that export alone; the
+edit's own export settings and versions stay as they are, so its next video export is still a video. The file goes
+where a video would: the Mac or PC's Downloads while the Rendrr app is open, else Google Drive (`driveFolder`, or
+`save_to_drive format "audio"`, which finds the sound-only final even after a newer video final). It is named `.m4a`
+or `.wav` everywhere and the answer says "Sound-only final ... (no picture)". A video final and a sound-only final of
+the same version are two renders (asking again joins the one of the same kind); sound is never billed as a best or 4K
+export. A review link never tries to play a sound-only file (or a GIF or ProRes overlay): it shows the version's video.
+New column `Render.format` (migration `20261117120000_render_format`). Tests: `apps/api/test/sound-export.test.ts`,
+`apps/worker/test/deliver-render.test.ts` (a real .m4a from a video edit), `packages/shared/test/deliverables.test.ts`.

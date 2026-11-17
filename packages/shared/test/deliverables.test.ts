@@ -1,7 +1,7 @@
 // Premiere parity, phase 12 (deliverables): SRT and WebVTT from the edit's words, YouTube chapters from chapter marks,
 // and the export's format, bitrate and frame rate (the op, the plan, the encode).
 import { describe, expect, it } from "vitest";
-import { applyOp, buildInitialTimeline, buildTranscript, chapterProblems, chaptersText, srtText, vttText, type EditContext, type Op, type Snapshot } from "../src/index";
+import { applyOp, buildInitialTimeline, buildTranscript, chapterProblems, chaptersText, formatFile, isSoundFormat, SOUND_QUALITY, srtText, vttText, withExportFormat, type EditContext, type Op, type Snapshot } from "../src/index";
 import { ffmpegArgs, planRender, type PlanFiles } from "../src/renderPlan";
 
 const tr = buildTranscript([Array.from({ length: 40 }, (_, i) => ({ text: `w${i}`, start: 0.5 + i * 0.5, end: 0.9 + i * 0.5 }))], { maxWordsPerLine: 6 }).map((l) => ({ ...l, words: l.words.map((w) => ({ ...w, filler: false })) }));
@@ -69,6 +69,21 @@ describe("export format, bitrate and frame rate", () => {
     expect(p300.operations.join("\n")).toMatch(/Deliverable: GIF 360 px wide, 6 fps/);
     expect(() => planRender({ kind: "final", snapshot: gifOf(700), transcript: tr, source: { ...source, seconds: 710 }, videoId: "v" })).toThrow(/A GIF can be up to 10 minutes; this edit is 11:[34]\d/);
   });
+  it("a sound-only final for one export (render_final format): the edit's own settings untouched", () => {
+    const video = edit(base(), { op: "set_export", resolution: "4k", fps: 25 } as Op);
+    const once = withExportFormat(video, "audio");
+    expect(once).not.toBe(video);
+    expect(video.timeline.export).toEqual({ resolution: "4k", fps: 25 });
+    expect(once.timeline.export).toEqual({ resolution: "4k", fps: 25, format: "audio" });
+    expect(plan(once).format).toBe("audio");
+    expect(args(once, "/o.m4a").args.join(" ")).toMatch(/-map \[aout\] -c:a aac -b:a 256k/);
+    expect(withExportFormat(video, null)).toBe(video);
+    expect(withExportFormat(once, "audio")).toBe(once);
+    expect(formatFile("audio")).toEqual({ ext: "m4a", type: "audio/mp4" });
+    expect([isSoundFormat("audio"), isSoundFormat("wav"), isSoundFormat("mp4"), isSoundFormat(null)]).toEqual([true, true, false, false]);
+    expect(SOUND_QUALITY).toEqual({ audio: "Sound only (.m4a)", wav: "Sound only (WAV)" });
+  });
+
   it("the overlay export: the picture as one colour, b-roll and zooms left out, a lossless pass", () => {
     const s = edit(base(true), { op: "set_export", format: "overlay" } as Op);
     const p = plan(s);

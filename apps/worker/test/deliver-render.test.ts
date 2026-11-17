@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { applyOp, buildInitialTimeline, buildTranscript, type EditContext, type Op, type Snapshot } from "@rendrr/shared";
+import { applyOp, buildInitialTimeline, buildTranscript, withExportFormat, type EditContext, type Op, type Snapshot } from "@rendrr/shared";
 import { ffmpegArgs, planRender, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { run } from "../src/lib/ffmpeg";
 import { makeGif, mergeOverlay, writeSideFiles } from "../src/lib/deliver";
@@ -48,6 +48,17 @@ describe("deliverables, rendered", () => {
     console.log(`final: ${v.r_frame_rate}, ${mbps.toFixed(2)} Mbit/s overall`);
     assert.equal(v.r_frame_rate, "25/1");
     assert.ok(mbps > 0.8 && mbps < 2.8, "about the bitrate asked");
+  });
+
+  it("a sound-only final of a video edit, asked for one export (render_final format), the edit unchanged", async () => {
+    const video = edit([{ op: "set_export", fps: 25 } as Op]);
+    const once = withExportFormat(video, "audio");
+    assert.equal(video.timeline.export?.format, undefined, "the edit itself stays a video");
+    const { file, plan } = await render(once, "once.m4a");
+    const p = await probe(file);
+    assert.equal(plan.format, "audio");
+    assert.deepEqual(p.streams.map((x) => x.codec_name), ["aac"], "sound only, no picture");
+    assert.ok(Math.abs(Number(p.format.duration) - SECONDS) < 0.1);
   });
 
   it("sound only: WAV and AAC, as long as the edit, no picture", async () => {

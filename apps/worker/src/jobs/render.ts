@@ -1,7 +1,7 @@
 import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, forgetOrigins, getBytes, getText, macExportsKey, macForRender, noteCost, publishRender, queueDriveSave, recordUsage, redis, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
-import { bestResolution, desktopAppName, fmtClock, formatFile, isBestQuality, lengthTolerance, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
+import { bestResolution, desktopAppName, fmtClock, formatFile, isBestQuality, isSoundFormat, lengthTolerance, SOUND_QUALITY, withExportFormat, type ExportFormat, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSideFiles } from "../lib/deliver";
 import { dropTemps, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
 import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
@@ -59,7 +59,9 @@ export async function renderJob(ctx: Ctx) {
   const project = await prisma.project.findUniqueOrThrow({ where: { id: r.projectId } });
   const video = await prisma.video.findUniqueOrThrow({ where: { id: project.videoId }, include: { analysis: true } });
   const version = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId: project.id, v: r.version } } });
-  const snapshot = (version?.timeline ?? { timeline: project.timeline, name: project.name, aspect: project.aspect, styleId: project.styleId }) as unknown as Snapshot;
+  // A final of another file type asked for this export only (render_final format: sound only) is made as that type; the
+  // edit's own export settings stay as they are.
+  const snapshot = withExportFormat((version?.timeline ?? { timeline: project.timeline, name: project.name, aspect: project.aspect, styleId: project.styleId }) as unknown as Snapshot, r.kind === "final" ? (r.format as ExportFormat | null) : null);
   const transcript = (video.analysis?.transcript as unknown as Transcript) || [];
   const steps = (r.steps as string[]) || [];
   const kind = r.kind as "preview" | "final" | "sample";
@@ -815,7 +817,7 @@ export async function renderJob(ctx: Ctx) {
       status: "done", outputKey: outKey, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(), made: { on: where.on, device: where.device, why: where.why, ...(where.platform ? { platform: where.platform } : {}) },
       // A final made on the Mac is already in its Downloads (the app kept it there).
       ...(kind === "final" && macDone?.saved ? { delivery: { to: "mac", device: where.device, state: "sent", at: Date.now(), saved: macDone.saved } } : {}),
-      quality: kind === "final" ? qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr, best }) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}) } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? (isSoundFormat(fmt) ? SOUND_QUALITY[fmt] : qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr, best })) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}) } as unknown as Prisma.InputJsonValue,
     } });
     if (!won.count) {
       await deleteObjects([outKey, ...framesKeys, ...Object.values(sideKeys)]).catch(() => {});

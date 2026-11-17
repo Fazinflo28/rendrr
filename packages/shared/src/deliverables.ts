@@ -1,6 +1,6 @@
 // Phase 12: the files an edit can be delivered as besides its video. Captions as SRT and WebVTT (the render's own
 // word-timed events, in edit time), YouTube chapters from chapter marks, and what each export format is.
-import type { ExportFormat } from "./timeline";
+import type { ExportFormat, Snapshot } from "./timeline";
 
 export type CaptionCue = { start: number; end: number; text: string };
 export type Chapter = { at: number; title: string };
@@ -45,6 +45,16 @@ export function chapterProblems(chapters: Chapter[], total: number): string[] {
   const short = list.filter((c, i) => (list[i + 1]?.at ?? total) - c.at < 10);
   if (short.length) out.push(`each chapter at least 10 s long (${short.map((c) => c.title).slice(0, 3).join(", ")} ${short.length === 1 ? "is" : "are"} shorter)`);
   return out;
+}
+/** Sound only: a final with no picture (AAC .m4a or WAV). */
+export const isSoundFormat = (f: string | null | undefined): f is "audio" | "wav" => f === "audio" || f === "wav";
+/** What a sound-only final is called where a video's size would be (its quality label). */
+export const SOUND_QUALITY = { audio: "Sound only (.m4a)", wav: "Sound only (WAV)" } as const;
+/** The edit as a final of another file type, for one export (render_final format: sound only without changing the
+ *  edit's own export settings). The snapshot is not changed; null or undefined keeps its own format. */
+export function withExportFormat(s: Snapshot, format: ExportFormat | null | undefined): Snapshot {
+  if (!format || s.timeline.export?.format === format) return s;
+  return { ...s, timeline: { ...s.timeline, export: { ...(s.timeline.export ?? {}), format } } };
 }
 /** A format's file extension and media type. */
 export const formatFile = (f: ExportFormat | undefined): { ext: string; type: string } =>

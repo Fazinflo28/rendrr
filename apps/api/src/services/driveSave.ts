@@ -1,5 +1,6 @@
 import { AppError, drive, driveSaveOf, features, queueDriveSave, setDriveSave, withExt, type DriveSave } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
+import { formatFile, type ExportFormat } from "@rendrr/shared";
 import { renderResult } from "./render";
 
 // A final saved into the user's Google Drive, in the folder they named (save_to_drive, render_final driveFolder): the
@@ -52,8 +53,11 @@ export function driveLine(r: Render): string {
 }
 
 /** The latest finished final of an edit (a version when given). */
-export async function latestFinal(userId: string, projectId: string, version?: number) {
-  return prisma.render.findFirst({ where: { projectId, userId, kind: "final", status: "done", outputKey: { not: null }, ...(version ? { version } : {}) }, orderBy: { createdAt: "desc" } });
+export async function latestFinal(userId: string, projectId: string, version?: number, format?: string) {
+  // A file type asked for: renders from before it was kept are told by their file's extension.
+  const ext = format ? formatFile(format as ExportFormat).ext : null;
+  const of = format ? { OR: [{ format }, { format: null, outputKey: { endsWith: `.${ext}` } }] } : {};
+  return prisma.render.findFirst({ where: { projectId, userId, kind: "final", status: "done", outputKey: { not: null }, ...(version ? { version } : {}), ...of }, orderBy: { createdAt: "desc" } });
 }
 
 export { renderResult };

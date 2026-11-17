@@ -1,7 +1,7 @@
 import { chapterProblems, chaptersText, macOriginalOf, type Chapter } from "@rendrr/shared";
 import { AppError, enqueue, macForRender, publishRender, queue, readRender, redis, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
-import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, isFourKQuality, PREVIEW_STEPS, qualityLabel } from "@rendrr/shared";
+import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, isFourKQuality, isSoundFormat, PREVIEW_STEPS, qualityLabel, SOUND_QUALITY, type ExportFormat } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
 import { samplesView } from "./samples";
 import { assertMay } from "./billing";
@@ -32,7 +32,7 @@ export async function targetFromApp(userId: string, device: unknown): Promise<st
 }
 
 /** Starts a render. Local footage needs its original once for a final (code "need-original", as the UI expects), unless it is kept on the user's Mac and that Mac makes the final. */
-export async function startRender(userId: string, projectId: string, kind: "preview" | "final", opts: { version?: number; by?: string; best?: boolean; target?: string | null } = {}) {
+export async function startRender(userId: string, projectId: string, kind: "preview" | "final", opts: { version?: number; by?: string; best?: boolean; target?: string | null; format?: ExportFormat } = {}) {
   const p = await getOwnedProject(userId, projectId);
   const video = await prisma.video.findUniqueOrThrow({ where: { id: p.videoId } });
   if (kind === "preview" && (!video.proxyKey || video.status === "expired")) {
@@ -46,18 +46,22 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   if (kind === "final" && video.status === "missing") {
     throw new AppError("We could not reach your Drive file. Reconnect it and try again.", 409, "drive");
   }
-  // Best quality: the highest resolution the footage fills in the edit's shape, a finer encode (the worker reads "best"
-  // in the quality label). A best final and a standard one of the same version are different renders.
-  const best = kind === "final" && !!opts.best;
   const version = opts.version ?? (await sealLatestVersion(projectId));
   const exists = await prisma.projectVersion.findUnique({ where: { projectId_v: { projectId, v: version } } });
   if (!exists) throw new AppError(`Version ${version} does not exist.`, 400);
   const steps = stepsFor(kind, video.source, video.sample);
   // Phase 7: the final's quality from its version's export settings (its time limit follows it); HDR is learnt by the
   // worker from the original and added then.
-  const ex = (exists.timeline as unknown as { timeline?: { export?: { resolution?: string; codec?: string } } })?.timeline?.export;
+  const ex = (exists.timeline as unknown as { timeline?: { export?: { resolution?: string; codec?: string; format?: ExportFormat } } })?.timeline?.export;
+  // The final's file type: one asked for this export only (render_final format: sound only, the edit unchanged), else
+  // the version's export setting. Sound has no picture size, so it is never a best or 4K export.
+  const format: ExportFormat | null = kind === "final" ? opts.format ?? ex?.format ?? "mp4" : null;
+  const sound = isSoundFormat(format);
+  // Best quality: the highest resolution the footage fills in the edit's shape, a finer encode (the worker reads "best"
+  // in the quality label). A best final and a standard one of the same version are different renders.
+  const best = kind === "final" && !!opts.best && !sound;
   const resolution = best && (ex?.resolution === "4k" || bestResolution(p.aspect, video.width, video.height) === "4k") ? "4k" : best ? "1080p" : ex?.resolution;
-  const quality = kind === "final" ? qualityLabel({ resolution, codec: ex?.codec, hdr: !!video.hdr && ((ex as { hdr?: string })?.hdr ?? "keep") === "keep", best }) : "540p";
+  const quality = kind !== "final" ? "540p" : sound ? SOUND_QUALITY[format as "audio" | "wav"] : qualityLabel({ resolution, codec: ex?.codec, hdr: !!video.hdr && ((ex as { hdr?: string })?.hdr ?? "keep") === "keep", best });
   // Billing: the plan must have room for this export (or preview). Gallery renders are Rendrr's own.
   if (opts.by !== "gallery") await assertMay(userId, { metric: kind === "final" ? "export" : "preview", minutes: (p.outputSeconds || video.seconds || 60) / 60, fourK: kind === "final" && isFourKQuality(quality) });
   // Asking again while the same version is already waiting or rendering joins that render, however long it has been
@@ -65,9 +69,10 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   // click and the AI's render at once, make one render, not two.
   const made = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"render:" + projectId + ":" + kind}))`;
-    const running = await tx.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, ...(kind === "final" ? { quality: best ? { contains: "best" } : { not: { contains: "best" } } } : {}) }, orderBy: { createdAt: "desc" } });
+    // A final joins only one of the same file type (a sound-only export never stands in for the video, nor the reverse).
+    const running = await tx.render.findFirst({ where: { projectId, kind, version, status: { in: ["queued", "running"] }, ...(kind === "final" ? { quality: best ? { contains: "best" } : { not: { contains: "best" } }, format } : {}) }, orderBy: { createdAt: "desc" } });
     if (running) return { r: running, joined: true };
-    return { r: await tx.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality, by: opts.by ?? "user", target: opts.target ?? null } }), joined: false };
+    return { r: await tx.render.create({ data: { projectId, userId, kind, version, status: "queued", steps, quality, format, by: opts.by ?? "user", target: opts.target ?? null } }), joined: false };
   });
   if (made.joined) return made.r;
   const r = made.r;
@@ -85,7 +90,7 @@ export async function renderResult(r: Render) {
   const video = project ? await prisma.video.findUnique({ where: { id: project.videoId } }) : null;
   // Phase 12: the file's own extension (a GIF, sound only, ProRes with alpha) and its captions and chapters.
   // Before the file exists (render_final with driveFolder names the Drive copy at once), the edit's export format says it.
-  const fmt = (project?.timeline as { export?: { format?: string } } | null)?.export?.format;
+  const fmt = r.format ?? (project?.timeline as { export?: { format?: string } } | null)?.export?.format;
   const planned = ({ gif: "gif", audio: "m4a", wav: "wav", overlay: "mov" } as Record<string, string>)[fmt || ""] || "mp4";
   const ext = (r.outputKey?.match(/\.(\w+)$/)?.[1] ?? (r.kind === "final" ? planned : "mp4")).toLowerCase();
   const stem = `${(project?.name || "rendrr").replace(/[^\w\- ]+/g, "").trim() || "rendrr"} ${r.kind === "final" ? "final" : "preview"} v${r.version}`;
