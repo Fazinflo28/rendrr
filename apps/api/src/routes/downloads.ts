@@ -131,6 +131,13 @@ export default async function downloads(app: FastifyInstance) {
     reply.header("cache-control", "public, max-age=60").type("text/html; charset=utf-8");
     return page(p, await readInfo(p), base());
   };
+  // The newest app for each computer (the web app inside an older Mac or Windows app offers the update).
+  app.get("/downloads/latest", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (_req, reply) => {
+    const [mac, windows] = await Promise.all([readInfo("mac"), readInfo("windows")]);
+    reply.header("cache-control", "public, max-age=300");
+    return { mac: { version: mac.version ?? null, link: `${base()}/download/mac` }, windows: { version: windows.version ?? null, link: `${base()}/download/windows` } };
+  });
+
   app.get("/download", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (req, reply) => {
     reply.header("vary", "user-agent");
     return sendPage(/Windows/i.test(String(req.headers["user-agent"] || "")) ? "windows" : "mac", reply);

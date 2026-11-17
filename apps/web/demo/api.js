@@ -519,6 +519,9 @@ Object.assign(api, {
   },
 });
 
+// The newest Mac and Windows apps (an older app inside shows the update bar). A test can set globalThis.__demoLatest.
+Object.assign(api, { latestDesktop: async () => globalThis.__demoLatest || { mac: { version: "0.1.14", link: "https://api.rendrr.live/download/mac" }, windows: { version: "0.1.4", link: "https://api.rendrr.live/download/windows" } } });
+
 export { api };
 export const API_BASE = "";
 

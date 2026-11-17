@@ -5,7 +5,7 @@
 //   /editor/:id  /review/:token  /connect  /usage (Usage & billing)  /billing (its Billing tab)  /admin (team)  /settings
 //   Login is a modal over Explore (Higgsfield-style): browse free, act after logging in. /login opens that modal.
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, useNav, useApp, forgetPages } from "./ui";
+import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, Icon, useNav, useApp, forgetPages } from "./ui";
 import { AppIcon, Mark } from "./logo";
 import { appLink, isChallenge } from "./desktopLogin";
 import { AssetsPage } from "./assets";
@@ -188,6 +188,7 @@ function App() {
   const toast = useToast();
   useMacExports(user, toast);
   useMacRenders(user, toast);
+  const update = useDesktopUpdate();
   useClientErrors(user);
   // A plan limit reached anywhere (a render, an upload): one dialog says what ran out and where to top up.
   const [limit, setLimit] = useState(null);
@@ -276,9 +277,40 @@ function App() {
   const onCloseLogin = () => { const leave = login?.leave; setLogin(null); if (leave || pathname === "/login") go("/explore"); };
   return html`<${NavCtx.Provider} value=${{ route, go }}><${AppCtx.Provider} value=${ctx}>
     ${!page ? null : !guarded && (opts.bare || opts.full) ? page : html`<${Shell} key=${nonce}>${page}<//>`}
+    ${update && html`<${UpdateBar} u=${update} />`}
     ${limit && html`<${LimitDialog} message=${limit} onClose=${() => setLimit(null)} />`}
     ${login && !user && html`<${LoginPage} key=${login.mode} initialMode=${login.mode} onClose=${onCloseLogin} after=${(u) => { const f = login.after; setLogin(null); if (pathname === "/login") go("/explore"); if (f) f(u); }} />`}
   <//><//>`;
+}
+
+// Inside an older Mac or Windows app: a bar offers the new one. An app with no render engine (before rendering on the
+// computer came) cannot make exports there at all, so the bar says that; a newer version only says it is out. The app
+// loads this web app live, so even the oldest app shows it. Hidden for that version once closed.
+const newer = (a, b) => { const x = String(a || "").split(".").map(Number), y = String(b || "").split(".").map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+function useDesktopUpdate() {
+  const [u, setU] = useState(null);
+  useEffect(() => {
+    const d = typeof window !== "undefined" ? window.rendrrDesktop : null;
+    if (!d) return;
+    const platform = d.app === "windows" ? "windows" : "mac";
+    let on = true;
+    api.latestDesktop().then((all) => {
+      const latest = all?.[platform];
+      const noEngine = !d.render, out = !!latest?.version && newer(latest.version, d.version);
+      if (!on || (!noEngine && !out)) return;
+      const key = `rendrr:update-closed:${latest?.version || d.version || "old"}`;
+      try { if (localStorage.getItem(key)) return; } catch { /* private storage */ }
+      setU({ platform, version: latest?.version || null, link: latest?.link || `${window.location.origin}/download`, noEngine, key, close: () => { try { localStorage.setItem(key, "1"); } catch { /* private storage */ } setU(null); } });
+    }).catch(() => {});
+    return () => { on = false; };
+  }, []);
+  return u;
+}
+function UpdateBar({ u }) {
+  const M = u.platform === "windows" ? "PC" : "Mac", appName = u.platform === "windows" ? "Rendrr Windows app" : "Rendrr Mac app";
+  const open = () => { const d = window.rendrrDesktop; if (d?.openInBrowser) d.openInBrowser(u.link); else window.open(u.link, "_blank", "noopener"); };
+  const text = u.noEngine ? `Update the ${appName} to render exports on this ${M}. This version sends them to Rendrr's cloud.` : `A new ${appName}${u.version ? ` (${u.version})` : ""} is out.`;
+  return html`<div class="update-bar" id="update-bar" role="status"><${Icon} name="download" size="16" /><span class="grow">${text}</span><${Btn} size="sm" id="update-get" onClick=${open}>Get the new app<//><${Btn} kind="quiet" size="sm" icon="x" id="update-close" aria-label="Close" onClick=${u.close} /></div>`;
 }
 
 // This computer's own id (from the desktop app; an older app is known by its name). One account can be open on several

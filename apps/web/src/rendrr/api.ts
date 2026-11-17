@@ -583,6 +583,8 @@ export const api: any = {
     return post("/reviews", opts);
   },
   listFoldersLite: () => get("/folders?lite=1"),
+  // The newest Mac and Windows apps ({ mac: { version, link }, windows: { version, link } }): an older app is offered the update.
+  latestDesktop: () => get("/downloads/latest", { auth: false }),
   getReview: (t: string) => get(`/public/reviews/${enc(t)}`, { auth: false, headers: reviewHeaders(t) }),
   getReviewMedia: (t: string, v?: number) => get(`/public/reviews/${enc(t)}/media${v ? `?v=${v}` : ""}`, { auth: false, headers: reviewHeaders(t) }),
   checkReviewPassword: async (t: string, pw: string) => {

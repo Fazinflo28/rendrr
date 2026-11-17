@@ -1699,3 +1699,9 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
 .bin-el { aspect-ratio: 1; border: 0; border-radius: 10px; padding: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 1px var(--hair); }
 .bin-el:hover { box-shadow: 0 0 0 1px var(--accent-ring); }
 .bin-el img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* Inside an older Mac or Windows app: the bar that offers the new one (bottom of the window, above everything). */
+.update-bar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:90;display:flex;align-items:center;gap:10px;width:min(640px,calc(100vw - 32px));padding:10px 10px 10px 14px;border-radius:var(--r-md);background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow-pop);color:var(--ink);font-size:13px;line-height:1.35}
+.update-bar > svg{color:var(--accent-ink);flex:none}
+.update-bar .grow{flex:1;min-width:0}
+@media (max-width:560px){.update-bar{flex-wrap:wrap}.update-bar .grow{flex-basis:calc(100% - 60px)}}

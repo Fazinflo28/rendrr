@@ -107,5 +107,13 @@ describe("Mac and Windows download links", { skip: !ready && "needs Redis, stora
     const mac = await app.inject({ method: "GET", url: "/download", headers: { "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Safari/605.1" } });
     assert.match(mac.body, /<h1>Rendrr for Mac<\/h1>/);
     assert.equal((await app.inject({ method: "GET", url: "/download/linux" })).statusCode, 404);
+    // The newest version of each app, for the web app inside an older app to offer the update (no sign-in needed).
+    const latest = await app.inject({ method: "GET", url: "/downloads/latest" });
+    assert.equal(latest.statusCode, 200);
+    const l = latest.json() as { mac: { version: string; link: string }; windows: { version: string; link: string } };
+    assert.equal(l.mac.version, "0.1.9");
+    assert.equal(l.windows.version, "0.1.4");
+    assert.match(l.mac.link, /\/download\/mac$/);
+    assert.match(l.windows.link, /\/download\/windows$/);
   });
 });

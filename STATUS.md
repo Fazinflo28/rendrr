@@ -1494,3 +1494,14 @@ the same version are two renders (asking again joins the one of the same kind); 
 export. A review link never tries to play a sound-only file (or a GIF or ProRes overlay): it shows the version's video.
 New column `Render.format` (migration `20261117120000_render_format`). Tests: `apps/api/test/sound-export.test.ts`,
 `apps/worker/test/deliver-render.test.ts` (a real .m4a from a video edit), `packages/shared/test/deliverables.test.ts`.
+
+## Older Mac and Windows apps offer the new one (17 November)
+
+The desktop apps have no auto-update, so an old install stays old: one from before rendering on the computer has no
+render engine, and every export it asks for goes to Rendrr's cloud ("this Mac app cannot render yet: update it"). The
+app's window loads the live web app, so the web app now shows a bar inside an older app: with no render engine it says
+"Update the Rendrr Mac app to render exports on this Mac. This version sends them to Rendrr's cloud."; an app that
+renders but is older than the newest build says a new one is out. "Get the new app" opens the download page in the
+browser (every app version may open rendrr.live links). Closing it keeps it closed until a newer version comes out. The
+newest version comes from the new public `GET /downloads/latest` ({ mac, windows }: version and download link).
+Tests: `apps/web/demo/update-bar.mjs`, `apps/api/test/mac-download.test.ts`.
