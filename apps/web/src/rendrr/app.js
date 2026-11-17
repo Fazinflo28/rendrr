@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme,
 import { AppIcon, Mark } from "./logo";
 import { appLink, isChallenge } from "./desktopLogin";
 import { AssetsPage } from "./assets";
+import { AddPickPage } from "./addPick";
 import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, SettingsPage, Shell } from "./screens";
 import { UsageBillingPage, LimitDialog } from "./billing";
 import { AdminPage } from "./admin";
@@ -26,6 +27,7 @@ const ROUTES = [
   [/^\/projects\/([^/]+)$/, (m) => html`<${FolderPage} id=${m[1]} />`],
   [/^\/editor\/([^/]+)$/, (m) => html`<${EditorPage} id=${m[1]} />`, { full: true }],
   [/^\/review\/([^/]+)$/, (m) => html`<${ClientReviewPage} token=${m[1]} />`, { bare: true }],
+  [/^\/add\/([^/]+)$/, (m) => html`<${AddPickPage} id=${m[1]} />`],
   [/^\/connect$/, () => html`<${ConnectPage} />`],
   [/^\/usage$/, () => html`<${UsageBillingPage} key="usage" />`],
   [/^\/billing$/, () => html`<${UsageBillingPage} key="billing" initialTab="billing" />`],

@@ -9,6 +9,7 @@ import {
   ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip, CLOUD, CLOUD_REGION, desktopAppName, deviceLabel, machineWord, macOriginalOf, nextExportText, whereText } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, findOrMakeFolder, getOwnedProject, graphicPlacements, moveToFolder, resolveReference } from "./services/projects";
+import { createPick, ownPick, pickLink, type Pick, type PickSource } from "./services/picks";
 import { samplesOut, samplesView, startSamples } from "./services/samples";
 import type { AppOpen } from "@rendrr/shared";
 import { createCanvas } from "./services/canvas";
@@ -459,6 +460,25 @@ async function driveSyncLine(userId: string, folderId: string): Promise<string> 
     const t = r ? syncText(r) : "";
     return t ? `${t}${r && r.added ? " They are being prepared (list_footage shows when each is ready)." : ""} ` : "";
   } catch { return ""; }
+}
+
+const PICK_WHERE: Record<PickSource, string> = { computer: "their computer", dropbox: "their Dropbox", google_photos: "their Google Photos" };
+/** A pick as the AI reads it: the link to give the user (new), or what has arrived so far, each with its id and state. */
+async function pickAnswer(p: Pick, made: boolean): Promise<ToolOut> {
+  const where = PICK_WHERE[p.source], mins = Math.max(0, Math.round((p.until - Date.now()) / 60000));
+  const into = p.projectId ? " They go in the edit's Media panel too." : "";
+  if (made) {
+    const how = p.source === "computer" ? "drop or choose the videos and pictures there (any size; a video's preview is made in their browser, so they keep that page open until it says done, and its original stays on their computer: a final asks for it once)"
+      : p.source === "dropbox" ? "paste a Dropbox link there, or choose the files from their Dropbox"
+      : "choose the photos and videos in Google Photos from there";
+    return { text: `Give the user this link to add files from ${where} (open it where they are signed in to Rendrr; it works for ${mins} minutes): ${pickLink(p)}\nThey ${how}.${into} Then add_footage {pickId: "${p.id}", wait_seconds: 60} says which arrived (their videoIds).`, data: { pickId: p.id, link: pickLink(p) } };
+  }
+  const vs = p.videoIds.length ? await prisma.video.findMany({ where: { id: { in: p.videoIds }, userId: p.userId } }) : [];
+  const left = Date.now() > p.until ? "The link has expired: from: makes a new one." : `The link stays open ${mins} more minutes.`;
+  if (!vs.length) return { text: `Nothing has arrived from ${where} yet${p.done ? " (the user closed the page)" : ""}. ${left}`, data: { pickId: p.id, videoIds: [] } };
+  const order = new Map(p.videoIds.map((id, k) => [id, k]));
+  vs.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  return { text: `From ${where}, ${vs.length} ${vs.length === 1 ? "file" : "files"}${p.done ? " (the user is done)" : " so far"}:\n${vs.map((v) => `- ${footageText(v, { projectId: p.projectId })}`).join("\n")}\n${p.done ? "" : left}`.trim(), data: { pickId: p.id, videoIds: vs.map((v) => v.id), statuses: vs.map((v) => v.status) } };
 }
 
 export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolOut>> = {
@@ -1054,6 +1074,13 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   async add_footage(c, i) {
     const o = { name: i.name ?? null, kind: i.kind ?? null, libraryFolder: i.libraryFolder ?? null, projectId: i.projectId ?? null, ai: c.ai === "chatgpt" ? "chatgpt" as const : "claude" as const, aiName: c.aiName };
     const waitMs = Math.min(120, i.wait_seconds ?? 0) * 1000;
+    // Files the user has elsewhere: a link they open in Rendrr to add them; what arrived is asked for with pickId.
+    if (i.from) return pickAnswer(await createPick(c.userId, i.from, { projectId: i.projectId, kind: i.kind, ai: o.ai, aiName: c.aiName }), true);
+    if (i.pickId) {
+      const p0 = await ownPick(c.userId, i.pickId);
+      const p = waitMs ? await waitFor(async () => { const x = await ownPick(c.userId, i.pickId); return x.videoIds.length > p0.videoIds.length || x.done ? x : null; }, waitMs) ?? await ownPick(c.userId, i.pickId) : p0;
+      return pickAnswer(p, false);
+    }
     // A logo or overlay picture kept as an element (Assets > Elements), transparent: placed with add_graphic.
     if (i.as === "element") {
       if (i.upload) {

@@ -522,6 +522,25 @@ Object.assign(api, {
 // The newest Mac and Windows apps (an older app inside shows the update bar). A test can set globalThis.__demoLatest.
 Object.assign(api, { latestDesktop: async () => globalThis.__demoLatest || { mac: { version: "0.1.14", link: "https://api.rendrr.live/download/mac" }, windows: { version: "0.1.4", link: "https://api.rendrr.live/download/windows" } } });
 
+// The AI's links for files (/add/<pick>): a test sets globalThis.__demoPick ({ source, aiName, project, expired, other }).
+const demoPicks = {};
+const pickOf = (id) => {
+  const seed = globalThis.__demoPick || {};
+  if (seed.other) throw Object.assign(new Error("This link was made for another Rendrr account. Log in with that account to add the files, or ask your AI for a new link."), { code: "pick-other-account", status: 403 });
+  if (seed.expired === "gone") throw Object.assign(new Error("This link has expired. Ask your AI for a new one."), { code: "pick-expired", status: 404 });
+  return (demoPicks[id] ||= { id, source: seed.source || "computer", ai: "claude", aiName: seed.aiName || "Claude", project: seed.project || null, kind: null, until: Date.now() + 3600_000, expired: !!seed.expired, done: false, ids: [] });
+};
+const pickView = async (p) => {
+  const videos = [];
+  for (const id of p.ids) { const v = await api.getVideo(id).catch(() => null); videos.push(v ? { id, name: v.name, status: v.status === "ready" || !v.status ? "ready" : v.status, still: !!v.still } : { id, name: globalThis.__demoPickNames?.[id] || "Picture", status: "ready", still: true }); }
+  const { ids, ...rest } = p; return { ...rest, videos };
+};
+Object.assign(api, {
+  getPick: async (id) => { await wait(150); return pickView(pickOf(id)); },
+  reportPick: async (id, videoIds) => { const p = pickOf(id); for (const v of videoIds) if (!p.ids.includes(v)) p.ids.push(v); (globalThis.__demoPickReports ||= []).push(videoIds); return pickView(p); },
+  finishPick: async (id) => { const p = pickOf(id); p.done = true; return pickView(p); },
+});
+
 export { api };
 export const API_BASE = "";
 

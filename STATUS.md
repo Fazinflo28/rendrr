@@ -1505,3 +1505,14 @@ renders but is older than the newest build says a new one is out. "Get the new a
 browser (every app version may open rendrr.live links). Closing it keeps it closed until a newer version comes out. The
 newest version comes from the new public `GET /downloads/latest` ({ mac, windows }: version and download link).
 Tests: `apps/web/demo/update-bar.mjs`, `apps/api/test/mac-download.test.ts`.
+
+## Claude asks for files on your computer (17 November)
+
+`add_footage from: "computer"` gives the AI a one-hour link (`/add/<pick>`) to hand the user: they open it where they
+are signed in to Rendrr and drop or choose videos and pictures from their computer (any size, so files too big to attach
+to the chat get in too). A video stays on their computer and its preview is made in that tab, as from the Library; a
+picture is uploaded. What arrives is recorded on the pick and goes in the edit's Media panel when the link was made for
+one; `add_footage pickId` (with `wait_seconds`) tells the AI exactly which videos arrived and their state. The link
+belongs to one account: opened in another it says so and takes nothing; after an hour it says it expired. Code:
+`apps/api/src/services/picks.ts`, `apps/api/src/routes/picks.ts`, `apps/web/src/rendrr/addPick.js`. Tests:
+`apps/api/test/picks.test.ts`, `apps/web/demo/add-pick.mjs`.
