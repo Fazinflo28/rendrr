@@ -1,6 +1,6 @@
 import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, renderFileKeys, signGet } from "@rendrr/core";
 import { deleteEditCommentFiles } from "./commentMedia";
-import { prisma, type Prisma, type Project } from "@rendrr/db";
+import { prisma, type Folder, type Prisma, type Project } from "@rendrr/db";
 import { allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, libraryVideoIds, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip, ASPECTS, aspectSize, orientationOf, type Aspect } from "@rendrr/shared";
 import { otherVideoIds, playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
@@ -18,6 +18,76 @@ export async function defaultFolderId(userId: string, name?: string): Promise<st
 export async function createFolder(userId: string, name: string) {
   const [count, u] = await Promise.all([prisma.folder.count({ where: { userId } }), prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { name: true } })]);
   return prisma.folder.create({ data: { userId, name: name.trim().slice(0, 80) || "New project", workspace: `${(u.name || "My").split(" ")[0]}'s Workspace`, cover: 1 + (count % 6) } });
+}
+
+/**
+ * The user's project folder named by its id or its name (case and spaces at the ends ignored). Two of theirs with that
+ * name are refused (never a guess); a name that is not there yet makes the project when `make` is set.
+ */
+export async function findOrMakeFolder(userId: string, ref: string, make = true): Promise<{ folder: Folder; made: boolean }> {
+  const want = ref.trim();
+  const byId = want ? await prisma.folder.findUnique({ where: { id: want } }) : null;
+  if (byId && byId.userId === userId) return { folder: byId, made: false };
+  const all = await prisma.folder.findMany({ where: { userId }, orderBy: { updatedAt: "desc" } });
+  const same = all.filter((f) => f.name.trim().toLowerCase() === want.toLowerCase());
+  if (same.length === 1) return { folder: same[0], made: false };
+  if (same.length > 1) throw new AppError(`${same.length} projects are called "${same[0].name}": ${same.map((f) => f.id).join(", ")}. Send the id of the one meant.`, 409, "ambiguous-project");
+  if (!want || !make || /^c[a-z0-9]{20,}$/.test(want)) throw notFound(`There is no project "${want}". ${all.length ? `Projects: ${all.slice(0, 30).map((f) => `"${f.name}" (${f.id})`).join(", ")}.` : "There are none yet."}`);
+  return { folder: await createFolder(userId, want), made: true };
+}
+
+export type MoveItem = { kind: "edit" | "video"; id: string };
+export type MoveLine = { id: string; ok: boolean; text: string; projectId?: string; from?: string };
+
+/**
+ * Videos into a project (a folder of edits). An edit moves with everything in it (versions, renders, comments, its own
+ * share links); footage from the Library becomes a new edit there (version 1 is the raw footage) and stays in the
+ * Library. Each item is answered on its own: another user's things are "not found", a deleted edit is left alone.
+ */
+export async function moveToFolder(userId: string, items: MoveItem[], folder: Folder, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}): Promise<MoveLine[]> {
+  if (folder.userId !== userId) throw notFound("That project is gone.");
+  const ids = items.map((x) => x.id);
+  const [edits, videos] = await Promise.all([
+    prisma.project.findMany({ where: { userId, id: { in: ids } }, select: { id: true, name: true, folderId: true, deletedAt: true, videoId: true, folder: { select: { name: true } } } }),
+    prisma.video.findMany({ where: { userId, id: { in: ids } }, select: { id: true, name: true, projects: { where: { deletedAt: null }, select: { id: true, name: true, folder: { select: { name: true } } }, take: 5 } } }),
+  ]);
+  const editOf = new Map(edits.map((e) => [e.id, e])), videoOf = new Map(videos.map((v) => [v.id, v]));
+  const where = (ps: { id: string; name: string; folder: { name: string } }[]) => ps.map((p) => `"${p.name}" (${p.id}) in "${p.folder.name}"`).join(", ");
+  const out: MoveLine[] = [], touched = new Set<string>(), seen = new Set<string>();
+  for (const it of items) {
+    // The same id twice with the same kind is one item; sent once as each kind, the right one still counts.
+    if (seen.has(`${it.kind}:${it.id}`)) continue;
+    seen.add(`${it.kind}:${it.id}`);
+    const e = editOf.get(it.id), v = videoOf.get(it.id);
+    if (it.kind === "edit") {
+      if (!e) {
+        out.push({ id: it.id, ok: false, text: v ? `${it.id} is footage ("${v.name}"), not an edit: kind video puts it in the project as a new edit.${v.projects.length ? ` Its edits: ${where(v.projects)}; send one of their ids as kind edit to move it.` : ""}` : `edit ${it.id}: not found.` });
+        continue;
+      }
+      if (e.deletedAt) { out.push({ id: e.id, ok: false, text: `Edit "${e.name}" is deleted: restore it first (delete_items restore: true).` }); continue; }
+      if (e.folderId === folder.id) { out.push({ id: e.id, ok: false, text: `Edit "${e.name}" is already in "${folder.name}".` }); continue; }
+      await prisma.project.update({ where: { id: e.id }, data: { folderId: folder.id } });
+      touched.add(e.folderId);
+      out.push({ id: e.id, ok: true, projectId: e.id, from: e.folderId, text: `Edit "${e.name}" moved from "${e.folder.name}" to "${folder.name}".` });
+      continue;
+    }
+    if (!v) {
+      out.push({ id: it.id, ok: false, text: e ? `${it.id} is an edit ("${e.name}"), not footage: kind edit moves it.` : `video ${it.id}: not found.` });
+      continue;
+    }
+    try {
+      const p = await createProject(userId, { videoId: v.id, folderId: folder.id }, opts);
+      out.push({ id: v.id, ok: true, projectId: p.id, text: `Video "${v.name}" is in "${folder.name}" as a new edit "${p.name}" (${p.id}), version 1 = the raw footage; the Library keeps the video.${v.projects.length ? ` Its other edits stay where they are: ${where(v.projects)}.` : ""}` });
+    } catch (err) {
+      const msg = (err as Error).message;
+      out.push({ id: v.id, ok: false, text: msg.includes(`"${v.name}"`) ? msg : `"${v.name}": ${msg}` });
+    }
+  }
+  if (out.some((l) => l.ok)) {
+    touched.add(folder.id);
+    await prisma.folder.updateMany({ where: { id: { in: [...touched] }, userId }, data: { updatedAt: new Date() } });
+  }
+  return out;
 }
 
 /** The user's own folder, or null when that id is not theirs. */

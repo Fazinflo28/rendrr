@@ -431,6 +431,8 @@ export const api: any = {
   createFolder: async (name: string) => { if (!name?.trim()) throw fail("Give the project a name."); return post("/folders", { name: name.trim() }); },
   renameFolder: (id: string, name: string) => patch(`/folders/${enc(id)}`, { name }),
   deleteFolder: (id: string) => del(`/folders/${enc(id)}`),
+  // Edits into another project: { folder, moved: [{ id, from }], skipped: [{ id, why }] }.
+  moveEdits: (ids: string[], folderId: string) => post("/projects/move", { ids, folderId }),
   deleteAsset: (id: string) => del(`/projects/${enc(id)}`),
   restoreAsset: (id: string) => post(`/projects/${enc(id)}/restore`),
 

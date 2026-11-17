@@ -11,7 +11,7 @@ import { listen, openSse } from "../live";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut } from "../serialize";
 import { projectChat } from "../services/aiChat";
 import { editorMarks } from "../services/marks";
-import { createFolder, createProject, createWaitingEdit, getOwnedProject, listProjects, projectFull, purgeProjectFiles, resolveReference, stylesById, useFootage } from "../services/projects";
+import { createFolder, createProject, createWaitingEdit, getOwnedProject, listProjects, moveToFolder, projectFull, purgeProjectFiles, resolveReference, stylesById, useFootage } from "../services/projects";
 import { addNote, deleteComment, editNote } from "../services/commentMedia";
 import { sendComments } from "../services/handoff";
 
@@ -31,6 +31,7 @@ async function editThumbs(ps: { id: string; videoId: string }[]): Promise<Map<st
 }
 
 /** Server-sent events on a raw response. Keeps CORS headers that Fastify already set. */
+const MoveEditsInput = z.object({ ids: z.array(z.string().min(1).max(80)).min(1).max(100), folderId: z.string().min(1).max(80) });
 const SpeakerInput = z.object({ clips: z.array(z.object({ id: z.string().min(1).max(80), videoId: z.string().min(1).max(80), srcIn: z.number().min(0), srcOut: z.number().min(0), rotate: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).default(0) })).min(1).max(400) });
 const SkinAreasInput = z.object({ aspect: z.string().max(8).optional(), clips: z.array(z.object({ id: z.string().max(80), videoId: z.string().max(80), srcIn: z.number(), srcOut: z.number(), rotate: z.number().optional(), focus: z.object({ x: z.number(), y: z.number() }).nullable().optional() })).max(2000) });
 
@@ -121,6 +122,15 @@ export default async function projects(app: FastifyInstance) {
   app.post("/projects/:id/footage", async (req) => {
     const { videoIds } = UseFootageInput.parse(req.body);
     return projectOut(await useFootage(req.user!.id, (req.params as { id: string }).id, videoIds));
+  });
+
+  // Edits into another project (the folder page's Move to project): each moves with everything in it.
+  app.post("/projects/move", async (req) => {
+    const { ids, folderId } = MoveEditsInput.parse(req.body);
+    const folder = await prisma.folder.findUnique({ where: { id: folderId } });
+    if (!folder || folder.userId !== req.user!.id) throw notFound("That project is gone.");
+    const lines = await moveToFolder(req.user!.id, ids.map((id) => ({ kind: "edit" as const, id })), folder);
+    return { folder: folderOut(folder), moved: lines.filter((l) => l.ok).map((l) => ({ id: l.id, from: l.from })), skipped: lines.filter((l) => !l.ok).map((l) => ({ id: l.id, why: l.text })) };
   });
 
   // Editor autosave and status changes. Timeline writes go through applyTimelineChange only.

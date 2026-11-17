@@ -508,6 +508,17 @@ api.listFolders = async (...a) => (await listFolders0(...a)).map((f, i) => {
   return { ...f, thumbs: Array.from({ length: Math.min(n, 4) }, (_, k) => demoPic(i * 5 + k + 1)) };
 });
 
+// Edits into another project (the folder page's Move to project), like the server's POST /projects/move.
+Object.assign(api, {
+  moveEdits: async (ids, folderId) => {
+    const f = (await api.listFoldersLite()).find((x) => x.id === folderId);
+    if (!f) throw Object.assign(new Error("That project is gone."), { status: 404 });
+    for (const id of ids) await api.updateProject(id, { folderId });
+    (globalThis.__demoMoves ||= []).push({ ids, folderId });
+    return { folder: f, moved: ids.map((id) => ({ id, from: null })), skipped: [] };
+  },
+});
+
 export { api };
 export const API_BASE = "";
 

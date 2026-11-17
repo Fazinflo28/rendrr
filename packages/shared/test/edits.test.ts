@@ -124,7 +124,8 @@ describe("connector tool list", () => {
     // as a storyboard in the chat before the whole preview; the changes they ask on each).
     // 51: add_footage (a video or picture the user gives the AI in the chat, into their library and the edit).
     // 52: delete_items (footage, edits, folders and assets deleted or restored when the user asks; the Trash first).
-    expect(MCP_TOOLS.length).toBeLessThanOrEqual(52);
+    // 53: move_to_project (edits moved into another project; footage put in one as a new edit).
+    expect(MCP_TOOLS.length).toBeLessThanOrEqual(53);
     const names = MCP_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
     for (const gone of ["cut_silences", "remove_fillers", "add_zoom", "set_captions", "list_references", "get_reference"]) expect(names).not.toContain(gone);

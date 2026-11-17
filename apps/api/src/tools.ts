@@ -8,7 +8,7 @@ import {
   heardDiff, heardDiffLine, wordsAsPlayed, type HeardTranscript, EDITING_SKILL,
   ASPECT_RATIO, aspectSize, type Aspect, type CaptionLook, MARK_KINDS, MCP_TOOLS, EDIT_OP_NAMES, RETIRED_OPS, styleGuidance, alignedMap, alignmentDiffs, clipEdges, deepAudioText, visionText, sidewaysText, PREFIX, type Alignment, marksText, markInEdit, footageInputOf, footageMarks, sheetsIn, StyleRulesSchema, summarizeTimeline, transcriptAsText, unknownEditFields, type Breakdown, type ReferenceRef, type EditOp, type FileLoudness, type FileMeasure, type Sheet, type Silence, type Snapshot, type StyleRules, type Timeline, type Transcript, type VideoKind, type V3Clip, CLOUD, CLOUD_REGION, desktopAppName, deviceLabel, machineWord, macOriginalOf, nextExportText, whereText } from "@rendrr/shared";
 import { otherSources, otherVideoIds } from "./services/sequence";
-import { copyProject, createFolder, createProject, getOwnedProject, graphicPlacements, resolveReference } from "./services/projects";
+import { copyProject, createFolder, createProject, findOrMakeFolder, getOwnedProject, graphicPlacements, moveToFolder, resolveReference } from "./services/projects";
 import { samplesOut, samplesView, startSamples } from "./services/samples";
 import type { AppOpen } from "@rendrr/shared";
 import { createCanvas } from "./services/canvas";
@@ -875,6 +875,13 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const r = await moveVideos(c.userId, i.videoIds, f?.id ?? null);
     const n = `${r.moved} ${r.moved === 1 ? "video" : "videos"}`;
     return { text: f ? `Moved ${n} into ${made ? "the new " : ""}library folder "${path}" (${f.id})${made > 1 ? ` (${made} folders made)` : ""}. create_project libraryFolder "${path}" makes one edit of its ready videos (and its folders'), in name order.` : `Took ${n} out of their library folder.`, data: { libraryFolderId: f?.id ?? null } };
+  },
+
+  async move_to_project(c, i) {
+    const { folder, made } = await findOrMakeFolder(c.userId, i.project);
+    const lines = await moveToFolder(c.userId, i.items, folder, { actorKind: c.ai === "chatgpt" ? "chatgpt" : "claude" });
+    const ok = lines.filter((l) => l.ok).length;
+    return { text: `Moved ${ok} of ${lines.length} into ${made ? "the new project" : "the project"} "${folder.name}" (${folder.id}):\n${lines.map((l) => `- ${l.text}`).join("\n")}`, data: { folderId: folder.id, projectIds: lines.filter((l) => l.projectId).map((l) => l.projectId) } };
   },
 
   async create_project(c, i) {

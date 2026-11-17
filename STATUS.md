@@ -1470,3 +1470,15 @@ On the Projects page each project's card shows the pictures of its newest edits 
 the footage's): one fills the card, two side by side, three or four as a 2x2 grid, never more than four, with the name on
 a shade at the bottom. A project with no edits keeps its grey cover. The Claude card's project cards do the same.
 Tests: `apps/web/demo/project-cards.mjs`, `apps/api/test/folder-cards.test.ts`, `apps/mcp/test/app-browser.mjs`.
+
+## Claude can move videos into any project (17 November)
+
+New connector tool `move_to_project`: edits (kind `edit`) move into another project with their versions, renders,
+comments and their own share links; footage from the Library (kind `video`) goes into a project as a new edit of it
+(version 1 is the raw footage) and stays in the Library. The project is named by id or name; a new name makes it, and
+two projects with the same name are refused (the ids are listed). Several at once; each item is answered on its own (a
+footage id sent as an edit says which edits it has, a deleted edit is left alone, another user's things are "not
+found"). A whole-project share link shows the edits in that project now. On the web, a project's page has "Move to
+project" in each video's menu and Move for the selected ones: pick a project or make one, and Undo puts them back.
+Code: `moveToFolder` and `findOrMakeFolder` in `apps/api/src/services/projects.ts`, `POST /projects/move`. Tests:
+`apps/api/test/move-to-project.test.ts`, `apps/web/demo/move-edits.mjs`.

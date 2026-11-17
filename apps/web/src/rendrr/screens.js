@@ -666,11 +666,37 @@ function ProjectsPage() {
 // The project page while it loads: the header row and full-width edit cards, as the real page lays them out.
 const FolderSkeleton = () => html`<div class="folder"><div class="fmain"><div class="row" style="gap:12px;padding:0 0 12px"><div class="skeleton" style="width:36px;height:36px;border-radius:10px" /><div class="skeleton sk-line" style="width:220px" /></div>
   <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr))">${Array.from({ length: 4 }).map((_, i) => html`<div key=${i} class="acard sk"><div class="skeleton" style="aspect-ratio:4/5;border-radius:var(--r-lg) var(--r-lg) 0 0" /><div class="col" style="padding:12px 14px 14px;gap:8px"><div class="skeleton sk-line" style="width:65%" /><div class="skeleton sk-line" style="width:30%" /></div></div>`)}</div></div></div>`;
+// Edits into another project: every project but this one, or a new one made on the spot.
+function MoveToProjectModal({ edits, from, onClose, onMoved }) {
+  const toast = useToast(); const fq = useAsync(() => api.listFoldersLite(), []); const [busy, setBusy] = useState(false); const [name, setName] = useState("");
+  const ids = edits.map((e) => e.id);
+  const move = async (folder) => {
+    setBusy(true);
+    try { const r = await api.moveEdits(ids, folder.id); onMoved(r.folder || folder, (r.moved || []).map((m) => m.id)); }
+    catch (e) { toast(e.message); setBusy(false); }
+  };
+  const makeAndMove = async () => { setBusy(true); try { const f = await api.createFolder(name); await move(f); } catch (e) { toast(e.message); setBusy(false); } };
+  const others = (fq.data || []).filter((f) => f.id !== from.id).sort((a, b) => a.name.localeCompare(b.name));
+  return html`<${Modal} title=${edits.length === 1 ? "Move " + edits[0].name : "Move " + edits.length + " videos"} sub="Pick the project they go in." onClose=${onClose}>
+    <div class="col" id="move-project-list" style="gap:6px">
+      <button class="lfrow on" disabled><${Icon} name="folder" size="16" /><span class="grow">${from.name}</span><span class="t-small muted">Here now</span></button>
+      ${fq.loading && !fq.data ? html`<div class="skeleton" style="height:40px;border-radius:10px" />` : others.map((f) => html`<button key=${f.id} class="lfrow" data-move-project=${f.id} disabled=${busy} onClick=${() => move(f)}><${Icon} name="folder" size="16" /><span class="grow">${f.name}</span></button>`)}
+    </div>
+    <div class="row" style="gap:8px;margin-top:12px"><input id="move-project-name" class="input" placeholder="New project name" maxlength="80" value=${name} onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && name.trim() && !busy) makeAndMove(); }} /><${Btn} id="move-project-new" icon="plus" disabled=${busy || !name.trim()} onClick=${makeAndMove}>Make and move<//></div>
+  <//>`;
+}
 function FolderPage({ id }) {
   const { go } = useNav(); const toast = useToast(); const q = useAsync(() => api.getFolder(id), [id]);
   const [search, setSearch] = useState("");
-  const [sel, setSel] = useState([]); const [share, setShare] = useState(null); const [np, setNp] = useState(false); const [menu, setMenu] = useState(null);
+  const [sel, setSel] = useState([]); const [share, setShare] = useState(null); const [np, setNp] = useState(false); const [menu, setMenu] = useState(null); const [moveOf, setMoveOf] = useState(null);
   useEffect(() => { const k = () => setMenu(null); window.addEventListener("click", k); return () => window.removeEventListener("click", k); }, []);
+  // Moved edits leave this project at once; Undo brings them back here.
+  const moved = (to, ids) => {
+    setMoveOf(null); setSel([]);
+    if (!ids.length) { toast("Nothing was moved"); q.reload(); return; }
+    q.setData((d) => ({ ...d, assets: d.assets.filter((a) => !ids.includes(a.id)) }));
+    toast(ids.length === 1 ? `Moved to ${to.name}` : `${ids.length} videos moved to ${to.name}`, { icon: "folder", tone: "brand", ms: 6000, action: { label: "Undo", onClick: async () => { try { await api.moveEdits(ids, id); q.reload(); } catch (e) { toast(e.message); } } } });
+  };
   const toggleSel = (e, pid) => { e.stopPropagation(); setSel((x) => (x.includes(pid) ? x.filter((i) => i !== pid) : [...x, pid])); };
   // A deleted edit can be brought back from the toast (the server keeps it for 30 days).
   const del = async (p) => {
@@ -687,13 +713,13 @@ function FolderPage({ id }) {
           <${Btn} kind="secondary" size="sm" icon="plus" id="new-edit" onClick=${() => setNp(true)}>New edit<//>
           <${Btn} size="sm" icon="link" id="share-folder" onClick=${() => setShare({ folder: f })}>Share<//></div>
         <div class="col" style="gap:16px">
-          ${sel.length > 0 && html`<div class="bulk"><span class="t-label">${sel.length} selected</span><${Btn} size="xs" icon="link" id="share-selected" onClick=${() => setShare({ folder: f, projectId: sel[0], many: sel.length })}>Share ${sel.length === 1 ? "video" : sel.length + " videos"}<//><${Btn} kind="ghost" size="xs" onClick=${() => setSel([])}>Clear<//></div>`}
+          ${sel.length > 0 && html`<div class="bulk"><span class="t-label">${sel.length} selected</span><${Btn} size="xs" icon="link" id="share-selected" onClick=${() => setShare({ folder: f, projectId: sel[0], many: sel.length })}>Share ${sel.length === 1 ? "video" : sel.length + " videos"}<//><${Btn} kind="ghost" size="xs" icon="folder" id="move-selected" onClick=${() => setMoveOf(f.assets.filter((a) => sel.includes(a.id)))}>Move<//><${Btn} kind="ghost" size="xs" onClick=${() => setSel([])}>Clear<//></div>`}
           ${list.length === 0 ? html`<${EmptyState} icon="scissors" title=${search ? "Nothing matches" : "No edits yet"} action=${!search && html`<${Btn} onClick=${() => setNp(true)}>New edit<//>`} />` : html`<div class=${"grid" + (sel.length ? " selecting" : "")} style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr))">
             ${list.map((p) => html`<div key=${p.id} class=${"acard" + (sel.includes(p.id) ? " sel" : "")} data-asset=${p.id} role="button" tabindex="0" onClick=${() => go("/editor/" + p.id)} onKeyDown=${(e) => e.key === "Enter" && go("/editor/" + p.id)}>
               <div class="athumb"><div class="athumb-img">${p.thumb ? html`<img src=${p.thumb} alt="" loading="lazy" />` : html`<${Art} art=${p.art} />`}</div><button class=${"acheck" + (sel.includes(p.id) ? " on" : "")} aria-label="Select" aria-pressed=${sel.includes(p.id)} onClick=${(e) => toggleSel(e, p.id)}>${sel.includes(p.id) && html`<${Icon} name="check" size="12" />`}</button>
                 <div class="ainfo"><span>${p.comments > 0 && html`<${Icon} name="comment" size="12" />${p.comments}`}</span><span class="mono">${p.seconds ? fmtTime(p.seconds) : ""}</span></div></div>
               <div style="padding:12px 14px 14px" class="col"><div class="row between"><b class="t-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.name}</b><div style="position:relative" onClick=${(e) => e.stopPropagation()}><${Btn} kind="quiet" size="xs" icon="more" aria-label="More" onClick=${() => setMenu(menu === p.id ? null : p.id)} />
-                ${menu === p.id && html`<div class="menu" style="top:30px"><button class="item" onClick=${() => { setShare({ folder: f, projectId: p.id }); setMenu(null); }}><${Icon} name="link" />Share this video</button><button class="item" data-delete-edit=${p.id} onClick=${() => { del(p); setMenu(null); }}><${Icon} name="trash" />Delete</button></div>`}</div></div>
+                ${menu === p.id && html`<div class="menu" style="top:30px"><button class="item" onClick=${() => { setShare({ folder: f, projectId: p.id }); setMenu(null); }}><${Icon} name="link" />Share this video</button><button class="item" data-move-edit=${p.id} onClick=${() => { setMoveOf([p]); setMenu(null); }}><${Icon} name="folder" />Move to project</button><button class="item" data-delete-edit=${p.id} onClick=${() => { del(p); setMenu(null); }}><${Icon} name="trash" />Delete</button></div>`}</div></div>
                 <div class="row between" style="gap:8px"><span class="t-small muted">${fmtAgo(p.updated)}</span><${StatusChip} status=${p.status} /></div></div>
             </div>`)}
           </div>`}
@@ -701,7 +727,8 @@ function FolderPage({ id }) {
       </div>
     </div>
     ${np && html`<${NewProjectModal} folderId=${f.id} onClose=${() => setNp(false)} onCreated=${(p) => { setNp(false); go("/editor/" + p.id); }} />`}
-    ${share && html`<${CreateLinkModal} folder=${share.projectId ? null : share.folder} projectId=${share.projectId} onClose=${() => { setShare(null); setSel([]); q.reload(); }} />`}`; }}<//>`;
+    ${share && html`<${CreateLinkModal} folder=${share.projectId ? null : share.folder} projectId=${share.projectId} onClose=${() => { setShare(null); setSel([]); q.reload(); }} />`}
+    ${moveOf && html`<${MoveToProjectModal} edits=${moveOf} from=${f} onClose=${() => setMoveOf(null)} onMoved=${moved} />`}`; }}<//>`;
 }
 
 /* ---------- /styles ---------- */
