@@ -8,7 +8,7 @@ import { authenticate } from "../auth";
 import { projectOut, videoOut } from "../serialize";
 import { purgeProjectFiles } from "../services/projects";
 import { deviceIdOf } from "../services/macExport";
-import { DRIVE_SYNC_FRESH_MS, driveConn, folderNamed, importDriveFolder, linkDriveFile, rememberRemoved, syncDriveFolder, syncStaleDriveFolders } from "../services/driveLibrary";
+import { DRIVE_SYNC_FRESH_MS, driveConn, importDriveFolder, linkDriveFile, newFolder, rememberRemoved, syncDriveFolder, syncStaleDriveFolders } from "../services/driveLibrary";
 import { createLibraryFolder, deleteLibraryFolder, folderTree, libraryFolderFull, libraryFolderOut, listLibraryFolders, moveVideos, ownLibraryFolder, projectFromLibraryFolder, updateLibraryFolder } from "../services/libraryFolders";
 import { assertMayAddFootage } from "../services/billing";
 import { deleteVideoForGood } from "../services/deleting";
@@ -197,16 +197,20 @@ export default async function library(app: FastifyInstance) {
       for (const fid of Array.from(new Set(fileIds))) {
         const f = await drive.getFile(userId, fid, conn.stub);
         if (!f) continue;
+        // Already linked, or in the Trash: that video (brought back, into the folder it was picked into), not a copy.
+        const have = await prisma.video.findFirst({ where: { userId, source: "drive", driveFileId: f.id, status: { not: "missing" } }, orderBy: { deletedAt: { sort: "asc", nulls: "first" } } });
+        if (have) { out.push(await prisma.video.update({ where: { id: have.id }, data: { deletedAt: null, ...(inFolder ? { libraryFolderId: inFolder } : {}) } })); continue; }
         out.push(await linkDriveFile(userId, f, { stub: conn.stub, kind, libraryFolderId: inFolder }));
       }
       if (!out.length) throw new AppError("Pick at least one video.", 400);
       return Promise.all(out.map(videoOut));
     });
 
-    // A whole Drive folder: a library folder named after it, every video in it linked, its folders made the same way
-    // down (up to 200 videos and the library's depth). A video already in the library is moved into its folder, not
-    // linked twice. Importing the same folder again adds only what is new; the folder stays linked to Drive, so videos
-    // put in the Drive folder later come in by themselves (services/driveLibrary.ts).
+    // A whole Drive folder: a library folder of its own named after it (never mixed into another of the same name),
+    // every video in it linked, its folders made the same way down (up to 200 videos and the library's depth). A video
+    // already in the library is moved into its folder, not linked twice; one in the Trash comes back. Importing the
+    // same Drive folder again adds only what is new; the folder stays linked to Drive, so videos put in the Drive
+    // folder later come in by themselves (services/driveLibrary.ts).
     a.post("/videos/drive-folder", async (req) => importDriveFolder(req.user!.id, DriveFolderImportInput.parse(req.body)));
 
     // Built-in sample footage: processed on the server, original kept so exports work without asking.
@@ -239,18 +243,19 @@ export default async function library(app: FastifyInstance) {
       const { files, kind, libraryFolderId } = LocalFilesInput.parse(req.body);
       const userId = req.user!.id;
       const inFolder = await intoFolder(userId, libraryFolderId);
-      // A folder picked whole: the same folders in the Library (inside the open one), each file in its own. A level
-      // deeper than folders go lands in the deepest one allowed.
+      // A folder picked whole: the same folders in the Library (inside the open one), each file in its own. Always new
+      // folders: one of the same name already there is left alone (the new one is "B-roll (2)"), so two clients'
+      // folders never mix. A level deeper than folders go lands in the deepest one allowed.
       const room = LIBRARY_FOLDER_MAX_DEPTH - (inFolder ? (await folderTree(userId)).depth(await ownLibraryFolder(userId, inFolder)) : 0);
       const made_folders = new Map<string, string>();
       const folderFor = async (path?: string): Promise<string | null> => {
         const parts = (path || "").split("/").map((x) => x.trim()).filter(Boolean).slice(0, Math.max(0, room));
-        if (!parts.length) return inFolder;
-        const key = parts.join("/").toLowerCase();
-        if (made_folders.has(key)) return made_folders.get(key)!;
         let parent = inFolder;
-        for (const p of parts) parent = (await folderNamed(userId, p, parent)).folder.id;
-        made_folders.set(key, parent!);
+        for (let i = 0; i < parts.length; i++) {
+          const key = parts.slice(0, i + 1).join("/").toLowerCase();
+          if (!made_folders.has(key)) made_folders.set(key, (await newFolder(userId, parts[i], parent)).id);
+          parent = made_folders.get(key)!;
+        }
         return parent;
       };
       const where: (string | null)[] = [];
@@ -379,7 +384,8 @@ export default async function library(app: FastifyInstance) {
         drive.browse(req.user!.id, { view, folderId: String(qs.folderId || "root").slice(0, 200), driveId: qs.driveId ? String(qs.driveId).slice(0, 200) : undefined, q: String(qs.q || "").slice(0, 100) }, conn.stub),
         qs.drives ? drive.sharedDrives(req.user!.id, conn.stub).catch(() => []) : Promise.resolve(undefined),
       ]);
-      const linked = new Set((await prisma.video.findMany({ where: { userId: req.user!.id, source: "drive", status: { not: "missing" } }, select: { driveFileId: true } })).map((v) => v.driveFileId));
+      // In the library already (one in the Trash is not: it can be picked again, and comes back).
+      const linked = new Set((await prisma.video.findMany({ where: { userId: req.user!.id, source: "drive", status: { not: "missing" }, deletedAt: null }, select: { driveFileId: true } })).map((v) => v.driveFileId));
       return { folders, files: files.map((f) => ({ id: f.id, folderId: f.folderId, name: f.name, size: fmtSize(f.sizeBytes), seconds: f.seconds, date: f.date, added: linked.has(f.id) })), truncated, ...(drives ? { drives } : {}) };
     });
   });

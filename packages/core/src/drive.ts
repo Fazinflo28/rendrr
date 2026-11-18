@@ -178,6 +178,23 @@ export async function folderName(userId: string, folderId: string, stub: boolean
   return !j ? "Google Drive" : (j.parents as string[] | undefined)?.length || j.driveId ? String(j.name) : "My Drive";
 }
 
+/** The name of the folder a Drive folder sits in ("Client B" for "Client B/B-roll"), or null at the top of My Drive or
+ *  when Drive does not say. Tells apart two folders of the same name. */
+export async function parentFolderName(userId: string, folderId: string, stub: boolean): Promise<string | null> {
+  if (stub || !features().drive) {
+    const parent = STUB_FOLDERS.find((x) => x.id === STUB_FOLDERS.find((f) => f.id === folderId)?.parent);
+    return parent && parent.id !== "root" ? parent.name : null;
+  }
+  const f = await driveGet(userId, `/files/${encodeURIComponent(cleanId(folderId))}`, { fields: "parents,driveId", supportsAllDrives: "true" }).catch(() => null);
+  const up = (f?.parents as string[] | undefined)?.[0];
+  if (!up) return null;
+  // The top of a shared drive: the drive's own name.
+  if (f?.driveId && up === f.driveId) { const d = await driveGet(userId, `/drives/${encodeURIComponent(cleanId(up))}`, { fields: "name" }).catch(() => null); return d?.name ? String(d.name) : null; }
+  const p = await driveGet(userId, `/files/${encodeURIComponent(cleanId(up))}`, { fields: "name,parents,driveId", supportsAllDrives: "true" }).catch(() => null);
+  // My Drive itself has no parent: no name worth adding.
+  return p && ((p.parents as string[] | undefined)?.length || p.driveId) ? String(p.name) : null;
+}
+
 export async function getFile(userId: string, fileId: string, stub: boolean): Promise<(DriveFile & { sampleKey?: string }) | null> {
   if (stub || !features().drive) {
     const f = STUB_FILES.find((x) => x.id === fileId);

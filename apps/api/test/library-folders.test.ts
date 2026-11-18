@@ -219,7 +219,7 @@ describe("library folders", { skip: !ready && "needs DATABASE_URL and REDIS_URL"
     await assert.rejects(tool("list_footage", { libraryFolder: "Raw" }), /More than one folder is called "Raw": .* Say which with its path or id/);
   });
 
-  it("a whole folder from the computer: the same folders made (inside the open one), each video in its own; again reuses them", async () => {
+  it("a whole folder from the computer: the same folders made (inside the open one), each video in its own; again makes new ones", async () => {
     const files = [
       { name: "Intro.mp4", size: 10, type: "video/mp4", folder: `Shoot ${run}` },
       { name: "Take 1.mp4", size: 10, type: "video/mp4", folder: `Shoot ${run}/Day 1` },
@@ -228,16 +228,22 @@ describe("library folders", { skip: !ready && "needs DATABASE_URL and REDIS_URL"
     ];
     const r = await call("POST", "/videos/local", { files });
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    const shoot = (await prisma.libraryFolder.findFirst({ where: { userId, parentId: null, name: `Shoot ${run}` } }))!;
+    // A folder called "Shoot" is already at the top (made above): the upload makes its own beside it, not mixed in.
+    const shoot = (await prisma.libraryFolder.findFirst({ where: { userId, parentId: null, name: `Shoot ${run} (2)` } }))!;
     const day = (await prisma.libraryFolder.findFirst({ where: { userId, parentId: shoot.id, name: "Day 1" } }))!;
+    assert.equal(await prisma.libraryFolder.count({ where: { userId, parentId: (await prisma.libraryFolder.findFirstOrThrow({ where: { userId, parentId: null, name: `Shoot ${run}` } })).id } }), 0, "the folder already there gets nothing");
     assert.deepEqual(r.body.map((v: { libraryFolderId: string | null }) => v.libraryFolderId), [shoot.id, day.id, day.id, null]);
-    // Into an open folder, and a second time: the same folders, not new ones.
+    // Into an open folder, and a second time: a new folder beside the first ("Shoot (2)"), never mixed into it (two
+    // clients' "B-roll" folders stay apart).
     const host = (await call("POST", "/library/folders", { name: `Host ${run}` })).body;
     const into = await call("POST", "/videos/local", { files: files.slice(0, 2), libraryFolderId: host.id });
     const inner = (await prisma.libraryFolder.findFirst({ where: { userId, parentId: host.id, name: `Shoot ${run}` } }))!;
     assert.equal(into.body[0].libraryFolderId, inner.id);
-    await call("POST", "/videos/local", { files: files.slice(1, 2), libraryFolderId: host.id });
-    assert.equal(await prisma.libraryFolder.count({ where: { userId, parentId: inner.id, name: "Day 1" } }), 1);
+    const second = await call("POST", "/videos/local", { files: files.slice(1, 2), libraryFolderId: host.id });
+    const inner2 = (await prisma.libraryFolder.findFirst({ where: { userId, parentId: host.id, name: `Shoot ${run} (2)` } }))!;
+    const day2 = (await prisma.libraryFolder.findFirst({ where: { userId, parentId: inner2.id, name: "Day 1" } }))!;
+    assert.equal(second.body[0].libraryFolderId, day2.id);
+    assert.equal(await prisma.libraryFolder.count({ where: { userId, parentId: inner.id, name: "Day 1" } }), 1, "the first one is left as it was");
     // Up to 200 at once.
     const many = Array.from({ length: 201 }, (_, i) => ({ name: `c${i}.mp4`, size: 1, folder: "Big" }));
     const big = await call("POST", "/videos/local", { files: many });

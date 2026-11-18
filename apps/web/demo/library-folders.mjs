@@ -190,6 +190,14 @@ check(await until(async () => (await page.locator(".vcard").count()) === 1), "th
 await page.locator(".lfcard", { hasText: "Day 1" }).click();
 check(await until(async () => (await page.locator(".vcard").count()) === 2), "the inner folder holds its two videos");
 await page.locator("#folder-back").click(); await page.locator("#lib-folders").waitFor();
+// Another folder of the same name (another client's "Shoot"): a folder of its own, opened; the first is left as it was.
+await page.locator("#folder-back").click().catch(() => {}); await page.locator("#lib-folders").waitFor();
+await page.locator("#upload").click(); await page.locator("#src-local").click();
+await page.locator("#local-folder-input").setInputFiles(join(tmp, "Shoot"));
+check(await until(async () => (await page.locator("#folder-title").count()) > 0 && /Shoot \(2\)/i.test(await page.locator("#folder-title").innerText()), 6000), `the same folder name again: the Library opens on a new "Shoot (2)" (${await page.locator("#folder-title").innerText().catch(() => "-")})`);
+check(await until(async () => (await page.locator(".vcard").count()) === 1 && (await page.locator(".lfcard", { hasText: "Day 1" }).count()) === 1), "with its own video and folder");
+await page.locator("#folder-back").click(); await page.locator("#lib-folders").waitFor();
+check(await until(async () => (await page.locator(".lfcard", { hasText: /^Shoot$|Shoot\s*\d+ video/ }).count()) >= 1 && (await page.locator(".lfcard", { hasText: "Shoot (2)" }).count()) === 1), "both folders are in the Library, side by side");
 fsx.rmSync(tmp, { recursive: true, force: true }); void beforeVids;
 
 // 6e. Several Drive folders at once: tick them (ticking does not open the folder), Select all folders ticks every one

@@ -25,6 +25,12 @@ const libFolderIn = (name, parentId) => {
   if (same) return same;
   const nf = { id: "lf" + Math.random().toString(36).slice(2, 8), name, parentId: parentId || null, updated: Date.now() }; libFolders.push(nf); return nf;
 };
+// A folder added from Drive or the computer is always a new one: a name already used next to it gets " (2)", " (3)"…
+const newLibFolder = (name, parentId, extra = {}) => {
+  const taken = new Set(libFolders.filter((x) => (x.parentId || null) === (parentId || null)).map((x) => x.name.toLowerCase()));
+  let n = name; for (let i = 2; taken.has(n.toLowerCase()); i++) n = `${name} (${i})`;
+  const nf = { id: "lf" + Math.random().toString(36).slice(2, 8), name: n, parentId: parentId || null, updated: Date.now(), ...extra }; libFolders.push(nf); return nf;
+};
 const folderErr = (msg) => Object.assign(new Error(msg), { code: "invalid-input" });
 
 // "What Claude sees" for demo footage: drawn contact sheets and a breakdown made by the real shared code.
@@ -261,10 +267,12 @@ Object.assign(api, {
     const vids = fromFolder ? list.filter((f) => (f.type ? f.type.startsWith("video/") : /\.(mp4|mov|m4v|webm|mkv)$/i.test(f.name)) && !f.name.startsWith(".")) : list;
     if (!vids.length) throw folderErr("There are no videos in that folder.");
     const out = await addFromComputer(vids, onProgress);
+    const made = new Map(); // this upload's folders, by path: new ones, never one that only has the same name
     (out || []).forEach((v, i) => {
       if (kind) kinds[v.id] = kind;
       let parent = fid || null;
-      for (const part of (where(vids[i] || {}) || "").split("/").filter(Boolean)) parent = libFolderIn(part, parent).id;
+      const parts = (where(vids[i] || {}) || "").split("/").filter(Boolean);
+      parts.forEach((part, j) => { const key = parts.slice(0, j + 1).join("/").toLowerCase(); if (!made.has(key)) made.set(key, newLibFolder(part, parent).id); parent = made.get(key); });
       if (parent) inFolder[v.id] = parent;
     });
     return (out || []).map(withKind);
@@ -453,13 +461,14 @@ Object.assign(api, {
     const all = (await Promise.all(["root", "fd1", "fd2", "fd3"].map((x) => listDriveFiles(x)))).flatMap((r) => r.files);
     const known = new Set(all.map((x) => x.id));
     let added = 0, made = 0;
-    const folderIn = (name, parentId) => {
-      const same = libFolders.find((x) => (x.parentId || null) === (parentId || null) && x.name.toLowerCase() === name.toLowerCase());
+    // The folder made for this same Drive folder before, else a new one (another of the same name is left alone).
+    const folderIn = (name, parentId, driveFolderId) => {
+      const same = libFolders.find((x) => (x.parentId || null) === (parentId || null) && x.driveFolderId === driveFolderId);
       if (same) return same;
-      const nf = { id: "lf" + Math.random().toString(36).slice(2, 8), name, parentId: parentId || null, updated: Date.now() }; libFolders.push(nf); made++; return nf;
+      made++; return newLibFolder(name, parentId, { driveFolderId });
     };
     const put = async (id, name, parentId, depth) => {
-      const lf = folderIn(name, parentId);
+      const lf = folderIn(name, parentId, id);
       const ids = (DEMO_FILES[id] || []).filter((x) => known.has(x));
       if (ids.length) { const out = await addFromDrive(ids); out.forEach((v) => { inFolder[v.id] = lf.id; if (o.kind) kinds[v.id] = o.kind; }); added += out.length; }
       if (o.subfolders !== false && depth < 6) for (const sub of DEMO_TREE[id] || []) await put(sub, DEMO_FOLDERS[sub], lf.id, depth + 1);

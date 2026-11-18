@@ -99,6 +99,18 @@ export async function createLibraryFolder(userId: string, name: string, parentId
   return f;
 }
 
+/** A name no folder next to it has, for a folder added from Drive or the computer (never mixed into one that only has
+ *  the same name): the name itself, else "name (hint)" (the Drive folder it sits in, so two clients' "B-roll" folders
+ *  are told apart), else "name (2)", "name (3)"... */
+export async function freeFolderName(userId: string, name: string, parentId: string | null, hint?: () => Promise<string | null>) {
+  const base = name.replace(/\//g, "-").trim().slice(0, 80) || "Untitled folder";
+  const taken = new Set((await prisma.libraryFolder.findMany({ where: { userId, parentId }, select: { name: true } })).map((f) => f.name.toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  const h = (await hint?.().catch(() => null))?.replace(/\//g, "-").trim().slice(0, 40);
+  if (h && h.toLowerCase() !== base.toLowerCase() && !taken.has(`${base} (${h})`.toLowerCase())) return `${base} (${h})`;
+  for (let n = 2; ; n++) if (!taken.has(`${base} (${n})`.toLowerCase())) return `${base} (${n})`;
+}
+
 /** A folder from a path, making the levels that are not there yet ("Course/Module 1"). */
 export async function ensureLibraryFolderPath(userId: string, path: string): Promise<{ folder: LibraryFolder; made: number }> {
   const parts = path.split("/").map((x) => x.trim()).filter(Boolean);

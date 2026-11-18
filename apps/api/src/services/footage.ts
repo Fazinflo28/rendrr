@@ -116,7 +116,9 @@ export async function footageFromSource(userId: string, i: { url?: string; drive
       if (/^audio\//.test(f.mimeType || "")) throw err(AUDIO_FILE);
       if (!/^image\//.test(f.mimeType || "")) {
         if (i.projectId) await ownProject(userId, i.projectId);
-        const have = await prisma.video.findFirst({ where: { userId, source: "drive", driveFileId: f.id, status: { not: "missing" } } });
+        const have = await prisma.video.findFirst({ where: { userId, source: "drive", driveFileId: f.id, status: { not: "missing" } }, orderBy: { deletedAt: { sort: "asc", nulls: "first" } } });
+        // In the Trash: brought back (into the folder asked for), not linked a second time.
+        if (have?.deletedAt) await prisma.video.update({ where: { id: have.id }, data: { deletedAt: null, ...(i.libraryFolder ? { libraryFolderId: await folderOf(userId, i.libraryFolder) } : {}) } });
         if (!have) await assertMayAddFootage(userId, (f.seconds || 0) / 60);
         const v = have ?? (await linkDriveFile(userId, f, { stub: false, kind: i.kind ?? "footage", libraryFolderId: await folderOf(userId, i.libraryFolder) }));
         if (i.name && !have) await prisma.video.update({ where: { id: v.id }, data: { name: nameOf(i.name, v.name) } });

@@ -5,7 +5,7 @@
 import { AppError, drive, enqueue, redis, type ProxyJob } from "@rendrr/core";
 import { prisma, type LibraryFolder } from "@rendrr/db";
 import { LIBRARY_FOLDER_MAX_DEPTH, orientationOf, type VideoKind } from "@rendrr/shared";
-import { createLibraryFolder, folderTree, libraryFolderFull, ownLibraryFolder } from "./libraryFolders";
+import { createLibraryFolder, folderTree, freeFolderName, libraryFolderFull, ownLibraryFolder } from "./libraryFolders";
 
 const ART = ["c", "d", "e", "f", "a", "b"];
 const randomArt = () => ART[Math.floor(Math.random() * ART.length)];
@@ -34,21 +34,19 @@ export async function linkDriveFile(userId: string, f: drive.DriveFile & { sampl
   return v;
 }
 
-/** The library folder called `name` inside `parentId` (any case), made if it is not there: importing the same Drive
- *  folder again fills the same library folder. */
-export async function folderNamed(userId: string, name: string, parentId: string | null) {
-  const n = name.replace(/\//g, "-").trim().slice(0, 80) || "Untitled folder";
-  const same = await prisma.libraryFolder.findFirst({ where: { userId, parentId, name: { equals: n, mode: "insensitive" } }, orderBy: { createdAt: "asc" } });
-  return { folder: same ?? (await createLibraryFolder(userId, n, parentId)), made: !same };
+/** A new library folder inside `parentId`, named `name` or, when a folder next to it has that name, told apart from it
+ *  ("B-roll (Client B)", "B-roll (2)"): a folder added is never mixed into another that only has the same name. */
+export async function newFolder(userId: string, name: string, parentId: string | null, hint?: () => Promise<string | null>) {
+  return createLibraryFolder(userId, await freeFolderName(userId, name, parentId, hint), parentId);
 }
 
-/** The library folder for a Drive folder inside `parentId`: the one linked to it, else the one of its name (linked now). */
-async function folderFor(userId: string, node: { id: string; name: string }, parentId: string | null) {
+/** The library folder for a Drive folder inside `parentId`: the one linked to that same Drive folder (importing or
+ *  syncing it again fills it), else a new one. Another client's Drive folder of the same name gets its own. */
+async function folderFor(userId: string, node: { id: string; name: string }, parentId: string | null, hint?: () => Promise<string | null>) {
   const linked = await prisma.libraryFolder.findFirst({ where: { userId, parentId, driveFolderId: node.id }, orderBy: { createdAt: "asc" } });
   if (linked) return { folder: linked, made: false };
-  const r = await folderNamed(userId, node.name, parentId);
-  if (r.folder.driveFolderId !== node.id) r.folder = await prisma.libraryFolder.update({ where: { id: r.folder.id }, data: { driveFolderId: node.id } });
-  return r;
+  const f = await newFolder(userId, node.name, parentId, hint);
+  return { folder: await prisma.libraryFolder.update({ where: { id: f.id }, data: { driveFolderId: node.id } }), made: true };
 }
 
 type Walked = Awaited<ReturnType<typeof drive.walkFolder>>;
@@ -64,41 +62,50 @@ async function forgetRemoved(userId: string, itemIds: string[]) {
 }
 const treeIds = (n: drive.DriveTree): string[] => [n.id, ...n.files.map((f) => f.id), ...n.folders.flatMap(treeIds)];
 
+/** The user's Drive files in the library, in the Trash too (a live one wins over a trashed one), by Drive file id. */
 async function linkedFiles(userId: string) {
-  return new Map((await prisma.video.findMany({ where: { userId, source: "drive", status: { not: "missing" }, driveFileId: { not: null } }, select: { id: true, driveFileId: true } })).map((v) => [v.driveFileId!, v.id]));
+  const rows = await prisma.video.findMany({ where: { userId, source: "drive", status: { not: "missing" }, driveFileId: { not: null } }, select: { id: true, driveFileId: true, deletedAt: true }, orderBy: { deletedAt: { sort: "desc", nulls: "last" } } });
+  return new Map(rows.map((v) => [v.driveFileId!, { id: v.id, trashed: !!v.deletedAt }]));
 }
 
 /**
  * Puts a walked Drive tree into the Library under `parentId`. moveExisting: a video already in the library is moved
- * into its folder (an import: the user asked for this folder); a sync leaves it where it is.
+ * into its folder, and one in the Trash brought back into it (an import: the user asked for this folder); a sync
+ * leaves both where they are.
  */
-async function place(userId: string, walked: Walked, parentId: string | null, o: { stub: boolean; kind?: VideoKind | null; moveExisting: boolean; root?: LibraryFolder }) {
+async function place(userId: string, walked: Walked, parentId: string | null, o: { stub: boolean; kind?: VideoKind | null; moveExisting: boolean; root?: LibraryFolder; hint?: () => Promise<string | null> }) {
   const linked = await linkedFiles(userId);
-  let added = 0, moved = 0, made = 0;
+  let added = 0, moved = 0, made = 0, restored = 0;
   const put = async (node: drive.DriveTree, parent: string | null, root: boolean): Promise<string> => {
-    const { folder, made: isNew } = root && o.root ? { folder: o.root, made: false } : await folderFor(userId, node, parent);
+    const { folder, made: isNew } = root && o.root ? { folder: o.root, made: false } : await folderFor(userId, node, parent, root ? o.hint : undefined);
     if (isNew) made++;
     for (const f of node.files) {
       const have = linked.get(f.id);
+      if (have?.trashed) {
+        if (o.moveExisting) { await prisma.video.update({ where: { id: have.id }, data: { deletedAt: null, libraryFolderId: folder.id } }); have.trashed = false; restored++; }
+        continue;
+      }
       if (have) {
-        if (o.moveExisting) { await prisma.video.update({ where: { id: have }, data: { libraryFolderId: folder.id } }); moved++; }
+        if (o.moveExisting) { await prisma.video.update({ where: { id: have.id }, data: { libraryFolderId: folder.id } }); moved++; }
         continue;
       }
       const full = o.stub ? await drive.getFile(userId, f.id, true) : f; // the fake Drive keeps its sample file on the file
       const v = await linkDriveFile(userId, full ?? f, { stub: o.stub, kind: o.kind, libraryFolderId: folder.id });
-      linked.set(f.id, v.id); added++;
+      linked.set(f.id, { id: v.id, trashed: false }); added++;
     }
     for (const sub of node.folders) await put(sub, folder.id, false);
     return folder.id;
   };
   const topId = await put(walked.tree, parentId, true);
-  return { topId, added, moved, made };
+  return { topId, added, moved, made, restored };
 }
 
 /**
- * A whole Drive folder: a library folder named after it, every video in it linked, its folders made the same way down
- * (up to 200 videos and the library's depth). A video already in the library is moved into its folder, not linked
- * twice. The folder stays linked to Drive: new videos put there later come in by themselves.
+ * A whole Drive folder: a library folder of its own named after it (another client's folder of the same name gets its
+ * own: "B-roll (Client B)"; the same Drive folder imported again fills the one it made), every video in it linked, its
+ * folders made the same way down (up to 200 videos and the library's depth). A video already in the library is moved
+ * into its folder, not linked twice, and one in the Trash comes back into it. The folder stays linked to Drive: new
+ * videos put there later come in by themselves.
  */
 export async function importDriveFolder(userId: string, b: { folderId: string; driveId?: string; name?: string; kind?: VideoKind | null; libraryFolderId?: string | null; subfolders?: boolean }) {
   const conn = await driveConn(userId);
@@ -109,9 +116,9 @@ export async function importDriveFolder(userId: string, b: { folderId: string; d
   const walked = await drive.walkFolder(userId, { id: b.folderId, name, driveId: b.driveId }, conn.stub, { maxDepth: b.subfolders === false ? 1 : depthLeft, maxFiles: DRIVE_FOLDER_MAX_FILES });
   if (!walked.files) throw new AppError(`"${name}" has no videos${b.subfolders === false || !walked.folders ? "" : ", its folders neither"}.`, 400, "folder-empty");
   await forgetRemoved(userId, treeIds(walked.tree)); // imported on purpose: what was deleted from it before comes back
-  const r = await place(userId, walked, parent?.id ?? null, { stub: conn.stub, kind: b.kind, moveExisting: true });
+  const r = await place(userId, walked, parent?.id ?? null, { stub: conn.stub, kind: b.kind, moveExisting: true, hint: () => drive.parentFolderName(userId, b.folderId, conn.stub) });
   await prisma.libraryFolder.update({ where: { id: r.topId }, data: { driveFolderId: b.folderId, driveId: b.driveId ?? null, driveKind: b.kind ?? "footage", driveSubfolders: b.subfolders !== false, driveSyncedAt: new Date() } });
-  return { folder: await libraryFolderFull(userId, r.topId), added: r.added, moved: r.moved, folders: r.made, truncated: walked.truncated };
+  return { folder: await libraryFolderFull(userId, r.topId), added: r.added, moved: r.moved, restored: r.restored, folders: r.made, truncated: walked.truncated };
 }
 
 /** The import a folder belongs to: itself or the nearest folder above it that was imported from Drive (its subfolders

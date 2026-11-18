@@ -144,6 +144,13 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - Server: `app_list_projects` takes `folderId` and sends `folders` with the first page; every edit carries `folderId`. A chat whose cached tool list is older still works: the card picks the project's videos out of the full list.
 - Tested in `apps/mcp/test/app-browser.mjs` (desktop and phone) and `apps/api/test/claude-app.test.ts`.
 
+## Folders added never mix, and videos in the Trash can be added again (18 November)
+
+- **A folder added is always its own folder.** Importing a Google Drive folder used to fill any Library folder with the same name, so a second client's "B-roll" went into the first client's "B-roll" (and the sync switched to the second one). Now another Drive folder of the same name gets a folder of its own, named after the Drive folder it sits in ("B-roll (Client B)", else "B-roll (2)"). The same Drive folder imported again still fills the folder it made. A folder from the computer is a new folder every time too ("Shoot (2)"), and the Library opens on it.
+- **Videos in the Trash can be added again.** A Drive video moved to the Trash still counted as "Already in your library": the picker greyed it out and a folder import hid it. Now the picker lets you pick it, and picking it (or importing its folder, or Claude adding it by driveFileId) brings that same video back out of the Trash, into the folder you add it to. A folder sync still leaves it in the Trash.
+- Already mixed folders: import the first client's Drive folder again and its videos move into a new folder of their own.
+- Tested: `apps/api/test/drive-folder-import.test.ts` (two clients' "B-roll", a third with a number, trashed video picked into another folder, re-import restores, sync leaves it), `apps/api/test/library-folders.test.ts`, `apps/web/demo/library-folders.mjs` (the same computer folder twice opens "Shoot (2)").
+
 ## Quick fixes: client comments, several Drive folders, deleting from the Library (1 November)
 
 - Client review page: the comment box is always under the comments. A tap or click on the video pauses it and opens the box at that moment. Phone, small phone and desktop tested (`demo/review-phone.mjs`).

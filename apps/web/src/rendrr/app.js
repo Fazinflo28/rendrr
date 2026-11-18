@@ -225,12 +225,17 @@ function App() {
     const job = api.addFromComputer(list, undefined, kind, libraryFolderId); setTimeout(ping, 50);
     try {
       const made = await job;
+      let f = null;
       if (top) {
+        // The folder this upload made (a new one each time, "B-roll (2)" when the name is taken): up from a video's
+        // folder to the level the upload went into.
         const fs = await api.listLibraryFolders().catch(() => []);
-        const f = fs.find((x) => (x.parentId || null) === (libraryFolderId || null) && x.name.toLowerCase() === top.toLowerCase());
+        const byId = new Map(fs.map((x) => [x.id, x]));
+        const into = libraryFolderId || null;
+        for (let x = byId.get(made.find((v) => v.libraryFolderId && v.libraryFolderId !== into)?.libraryFolderId); x; x = byId.get(x.parentId)) if ((x.parentId || null) === into) { f = x; break; }
         if (f) { try { sessionStorage.setItem("rendrr:libfolder", f.id); } catch { /* private window */ } window.dispatchEvent(new CustomEvent("rendrr:openfolder", { detail: f.id })); }
       }
-      toast(`${top ? `${made.length} ${made.length === 1 ? "video" : "videos"} from "${top}". ` : ""}Keep this tab open while we prepare your preview${made.length > 1 ? "s, two at a time" : ""}.`, { icon: "clock", ms: 4000 });
+      toast(`${top ? `${made.length} ${made.length === 1 ? "video" : "videos"} from "${f?.name || top}". ` : ""}Keep this tab open while we prepare your preview${made.length > 1 ? "s, two at a time" : ""}.`, { icon: "clock", ms: 4000 });
     }
     catch (e) { toast(e.message, { icon: "alert", ms: 4000 }); }
     ping();
@@ -254,8 +259,8 @@ function App() {
     try { if (openId) sessionStorage.setItem("rendrr:libfolder", openId); else sessionStorage.removeItem("rendrr:libfolder"); } catch { /* private window */ }
     go("/library"); window.dispatchEvent(new CustomEvent("rendrr:openfolder", { detail: openId }));
     const vids = (n) => `${n} ${n === 1 ? "video" : "videos"}`;
-    const added = done.reduce((s, r) => s + r.added, 0), moved = done.reduce((s, r) => s + r.moved, 0), made = done.reduce((s, r) => s + r.folders, 0);
-    const parts = [added && `${vids(added)} linked`, moved && `${moved} already in your library moved in`, made > done.length && `${made} folders made`, files && `${vids(files)} added`].filter(Boolean);
+    const added = done.reduce((s, r) => s + r.added, 0), moved = done.reduce((s, r) => s + r.moved, 0), made = done.reduce((s, r) => s + r.folders, 0), back = done.reduce((s, r) => s + (r.restored || 0), 0);
+    const parts = [added && `${vids(added)} linked`, back && `${vids(back)} back from the Trash`, moved && `${moved} already in your library moved in`, made > done.length && `${made} folders made`, files && `${vids(files)} added`].filter(Boolean);
     const what = done.length === 1 ? `"${done[0].folder.name}"` : done.length ? `${done.length} folders` : vids(files);
     const cut = done.some((r) => r.truncated) ? " Only the first 200 videos of a folder came in." : "";
     const why = failed.length ? ` ${failed.length === 1 ? "One" : failed.length} did not: ${failed.map((e) => e.message).join(" ")}` : "";

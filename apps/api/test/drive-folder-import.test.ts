@@ -162,6 +162,56 @@ describe("importing a Drive folder", { skip: !ready && "needs DATABASE_URL and R
     assert.equal(await prisma.driveRemoved.count({ where: { userId } }), 0);
   });
 
+  it("another client's Drive folder of the same name gets a folder of its own; the same Drive folder again fills its own", async () => {
+    ITEMS.push(
+      { id: "cClientA", name: "Client A", mimeType: FOLDER, parents: ["root"], modifiedTime: T }, { id: "cBrA", name: "B-roll", mimeType: FOLDER, parents: ["cClientA"], modifiedTime: T },
+      { id: "cClientB", name: "Client B", mimeType: FOLDER, parents: ["root"], modifiedTime: T }, { id: "cBrB", name: "B-roll", mimeType: FOLDER, parents: ["cClientB"], modifiedTime: T },
+      vid("vA1", "Drone A.mp4", "cBrA", 10), vid("vA2", "City A.mp4", "cBrA", 10), vid("vB1", "Drone B.mp4", "cBrB", 10),
+    );
+    const a = await post("/videos/drive-folder", { folderId: "cBrA", name: "B-roll" });
+    assert.equal(a.status, 200, JSON.stringify(a.body));
+    const b = await post("/videos/drive-folder", { folderId: "cBrB", name: "B-roll" });
+    assert.equal(b.status, 200, JSON.stringify(b.body));
+    assert.deepEqual([a.body.folder.name, b.body.folder.name, b.body.added], ["B-roll", "B-roll (Client B)", 1], "named after the Drive folder it sits in");
+    assert.notEqual(a.body.folder.id, b.body.folder.id);
+    assert.deepEqual(await videosIn(a.body.folder.id), ["City A", "Drone A"], "client A's folder keeps only its own videos");
+    assert.deepEqual(await videosIn(b.body.folder.id), ["Drone B"]);
+    assert.equal((await prisma.libraryFolder.findUniqueOrThrow({ where: { id: a.body.folder.id } })).driveFolderId, "cBrA", "and stays linked to client A's Drive folder");
+    const again = await post("/videos/drive-folder", { folderId: "cBrA", name: "B-roll" });
+    assert.deepEqual([again.body.folder.id, again.body.added], [a.body.folder.id, 0], "the same Drive folder again: its own folder, nothing new");
+    // A third one of the same name with no folder above it to tell it apart: a number.
+    ITEMS.push({ id: "cBrC", name: "B-roll", mimeType: FOLDER, parents: ["root"], modifiedTime: T }, vid("vC1", "Drone C.mp4", "cBrC", 10));
+    const c = await post("/videos/drive-folder", { folderId: "cBrC", name: "B-roll" });
+    assert.equal(c.body.folder.name, "B-roll (2)");
+  });
+
+  it("a video moved to the Trash can be picked again (it comes back, wherever it is picked into); a sync leaves it in the Trash", async () => {
+    const a = (await child(null, "B-roll"))!, b = (await child(null, "B-roll (Client B)"))!;
+    const drone = await prisma.video.findFirstOrThrow({ where: { userId, driveFileId: "vA1" } });
+    const trash = await app.inject({ method: "POST", url: `/assets/video/${drone.id}/trash`, headers: headers() });
+    assert.equal(trash.statusCode, 200, trash.body);
+    const list = await app.inject({ method: "GET", url: "/drive/files?folderId=cBrA", headers: headers() });
+    const added = Object.fromEntries((JSON.parse(list.body).files as { id: string; added: boolean }[]).map((f) => [f.id, f.added]));
+    assert.deepEqual(added, { vA1: false, vA2: true }, "the picker does not call a trashed video already added");
+    await prisma.libraryFolder.update({ where: { id: a.id }, data: { driveSyncedAt: new Date(Date.now() - 3600_000) } });
+    const s = await post(`/library/folders/${a.id}/sync`, {});
+    assert.equal(s.body.added, 0);
+    assert.ok((await prisma.video.findUniqueOrThrow({ where: { id: drone.id } })).deletedAt, "a sync leaves it in the Trash");
+    // Picked into the other client's folder: the same video back, there, not a second copy.
+    const pick = await post("/videos/drive", { fileIds: ["vA1"], libraryFolderId: b.id });
+    assert.equal(pick.status, 200, JSON.stringify(pick.body));
+    assert.equal(pick.body[0].id, drone.id);
+    const back = await prisma.video.findUniqueOrThrow({ where: { id: drone.id } });
+    assert.deepEqual([back.deletedAt, back.libraryFolderId], [null, b.id]);
+    assert.equal(await prisma.video.count({ where: { userId, driveFileId: "vA1" } }), 1);
+    // Importing its folder again brings a trashed one back into it.
+    const city = await prisma.video.findFirstOrThrow({ where: { userId, driveFileId: "vA2" } });
+    await prisma.video.update({ where: { id: city.id }, data: { deletedAt: new Date() } });
+    const again = await post("/videos/drive-folder", { folderId: "cBrA", name: "B-roll" });
+    assert.deepEqual([again.body.folder.id, again.body.restored, again.body.added], [a.id, 1, 0]);
+    assert.deepEqual([(await prisma.video.findUniqueOrThrow({ where: { id: city.id } })).deletedAt, (await prisma.video.findUniqueOrThrow({ where: { id: city.id } })).libraryFolderId], [null, a.id]);
+  });
+
   it("into a library folder, without its folders; the name from Drive when not sent; an empty folder is refused", async () => {
     const clients = await prisma.libraryFolder.create({ data: { userId, name: `Clients ${run}` } });
     const r = await post("/videos/drive-folder", { folderId: "cMod1", libraryFolderId: clients.id, subfolders: false });
