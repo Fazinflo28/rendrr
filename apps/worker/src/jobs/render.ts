@@ -18,6 +18,7 @@ import { cachedAsset, cachedCopy } from "../lib/assets";
 import { matchFacing } from "../lib/orient";
 import { closeIdleBrowsers, renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
+import { ensureVoices } from "../lib/voice";
 import { writeMoving } from "../lib/moving";
 import { morphFaces } from "../lib/morph";
 import { detectShake, detectShakeArgs, makeStableCopy, stableCopyArgs } from "../lib/stabilize";
@@ -351,6 +352,29 @@ export async function renderJob(ctx: Ctx) {
       est.matte = null;
       if (pt) pt = armPreview(Math.max(60_000, previewLimit - (m0 - t0)));
       if (Date.now() - m0 > 3000) plan.operations.push(`Background: the person's matte made in ${Math.round((Date.now() - m0) / 1000)} s (kept: the next render reuses it)`);
+    }
+    // Studio voice: the dialogue's noise, room and echo taken out by the AI, made once per block of footage and kept
+    // (the first render waits for it; the job's own limit allows for it: voiceAllowanceMs).
+    if (plan.voices) {
+      const v0 = Date.now();
+      if (pt) clearTimeout(pt);
+      const label = steps[i];
+      steps[i] = "Cleaning up the voice";
+      est.matte = { start: v0, frac: 0 };
+      try {
+        files.voices = await ensureVoices(plan, video.userId, ctx.dir, signal, (f) => { est.matte!.frac = f; sendThrottled(i, 0.2 + 0.7 * f); });
+        if (Date.now() - v0 > 3000) plan.operations.push(`Studio voice: made in ${Math.round((Date.now() - v0) / 1000)} s (kept: the next render reuses it)`);
+      } catch (e) {
+        // A voice that cannot be made does not stop the render: the footage's own sound plays, with the cleanup's tone.
+        if (signal.aborted) throw e;
+        console.error(`[render] ${r.id}: studio voice not made: ${(e as Error).message}`);
+        plan.voices = undefined;
+        plan.operations = plan.operations.filter((o) => !o.startsWith("Studio voice: the dialogue read"));
+        plan.operations.push(`Studio voice: could not be made (${(e as Error).message.slice(0, 160)}): the footage's own sound plays, with the cleanup's tone`);
+      }
+      steps[i] = label;
+      est.matte = null;
+      if (pt) pt = armPreview(Math.max(60_000, previewLimit - (v0 - t0)));
     }
     for (const a of plan.audio) {
       // The user's own file: the one found for this user above (its key from the database, not the edit).

@@ -78,6 +78,13 @@ await page.locator("#audio-fine summary").click(); await sleep(200);
 await slide("audio-crossfade", 60);
 check(await val("audio-crossfade") === "60 ms (in the render)", `Crossfade at every cut (${await val("audio-crossfade")})`);
 check(/Cleanup and loudness are heard in the rendered preview/.test(await page.locator("#audio-note").textContent()), "the note says what only the rendered preview has");
+// Studio voice: the preset turns the AI on (its values show as the preset's), the sliders set them by hand.
+await page.locator('#voice-presets [data-preset="studio"]').click(); await sleep(300);
+check(await page.locator('#voice-presets [data-preset="studio"]').getAttribute("aria-checked") === "true", "the Studio voice preset is on");
+check(await val("audio-enhance") === "100 (preset)" && await val("audio-dereverb") === "60 (preset)" && await val("audio-level") === "50 (preset)" && await val("audio-crisp") === "25 (preset)", `its AI noise removal, echo removal, leveling and crispness (${await val("audio-enhance")}, ${await val("audio-dereverb")}, ${await val("audio-level")}, ${await val("audio-crisp")})`);
+await slide("audio-dereverb", 90);
+check(await val("audio-dereverb") === "90", `Echo removal set by hand (${await val("audio-dereverb")})`);
+check(/AI noise and echo removal is made on the first render/.test(await page.locator("#audio-note").textContent()), "the note says the AI voice is made on the first render");
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close();
 console.log(fails.length ? `\n${fails.length} failed` : "\nall passed");

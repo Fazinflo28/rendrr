@@ -21,6 +21,45 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Studio voice: real AI voice cleanup (20 November)
+
+- Asked: asking for less echo, more crispness, more volume or a podcast sound did little. The old presets only had
+  FFmpeg's FFT denoiser and EQ.
+- Looked at the open-source options (only MIT or Apache-2.0):
+  - **DeepFilterNet3** (MIT or Apache-2.0): the best noise and room removal that runs fast on a CPU. Used.
+  - **WPE dereverberation**, after nara_wpe (MIT): the classic echo remover, no model. Used.
+  - Resemble Enhance (MIT) and ClearerVoice MossFormer2 (Apache-2.0) are closer to Adobe Podcast (they rebuild the
+    voice), but need a GPU to be quick. Not used yet; they fit a GPU worker later.
+  - VoiceFixer (MIT): older, vocoder artefacts. Not used.
+- New preset **Studio voice** (`studio`), first after Off: AI noise and room removal, echo removal, a full close-mic
+  tone (body, less mud, presence, air), crispness, de-esser, leveling and compression, then the loudness step.
+- Podcast voice, Clean voice, Clean up noisy dialogue and Dry up a roomy voice now use the AI instead of the FFT
+  denoiser and the gate.
+- Four new values, by hand over any preset (set_audio, the editor's Fine-tune):
+  - `enhance` 0-100: AI noise and room removal (DeepFilterNet3).
+  - `dereverb` 0-100: echo removal (WPE).
+  - `level` 0-100: quiet and loud sentences evened (FFmpeg dynaudnorm, up to +12 dB).
+  - `crisp` 0-100: sparkle above 6 kHz (FFmpeg aexciter).
+- How it runs:
+  - The worker makes the clean voice before the render (`apps/worker/python/voice.py`, `apps/worker/src/lib/voice.ts`),
+    from the preview copy, in 30 s blocks of footage. Each block is kept with the video (`frames/<user>/<video>/voice-...`),
+    so the next render, the final and a render on the Mac or PC reuse it.
+  - The render reads the clean voice in place of the footage's sound; the tone chain stays in FFmpeg, so tone changes
+    need no new AI pass.
+  - The model is DeepFilterNet3's official ONNX export, pinned at v0.5.6 and checked by hash in the worker image. It
+    runs on onnxruntime (already in the image). The features are written in numpy as libDF computes them.
+  - The render's time limit grows for it (`voiceAllowanceMs`).
+- Measured here (4 CPUs): about 8x faster than real time with both steps (echo removal is two thirds of it; noise
+  removal alone is about 35x). Noise between words drops 25-39 dB above 80 Hz; the voice keeps its level within 2 dB.
+  Echo: about 2 dB cleaner on a medium room.
+- Claude's tool text says which value to use: less echo `dereverb`, less noise `enhance`, crisper `crisp` and
+  `presence`, even volume `level`, louder `loudness`.
+- A leveling setting found while testing: dynaudnorm's threshold option turned speech with pauses down by 10 dB, so it
+  is not used.
+- Tests: `packages/shared/test/studio-voice.test.ts`, `apps/worker/test/studio-voice.test.ts` (real speech, noise and
+  echo, the blocks, the join and a render), `apps/worker/test/audio-render.test.ts` (noisy room on target at -14 LUFS),
+  `apps/web/demo/audio6.mjs` (the preset and the sliders).
+
 ## Heavy finals timed out (6 November)
 
 - The V30 final (Shift performance therapy) failed twice with "took too long". Worker log: 43 inputs, 224 scalers. The one pass ran 10 minutes, was killed for memory, started again in 9 pieces, and hit the job's 16-minute limit at 78%.

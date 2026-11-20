@@ -8,6 +8,7 @@
 //   match    shot matching from measured pixels: three-point curves per channel and a saturation ratio.
 import { z } from "zod";
 import { matteTimeoutMs, PREFIX, renderTimeoutMs } from "./constants";
+import { voiceAllowanceMs } from "./cleanup";
 
 const unit = z.number().min(0).max(1);
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "a colour like #00FF00");
@@ -409,11 +410,11 @@ export function layerAllowanceMs(timeline: unknown, kind: "preview" | "final"): 
 
 /**
  * The one limit for a render, used everywhere it matters: the worker's job limit, the app's wait, the API's "join the
- * render already running" window and the stuck-work sweep. The footage's length and quality, plus the matte and the
- * layers the edit has, plus a minute.
+ * render already running" window and the stuck-work sweep. The footage's length and quality, plus the matte, the
+ * studio voice and the layers the edit has, plus a minute.
  */
 export function renderLimitMs(kind: "preview" | "final", sourceSeconds: number, quality: string | null | undefined, timeline: unknown): number {
-  return renderTimeoutMs(kind, sourceSeconds, quality) + matteAllowanceMs(timeline) + layerAllowanceMs(timeline, kind) + 60_000;
+  return renderTimeoutMs(kind, sourceSeconds, quality) + matteAllowanceMs(timeline) + voiceAllowanceMs(timeline) + layerAllowanceMs(timeline, kind) + 60_000;
 }
 
 /** Everything Phase 6 adds to a drawn clip (V1, b-roll). */

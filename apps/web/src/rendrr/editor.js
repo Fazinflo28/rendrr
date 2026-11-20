@@ -779,7 +779,9 @@ function ClipTab({ clip, track, plan, first, at, srcAt, doOp, H, liveOp, onSeek 
 
 
 // The cleanup values the Audio tab can set by hand: key, label, range, step, unit.
-const FINE = [["highpass", "Rumble cut (high-pass)", 0, 300, 10, " Hz"], ["denoise", "Noise reduction", 0, 40, 1, " dB"], ["presence", "Presence", -8, 8, 0.5, " dB"], ["deess", "De-esser", 0, 1, 0.05, ""], ["compress", "Compression", 1, 10, 0.5, ":1"]];
+// Studio voice: the AI's noise and room removal and echo removal (made on the first render, kept), leveling and crispness.
+const FINE = [["enhance", "AI noise removal", 0, 100, 5, ""], ["dereverb", "Echo removal", 0, 100, 5, ""], ["level", "Leveling (even volume)", 0, 100, 5, ""], ["crisp", "Crispness", 0, 100, 5, ""],
+  ["highpass", "Rumble cut (high-pass)", 0, 300, 10, " Hz"], ["denoise", "Plain noise reduction", 0, 40, 1, " dB"], ["presence", "Presence", -8, 8, 0.5, " dB"], ["deess", "De-esser", 0, 1, 0.05, ""], ["compress", "Compression", 1, 10, 0.5, ":1"]];
 const CLEANUP_NAME = Object.fromEntries(VOICE_PRESETS.map((v) => [v.id, v.name]));
 const LOUDNESS = [[-14, "-14 LUFS (online)"], [-16, "-16 LUFS (podcast)"], [-23, "-23 LUFS (broadcast)"]];
 const dB = (x) => (x > 0 ? "+" : "") + (Math.round(x * 10) / 10) + " dB";
@@ -858,7 +860,7 @@ function AudioTab({ a, clip, track, len, here = 0, planned, doOp, H, liveOp, voi
         <${ClipSound} clip=${clip} v1=${v1} len=${len} here=${here} gain=${gain} clipOp=${clipOp} doOp=${doOp} sl=${sl} />`
         : html`<p class="t-small muted">Select a clip on V1, A1, A2 or A3 to set its level and fades.</p>`}
     </div>`}
-    ${showEdit && html`<p class="t-small muted" id="audio-note">Cleanup and loudness are heard in the rendered preview.</p>`}
+    ${showEdit && html`<p class="t-small muted" id="audio-note">Cleanup and loudness are heard in the rendered preview.${cleanupParams(a).enhance || cleanupParams(a).dereverb ? " The AI noise and echo removal is made on the first render (about a tenth of the footage's length) and kept for the next ones." : ""}</p>`}
   </div></div>`;
 }
 

@@ -9,6 +9,16 @@ import { applyOp, buildInitialTimeline, buildTranscript, noiseBetweenWords, STYL
 import { ffmpegArgs, planRender, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { measureFile, run } from "../src/lib/ffmpeg";
 import { measureMix } from "../src/lib/mix";
+import { VOICE_MODELS, VOICE_PY } from "../src/lib/voice";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { VOICE_BLOCK } from "@rendrr/shared";
+
+// The noisy-room cleanup takes the noise out with the AI (python/voice.py): Python with numpy and onnxruntime
+// (PYTHON_BIN), DeepFilterNet3's model (VOICE_MODELS) and a voice that is speech (espeak-ng).
+const PY = process.env.PYTHON_BIN || "python3";
+const has = (cmd: string, args: string[]) => { try { execFileSync(cmd, args, { stdio: "ignore" }); return true; } catch { return false; } };
+const aiReady = has(PY, ["-c", "import numpy, onnxruntime"]) && has("espeak-ng", ["--version"]) && existsSync(join(VOICE_MODELS, "enc.onnx"));
 
 const SECONDS = 12;
 const words = (from: number, to: number) => buildTranscript([Array.from({ length: Math.floor((to - from) / 0.5) }, (_, i) => ({ text: `w${i}`, start: from + i * 0.5, end: from + i * 0.5 + 0.4 }))], { maxWordsPerLine: 6 })
@@ -31,8 +41,11 @@ describe("the sound, rendered and measured", () => {
     await v("tone", ["-f", "lavfi", "-i", `aevalsrc='0.8*sin(2*PI*220*t)':d=${SECONDS}:s=48000`], "[1:a]anull[a]");
     // No sound at all (for ducking: only the music is heard).
     await v("silent", []);
-    // A voice from 3 s to 8 s over room noise everywhere.
-    await v("noisy", ["-f", "lavfi", "-i", `sine=f=300:d=${SECONDS}:sample_rate=48000`, "-f", "lavfi", "-i", `anoisesrc=c=pink:a=0.02:d=${SECONDS}:r=48000`], "[1:a]volume=-12dB,volume='between(t,3,8)':eval=frame[s];[s][2:a]amix=inputs=2:normalize=0[a]");
+    // A voice from 3 s to 8 s over room noise everywhere (speech, for the AI; a tone where espeak-ng is missing).
+    if (aiReady) {
+      execFileSync("espeak-ng", ["-v", "en-us", "-s", "150", "-w", join(dir, "talk.wav"), "We are going to clean up this voice so it sounds like a studio."]);
+      await v("noisy", ["-i", join(dir, "talk.wav"), "-f", "lavfi", "-i", `anoisesrc=c=pink:a=0.02:d=${SECONDS}:r=48000`], "[1:a]aresample=48000,atrim=0:5,volume=-6dB,adelay=3000:all=1,apad=whole_dur=12[s];[s][2:a]amix=inputs=2:normalize=0[a]");
+    } else await v("noisy", ["-f", "lavfi", "-i", `sine=f=300:d=${SECONDS}:sample_rate=48000`, "-f", "lavfi", "-i", `anoisesrc=c=pink:a=0.02:d=${SECONDS}:r=48000`], "[1:a]volume=-12dB,volume='between(t,3,8)':eval=frame[s];[s][2:a]amix=inputs=2:normalize=0[a]");
     media.music = join(dir, "music.m4a");
     await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", `sine=f=500:d=${SECONDS}:sample_rate=48000`, "-c:a", "aac", media.music]);
   });
@@ -45,6 +58,13 @@ describe("the sound, rendered and measured", () => {
     s = applyOp(s, { op: "batch", ops: [{ op: "set_captions", on: false }, ...ops] as never }, ctxFor(tr)).snap;
     const plan = planRender({ kind: "preview", snapshot: s, transcript: tr, source: source(hasAudio), videoId: "v" });
     const files: PlanFiles = { source: media[src], output: join(dir, `out-${name}.mp4`), audio: Object.fromEntries(plan.audio.map((a) => [a.clipId, media.music])) };
+    // The studio voice, made as the render job does (lib/voice.ts): the blocks, then joined from the video's start.
+    for (const vo of Object.values(plan.voices ?? {})) {
+      const vdir = join(dir, `voice-${name}`), joined = join(dir, `voice-${name}.flac`);
+      await run(PY, [VOICE_PY, "--input", media[src], "--blocks", vo.blocks.join(","), "--block", String(VOICE_BLOCK), "--seconds", String(SECONDS), "--denoise", String(vo.enhance), "--dereverb", String(vo.dereverb), "--models", VOICE_MODELS, "--out", vdir]);
+      await run(PY, [VOICE_PY, "--join", "--dir", vdir, "--blocks", vo.blocks.join(","), "--block", String(VOICE_BLOCK), "--seconds", String(SECONDS), "--out", joined]);
+      (files.voices ??= {})[vo.videoId] = joined;
+    }
     const mix = await measureMix(plan, files, source(hasAudio), { dir });
     const { args, filterGraph } = ffmpegArgs(plan, files, source(hasAudio), { loudnessGainDb: mix.gainDb });
     await writeFile(join(dir, `${name}.txt`), filterGraph);
@@ -127,7 +147,7 @@ describe("the sound, rendered and measured", () => {
     assert.ok(soft < 1.3, `with the fade the cut steps ${soft.toFixed(2)}x the tone's own step`);
   });
 
-  it("the check's noise reading between words drops with the noisy-room cleanup", async () => {
+  it("the check's noise reading between words drops with the noisy-room cleanup", { skip: !aiReady && "needs espeak-ng, PYTHON_BIN with numpy and onnxruntime, and VOICE_MODELS", timeout: 120_000 }, async () => {
     const tr = words(3, 8);
     const a = await render("noise-a", "noisy", tr, [{ op: "set_audio", loudness: null }]);
     const b = await render("noise-b", "noisy", tr, [{ op: "set_audio", loudness: null, cleanup: "noisy" }]);
@@ -137,7 +157,7 @@ describe("the sound, rendered and measured", () => {
     assert.ok(na!.lufs - nb!.lufs >= 6, `noise between words: ${na!.lufs} LUFS without cleanup, ${nb!.lufs} LUFS with it`);
   });
 
-  it("the noisy-room cleanup lowers the noise between the words", async () => {
+  it("the noisy-room cleanup lowers the noise between the words", { skip: !aiReady && "needs espeak-ng, PYTHON_BIN with numpy and onnxruntime, and VOICE_MODELS", timeout: 120_000 }, async () => {
     const tr = words(3, 8);
     const plain = await render("noisy-none", "noisy", tr, []);
     const clean = await render("noisy-clean", "noisy", tr, [{ op: "set_audio", cleanup: "noisy" }]);

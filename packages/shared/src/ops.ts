@@ -139,7 +139,8 @@ const EDIT_OPS = [
   // The edit's sound: dialogue cleanup preset, loudness target (LUFS, null = off), true-peak ceiling (dBTP), how many
   // dB music goes down under speech (0 = off), fades of the whole mix. Fields left out keep their value.
   z.object({ op: z.literal("set_audio"), cleanup: z.enum(CLEANUPS).optional(), loudness: z.number().min(-30).max(-6).nullable().optional(), peak: z.number().min(-6).max(0).optional(), duck: z.number().min(0).max(30).optional(), fadeIn: z.number().min(0).max(10).optional(), fadeOut: z.number().min(0).max(10).optional(),
-    highpass: z.number().min(0).max(300).nullable().optional(), denoise: z.number().min(0).max(40).nullable().optional(), presence: z.number().min(-8).max(8).nullable().optional(), deess: z.number().min(0).max(1).nullable().optional(), compress: z.number().min(1).max(10).nullable().optional(), declick: z.number().min(0).max(0.03).optional(), crossfade: z.number().min(0).max(0.5).optional() }),
+    highpass: z.number().min(0).max(300).nullable().optional(), denoise: z.number().min(0).max(40).nullable().optional(), presence: z.number().min(-8).max(8).nullable().optional(), deess: z.number().min(0).max(1).nullable().optional(), compress: z.number().min(1).max(10).nullable().optional(), declick: z.number().min(0).max(0.03).optional(), crossfade: z.number().min(0).max(0.5).optional(),
+    enhance: z.number().min(0).max(100).nullable().optional(), dereverb: z.number().min(0).max(100).nullable().optional(), level: z.number().min(0).max(100).nullable().optional(), crisp: z.number().min(0).max(100).nullable().optional() }),
   // One clip's sound: a V1 clip's dialogue (track v1 or a1, the default), a music clip (a2) or a sound effect (a3).
   // Phase 6: pan -1..1, eq{low, mid, high} dB (merged), reverb{amount, size}, keys [{t: s from the clip's start, gainDb}]
   // (the list replaces them); null removes each.

@@ -17,7 +17,7 @@ const snap = (): Snapshot => ({ timeline: buildInitialTimeline(tr, 40, "clean", 
 const edit = (s: Snapshot, ...ops: Parameters<typeof applyOp>[1][]) => applyOp(s, ops.length === 1 ? ops[0] : { op: "batch", ops: ops as never }, ctx);
 const source = { width: 1280, height: 720, fps: 30, seconds: 40, hasAudio: true };
 const plan = (s: Snapshot) => planRender({ kind: "preview", snapshot: s, transcript: tr, source, videoId: "vid1", sources: { noTr: { ...source, seconds: 20 } } });
-const files = (p: ReturnType<typeof plan>) => ({ source: "/m.mp4", videos: { noTr: "/n.mp4" }, output: "/o.mp4", audio: Object.fromEntries(p.audio.map((a) => [a.clipId, "/a.m4a"])) });
+const files = (p: ReturnType<typeof plan>) => ({ source: "/m.mp4", videos: { noTr: "/n.mp4" }, output: "/o.mp4", audio: Object.fromEntries(p.audio.map((a) => [a.clipId, "/a.m4a"])), voices: Object.fromEntries(Object.keys(p.voices ?? {}).map((v) => [v, `/voice-${v}.flac`])) });
 /** Evaluates an FFmpeg expression at t (the functions the expressions use). */
 const evalExpr = (expr: string, t: number) => new Function("t", "clip", "min", "max", "gte", "lt", "pow", `return ${expr}`)(t, (x: number, a: number, b: number) => Math.min(b, Math.max(a, x)), Math.min, Math.max, (a: number, b: number) => +(a >= b), (a: number, b: number) => +(a < b), Math.pow);
 
@@ -100,7 +100,8 @@ describe("the graph", () => {
     const s = edit(s0, { op: "set_audio", cleanup: "voice", fadeIn: 0.5, fadeOut: 1 }, { op: "set_clip_audio", clipId: s0.timeline.tracks.v1[0].id, gainDb: 3 }).snap;
     const p = plan(s);
     const g = ffmpegArgs(p, files(p), source, { loudnessGainDb: 2.5 }).filterGraph;
-    expect(g).toMatch(/afftdn=nr=10:nf=-40:tn=1,.*deesser=i=0.4,acompressor=threshold=-18dB:ratio=3/); // the voice preset
+    expect(g).toMatch(/highpass=f=80,.*deesser=i=0\.4,dynaudnorm=f=250:g=31:p=0\.9:m=1\.514,acompressor=threshold=-18dB:ratio=3/); // the voice preset
+    expect(p.voices?.[p.sources[0]]).toMatchObject({ enhance: 80, dereverb: 0 }); // its AI noise removal, made before the render
     expect(g).toMatch(/atrim=start=[\d.]+:end=[\d.]+,asetpts=PTS-STARTPTS,afade=t=in:d=0\.020000,afade=t=out:st=[\d.]+:d=0\.020000\[a\d+\]/); // no click at cuts (20 ms)
     expect(g).toMatch(/asetnsamples=n=480,volume='1\+gte\(t,/); // the clip's gain
     expect(g).toMatch(/volume='pow\(10,-12\*\(min\(1,clip/); // music ducking
@@ -119,11 +120,11 @@ describe("the graph", () => {
     expect(CLEANUP_CHAINS).toMatchObject({
       none: "",
       light: "highpass=f=80,acompressor=threshold=-20dB:ratio=2:attack=10:release=150",
-      voice: "highpass=f=80,afftdn=nr=10:nf=-40:tn=1,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1:g=3,deesser=i=0.4,acompressor=threshold=-18dB:ratio=3:attack=8:release=120",
-      noisy: "highpass=f=100,afftdn=nr=20:nf=-35:tn=1,agate=threshold=0.01:ratio=2:attack=5:release=200,equalizer=f=3500:t=q:w=1:g=3,deesser=i=0.5,acompressor=threshold=-18dB:ratio=4:attack=5:release=100",
+      voice: "highpass=f=80,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1:g=3,deesser=i=0.4,dynaudnorm=f=250:g=31:p=0.9:m=1.514,acompressor=threshold=-18dB:ratio=3:attack=8:release=120",
+      noisy: "highpass=f=100,equalizer=f=3500:t=q:w=1:g=3,deesser=i=0.5,dynaudnorm=f=250:g=31:p=0.9:m=1.738,acompressor=threshold=-18dB:ratio=4:attack=5:release=100",
     });
     // The voice presets (Premiere's Essential Sound ones): each its own chain.
-    expect(CLEANUP_CHAINS.podcast).toBe("highpass=f=90,afftdn=nr=8:nf=-42:tn=1,equalizer=f=250:t=q:w=1:g=-3,equalizer=f=4000:t=q:w=1:g=5,treble=g=3:f=10000:t=q:w=0.7,deesser=i=0.5,acompressor=threshold=-22dB:ratio=4:attack=5:release=100");
+    expect(CLEANUP_CHAINS.podcast).toBe("highpass=f=90,equalizer=f=250:t=q:w=1:g=-3,equalizer=f=4000:t=q:w=1:g=4,treble=g=3:f=10000:t=q:w=0.7,aexciter=amount=1.11:drive=8.5:blend=0:freq=6000:ceil=16000,deesser=i=0.5,dynaudnorm=f=250:g=31:p=0.9:m=2.291,acompressor=threshold=-22dB:ratio=4:attack=5:release=100");
     expect(CLEANUP_CHAINS.phone).toBe("highpass=f=400,lowpass=f=3400,equalizer=f=1500:t=q:w=1:g=6,acompressor=threshold=-20dB:ratio=4:attack=5:release=100");
     expect(CLEANUP_CHAINS.warm).toMatch(/^highpass=f=70,equalizer=f=180:t=q:w=0.9:g=3,equalizer=f=3500:t=q:w=1:g=1.5,treble=g=-2:/);
     expect(new Set(Object.values(CLEANUP_CHAINS)).size).toBe(Object.keys(CLEANUP_CHAINS).length); // no two the same
@@ -133,7 +134,7 @@ describe("the graph", () => {
     const r = edit(snap(), { op: "set_audio", cleanup: "voice", denoise: 15, presence: 5, highpass: 0 });
     expect(r.summary).toMatch(/cleanup voice, no high-pass, denoise 15 dB, presence \+5 dB/);
     const g = ffmpegArgs(plan(r.snap), files(plan(r.snap)), source, { loudnessGainDb: 0 }).filterGraph;
-    expect(g).toMatch(/aformat=sample_fmts=fltp:channel_layouts=stereo,afftdn=nr=15:nf=-40:tn=1,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1:g=5,deesser=i=0.4,acompressor=threshold=-18dB:ratio=3:attack=8:release=120/);
+    expect(g).toMatch(/aformat=sample_fmts=fltp:channel_layouts=stereo,afftdn=nr=15:nf=-40:tn=1,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1:g=5,deesser=i=0\.4,dynaudnorm=[^,]+,acompressor=threshold=-18dB:ratio=3:attack=8:release=120/);
     // Hand values on no preset build a chain of their own.
     const own = edit(snap(), { op: "set_audio", highpass: 90, compress: 2.5 }).snap;
     expect(cleanupChain(cleanupParams(audioSettings(own.timeline)))).toBe("highpass=f=90,acompressor=threshold=-18dB:ratio=2.5:attack=8:release=120");

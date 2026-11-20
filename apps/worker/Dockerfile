@@ -34,7 +34,17 @@ RUN mkdir -p /opt/models/selfie && cd /opt/models/selfie \
     && echo "191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b  selfie_segmenter.tflite" | sha256sum -c - \
     && echo "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0  selfie_multiclass_256x256.tflite" | sha256sum -c - \
     && echo "selfie models ready"
-ENV PYTHON_BIN=/opt/venv/bin/python CHROMIUM_PATH=/usr/bin/chromium ALIGN_MODEL=/opt/models/wav2vec2/model_quantized.onnx ALIGN_VOCAB=/opt/models/wav2vec2/vocab.json MATTE_MODEL=/opt/models/selfie/selfie_multiclass_256x256.tflite MATTE_LOCATE=/opt/models/selfie/selfie_segmenter.tflite
+# Studio voice (python/voice.py): DeepFilterNet3's official ONNX export (MIT or Apache-2.0, Rikorose/DeepFilterNet at
+# v0.5.6, 8 MB), the AI that takes noise and room out of the dialogue. Pinned, checked.
+RUN mkdir -p /opt/models/dfn3 && cd /opt/models/dfn3 \
+    && curl -fsSL --retry 3 -o dfn3.tar.gz https://raw.githubusercontent.com/Rikorose/DeepFilterNet/v0.5.6/models/DeepFilterNet3_onnx.tar.gz \
+    && echo "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616  dfn3.tar.gz" | sha256sum -c - \
+    && tar -xzf dfn3.tar.gz --strip-components=2 && rm dfn3.tar.gz \
+    && echo "7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916  enc.onnx" | sha256sum -c - \
+    && echo "ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895  erb_dec.onnx" | sha256sum -c - \
+    && echo "23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a  df_dec.onnx" | sha256sum -c - \
+    && echo "studio voice model ready"
+ENV PYTHON_BIN=/opt/venv/bin/python CHROMIUM_PATH=/usr/bin/chromium ALIGN_MODEL=/opt/models/wav2vec2/model_quantized.onnx ALIGN_VOCAB=/opt/models/wav2vec2/vocab.json MATTE_MODEL=/opt/models/selfie/selfie_multiclass_256x256.tflite MATTE_LOCATE=/opt/models/selfie/selfie_segmenter.tflite VOICE_MODELS=/opt/models/dfn3
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./

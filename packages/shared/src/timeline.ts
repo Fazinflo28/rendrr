@@ -188,7 +188,7 @@ export type Multicam = z.infer<typeof MulticamSchema>;
 
 /** Dialogue cleanup and voice presets, like Premiere's Essential Sound (see audio.ts CLEANUP_PRESETS); set_audio can
  *  change their main numbers by hand. */
-export const CLEANUPS = ["none", "light", "voice", "noisy", "balanced", "podcast", "roomy", "warm", "bright", "radio", "phone", "soft", "punchy"] as const;
+export const CLEANUPS = ["none", "light", "voice", "noisy", "balanced", "podcast", "roomy", "warm", "bright", "radio", "phone", "soft", "punchy", "studio"] as const;
 export type Cleanup = (typeof CLEANUPS)[number];
 /**
  * The edit's sound. Left out = the defaults: no cleanup, loudness -14 LUFS with a -1 dBTP ceiling, music 12 dB down
@@ -216,11 +216,19 @@ export const AudioSettingsSchema = z.object({
   presence: z.number().min(-8).max(8).optional(),
   deess: z.number().min(0).max(1).optional(),
   compress: z.number().min(1).max(10).optional(),
+  /** Studio voice (audio.ts, python/voice.py): AI noise and room removal 0-100 (DeepFilterNet3; 0 = off), echo
+   *  removal 0-100 (WPE dereverberation; 0 = off), leveling 0-100 (quiet and loud sentences evened; 0 = off) and
+   *  crispness 0-100 (harmonics added above 6 kHz; 0 = off), on top of the preset. */
+  enhance: z.number().min(0).max(100).optional(),
+  dereverb: z.number().min(0).max(100).optional(),
+  level: z.number().min(0).max(100).optional(),
+  crisp: z.number().min(0).max(100).optional(),
 });
 export type AudioSettings = z.infer<typeof AudioSettingsSchema>;
 export const AUDIO_DEFAULTS = {
   cleanup: "none" as Cleanup, loudness: -14 as number | null, peak: -1, duck: 12, fadeIn: 0, fadeOut: 0, declick: 0.02, crossfade: 0,
   highpass: undefined as number | undefined, denoise: undefined as number | undefined, presence: undefined as number | undefined, deess: undefined as number | undefined, compress: undefined as number | undefined,
+  enhance: undefined as number | undefined, dereverb: undefined as number | undefined, level: undefined as number | undefined, crisp: undefined as number | undefined,
 };
 export type AudioMixSettings = typeof AUDIO_DEFAULTS;
 /** The edit's audio settings with the defaults filled in. */

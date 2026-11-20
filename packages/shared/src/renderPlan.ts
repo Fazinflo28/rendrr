@@ -9,7 +9,7 @@ import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WH
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing, Resolution, Codec } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
-import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, clipFxChain, clipFxText, dialogueExpr, duckExpr, keyExpr, reverbWet, speechRanges, type AudioKey, type DialogueSpan, type Eq, type Reverb } from "./audio";
+import { autoMusicFades, cleanupChain, cleanupParams, cleanupText, clipFxChain, clipFxText, dialogueExpr, duckExpr, keyExpr, reverbWet, speechRanges, VOICE_BLOCK, voiceBlocks, voiceStrengths, voiceText, type AudioKey, type DialogueSpan, type Eq, type Reverb, type VoiceOp } from "./audio";
 import { audioSettings, sourceVideoIds, type AudioMixSettings, type ExportFormat } from "./timeline";
 import { chapterProblems, GIF_MAX_SECONDS, gifSpec, type Chapter } from "./deliverables";
 import { blendFilter, blendText, type BlendMode } from "./blend";
@@ -231,6 +231,9 @@ export type RenderPlan = {
   cards?: Record<string, CardOp>;
   /** remove_background: the matte blocks each subject reads, by name (LookOp.subject.matte). */
   mattes?: Record<string, MatteOp>;
+  /** Studio voice (the cleanup's enhance or dereverb): each video whose sound is read as its studio voice (made by the
+   *  worker before the render, in blocks, kept), by video id. */
+  voices?: Record<string, VoiceOp>;
   background?: BackgroundOp | null;
   /** Sequences: the caption style, the captions with their lines and word times, the text layers (Phase 4). */
   captionStyle?: CaptionStyle;
@@ -843,6 +846,17 @@ export function planRender(input: PlanInput): RenderPlan {
   const sound = view.sound.map((x) => ({ ...x, start: r3(x.start), end: r3(x.end) }));
   const sources = Array.from(new Set([main, ...parts.map((p) => p.videoId), ...sound.map((x) => x.videoId)])).filter((v) => parts.some((p) => p.videoId === v) || sound.some((x) => x.videoId === v));
   const videos = Object.fromEntries(sources.map((v) => [v, { hasAudio: infoOf(v)!.hasAudio, hdr: !!infoOf(v)!.hdr, ...(infoOf(v)!.hdr ? { transfer: infoOf(v)!.transfer ?? "pq" } : {}), seconds: infoOf(v)!.seconds }]));
+  // Studio voice: with the cleanup's AI steps on (enhance, dereverb), every video the dialogue reads is read as its
+  // studio voice, made before the render in blocks of footage (VOICE_BLOCK s), kept. Not under the user's own voice file.
+  const voiceAt = voiceStrengths(cleanupParams(settings));
+  const voices: Record<string, VoiceOp> = {};
+  if ((voiceAt.enhance || voiceAt.dereverb) && !audio.some((x) => x.kind === "voice")) {
+    for (const x of sound) {
+      if (x.muted || x.silent || !videos[x.videoId]?.hasAudio) continue;
+      (voices[x.videoId] ??= { videoId: x.videoId, ...voiceAt, blocks: [] }).blocks.push(...voiceBlocks(x.srcIn, x.srcOut, videos[x.videoId].seconds));
+    }
+    for (const v of Object.values(voices)) v.blocks = Array.from(new Set(v.blocks)).sort((x, y) => x - y);
+  }
   const cutCount = cutRegions(words, new Set(tl.cut)).length;
   const live = view.clips.filter((c) => c.pieces.length);
   const jl = { j: live.filter((c, i) => i > 0 && c.soundStart < c.start - 1e-6).length, l: live.filter((c, i) => i > 0 && c.soundStart > c.start + 1e-6).length, muted: (tl.tracks.v1 as unknown as { audioMuted?: boolean }[]).filter((c) => c.audioMuted).length };
@@ -874,6 +888,7 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(background ? [`Behind V1: ${background.text}`] : bgIn?.videoId ? ["Behind V1: the background video is not in the library or not ready: black instead"] : []),
     ...(audio.some((a) => a.kind === "voice") ? [`Voice: "${voFile!.name}" plays in place of every clip's own sound, from ${r3(vo!.start)}s (${r3(voFile!.seconds)}s file, edit ${r3(total)}s${Math.abs(vo!.start + voFile!.seconds - total) > 0.05 ? `: ${vo!.start + voFile!.seconds > total ? "the file runs past the edit's end" : "the file ends before the edit"}` : ""}${vo!.editSeconds != null && Math.abs(vo!.editSeconds - total) > 0.05 ? `; the edit was ${r3(vo!.editSeconds)}s when the voice was set: a cut since then is not in the file, so it is out of sync after it` : ""})`] : []),
     ...soundNotes,
+    ...(Object.keys(voices).length ? [`Studio voice: the dialogue read from its studio voice: ${voiceText(voiceAt)}; made once per ${VOICE_BLOCK} s block of footage (${Object.values(voices).reduce((n, v) => n + v.blocks.length, 0)} blocks) and kept, the tone (EQ, leveling, compression, loudness) on top`] : []),
     `Audio: dialogue${jl.j || jl.l ? ` (${jl.j} J cuts, ${jl.l} L cuts)` : ""}${jl.muted ? ` (${jl.muted} muted clips)` : ""}${dialogue.length ? ` (${dialogue.length} clips with their own gain or fades)` : ""}${cleanupText(settings) !== "none" ? `, cleanup ${cleanupText(settings)}` : ""}${settings.crossfade ? `, ${Math.round(settings.crossfade * 1000)} ms crossfade at cuts` : settings.declick ? `, ${Math.round(settings.declick * 1000)} ms fade at every cut` : ""}${Object.keys(clipFx).length || audio.some((a) => a.pan || a.eq || a.reverb || a.keys) ? `; clips with their own sound: ${[...Object.entries(clipFx).map(([id, f]) => `${id} ${clipFxText(f)}`), ...audio.filter((a) => a.pan || a.eq || a.reverb || a.keys).map((a) => `${a.clipId} ${clipFxText(a)}`)].slice(0, 4).join("; ")}` : ""}${audio.some((a) => a.kind === "music") ? ` + music${settings.duck ? `, ${settings.duck} dB down under speech` : ""}` : ""}${audio.some((a) => a.kind === "sfx") ? ` + ${audio.filter((a) => a.kind === "sfx").length} sound effects` : ""}${settings.fadeIn || settings.fadeOut ? `; mix fades in ${settings.fadeIn}s, out ${settings.fadeOut}s` : ""}`,
     settings.loudness != null ? `Loudness: measured first, then set to ${settings.loudness} LUFS with a ${settings.peak} dBTP true-peak ceiling` : "Loudness: not normalized (limiter only)",
     kind === "preview" ? `Encode preview: H.264 ultrafast, ${width}x${height}` : hdr ? `Encode final: HEVC 10-bit HDR (${hdr.transfer === "pq" ? "PQ" : "HLG"}, BT.2020), ${width}x${height}, ${rateText(out.fps)} fps` : `Encode final: ${codec === "hevc" ? "HEVC" : "H.264"}, ${width}x${height}, ${rateText(out.fps)} fps`,
@@ -888,7 +903,7 @@ export function planRender(input: PlanInput): RenderPlan {
     ...(assBehind ? { assBehind: hdr ? hdrAss(assBehind, hdr.transfer) : assBehind } : {}), ...(person ? { person } : {}),
     ...(textMattes.length ? { textMattes: hdr ? textMattes.map((m) => (m.decor ? { ...m, decor: hdrAss(m.decor, hdr.transfer) } : m)) : textMattes } : {}),
     ...(textBlurs.length ? { textBlurs } : {}),
-    ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}),
+    ...(Object.keys(cards).length ? { cards } : {}), ...(background ? { background } : {}), ...(Object.keys(mattes).length ? { mattes } : {}), ...(Object.keys(voices).length ? { voices } : {}),
     ...(Object.keys(stabilize).length ? { stabilize } : {}), ...(Object.keys(stabilized).length ? { stabilized } : {}), ...(adjust.length ? { adjust } : {}),
     ...(kind === "final" && tl.export?.format && tl.export.format !== "mp4" ? { format: tl.export.format } : {}),
     ...(kind === "final" && tl.export?.bitrate && !hdr ? { bitrate: tl.export.bitrate } : {}),
@@ -1213,6 +1228,9 @@ export type PlanFiles = {
   under?: Record<string, string>;
   /** remove_background: each matte's blocks joined (an FFmpeg concat list), by matte name (plan.mattes). */
   mattes?: Record<string, string>;
+  /** Studio voice: each video's voice from its start (its blocks joined, silence where none was needed), by video id
+   *  (plan.voices). */
+  voices?: Record<string, string>;
   looks?: Record<string, string>;
   /** Phase 7: how long each graphic's file plays (seconds, by clip id). A clip longer than its file holds the last
    *  frame, as the player does with a custom graphic's recording. */
@@ -1617,6 +1635,12 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
   // Phase 21: a stabilized copy is read as a video of its own ("copy:<clip>"), its time starting at the copy's srcIn.
   const copyVid = (clipId: string) => `copy:${clipId}`;
   for (const [clipId, st] of Object.entries(plan.stabilized ?? {})) if (files.stableCopies?.[clipId]) srcPath[copyVid(clipId)] = files.stableCopies[clipId];
+  // Studio voice: a video's dialogue read from its studio voice ("voice:<video>", footage seconds from its start).
+  const voiceVid = (vid: string) => (plan.voices?.[vid] ? `voice:${vid}` : vid);
+  for (const vid of Object.keys(plan.voices ?? {})) {
+    if (!files.voices?.[vid]) throw new RenderPlanError("The studio voice of a video in this edit is missing. Render again.");
+    srcPath[`voice:${vid}`] = files.voices[vid];
+  }
   /** Where a stretch of a clip's footage is read: its stabilized copy (shifted to the copy's time) when it has one
    *  covering it, else the video itself. */
   const readFrom = (clipId: string | undefined, videoId: string, a: number, b: number) => {
@@ -1972,7 +1996,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     // Each sound unit from the window that reads its footage, in edit order.
     units.forEach((u, i) => {
       if (!live(u[0])) return;
-      take("a", u[0].videoId, Math.min(...u.map((x) => x.srcIn)) - pre(i), Math.max(...u.map((x) => x.srcOut)) + post(i), `sa${i}`);
+      take("a", voiceVid(u[0].videoId), Math.min(...u.map((x) => x.srcIn)) - pre(i), Math.max(...u.map((x) => x.srcOut)) + post(i), `sa${i}`);
       // Phase 6: the clip's own pan, EQ and reverb on its sound, before the joins.
       const fx = mix?.clipFx?.[u[0].clipId];
       g.push(`[sa${i}]${u.length === 1 && rateOf(u[0]) === 1 ? at(u[0], pre(i), post(i)) : tempo(u)}[${fx ? `au${i}` : `a${i}`}]`);
