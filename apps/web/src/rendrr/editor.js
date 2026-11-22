@@ -24,6 +24,7 @@ import { ColorTab, LookCanvas, MaskOverlay, pickColor, useLutData } from "./colo
 import { MulticamTab } from "./multicam";
 import { ExportModal, exportSummary, QualityMenu, qualityChip, timeLeft } from "./export";
 import { SamplesWindow } from "./samples";
+import { StoryboardWindow } from "./storyboard";
 // The timeline logic and the render plan are shared with the server: the editor edits with the connector's own ops,
 // draws and plays the edit exactly as the connector changes it and the renderer renders it.
 import { SourceMonitor, MediaBin, useLibrary } from "./media";
@@ -1041,6 +1042,8 @@ function EditorInner({ project, reload, ai, keep }) {
   const [tool, setTool] = useState("select"); const [snapOn, setSnapOn] = useState(true); const [addOpen, setAddOpen] = useState(false);
   const [render, setRender] = useState(null);
   const [share, setShare] = useState(false); const [help, setHelp] = useState(false); const [exportOpen, setExportOpen] = useState(false); const [samplesOpen, setSamplesOpen] = useState(false);
+  // Storyboard mode: open on a board (Claude's link carries ?storyboard=<its id>), or on the latest.
+  const [board, setBoard] = useState(() => { try { const q = new URLSearchParams(location.search).get("storyboard"); return q ? { id: q } : null; } catch { return null; } });
   const [viewVer, setViewVer] = useState(null);
   const [comments, setComments] = useState(project.comments);
   const [saved, setSaved] = useState("Saved");
@@ -1564,6 +1567,7 @@ function EditorInner({ project, reload, ai, keep }) {
     { label: "Aspect ratio", icon: "monitor", where: S.aspect, run: later(() => setTopMenu("aspect")) },
     { label: "Quality", icon: "quality", where: qualityChip({ timeline, aspect: S.aspect }), run: later(() => setTopMenu("quality")) },
     { label: "Samples", icon: "image", where: "Frames", run: () => setSamplesOpen(true) },
+    { label: "Storyboard", icon: "film", where: "Review", run: () => setBoard({ id: null }) },
     { label: "Share for review", icon: "link", where: "Link", run: () => setShare(true) },
     { label: "Export", icon: "download", where: "Final", run: () => setExportOpen(true) },
     { label: "Keyboard shortcuts", icon: "help", where: "?", run: () => setHelp(true) },
@@ -1596,6 +1600,7 @@ function EditorInner({ project, reload, ai, keep }) {
       <${MoreMenu} id="editor-more" label="More" items=${[
         !fresh && { id: "render-preview", label: "Export preview", icon: "play", disabled: waiting || saved !== "Saved" || !plan, onClick: () => startRender("preview") },
         { id: "samples-btn", label: "Samples", icon: "image", title: "A few frames and short clips, drawn as the export draws them", disabled: saved !== "Saved" || !plan, onClick: () => { pb.setPlaying(false); setSamplesOpen(true); } },
+        { id: "storyboard-btn", label: "Storyboard", icon: "film", title: "A board of the key moments and the style sheet, to review before the whole video", disabled: saved !== "Saved" || !plan, onClick: () => { pb.setPlaying(false); setBoard({ id: null }); } },
       ]} />
       <${Btn} kind="secondary" size="sm" id="share" icon="link" onClick=${() => setShare(true)}>Share<//>
       <${Btn} size="sm" id="render-final" icon="download" disabled=${waiting} onClick=${() => setExportOpen(true)}>Export<//>
@@ -1789,6 +1794,8 @@ function EditorInner({ project, reload, ai, keep }) {
         <div class="row wrap">${render.hasFile ? html`<${Btn} id="upload-original" icon="upload" onClick=${() => sendOriginal(null)}>Upload original and export<//><${Btn} kind="secondary" id="pick-other" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the file<//>` : html`<${Btn} id="pick-original" icon="laptop" onClick=${() => document.getElementById("original-file").click()}>Pick the original file<//>`}<${Btn} kind="ghost" onClick=${() => setRender(null)}>Not now<//></div></div>`}
     <//>`}
     ${samplesOpen && html`<${SamplesWindow} projectId=${project.id} time=${pb.time} duration=${dur} aspect=${S.aspect} toast=${toast} onSeek=${(t) => pb.seek(t)} onClose=${() => setSamplesOpen(false)} />`}
+    ${board && html`<${StoryboardWindow} projectId=${project.id} initialId=${board.id} toast=${toast} onSeek=${(t) => pb.seek(t)} onRenderVideo=${() => startRender("preview")}
+      onClose=${() => { setBoard(null); try { const u = new URL(location.href); if (u.searchParams.has("storyboard")) { u.searchParams.delete("storyboard"); history.replaceState(history.state, "", u.pathname + u.search + u.hash); } } catch {} }} />`}
     ${exportOpen && html`<${ExportModal} snap=${{ timeline, aspect: S.aspect }} plan=${plan} name=${(S.name || "edit").replace(/[^\w\- ]+/g, "").trim() || "edit"} video=${project.video} doOp=${doOp} onReframe=${() => reframeFace(true)} reframing=${reframing} onRender=${(o) => { setExportOpen(false); startRender("final", o); }} onClose=${() => setExportOpen(false)} />`}
     ${share && html`<${CreateLinkModal} projectId=${project.id} onClose=${() => setShare(false)} onCreated=${() => setStatus("In review")} />`}
     ${addOpen && html`<${AddClipModal} waiting=${waiting} main=${{ id: main, name: project.video?.name || "Footage", seconds: footDur }} at=${pb.time} onAdd=${addClip} onClose=${() => setAddOpen(false)} />`}

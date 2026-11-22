@@ -633,9 +633,9 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const back = iconBtn("back", "Open the edit", () => { clearTimeout(samplePoll); state.samples = null; sampleMedia = null; openProject(p.id); }, "ghost");
     const frames = v.items.filter((i) => i.kind === "frame").length, clips = n - frames;
     const top = h("div", { class: "row top" }, back,
-      h("div", { class: "grow" }, h("h1", { title: p.name }, "Samples · " + p.name),
-        h("div", { class: "meta" }, ["v" + v.version, frames ? frames + (frames === 1 ? " frame" : " frames") : "", clips ? clips + (clips === 1 ? " clip" : " clips") : "", p.aspect].filter(Boolean).join(" · "))),
-      h("div", { class: "acts row" }, fsButton(), p.editorUrl ? iconBtn("external", "Open in Rendrr", () => openLink(p.editorUrl)) : null));
+      h("div", { class: "grow" }, h("h1", { title: p.name }, (v.board ? "Storyboard · " + v.board.title : "Samples · " + p.name)),
+        h("div", { class: "meta" }, ["v" + v.version, frames ? frames + (frames === 1 ? " frame" : " frames") : "", clips ? clips + (clips === 1 ? " clip" : " clips") : "", p.aspect, v.board ? (v.board.status === "approved" ? "Approved" : "In review") : ""].filter(Boolean).join(" · "))),
+      h("div", { class: "acts row" }, fsButton(), (v.board && v.board.url) || p.editorUrl ? iconBtn("external", v.board ? "Open the board in Rendrr (draw on a panel there)" : "Open in Rendrr", () => openLink((v.board && v.board.url) || p.editorUrl)) : null));
     const tall = p.aspect === "9:16" || p.aspect === "4:5";
     const go = (j) => { state.sampleSel = (j + n) % n; sampleMedia = null; render(); };
     // The one picked, big: a frame's picture, or a clip's video (it plays and loops when pressed; nothing starts alone).
@@ -654,7 +654,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
       n > 1 ? h("button", { class: "nav next", "aria-label": "Next sample", onClick: () => go(k + 1) }, icon("next")) : null);
     const strip = h("div", { class: "strip" + (tall ? " tall" : p.aspect === "1:1" ? " square" : ""), "data-key": "strip", role: "tablist" }, v.items.map((it, j) => {
       const asked = changesOn(v, it).filter((c) => !c.resolved).length;
-      return h("button", { class: "th" + (j === k ? " on" : "") + (it.still ? "" : " wait"), role: "tab", "aria-selected": j === k ? "true" : "false", title: sampleName(it) + (it.note ? " · " + it.note : ""), onClick: () => go(j) },
+      return h("button", { class: "th" + (j === k ? " on" : "") + (it.still ? "" : " wait"), role: "tab", "aria-selected": j === k ? "true" : "false", title: (it.title ? (j + 1) + ". " + it.title + " · " : "") + sampleName(it) + (it.note ? " · " + it.note : ""), onClick: () => go(j) },
         it.still ? h("img", { src: it.still, alt: "", loading: "lazy", decoding: "async" }) : null,
         h("span", { class: "n" }, String(j + 1)),
         h("span", { class: "lab" }, it.kind === "clip" ? "▶ " + (Math.round((it.end - it.at) * 10) / 10) + "s" : sampleTime(it.at)),
@@ -663,6 +663,9 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const notes = [];
     if (v.status === "queued" || v.status === "running") notes.push(h("div", { class: "note" }, h("div", { class: "row" }, h("span", { class: "grow" }, v.status === "queued" ? "Waiting to render the samples" : "Rendering samples · " + v.percent + "%" + (v.step ? " · " + v.step : "")), h("span", { class: "muted small" }, left(v.etaSec))), h("div", { class: "prog" }, h("div", { style: "width:" + Math.max(3, v.percent) + "%" }))));
     else if (v.status === "failed") notes.push(h("div", { class: "note err" }, "The samples did not render: " + (v.error || "unknown error")));
+    // A storyboard's panel: its beat, the words said, what is on screen, what we see.
+    const words = x && v.board ? h("div", { class: "snote" }, x.title ? h("div", {}, h("b", {}, (k + 1) + ". " + x.title)) : null,
+      x.caption ? h("div", {}, "Says: " + x.caption) : null, x.onScreen ? h("div", { class: "muted small" }, "On screen: " + x.onScreen) : null, x.shot ? h("div", { class: "muted small" }, "Shows: " + x.shot) : null) : null;
     const said = x && x.note ? h("div", { class: "snote" }, h("b", {}, aiName() + ": "), x.note) : null;
     // The changes asked on this one, and the box to ask another.
     const mine = x ? changesOn(v, x) : [];
@@ -690,9 +693,9 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     }
     const open = v.comments.filter((c) => !c.resolved);
     const send = h("button", { class: "btn primary", disabled: !open.length || state.sending, onClick: () => sendChanges(v) }, "Send " + (open.length ? open.length + " " : "") + (open.length === 1 ? "change" : "changes") + " to " + aiName());
-    const good = h("button", { class: "btn ghost", disabled: v.status !== "done" || state.sending, onClick: () => looksGood(v) }, "Looks good: render the preview");
+    const good = h("button", { class: "btn ghost", disabled: v.status !== "done" || state.sending, onClick: () => looksGood(v) }, v.board ? (v.board.status === "approved" ? "Approved: render the video" : "Approve: render the video") : "Looks good: render the preview");
     const askBox = x && v.status === "done" ? h("div", { class: "ask" }, ta, h("div", { class: "row" }, add)) : null;
-    return h("div", { class: "sv" }, top, viewer, strip, notes, said, list, askBox, v.status === "done" ? h("div", { class: "sendbar" }, send, good) : null,
+    return h("div", { class: "sv" }, top, viewer, strip, notes, words, said, list, askBox, v.status === "done" ? h("div", { class: "sendbar" }, send, good) : null,
       state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
   }
   async function dropChange(c) {
@@ -704,14 +707,20 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const open = v.comments.filter((c) => !c.resolved);
     if (!open.length) return;
     const lines = open.map((c) => { const j = v.items.findIndex((x) => changesOn(v, { ...x, end: x.end == null ? x.at : x.end }).includes(c)); return "- " + (j >= 0 ? "Sample " + (j + 1) + " (" + sampleName(v.items[j]) + ")" : sampleTime(c.time)) + ": " + c.text; });
-    const text = "Changes on the samples of my Rendrr edit \"" + v.project.name + "\" (" + v.project.id + ", samples " + v.renderId + "):\n" + lines.join("\n") + "\nMake them in one apply_edits, then render_samples again so I can look.";
+    const text = v.board
+      ? "Changes on the storyboard of my Rendrr edit \"" + v.project.name + "\" (" + v.project.id + ", storyboard " + v.renderId + "):\n" + lines.join("\n").replace(/Sample /g, "Panel ") + "\nRead them with get_samples, make them in one apply_edits, then create_storyboard again so I can look."
+      : "Changes on the samples of my Rendrr edit \"" + v.project.name + "\" (" + v.project.id + ", samples " + v.renderId + "):\n" + lines.join("\n") + "\nMake them in one apply_edits, then render_samples again so I can look.";
     state.sending = true; render();
     try { const r = await sendMessage(text); if (r && r.isError) throw new Error(); toast("Sent to " + aiName() + "."); }
     catch { try { await navigator.clipboard.writeText(text); toast("Could not send. Copied: paste it in the chat."); } catch { toast("Could not send to " + aiName() + "."); } }
     state.sending = false; render();
   }
   async function looksGood(v) {
-    const text = "The samples of my Rendrr edit \"" + v.project.name + "\" (" + v.project.id + ") look good. Render the full preview (render_preview) and show it to me.";
+    // A storyboard is approved in Rendrr first (so the board and the editor show it), then Claude renders the video.
+    if (v.board && v.board.status !== "approved") { try { const nv = await callTool("app_approve_storyboard", { renderId: v.renderId }); if (nv) showSamples(nv); } catch (e) { toast(e.message); return; } }
+    const text = v.board
+      ? "I approved the storyboard of my Rendrr edit \"" + v.project.name + "\" (" + v.project.id + ", storyboard " + v.renderId + "). Render the whole video (render_preview) and show it to me."
+      : "The samples of my Rendrr edit \"" + v.project.name + "\" (" + v.project.id + ") look good. Render the full preview (render_preview) and show it to me.";
     try { const r = await sendMessage(text); if (r && r.isError) throw new Error(); toast("Sent to " + aiName() + "."); }
     catch { try { await navigator.clipboard.writeText(text); toast("Could not send. Copied: paste it in the chat."); } catch { toast("Could not send to " + aiName() + "."); } }
   }

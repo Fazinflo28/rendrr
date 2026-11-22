@@ -10,6 +10,7 @@ import { renderResult, renderStatus, startRender } from "./render";
 import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
 import { createReviewLink } from "../routes/reviews";
 import { samplesView } from "./samples";
+import { approveStoryboard } from "./storyboard";
 import type { ToolCtx, ToolOut } from "../tools";
 
 /** "Mac" or "PC" when a render was made on the user's computer (the card's chip says "PC render"), else nothing. */
@@ -181,7 +182,11 @@ export const APP_HANDLERS: Record<string, (c: ToolCtx, input: any) => Promise<To
   },
   async app_get_samples(c, i) {
     const v = await samplesView(c.userId, i.renderId);
-    return { text: `Samples of "${v.project.name}" v${v.version}: ${v.status}.`, data: v };
+    return { text: `${v.board ? "Storyboard" : "Samples"} of "${v.project.name}" v${v.version}: ${v.status}.`, data: v };
+  },
+  async app_approve_storyboard(c, i) {
+    const v = await approveStoryboard(c.userId, i.renderId, i.approved !== false);
+    return { text: `Storyboard of "${v.project.name}" v${v.version}: ${v.board?.status === "approved" ? "approved" : "back in review"}.`, data: v };
   },
   async app_get_project(c, i) {
     const view = await appProject(c.userId, i.projectId, i.renderId);

@@ -7,8 +7,9 @@ import { getOwnedProject } from "../services/projects";
 import { renderResult, renderStatus, startRender, stopRender, targetFromApp } from "../services/render";
 import { listen, openSse } from "../live";
 import { samplesView, startSamples } from "../services/samples";
+import { approveStoryboard, listStoryboards, startStoryboard, storyboardView } from "../services/storyboard";
 import { claimMacExport, macExports, macPing, macStatus } from "../services/macExport";
-import { SampleRequestSchema } from "@rendrr/shared";
+import { SampleRequestSchema, StoryboardRequestSchema } from "@rendrr/shared";
 
 export default async function render(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
@@ -29,12 +30,26 @@ export default async function render(app: FastifyInstance) {
     const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { timeline: true, video: { select: { seconds: true } } } });
     return { renderId: r.id, kind: "sample", steps: r.steps, status: r.status, quality: r.quality, limitMs: renderLimitMs("preview", v?.video.seconds ?? 0, r.quality, v?.timeline) };
   });
-  // The edit's latest sets of samples (the user's and Claude's), newest first.
+  // The edit's latest sets of samples (the user's and Claude's), newest first. Storyboards are listed on their own.
   app.get("/projects/:id/samples", async (req) => {
     const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
-    const rs = await prisma.render.findMany({ where: { projectId: p.id, kind: "sample", status: { in: ["queued", "running", "done"] } }, orderBy: { createdAt: "desc" }, take: 4, select: { id: true } });
-    return { sets: await Promise.all(rs.map((r) => samplesView(req.user!.id, r.id))) };
+    const rs = await prisma.render.findMany({ where: { projectId: p.id, kind: "sample", status: { in: ["queued", "running", "done"] } }, orderBy: { createdAt: "desc" }, take: 16, select: { id: true, plan: true } });
+    const sets = rs.filter((r) => !(r.plan as { samples?: { board?: unknown } } | null)?.samples?.board).slice(0, 4);
+    return { sets: await Promise.all(sets.map((r) => samplesView(req.user!.id, r.id))) };
   });
+
+  // Storyboard mode: a board of panels and the style sheet, made from the edit (the editor's Storyboard; Claude's
+  // create_storyboard). Panels left out: Rendrr picks them.
+  app.post("/projects/:id/storyboards", async (req) => {
+    const body = StoryboardRequestSchema.parse(req.body ?? {});
+    const r = await startStoryboard(req.user!.id, (req.params as { id: string }).id, body, await targetFromApp(req.user!.id, (req.body as { device?: unknown } | null)?.device), "user");
+    const v = await prisma.project.findUnique({ where: { id: r.projectId }, select: { timeline: true, video: { select: { seconds: true } } } });
+    return { renderId: r.id, kind: "sample", steps: r.steps, status: r.status, quality: r.quality, limitMs: renderLimitMs("preview", v?.video.seconds ?? 0, r.quality, v?.timeline) };
+  });
+  app.get("/projects/:id/storyboards", async (req) => ({ boards: await listStoryboards(req.user!.id, (req.params as { id: string }).id) }));
+  app.get("/storyboards/:id", async (req) => storyboardView(req.user!.id, (req.params as { id: string }).id));
+  // The user approves the board (approved false takes it back); the whole video is rendered from the editor after.
+  app.post("/storyboards/:id/approve", async (req) => approveStoryboard(req.user!.id, (req.params as { id: string }).id, (req.body as { approved?: unknown } | null)?.approved !== false));
 
   async function ownedRender(userId: string, id: string) {
     const r = await prisma.render.findUnique({ where: { id } });

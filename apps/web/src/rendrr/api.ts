@@ -540,6 +540,15 @@ export const api: any = {
     return (await followRender(started, "Samples", 5, onProgress))?.samples ?? null;
   },
   listSamples: async (projectId: string) => (await get(`/projects/${enc(projectId)}/samples`)).sets || [],
+  // Storyboard mode: a board of panels and the style sheet, made from the edit (panels left out: Rendrr picks them);
+  // the board once drawn.
+  renderStoryboard: async (projectId: string, req: { title?: string; panels?: any[]; rules?: string[]; palette?: { hex: string; name?: string }[] } = {}, onProgress?: (p: any) => void) => {
+    const started = await post(`/projects/${enc(projectId)}/storyboards`, req);
+    return (await followRender(started, "The storyboard", 10, onProgress))?.samples ?? null;
+  },
+  listStoryboards: async (projectId: string) => (await get(`/projects/${enc(projectId)}/storyboards`)).boards || [],
+  getStoryboard: (renderId: string) => get(`/storyboards/${enc(renderId)}`),
+  approveStoryboard: (renderId: string, approved = true) => post(`/storyboards/${enc(renderId)}/approve`, { approved }),
   // Local source only: the original is uploaded once for the export and deleted within 24h.
   uploadOriginalForExport: async (projectId: string, file: File | null, onProgress?: (p: any) => void, signal?: AbortSignal) => {
     const p = await get(`/projects/${enc(projectId)}`);
@@ -610,9 +619,10 @@ export const api: any = {
   },
   deleteComment: (commentId: string) => del(`/comments/${enc(commentId)}`),
   /** drawing: strokes on the picture ({w, h, strokes}); images: [{type, data (base64), name, w, h}] (up to 4). */
-  addProjectComment: (projectId: string, { time, text, drawing, images }: any) => {
+  // renderId: the render it is on (a storyboard's panel).
+  addProjectComment: (projectId: string, { time, text, drawing, images, renderId }: any) => {
     if (!text?.trim() && !drawing?.strokes?.length && !images?.length) throw fail("Write a comment, draw on the picture or add a picture first.");
-    return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: (text || "").trim(), ...(drawing?.strokes?.length ? { drawing } : {}), ...(images?.length ? { images } : {}) });
+    return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: (text || "").trim(), ...(drawing?.strokes?.length ? { drawing } : {}), ...(images?.length ? { images } : {}), ...(renderId ? { renderId } : {}) });
   },
   approveReview: (t: string) => post(`/public/reviews/${enc(t)}/approve`, {}, { auth: false, headers: reviewHeaders(t) }),
   requestChanges: (t: string, note: string) => post(`/public/reviews/${enc(t)}/changes`, { note }, { auth: false, headers: reviewHeaders(t) }),

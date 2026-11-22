@@ -2,6 +2,7 @@ import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue,
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
 import { bestResolution, desktopAppName, fmtClock, formatFile, isBestQuality, isSoundFormat, lengthTolerance, SOUND_QUALITY, withExportFormat, type ExportFormat, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
+import { audioSettings, audioText, boardStyle, lookText, onScreenAt, storyboardAutoPanels, type Board, type BoardPanel } from "@rendrr/shared";
 import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSideFiles } from "../lib/deliver";
 import { dropTemps, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
 import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
@@ -68,7 +69,8 @@ export async function renderJob(ctx: Ctx) {
   const kind = r.kind as "preview" | "final" | "sample";
   // Samples: a few frames and short clips of the edit (render_samples), from the preview copy, drawn as a preview is.
   const samples = kind === "sample" ? ((r.plan as { samples?: SamplePlan } | null)?.samples ?? null) : null;
-  if (kind === "sample" && !samples?.items?.length) throw new JobError("These samples have nothing to render. Ask for them again.", "empty", false);
+  // A storyboard Rendrr fills itself (board.auto) gets its panels from the first plan below.
+  if (kind === "sample" && !samples?.items?.length && !samples?.board?.auto) throw new JobError("These samples have nothing to render. Ask for them again.", "empty", false);
   const planKind: "preview" | "final" = kind === "final" ? "final" : "preview";
   // Where it is being made: Rendrr's cloud server until the user's Mac app takes the encode (then that Mac); why: why
   // the Mac did not make it, when the app was open.
@@ -256,6 +258,11 @@ export async function renderJob(ctx: Ctx) {
 
     // A first plan tells us the output size, so graphics can be drawn at the right resolution.
     const first = planRender(planBase);
+    // Storyboard mode, panels left to Rendrr: the opening, the scenes, the titles, graphics and b-roll of this plan.
+    if (samples?.board?.auto && !samples.items.length) {
+      samples.items = storyboardAutoPanels(first);
+      if (!samples.items.length) throw new JobError("This edit has nothing to put on a storyboard yet.", "empty", false);
+    }
     const graphicsReady: Record<string, boolean> = {};
     const graphicErrors: string[] = [];
     // Only graphics that are still in the edit, each drawn for the time it is on screen.
@@ -279,6 +286,20 @@ export async function renderJob(ctx: Ctx) {
     }
     const plan = planRender({ ...planBase, graphicsReady });
     plan.operations.push(...graphicErrors);
+    // Storyboard mode: the words on screen in each panel (its frame, or a clip's middle), and the edit's style sheet.
+    let boardOut: Board | undefined;
+    if (samples?.board) {
+      for (const it of samples.items as BoardPanel[]) { const said = onScreenAt(plan, it.kind === "clip" ? it.at + Math.min(1, (it.end! - it.at) / 2) : it.at); if (said) it.onScreen = said; else delete it.onScreen; }
+      const tl = snapshot.timeline, music = plan.audio.filter((a) => a.kind === "music");
+      const cuts = plan.parts.reduce((n, p, k) => n + (k > 0 && p.clipIds[0] !== plan.parts[k - 1].clipIds[0] ? 1 : 0), 0);
+      const bg = (tl as { background?: { color?: string } }).background;
+      boardOut = { ...samples.board, style: boardStyle({
+        aspect: snapshot.aspect, outputSeconds: plan.outputSeconds, width: plan.width, height: plan.height, captionStyle: plan.captionStyle, captionsOn: !!tl.captionsOn && !!plan.styledCaptions?.length,
+        texts: plan.texts, background: plan.background ? { color: bg?.color, text: plan.background.text } : null, transitions: plan.transitions, cuts,
+        look: lookText(tl), music: music.length ? `${music.length} ${music.length === 1 ? "track" : "tracks"} (${music.map((m) => m.soundId ? "your own file" : m.assetKey.split("/").pop()!.replace(/\.[a-z0-9]+$/i, "")).join(", ")}), ${plan.audioMix?.duck ? `${plan.audioMix.duck} dB down under speech` : "not ducked"}` : "none",
+        sound: audioText(audioSettings(tl)),
+      }, samples.board.palette) };
+    }
     // Samples: the shake and the person's matte only where a sample reads them.
     if (sampleWins) {
       const subs = sampleWins.map((w) => windowPlan(plan, w.from, w.to));
@@ -547,15 +568,25 @@ export async function renderJob(ctx: Ctx) {
       }
       est.encEnd = Date.now();
       // The user's notes may have changed while this rendered (asking for the same samples with new words): the latest.
-      const now = ((await prisma.render.findUnique({ where: { id: r.id }, select: { plan: true } }))?.plan as { samples?: { items?: { note?: string }[] } } | null)?.samples?.items;
-      const noted = <T extends { note?: string }>(xs: T[]) => xs.map((x, k) => { if (!now?.[k]) return x; const { note: _n, ...rest } = x; return (now[k].note != null ? { ...rest, note: now[k].note } : rest) as T; });
+      const latest = ((await prisma.render.findUnique({ where: { id: r.id }, select: { plan: true } }))?.plan as { samples?: SamplePlan } | null)?.samples;
+      const now = latest?.items;
+      // A storyboard's words (title, caption, shot, note) may have been changed the same way: the latest too.
+      const WORDS = ["note", "title", "caption", "shot"] as const;
+      const noted = <T extends { note?: string }>(xs: T[]) => xs.map((x, k) => {
+        if (!now?.[k]) return x;
+        const y = { ...x } as Record<string, unknown>;
+        for (const w of WORDS) { if (!samples.board && w !== "note") continue; const v = (now[k] as Record<string, unknown>)[w]; if (v != null) y[w] = v; else delete y[w]; }
+        return y as T;
+      });
+      // The board as it is now (its title, rules or palette asked again while this drew), with the style sheet read here.
+      const boardNow = boardOut ? { ...boardOut, ...(latest?.board ? { title: latest.board.title, rules: latest.board.rules, palette: latest.board.palette, status: latest.board.status } : {}) } : undefined;
       i = steps.length - 1;
       await send(i, 0.5);
       const seconds = Math.round(items.reduce((acc, it) => acc + (it.kind === "clip" ? it.end! - it.at : 0), 0) * 1000) / 1000;
       if (signal.aborted) { await deleteObjects(keys).catch(() => {}); throw new JobError("Stopped."); }
       await prisma.render.updateMany({ where: { id: r.id, status: "running" }, data: {
         status: "done", outputKey: null, sizeBytes: BigInt(bytes), seconds, framesKeys: keys, finishedAt: new Date(), quality: "540p", made: { on: where.on, device: where.device, why: where.why, ...(where.platform ? { platform: where.platform } : {}) },
-        plan: { samples: { items: noted(items), done: noted(done), width: plan.width, height: plan.height }, operations: plan.operations, outputSeconds: plan.outputSeconds, mix: mixLoudness } as unknown as Prisma.InputJsonValue,
+        plan: { samples: { items: noted(items), done: noted(done), width: plan.width, height: plan.height, ...(boardNow ? { board: boardNow } : {}) }, operations: plan.operations, outputSeconds: plan.outputSeconds, mix: mixLoudness } as unknown as Prisma.InputJsonValue,
       } });
       await usage(video.userId, "render_preview", Math.round((Math.max(seconds, items.length / fps) / 60) * 100) / 100, { projectId: project.id, renderId: r.id });
       // Samples are previews for billing: free on Starter, counted in the trial.

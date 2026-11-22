@@ -15,3 +15,6 @@ export const framesFor = (renderId: string, times: number[], overlays?: (string 
 
 /** Frames at exact times (original seconds) from a video's preview copy: footage or a reference. */
 export const videoFramesFor = (videoId: string, times: number[]) => take({ videoId, times: times.slice(0, 8) });
+
+/** A storyboard's panel pictures with a comment's drawing laid on each (kept with the storyboard's files). */
+export const stillsFor = (renderId: string, stills: { key: string; overlay: string }[]) => take({ renderId, times: [], stills: stills.slice(0, 6) });

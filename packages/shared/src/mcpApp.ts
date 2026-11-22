@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ToolDef } from "./mcpTools";
+import type { BoardStyle } from "./storyboard";
 
 // The Rendrr app inside the chat (an MCP App, io.modelcontextprotocol/ui): the user's edits, each one's latest preview
 // and its comments. open_projects (an AI tool, MCP_TOOLS) opens it; the app itself calls these tools through the host.
@@ -42,8 +43,10 @@ export const APP_TOOLS: ToolDef[] = [
     input: z.object({ projectId: id("project") }) },
   { name: "app_log", title: "Card log", app: true, description: "The Rendrr app: what happened to the card (it started, the host closed it, an error), kept in the connector's log to find problems. Nothing is saved.",
     input: z.object({ event: z.enum(["start", "mode", "teardown", "error", "hide"]), detail: z.string().max(500).optional(), seconds: z.number().min(0).max(7 * 86400).optional() }) },
-  { name: "app_get_samples", title: "Samples for the app", app: true, description: "The Rendrr app: a set of samples (render_samples): its progress, each frame's picture and each clip's video, and the user's changes on them.",
+  { name: "app_get_samples", title: "Samples for the app", app: true, description: "The Rendrr app: a set of samples (render_samples) or a storyboard (create_storyboard): its progress, each frame's picture and each clip's video, and the user's changes on them.",
     input: z.object({ renderId: id("render") }) },
+  { name: "app_approve_storyboard", title: "Approve the storyboard", app: true, write: true, description: "The Rendrr app: the user approves a storyboard (approved false takes it back).",
+    input: z.object({ renderId: id("render"), approved: z.boolean().optional() }) },
 ];
 
 /** What the app shows for one edit (app_get_project, open_projects with a projectId). */
@@ -74,7 +77,12 @@ export type AppFolderCard = { id: string; name: string; edits: number; updated: 
 /** folders: every project of the user (sent with the first page); folder: the project the edits are of, when one was asked for. */
 export type AppProjectsPage = { projects: AppProjectCard[]; total: number; offset: number; folders?: AppFolderCard[]; folder?: { id: string; name: string } | null };
 /** Samples (render_samples): a few frames and short clips of an edit, shown as a storyboard to ask changes on. */
-export type AppSampleItem = { kind: "frame" | "clip"; at: number; end: number | null; note: string | null; still: string | null; clip: string | null };
+export type AppSampleItem = { kind: "frame" | "clip"; at: number; end: number | null; note: string | null; still: string | null; clip: string | null;
+  /** A storyboard's panel: its beat, the words said, what we see, and the captions and text on screen there. */
+  title?: string | null; caption?: string | null; shot?: string | null; onScreen?: string | null };
+/** A storyboard's board (Storyboard mode): its title, rules, palette, the edit's style sheet, and the user's approval.
+ *  latestVersion: the edit's version now (a board of an older one shows the edit before later changes). */
+export type AppBoard = { title: string; rules: string[]; palette: { hex: string; name: string }[]; style: BoardStyle | null; status: "review" | "approved"; approvedAt: number | null; latestVersion: number; url: string | null };
 export type AppSamples = {
   renderId: string; project: { id: string; name: string; aspect: string; version: number; editorUrl: string | null };
   /** The edit's version the samples show. */
@@ -84,6 +92,8 @@ export type AppSamples = {
   items: AppSampleItem[];
   /** The user's changes asked on these samples (comments on this render, at each sample's edit time). */
   comments: AppComment[];
+  /** Set when these samples are a storyboard. */
+  board?: AppBoard | null;
 };
 /** open_projects' structured result: the page of projects, and the edit to open when it was asked for. */
 /** With an edit open, the list is left out (the app loads it with app_list_projects when the user goes back to it). */

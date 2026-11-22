@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Board, BoardPanel } from "./storyboard";
 
 /**
  * Samples: a few frames and short clips of an edit, rendered on their own before the whole preview (the way an editor
@@ -25,8 +26,9 @@ export type SampleRequest = z.infer<typeof SampleRequestSchema>;
 export type SampleItem = { kind: "frame" | "clip"; at: number; end?: number; note?: string };
 /** A finished sample: its still (a frame's picture, or a clip's first frame) and a clip's file (storage keys). */
 export type SampleDone = SampleItem & { still: string; clip?: string };
-/** What a sample render keeps in its plan: the items asked for, and once done their files. */
-export type SamplePlan = { items: SampleItem[]; done?: SampleDone[]; width?: number; height?: number; operations?: string[] };
+/** What a sample render keeps in its plan: the items asked for, and once done their files. A storyboard (Storyboard
+ *  mode) is a set of samples with a board: its panels' words are on the items. */
+export type SamplePlan = { items: (SampleItem & Partial<BoardPanel>)[]; done?: (SampleDone & Partial<BoardPanel>)[]; width?: number; height?: number; operations?: string[]; board?: Board };
 
 export class SampleError extends Error {}
 

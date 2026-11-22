@@ -12,7 +12,8 @@ import { framesPrefix } from "./breakdown";
 // references (get_frames, original times). Render frames are kept next to the render and expire with it; footage
 // frames sit with the video's other frames and go when its preview copy goes.
 export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | FaceSamples | TrackRow[]> {
-  const { renderId, videoId, times, overlays, colorSamples: cs, faces, track } = ctx.job.data as FramesJob;
+  const { renderId, videoId, times, overlays, colorSamples: cs, faces, track, stills } = ctx.job.data as FramesJob;
+  if (stills?.length) return stillsDrawn(ctx, stills, renderId);
   if (cs) return colorSamples(ctx, cs);
   if (faces) return faceSamples(ctx, faces);
   if (track) return trackSamples(ctx, track);
@@ -46,6 +47,32 @@ export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | Fac
     const fresh = await prisma.render.findUnique({ where: { id: r.id }, select: { framesKeys: true } });
     const have = (fresh?.framesKeys as string[]) || [];
     await prisma.render.update({ where: { id: r.id }, data: { framesKeys: Array.from(new Set([...have, ...out])) } });
+  }
+  return out;
+}
+
+/**
+ * A storyboard's panel pictures with a comment's drawing on each (for the AI to see what was drawn on what), kept next
+ * to the picture (they go with the storyboard's files). Made once per drawing.
+ */
+async function stillsDrawn(ctx: Ctx, stills: { key: string; overlay: string }[], renderId?: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const [i, s] of stills.slice(0, 6).entries()) {
+    const key = s.key.replace(/\.jpg$/, "") + `-drawn-${s.overlay.slice(s.overlay.lastIndexOf("/") + 1).replace(/\.png$/, "")}.jpg`;
+    if (await headObject(key)) { out.push(key); continue; }
+    const [pic, ink] = await Promise.all([fetch(await signGet(s.key, 600)).catch(() => null), fetch(await signGet(s.overlay, 600)).catch(() => null)]);
+    if (!pic?.ok || !ink?.ok) { console.warn(`[frames] a panel or its drawing could not be read (${pic?.status ?? "no answer"}, ${ink?.status ?? "no answer"})`); continue; }
+    const p = join(ctx.dir, `still${i}.jpg`), png = join(ctx.dir, `ink${i}.png`), q = join(ctx.dir, `still${i}-drawn.jpg`);
+    await writeFile(p, Buffer.from(await pic.arrayBuffer()));
+    await writeFile(png, Buffer.from(await ink.arrayBuffer()));
+    try { await overlayPng(p, png, q, ctx.signal); } catch (e) { console.warn(`[frames] the drawing could not go on the panel: ${(e as Error).message}`); continue; }
+    await uploadFile(key, q, "image/jpeg");
+    out.push(key);
+  }
+  // Recorded with the storyboard's files, so cleanup and deletes remove them too.
+  if (renderId && out.length) {
+    const r = await prisma.render.findUnique({ where: { id: renderId }, select: { framesKeys: true } });
+    if (r) await prisma.render.update({ where: { id: renderId }, data: { framesKeys: Array.from(new Set([...((r.framesKeys as string[]) || []), ...out])) } });
   }
   return out;
 }

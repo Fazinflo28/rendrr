@@ -21,6 +21,39 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Storyboard mode (22 November)
+
+- Asked: an optional storyboard before the whole render. A board of frames and short clips made from the user's ask,
+  with captions, fonts, caption animation, visual rules and colours. Users comment on a panel, draw on it with a
+  comment for Claude, approve it, then render the full video. Editing straight away still works the same.
+- What it is: a set of samples with a board (`packages/shared/src/storyboard.ts`). Each panel is a frame or a short
+  clip drawn exactly as the export draws it, so the final matches the board.
+  - Panels: up to 24, 8 of them clips of up to 6 s. Each has a title, the words said, what we see and a note.
+  - Rendrr fills in the words on screen at each panel (captions and text).
+  - Style sheet, read from the edit when the board is drawn: caption font, size, colours, case, position and how they
+    come on (3 words at a time, the spoken word lit in green); text fonts and animations; every colour with its use;
+    look, background, transitions, music, sound and pacing.
+  - Claude's visual rules and palette sit on the board too.
+- Claude: new tool `create_storyboard` (54 tools now), only when the user asks to storyboard first. `get_samples`
+  reads a board: the style sheet, panels, the user's changes per panel, and whether they approved it. With images,
+  each drawing comes laid on its panel's picture.
+- Editor: "Storyboard" in the top bar's menu and in tool search (`apps/web/src/rendrr/storyboard.js`).
+  - Empty: "Make storyboard" (Rendrr picks the opening, scenes, titles, graphics and b-roll), or ask Claude.
+  - The board: numbered panels with their words under each, like a printed storyboard; clips play on hover. The style
+    sheet is above: captions drawn in their own font and colours, font specimens, colour swatches, rules.
+  - A panel opens big: draw on it (5 pens, undo, clear), write the change, "Add change with drawing". Changes are
+    listed per panel, can be resolved, and "Send to Claude" sends them.
+  - "Make again" draws it from the edit as it is now. "Approve", then "Render the video" starts the preview.
+  - Claude's link (`/editor/<id>?storyboard=<board>`) opens that board.
+- Claude's chat app shows a board too: panel titles and words, "Open the board in Rendrr" (to draw), and
+  "Approve: render the video" (new app tool `app_approve_storyboard`).
+- API: `POST /projects/:id/storyboards`, `GET /projects/:id/storyboards`, `GET /storyboards/:id`,
+  `POST /storyboards/:id/approve`; comments can carry `renderId` from the editor.
+- Worker: picks the panels when left to Rendrr, fills the words on screen, reads the style sheet and keeps it with
+  the board. The frames job lays a comment's drawing on a panel's picture.
+- Tests: `packages/shared/test/storyboard.test.ts`, `apps/api/test/storyboard.test.ts` (with a database),
+  `apps/worker/test/storyboard-render.test.ts` (the real render job draws boards), `apps/web/demo/storyboard.mjs`.
+
 ## Studio voice: real AI voice cleanup (20 November)
 
 - Asked: asking for less echo, more crispness, more volume or a podcast sound did little. The old presets only had

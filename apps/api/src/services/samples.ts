@@ -37,7 +37,7 @@ export async function startSamples(userId: string, projectId: string, req: Sampl
   const done = await tx.render.findMany({ where: { projectId, kind: "sample", version, status: "done", createdAt: { gt: since } }, orderBy: { createdAt: "desc" }, take: 10 });
   for (const r of [...recent, ...done]) {
     const sp = (r.plan as { samples?: SamplePlan } | null)?.samples;
-    if (!sp || !same(sp.items, items)) continue;
+    if (!sp || sp.board || !same(sp.items, items)) continue;
     if (r.status === "done" && !((r.framesKeys as string[]) || []).length) continue; // its files were cleaned up
     // The notes may be new: keep the latest words.
     if (items.some((x, k) => (x.note ?? null) !== (sp.items[k]?.note ?? null))) {
@@ -73,14 +73,20 @@ export async function samplesView(userId: string, renderId: string): Promise<App
       kind: x.kind, at: x.at, end: x.end ?? null, note: x.note ?? null,
       still: d.still ? await signGet(d.still, LINK_SECONDS, { contentType: "image/jpeg" }) : null,
       clip: d.clip ? await signGet(d.clip, LINK_SECONDS, { contentType: "video/mp4" }) : null,
+      // A storyboard's panel words.
+      ...(sp.board ? { title: x.title ?? null, caption: x.caption ?? null, shot: x.shot ?? null, onScreen: x.onScreen ?? null } : {}),
     };
   }));
+  const board = sp.board ? {
+    title: sp.board.title, rules: sp.board.rules ?? [], palette: sp.board.palette ?? [], style: sp.board.style ?? null, status: sp.board.status ?? "review", approvedAt: sp.board.approvedAt ?? null,
+    latestVersion: p.currentVersion, url: WEB() ? `${WEB()}/editor/${p.id}?storyboard=${r.id}` : null,
+  } : null;
   const status = r.status === "done" || r.status === "failed" ? r.status : (st?.status === "running" ? "running" : "queued");
   return {
     renderId: r.id, project: { id: p.id, name: p.name, aspect: p.aspect, version: p.currentVersion, editorUrl: WEB() ? `${WEB()}/editor/${p.id}` : null },
     version: r.version, status, percent: r.status === "done" ? 100 : Math.round(st?.percent ?? 0), step: st ? st.steps[st.step] ?? null : null, etaSec: st?.etaSec ?? null,
     error: r.status === "failed" ? r.error || "The samples did not render." : null,
-    width: sp.width ?? null, height: sp.height ?? null, items, comments,
+    width: sp.width ?? null, height: sp.height ?? null, items, comments, ...(board ? { board } : {}),
   };
 }
 

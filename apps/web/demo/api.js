@@ -69,6 +69,7 @@ const DEMO_FOLDERS = { fd1: "Podcast raw", fd2: "Client footage", fd3: "B-roll",
 const DEMO_FILES = { root: ["df7"], fd1: ["df1"], fdB: ["df3", "df8"], fdC: ["df4", "df6"], fd3: ["df5"], fdS: ["df2"] };
 // Samples: the preview has no renderer, so each sample is a picture saying what it shows (a frame or a clip).
 const demoSamples = {};
+const demoBoards = {}; // Storyboard mode: each edit's boards, newest first
 const clockT = (x) => { const d = Math.round(Math.max(0, x) * 10); return Math.floor(d / 600) + ":" + String(Math.floor((d % 600) / 10)).padStart(2, "0") + "." + (d % 10); };
 const sampleStill = (label, k) => "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="${["#2b3a55", "#3c2f4f", "#24463b", "#4a3a26"][k % 4]}"/><stop offset="1" stop-color="#111"/></linearGradient></defs><rect width="960" height="540" fill="url(#g)"/><text x="480" y="290" fill="#fff" font-family="Inter, sans-serif" font-size="56" text-anchor="middle">${label}</text></svg>`);
 const logout = api.logout;
@@ -159,6 +160,27 @@ Object.assign(api, {
     return set;
   },
   listSamples: async (projectId) => (demoSamples[projectId] || []).slice(0, 4),
+  // Storyboard mode (demo): a board with Claude's panels, or six of Rendrr's own; the style sheet as the worker reads it.
+  renderStoryboard: async (projectId, req = {}, onProgress) => {
+    const steps = ["Reading timeline", "Measuring loudness", "Drawing the storyboard", "Packing the board"];
+    for (let i = 0; i < steps.length; i++) { onProgress?.({ step: i, steps, percent: Math.round((i / steps.length) * 100) }); await wait(200); }
+    const auto = [{ at: 0.5, title: "Opening", onScreen: "STILL DOWNLOADING ICONS" }, { at: 4.5, title: "Meet Fontora", onScreen: "Meet Fontora" }, { at: 9.3, title: "Scene 2", onScreen: "A LIVE ICON LIBRARY" },
+      { at: 14, end: 18, title: "Graphic" }, { at: 22.4, title: "B-roll" }, { at: 30.3, title: "Scene 4", onScreen: "STAY ON BRAND" }];
+    const panels = req.panels?.length ? req.panels : auto;
+    const items = panels.map((p, k) => ({ kind: p.end != null || p.clip ? "clip" : "frame", at: p.at, end: p.end ?? (p.clip ? p.at + 4 : null), note: p.note || null, title: p.title || null, caption: p.caption || null, shot: p.shot || null, onScreen: p.onScreen || null, still: sampleStill(p.title || "Panel " + (k + 1), k), clip: null }));
+    const board = { title: req.title || "Fontora launch", rules: req.rules || [], palette: (req.palette || []).map((c) => ({ hex: c.hex.toUpperCase(), name: c.name || "palette" })), status: "review", approvedAt: null, latestVersion: 1, url: null,
+      style: { aspect: "16:9", seconds: 42, width: 960, height: 540, captions: { font: "Inter", weight: 700, size: 7.4, color: "#FFFFFF", highlight: "#34C759", stroke: "#000000", box: null, case: "upper", wordsAtOnce: 3, lines: 1, position: "bottom", animation: "3 words at a time, the spoken word lit in #34C759" },
+        fonts: [{ font: "Inter", weight: 700, use: "captions" }, { font: "Poppins", weight: 600, use: "titles and text" }], texts: { count: 2, animations: ["pop"] },
+        colors: [{ hex: "#34C759", name: "brand green, spoken word" }, { hex: "#FFFFFF", name: "caption text" }, { hex: "#0B3D2E", name: "title text" }],
+        look: "as shot", background: null, transitions: ["whip"], music: "1 track (m_lofi), 12 dB down under speech", sound: "cleanup studio", pacing: "9 cuts in 0:42 (12.9 a minute)" } };
+    const set = { renderId: "sb_" + Math.random().toString(36).slice(2, 8), project: { id: projectId, name: "", aspect: "16:9", version: 1, editorUrl: null }, version: 1, status: "done", percent: 100, step: null, etaSec: null, error: null, width: 960, height: 540, items, comments: [], board };
+    (demoBoards[projectId] ||= []).unshift(set);
+    onProgress?.({ step: steps.length, steps, percent: 100 });
+    return set;
+  },
+  listStoryboards: async (projectId) => (demoBoards[projectId] || []).slice(0, 4),
+  getStoryboard: async (id) => { const b = Object.values(demoBoards).flat().find((x) => x.renderId === id); if (!b) throw Object.assign(new Error("That storyboard is gone."), { friendly: true }); return { ...b, comments: [...b.comments] }; },
+  approveStoryboard: async (id, approved = true) => { const b = Object.values(demoBoards).flat().find((x) => x.renderId === id); b.board = { ...b.board, status: approved ? "approved" : "review", approvedAt: approved ? Date.now() : null }; return { ...b }; },
   // The Export window's choice for this export (Best quality) is kept where the page's checks can read it.
   // Each final has an id in its progress (the export window's Stop button uses it); stopRender ends it as "stopped".
   renderFinal: async (projectId, onProgress, opts) => {
@@ -438,16 +460,23 @@ Object.assign(api, {
   editComment: async (id, text) => { if (!text?.trim()) throw Object.assign(new Error("Write the comment first."), { friendly: true }); edits[id] = text.trim(); return { id, text: text.trim(), edited: true }; },
   deleteComment: async (id) => { deleted.add(id); return { ok: true }; },
   // A note with its drawing and pictures (kept in this tab).
-  addProjectComment: async (_projectId, { time, text, drawing, images }) => {
+  addProjectComment: async (_projectId, { time, text, drawing, images, renderId }) => {
     if (!text?.trim() && !drawing?.strokes?.length && !images?.length) throw Object.assign(new Error("Write a comment, draw on the picture or add a picture first."), { friendly: true });
     await new Promise((r) => setTimeout(r, 120));
     globalThis.__rendrrLastComment = { time, drawing }; // what the editor sent (the browser tests read it)
     const c = { id: "cm_" + Math.random().toString(36).slice(2, 8), time: Math.max(0, Number(time) || 0), text: (text || "").trim(), author: "You", mine: true, resolved: false, at: Date.now(), edited: false,
       drawing: drawing?.strokes?.length ? { w: drawing.w, h: drawing.h, strokes: drawing.strokes } : null, images: (images || []).map((im, i) => ({ id: "im" + i + Math.random().toString(36).slice(2, 5), url: `data:${im.type};base64,${im.data}`, w: im.w, h: im.h, name: im.name })) };
     (globalThis.__demoPosted ||= []).push(c); // for Send to Claude
+    // On a storyboard's panel: the board lists it.
+    const sb = renderId && Object.values(demoBoards).flat().find((x) => x.renderId === renderId);
+    if (sb) sb.comments.push({ ...c, renderId });
     return c;
   },
-  resolveComment: ((before) => async (id, resolved = true) => (id === fromClaude.id ? (fromClaude.resolved = resolved, { id, resolved }) : before(id, resolved)))(api.resolveComment),
+  resolveComment: ((before) => async (id, resolved = true) => {
+    const onBoard = Object.values(demoBoards).flat().flatMap((b) => b.comments).find((c) => c.id === id);
+    if (onBoard) { onBoard.resolved = resolved; return { id, resolved }; }
+    return id === fromClaude.id ? (fromClaude.resolved = resolved, { id, resolved }) : before(id, resolved);
+  })(api.resolveComment),
 });
 
 // Music and sound effect files for the live player, by catalog key (the real API sends signed URLs).
@@ -620,6 +649,7 @@ api.listGallery = async (...a) => {
 for (const name of ["renderPreview", "renderFinal"]) {
   const run0 = api[name];
   api[name] = async (projectId, onProgress, opts) => {
+    (globalThis.__demoRenders ||= []).push(name); // which renders a test started
     const m = globalThis.__demoMadeOn || null;
     const r = await run0(projectId, (p) => onProgress?.(m ? { ...p, on: m.on, device: m.device ?? null } : p), opts);
     return m && r ? { ...r, where: { renders: m.on, device: m.device ?? null, region: "US East", delivery: { to: m.on === "mac" && name === "renderFinal" ? "mac" : "download", device: m.device ?? null, state: m.on === "mac" ? "sent" : null, folder: null, at: null } } } : r;

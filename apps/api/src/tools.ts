@@ -11,6 +11,7 @@ import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, findOrMakeFolder, getOwnedProject, graphicPlacements, moveToFolder, resolveReference } from "./services/projects";
 import { checkPhotos, createPick, ownPick, pickLink, type Pick, type PickSource } from "./services/picks";
 import { samplesOut, samplesView, startSamples } from "./services/samples";
+import { startStoryboard, storyboardImages, storyboardOut } from "./services/storyboard";
 import type { AppOpen } from "@rendrr/shared";
 import { createCanvas } from "./services/canvas";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
@@ -352,6 +353,11 @@ async function renderOut(renderId: string): Promise<ToolOut> {
 /** Samples as Claude reads them, with their pictures (a frame's, a clip's first) once done; the app's data with them. */
 async function samplesAnswer(userId: string, renderId: string, images: boolean, lead = ""): Promise<ToolOut> {
   const v = await samplesView(userId, renderId);
+  // A storyboard: the board, its style sheet, rules, panels and the user's changes; the drawings on their panels first.
+  if (v.board) {
+    const pics = images && v.status === "done" ? await storyboardImages(userId, v) : { urls: [], said: [] };
+    return { text: `${lead}${storyboardOut(v)}${pics.said.length ? `\nImages, in order:\n${pics.said.join("\n")}` : ""}`, images: pics.urls, data: { open: null, webUrl: WEB(), samples: v } as AppOpen };
+  }
   const urls = images && v.status === "done" ? v.items.map((x) => x.still).filter((u): u is string => !!u) : [];
   const said = urls.length ? `\nImages, in order: ${v.items.map((x, k) => `${k + 1}. ${x.kind === "frame" ? "the frame" : "the clip's first frame"}`).join("; ")}` : "";
   const data: AppOpen = { open: null, webUrl: WEB(), samples: v };
@@ -1215,6 +1221,18 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     try { r = await startSamples(c.userId, i.projectId, { frames: i.frames, clips: i.clips }, pick.target); } catch (e) {
       const err = e as AppError;
       if (err.code === "samples" || err.code === "expired") return { text: `${err.message} Nothing was rendered.` };
+      throw e;
+    }
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
+    return samplesAnswer(c.userId, r.id, i.images !== false);
+  },
+  async create_storyboard(c, i) {
+    const pick = await pickTarget(c.userId, i.device, { tool: "create_storyboard" });
+    if (pick.ask) return { text: pick.ask };
+    let r;
+    try { r = await startStoryboard(c.userId, i.projectId, { title: i.title, panels: i.panels, rules: i.rules, palette: i.palette }, pick.target, c.ai ?? "claude"); } catch (e) {
+      const err = e as AppError;
+      if (err.code === "storyboard" || err.code === "expired") return { text: `${err.message} Nothing was drawn.` };
       throw e;
     }
     await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);

@@ -276,7 +276,8 @@ export default async function projects(app: FastifyInstance) {
   // The user's own notes on an edit, at a moment of the video. Client comments arrive through review links.
   // A drawing on the picture and pictures (up to 4) can come with it, as from the app in the chat; then the text may be
   // empty.
-  const NoteInput = z.object({ time: ProjectCommentInput.shape.time, text: z.string().trim().max(2000, "That comment is too long.").default(""), drawing: DrawingInput.optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional() });
+  // renderId: the render it is on (a storyboard's panel: the comment's time is the panel's).
+  const NoteInput = z.object({ time: ProjectCommentInput.shape.time, text: z.string().trim().max(2000, "That comment is too long.").default(""), drawing: DrawingInput.optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional(), renderId: z.string().max(100).optional() });
   app.post("/projects/:id/comments", { bodyLimit: 8 * 1024 * 1024 }, async (req) => {
     const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
     const i = NoteInput.parse(req.body);
