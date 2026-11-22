@@ -74,7 +74,7 @@ const clockT = (x) => { const d = Math.round(Math.max(0, x) * 10); return Math.f
 const sampleStill = (label, k) => "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="${["#2b3a55", "#3c2f4f", "#24463b", "#4a3a26"][k % 4]}"/><stop offset="1" stop-color="#111"/></linearGradient></defs><rect width="960" height="540" fill="url(#g)"/><text x="480" y="290" fill="#fff" font-family="Inter, sans-serif" font-size="56" text-anchor="middle">${label}</text></svg>`);
 const logout = api.logout;
 let demoRun = null; // the final being made (demo), so Stop export can end it
-let signedIn = false;
+let signedIn = !!globalThis.__demoSignedIn; // a test can start a page with a session
 const track = (fn) => async (...a) => { const r = await fn(...a); signedIn = true; return r; };
 
 // Mac app login through the browser. The fake server's grants live in localStorage, so the "browser" tab and the
@@ -528,7 +528,13 @@ Object.assign(api, {
 const getProfile0 = api.getProfile;
 const login0 = api.login, signup0 = api.signup;
 const asAdmin = (u) => (u ? { ...u, admin: !!globalThis.__demoAdmin } : u);
-Object.assign(api, demoBillingApi, { getProfile: async (...a) => asAdmin(await getProfile0(...a)), login: async (...a) => asAdmin(await login0(...a)), signup: async (...a) => asAdmin(await signup0(...a)) });
+Object.assign(api, demoBillingApi, { getProfile: async (...a) => {
+  globalThis.__demoProfileTries = (globalThis.__demoProfileTries || 0) + 1;
+  // A test: Rendrr out of reach for the first looks (a restart: the browser sees a network error), or a refused login.
+  if (globalThis.__demoProfileFail > 0) { globalThis.__demoProfileFail--; throw Object.assign(new Error("We could not reach Rendrr."), { friendly: true, code: "network" }); }
+  if (globalThis.__demoProfileRefuse) throw Object.assign(new Error("Log in again."), { friendly: true, code: "unauthorized", status: 401 });
+  return asAdmin(await getProfile0(...a));
+},  login: async (...a) => asAdmin(await login0(...a)), signup: async (...a) => asAdmin(await signup0(...a)) });
 
 demoAssetsApi(api); // the Assets page: favourites, the Trash, elements and audio
 // The AI connector's consent page (Supabase's OAuth server): a test sets globalThis.__demoOAuth.

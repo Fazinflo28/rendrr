@@ -205,7 +205,20 @@ function App() {
     // Known to be logged out: stays so while it is checked again (no Log in buttons blinking on every page change).
     setAuth((a) => (a === "out" ? "out" : "checking"));
     (async () => {
-      try { if (await api.hasSession()) { const u = await api.getProfile(); if (on) { setUser(u); setAuth("in"); return; } } } catch { /* fall through */ }
+      for (let k = 0; on; k++) {
+        try {
+          if (!(await api.hasSession())) break;
+          const u = await api.getProfile();
+          if (on) { setUser(u); setAuth("in"); }
+          return;
+        } catch (e) {
+          // Rendrr out of reach for a moment (a restart, the network): the session is kept and asked again (1 s, 2 s, 4 s
+          // ... up to 30 s apart), not taken as logged out. Before, one failed look at start left the page logged out
+          // for good, and the Mac or Windows app never told Rendrr it was open (renders went to the cloud).
+          if (e?.code !== "network" && !((e?.status ?? 0) >= 500)) break;
+          await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** Math.min(k, 5))));
+        }
+      }
       if (on) setAuth("out");
     })();
     return () => { on = false; };

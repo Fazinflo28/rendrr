@@ -56,9 +56,12 @@ describe("export format, bitrate and frame rate", () => {
     const pv = plan(s, "preview");
     expect([pv.fps, pv.bitrate]).toEqual([30, undefined]);
   });
-  it("sound only writes the mix straight to its file (the picture made and dropped); a long GIF gets fewer frames, past ten minutes refused", () => {
-    const a = args(edit(base(), { op: "set_export", format: "wav" } as Op), "/o.wav").args.join(" ");
-    expect(a).toMatch(/-map \[aout\] -c:a pcm_s16le -ar 48000 -t [\d.]+ .*\/o\.wav -map \[vout\] -f null -$/);
+  it("sound only writes the mix straight to its file (no picture made); a long GIF gets fewer frames, past ten minutes refused", () => {
+    const w = args(edit(base(), { op: "set_export", format: "wav" } as Op), "/o.wav"), a = w.args.join(" ");
+    expect(a).toMatch(/-map \[aout\] -c:a pcm_s16le -ar 48000 -t [\d.]+ .*\/o\.wav$/);
+    // No picture at all: as heavy as the video before (a 4K final ran out of memory making a WAV).
+    expect(a).not.toMatch(/\[vout\]|-f null/);
+    expect(w.filterGraph).not.toMatch(/\[vout\]|scale=|\[0:v\]/);
     const m = args(edit(base(), { op: "set_export", format: "audio" } as Op), "/o.m4a").args.join(" ");
     expect(m).toMatch(/-map \[aout\] -c:a aac -b:a 256k/);
     // Phase 20: a GIF over a minute is made at fewer frames and smaller; over ten minutes it is refused.

@@ -1684,7 +1684,9 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
   let v = "";
   /** Phase 2: the person's matte over the whole edit (when layers go behind the person). */
   let personMatte: string | null = null;
-  const noPicture = !!opts.measure || opts.sound === "only";
+  // A sound-only export (m4a, wav) makes no picture: before, the whole picture was made and dropped, as heavy as the
+  // video (a final of 4K footage ran out of memory making a WAV).
+  const noPicture = !!opts.measure || opts.sound === "only" || ((plan.format === "audio" || plan.format === "wav") && !opts.still && !opts.pictureAs);
   if (!noPicture) {
     const vt = (k: { srcIn: number; srcOut: number }) => `trim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},setpts=PTS-STARTPTS`;
     const turnOf = (r: number) => (r === 90 ? "transpose=1," : r === 270 ? "transpose=2," : r === 180 ? "hflip,vflip," : "");
@@ -1731,6 +1733,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       const st = x.clipIds ? plan.stabilize?.[stabilizeKey({ clipIds: x.clipIds, srcIn: x.srcIn })] : undefined, f = st ? files.stabilize?.[stabilizeKey({ clipIds: x.clipIds!, srcIn: x.srcIn })] : undefined;
       return st && f ? `,vidstabtransform=input=${q(f)}:smoothing=${st.smoothing}:optzoom=1:interpol=bicubic` : "";
     };
+    /** False while the main parts are drawn under one shared grade (drawn once after the join, sharedLook below). */
+    let partLooks = true;
     const drawSeg = (x0: { videoId: string; srcIn: number; srcOut: number; rate?: number; start: number; end: number; rotate: number; framing: Framing | null; clipIds?: string[]; clipId?: string; flip?: "h" | "v" | "both"; interp?: "blend" | "flow" }, out: string, tag: string, exact = false) => {
       const N = Math.max(1, Math.round((x0.end - x0.start) * FPS));
       const r = rateOf(x0);
@@ -1738,7 +1742,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       // mattes and keys keep the footage's own (x0).
       const cp = readFrom(x0.clipId ?? (x0.clipIds?.length === 1 ? x0.clipIds[0] : undefined), x0.videoId, x0.srcIn, r === 0 ? x0.srcIn : x0.srcOut);
       const x = cp ? { ...x0, videoId: cp.vid, srcIn: x0.srcIn - cp.d, srcOut: x0.srcOut - cp.d } : x0;
-      const lk = looks[x.clipId ?? x.clipIds?.[0] ?? ""], dom = domOf(x0.videoId, lk);
+      const lk = partLooks ? looks[x.clipId ?? x.clipIds?.[0] ?? ""] : undefined, dom = domOf(x0.videoId, lk);
       const look = `${turnOf(x.rotate)}${flipFilter(x.flip)}${toneOf(x0.videoId, dom)}${fitFor(x.framing)}`;
       // tpad clones a frame at the link's frame rate: without a rate (after trim) FFmpeg 7 gives the clones one
       // timestamp and they are dropped, so the stream is put on the 30 fps grid first.
@@ -1821,7 +1825,27 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     // Otherwise each part is drawn on its own first.
     const lookKey = (p: PicturePart) => JSON.stringify(looks[p.clipIds[0]] ?? null);
     const uniform = plan.sources.length === 1 && !underClips.length && !(bg?.videoId) && plan.parts.every((p) => rateOf(p) === 1 && !p.flip && p.rotate === plan.parts[0].rotate && sameFraming(p.framing, plan.parts[0].framing) && !(p.clipIds.length === 1 && motion[p.clipIds[0]]) && lookKey(p) === lookKey(plan.parts[0])) && !Object.values(looks).some((l) => l.subject || isMovingLook(l)) && !Object.keys(plan.person?.parts ?? {}).length && !plan.stabilize && !plan.stabilized;
+    // Not uniform (a clip moves, is framed apart or at another speed), but the same plain grade on every part (colour only:
+    // no key, mask, effect, skin, cut-out or moving picture), SDR, and every part always fills the frame (nothing behind
+    // shows to be graded): the grade is drawn once on the joined picture, not in each part. Each part's own grade chain
+    // keeps its frames until the render ends: a 4K final of 62 graded parts ran the worker out of memory.
+    const covers = (c: string): boolean => {
+      const fr = plan.parts.find((p) => p.clipIds.includes(c))?.framing ?? null;
+      const ok = (s: number, x: number, y: number) => s >= 1 - 1e-6 && Math.abs(x) <= (s - 1) / 2 + 1e-6 && Math.abs(y) <= (s - 1) / 2 + 1e-6;
+      if (fr && !ok(fr.scale ?? 1, fr.x ?? 0, fr.y ?? 0)) return false;
+      const m = motion[c];
+      if (!m) return true;
+      if (m.motionBlur || (m.anchor && (Math.abs(m.anchor.x - 0.5) > 1e-6 || Math.abs(m.anchor.y - 0.5) > 1e-6))) return false;
+      const ks = m.keys, min = Math.min(1, ...ks.map((k) => k.scale ?? 1));
+      return ks.every((k) => (k.rotation ?? 0) === 0 && (k.opacity ?? 1) === 1 && (!Array.isArray(k.ease) || (k.ease[1] >= 0 && k.ease[1] <= 1 && k.ease[3] >= 0 && k.ease[3] <= 1))
+        && ok(min, k.x ?? 0, k.y ?? 0) && (k.scale ?? 1) >= 1 - 1e-6);
+    };
+    const l0 = looks[plan.parts[0]?.clipIds[0] ?? ""];
+    const sharedLook = !uniform && !hdr && !!l0 && !l0.key && !l0.masks?.length && !l0.effects?.length && !l0.skin && !l0.subject && !isMovingLook(l0)
+      && !underClips.length && !bg && !Object.keys(plan.cards ?? {}).length && plan.parts.every((p) => lookKey(p) === lookKey(plan.parts[0]) && p.clipIds.every(covers)) ? l0 : null;
+    partLooks = !sharedLook;
     plan.parts.forEach((p, i) => { if (uniform) g.push(`[${branch(p.videoId, p.srcIn, p.srcOut)}]${vt(p)}[v${i}]`); else drawSeg(p, `v${i}`, String(i)); });
+    partLooks = true;
     const withPerson = !!plan.person?.windows.length && Object.keys(personFor).length > 0;
     const blackFrom = new Set<number>();
     if (withPerson) plan.parts.forEach((_, i) => {
@@ -1854,6 +1878,12 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         g.push(`[${b ?? "ubk"}][${v}]overlay=format=auto,format=${PF}[vlook]`); v = "vlook";
       }
       if (frm) { const b = back(); frame(v, frm, "vframed", "", b ? { base: b } : "black", card, all); v = "vframed"; }
+    }
+    if (sharedLook) {
+      const all = Math.max(1, Math.round((plan.window ? plan.parts[plan.parts.length - 1].end - plan.parts[0].start : plan.outputSeconds) * FPS));
+      const c = colorChain(v, sharedLook, "sdr", all, "s");
+      g.push(`[${c.out}]format=${PF}[vshared]`);
+      v = "vshared";
     }
 
     // Samples: the joined picture (only the window's parts) moved to its edit time, so everything laid on it below
@@ -2455,8 +2485,8 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
   if (opts.sound === "only") return [...head, "-map", "[aout]", "-c:a", "pcm_s16le", "-ar", "48000", "-t", n3(outLen), ...tail, files.output];
   if (opts.sound === "none") return [...head, "-map", "[vout]", ...video, "-an", "-t", n3(outLen), ...tail, files.output];
   if (opts.pictureAs) return [...head, "-map", "[vout]", "-map", "[aout]", "-c:v", "ffv1", "-level", "3", "-g", "1", "-pix_fmt", "yuv444p", "-r", R, "-c:a", "pcm_s16le", "-ar", "48000", "-t", n3(outLen), ...tail, files.output];
-  // Phase 12: sound only: the mix as the file, the picture made and dropped (its graph is the same).
-  if (plan.format === "audio" || plan.format === "wav") return [...head, "-map", "[aout]", ...(plan.format === "wav" ? ["-c:a", "pcm_s16le"] : ["-c:a", "aac", "-b:a", "256k"]), "-ar", "48000", "-t", n3(outLen), ...tail, files.output, "-map", "[vout]", "-f", "null", "-"];
+  // Phase 12: sound only: the mix as the file (no picture is made).
+  if (plan.format === "audio" || plan.format === "wav") return [...head, "-map", "[aout]", ...(plan.format === "wav" ? ["-c:a", "pcm_s16le"] : ["-c:a", "aac", "-b:a", "256k"]), "-ar", "48000", "-t", n3(outLen), ...tail, files.output];
   return [
     "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
     ...capInputThreads(inputs, opts.inputThreads),

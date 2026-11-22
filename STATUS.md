@@ -21,7 +21,20 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
-## Overexposure flash transition (22 November)
+## Exports failing: the Mac app seen as closed, the cloud out of memory (22 November)
+
+- **The Mac app counted as closed all day.** At 03:59 UTC the Mac app started while the API was restarting: its first
+  look at the account got a 502, and the app took that as logged out for good (it never asked again), so it showed the
+  public pages and never pinged; Claude rendered in the cloud. Now a failed look (network, 5xx) keeps the session and is
+  asked again (1 s, 2 s, 4 s ... up to 30 s); only no session or a refusal (401) logs out (demo/auth-retry.mjs).
+- **Cloud finals of the V3 short were killed for memory** (the worker is capped at 6 GB and 6 CPUs, a limit set on
+  Railway). The edit: 62 cuts of 4K 10-bit portrait DJI footage, one grade on every clip, three full-length graphics,
+  two clips with a punch-in. Rebuilt here with synthetic 4K 10-bit HEVC: FFmpeg peaked at 5.4 GB.
+  - Two clips moving made every clip drawn and graded on its own; each clip's grade chain keeps its frames to the end.
+    Now the same plain grade on every clip (colour only, SDR, every clip filling the frame) is drawn once on the joined
+    picture: 5.4 GB to 3.7 GB, 254 scalers to 132, the same picture (test/shared-look-render.test.ts).
+  - The WAV (and M4A) export made the whole picture and dropped it, as heavy as the video: it makes no picture now.
+
 
 - Asked: the overexposure flash in a reference clip (the picture blowing out to white on the cut and coming back), which
   Claude could not make: Rendrr's only "white flash" was dip-white, a flat white layer fading in and out.
