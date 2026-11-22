@@ -90,11 +90,14 @@ jobs:
           cp "dist/Rendrr-$V-x64.dmg" out/Rendrr-Mac-Intel.dmg
           ls -la out
 
+      # A spare copy on GitHub; the release and Rendrr's download link below are what users get, so a full
+      # artifact store (the account's quota) does not stop them.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: Rendrr-Mac
           path: desktop/out/*.dmg
-          retention-days: 30
+          retention-days: 3
 
       - name: Publish the release
         env:

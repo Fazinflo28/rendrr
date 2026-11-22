@@ -96,11 +96,14 @@ jobs:
           cp "dist/Rendrr-$V-arm64-setup.exe" out/Rendrr-Windows-Arm.exe
           ls -la out
 
+      # A spare copy on GitHub; the release and Rendrr's download link below are what users get, so a full
+      # artifact store (the account's quota) does not stop them.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: Rendrr-Windows
           path: desktop/out/*.exe
-          retention-days: 30
+          retention-days: 3
 
       - name: Publish the release
         env:
