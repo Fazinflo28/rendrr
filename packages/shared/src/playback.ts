@@ -110,7 +110,7 @@ export function transitionNow(plan: RenderPlan, t: number): TransitionNow | null
   };
   // A dip that starts the edit (fade in from the colour) is the second half of a dip centred on 0.
   const D = op.end - op.start;
-  const p = op.at <= op.start + 1e-9 && op.type.startsWith("dip") ? 0.5 + (t - op.start) / (2 * D) : (t - op.start) / D;
+  const p = op.at <= op.start + 1e-9 && (op.type.startsWith("dip") || op.type === "flash") ? 0.5 + (t - op.start) / (2 * D) : (t - op.start) / D;
   return { op, p, look: transitionAt(op, p, plan.width, plan.height), a: side(op.a), b: side(op.b) };
 }
 

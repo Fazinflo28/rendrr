@@ -182,7 +182,9 @@ export function rampSteps(ramp: RampPoint[], a: number, b: number, reverse = fal
 // ---------------------------------------------------------------------------------------------
 /** morph (Phase 8): Premiere's Morph Cut for a jump cut in a talking head: the last frame before the window flows into the
  *  first frame after it (motion-compensated in the render; the player shows a dissolve). */
-export const TRANSITIONS = ["cut", "dissolve", "dip-black", "dip-white", "whip", "zoom", "slide", "morph", "push", "wipe", "iris", "cross-zoom", "film-dissolve", "clock", "barn-door", "diamond", "box", "cross", "blinds", "checker", "wedge"] as const;
+/** flash: an overexposure flash, the picture itself blown out to white with a glow on the cut and back fast (as a
+ *  camera flash or a light hit), not a white layer (dip-white). */
+export const TRANSITIONS = ["cut", "dissolve", "dip-black", "dip-white", "flash", "whip", "zoom", "slide", "morph", "push", "wipe", "iris", "cross-zoom", "film-dissolve", "clock", "barn-door", "diamond", "box", "cross", "blinds", "checker", "wedge"] as const;
 export type TransitionType = (typeof TRANSITIONS)[number];
 export const DIRS = ["left", "right", "up", "down"] as const;
 export type Dir = (typeof DIRS)[number];
@@ -251,6 +253,29 @@ export const ZOOM_PEAK = 1.6;
 export const WHIP_BLUR = 0.03;
 /** Smoothstep: the slide and whip movement. */
 export const smooth = (p: number) => p * p * (3 - 2 * p);
+/**
+ * The overexposure flash: how blown out the picture is (0 as shot, 1 the peak) at progress p of its window (the cut at
+ * 0.5). It builds over the last frames before the cut (to the fourth power) and peaks on the first frame after it, then
+ * falls fast and fades out softly: a quick drop and a slow tail, each an exponential, ending at 0. Fitted to a reference
+ * flash: at 25 fps and 0.5 s its frames after the cut are as bright as the reference's (about 228, 117, 90, 81, 76 of
+ * 255 on a frame of 70).
+ */
+export function flashLevel(p: number): number {
+  const q = Math.min(1, Math.max(0, p));
+  if (q < 0.5) return (2 * q) ** 4;
+  const g = (u: number) => 0.65 * Math.exp(-u / 0.06) + 0.35 * Math.exp(-u / 0.35);
+  return Math.max(0, (g(2 * q - 1) - g(1)) / (g(0) - g(1)));
+}
+/** The flash at its peak, as FFmpeg's exposure filter takes it on the picture's own values: exposure in stops and the
+ *  black level lowered below 0 (its cube: only near the peak), which together map v to (v - black) / (2^-stops -
+ *  black): at the peak about 2.1 times v plus 0.74, so the highlights blow out, a dark shirt comes up to a light grey;
+ *  and the glow of what goes over white (a Gaussian of this share of the frame's short side, screened over). */
+export const FLASH_STOPS = 3, FLASH_LIFT = 0.35, FLASH_GLOW = 0.09;
+/** The flash's map at level f: v times gain, plus add (FFmpeg's exposure with exposure FLASH_STOPS f, black -FLASH_LIFT f^3). */
+export function flashMap(f: number): { gain: number; add: number } {
+  const black = -FLASH_LIFT * f ** 3, gain = 1 / (2 ** (-FLASH_STOPS * f) - black);
+  return { gain, add: -black * gain };
+}
 export const smoothExpr = (p: string) => `(${p})*(${p})*(3-2*(${p}))`;
 /** The direction a side moves in, as a unit vector (left: towards the left). */
 export const dirVec = (d: Dir = "left"): [number, number] => (d === "left" ? [-1, 0] : d === "right" ? [1, 0] : d === "up" ? [0, -1] : [0, 1]);
@@ -258,7 +283,10 @@ export const dirVec = (d: Dir = "left"): [number, number] => (d === "left" ? [-1
 export type SideLook = { x: number; y: number; opacity: number };
 /** Phase 12: clip: a CSS clip-path for B (wipes, iris, barn door, diamond); mask: a CSS mask for B (clock); aScale: A's
  *  zoom (cross zoom). */
-export type TransitionLook = { a: SideLook; b: SideLook; color: { hex: string; opacity: number } | null; zoom: number; blur: { x: number; y: number }; clip?: string; mask?: string; aScale?: number };
+export type TransitionLook = { a: SideLook; b: SideLook; color: { hex: string; opacity: number } | null; zoom: number; blur: { x: number; y: number }; clip?: string; mask?: string; aScale?: number;
+  /** The overexposure flash in the player: the picture's brightness multiplied (CSS brightness) under a white layer of
+   *  opacity lift (together the render's map, flashMap), and its level (0-1). */
+  flash?: { bright: number; lift: number; level: number } };
 /** What a transition shows at progress p (0 at the window's start, 1 at its end; the cut is at 0.5). B is drawn over A. */
 export function transitionAt(tr: { type: TransitionType; dir?: Dir }, p: number, W: number, H: number): TransitionLook {
   const q = Math.min(1, Math.max(0, p));
@@ -274,6 +302,12 @@ export function transitionAt(tr: { type: TransitionType; dir?: Dir }, p: number,
     const s = Math.sin(Math.PI * q);
     look.blur = { x: dx ? W * WHIP_BLUR * s : 0, y: dy ? H * WHIP_BLUR * s : 0 };
   } else if (tr.type === "dip-black" || tr.type === "dip-white") look.color = { hex: tr.type === "dip-black" ? "#000000" : "#FFFFFF", opacity: q < 0.5 ? 2 * q : 2 * (1 - q) };
+  else if (tr.type === "flash") {
+    // As the render maps it (v * gain + add): CSS brightness under a white layer of opacity lift gives v * bright * (1 -
+    // lift) + lift, so bright = gain / (1 - add) and lift = add.
+    const f = flashLevel(q), m = flashMap(f), lift = Math.min(0.95, m.add);
+    look.flash = { bright: m.gain / (1 - lift), lift, level: f };
+  }
   else if (tr.type === "zoom") look.zoom = 1 + (ZOOM_PEAK - 1) * (q < 0.5 ? (2 * q) ** 2 : (2 - 2 * q) ** 2);
   else if (tr.type === "push") { look.a = { x: dx * W * q, y: dy * H * q, opacity: 1 }; look.b = { x: dx * W * (q - 1), y: dy * H * (q - 1), opacity: 1 }; }
   else if (tr.type === "film-dissolve") look.b = { x: 0, y: 0, opacity: q };

@@ -110,7 +110,7 @@ describe("the library through the connector", { skip: !ready && "needs DATABASE_
     await add("lib_social_comment", { start: 9, end: 12, params: { text: "Love this" } });
     await add("lib_list_steps", { start: 12, end: 18, params: { items: ["Hook", "Value", "Offer"] } });
     const tr = await add("lib_tr_flash", { start: 7.7 });
-    assert.match(tr.text, /set_transition dip-white on the cut at edit 8\.00s, before clip \w+, the cut nearest 7\.70s/);
+    assert.match(tr.text, /set_transition flash on the cut at edit 8\.00s, before clip \w+, the cut nearest 7\.70s/);
     const bg = await add("lib_bg_grid", { params: { color: "#fdf2f8", ink: "#f9a8d4" } });
     assert.match(bg.text, /set_background \{"pattern":\{"kind":"grid","color":"#fdf2f8","ink":"#f9a8d4","size":0\.06\}\}/);
     const pip = await add("lib_pip_circle", { start: 20, end: 24, params: { corner: "bottom-right" } });
@@ -124,7 +124,7 @@ describe("the library through the connector", { skip: !ready && "needs DATABASE_
     assert.equal(g.lib_social_comment.position, "bottom");
     assert.match(String(g.lib_icon.svg), /^<svg [^>]*viewBox="0 0 24 24"[^>]*>(<path [^>]*\/>)+<\/svg>$/);
     assert.deepEqual(tl.background, { pattern: { kind: "grid", color: "#FDF2F8", ink: "#F9A8D4", size: 0.06 } });
-    assert.equal(tl.tracks.v1.filter((x) => x.transition?.type === "dip-white").length, 1);
+    assert.equal(tl.tracks.v1.filter((x) => x.transition?.type === "flash").length, 1);
     const carded = tl.tracks.v1.filter((x) => x.cardLook?.radius === 0.5);
     assert.equal(carded.length, 1);
     assert.ok(carded[0].framing && carded[0].framing.scale < 1, JSON.stringify(carded[0].framing));

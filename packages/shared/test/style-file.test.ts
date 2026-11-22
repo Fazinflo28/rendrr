@@ -44,6 +44,6 @@ describe("style file", () => {
     expect(f.sound).toMatchObject({ bed: "no bed: the pauses drop to near silence", duckDb: null });
     const t = styleFileText("sf1", "Mine", f);
     expect(t).toMatch(/^ZOOMS: 1 punch-ins and 0 punch-outs at cuts \(2 a minute, typically 1\.3x: add_zoom scale 1\.3\); 1 slow zooms inside shots/m);
-    expect(t).toMatch(/^20s white flash at the cut \(100 ms\)$/m);
+    expect(t).toMatch(/^20s white flash \(set_transition flash\) at the cut \(100 ms\)$/m);
   });
 });

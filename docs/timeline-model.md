@@ -27,7 +27,7 @@ A timeline with `model: "B"` and `mainVideoId` (the project's footage):
 - **Speed, transitions, keyframes (Phase 5).** A V1 clip can carry:
   - `speed` (0.1 to 10), `reverse`, `ramp` (speed points `{at, speed}` at its footage seconds, linear between them)
   - `freeze` (seconds): the clip is a still of the frame at `sourceIn`
-  - `transition` `{type, duration, dir}` on the cut before it: dissolve, dip-black, dip-white, whip, zoom, slide
+  - `transition` `{type, duration, dir}` on the cut before it: dissolve, dip-black, dip-white, flash (an overexposure flash: the picture itself blown out on the cut), whip, zoom, slide
   - `keys` (keyframes), stored at footage seconds so they move with the footage when the clip is cut or split; a freeze's are `sourceIn` + seconds into it
 
   V2 b-roll and V3 text and graphics clips carry `keys` in seconds from their own start. A key is `{t, x, y, scale, rotation, opacity, ease}`.

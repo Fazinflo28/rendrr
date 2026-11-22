@@ -167,7 +167,7 @@ export function buildStyleFile(i: StyleInput): StyleFile {
   // Every graphic moment in order: texts that come and go, transitions, punch-ins, hits.
   const moments: [number, string][] = [
     ...textGraphics.map((t): [number, string] => [t.start, `text ${Math.round(t.box[2] * 100)}% wide at the ${t.place}, ${t.color}${t.boxColor ? ` on a ${t.boxColor} box` : ""}${t.stroke ? ` with a ${t.stroke} outline` : ""}, ${t.weight}, ${Math.round(t.heightShare * 1000) / 10}% tall; in: ${motionText(t.in)}; out: ${motionText(t.out)}; on ${r2(t.end - t.start)}s`]),
-    ...transitions.list.map((x): [number, string] => [x[0], `${x[1] === "flash" ? "white flash" : x[1] === "dip-black" ? "dip to black" : "whip"} at the cut (${x[2]} ms)`]),
+    ...transitions.list.map((x): [number, string] => [x[0], `${x[1] === "flash" ? "white flash (set_transition flash)" : x[1] === "dip-black" ? "dip to black" : "whip"} at the cut (${x[2]} ms)`]),
     ...(zooms?.list ?? []).map((x): [number, string] => [x[0], `punch ${x[1] > 1 ? "in" : "out"} at the cut (face ${x[1]}x)`]),
     ...(zooms?.slow ?? []).map((x): [number, string] => [x.start, `slow zoom ${x.change > 0 ? "in" : "out"} ${Math.round(Math.abs(x.change) * 100)}% to ${x.end}s`]),
     ...(sound?.hits ?? []).map((x): [number, string] => [x[0], `sound hit at the cut (${x[1]} dBFS)`]),
@@ -189,7 +189,7 @@ export function styleFileText(id: string, name: string, f: StyleFile): string {
   const th = f.textHabits;
   L.push(`TEXT GRAPHICS: ${th.count} (${th.perMin} a minute)${th.count ? `; where: ${Object.entries(th.places).map(([k, v]) => `${k} ${v}`).join(", ")}; entrances: ${Object.entries(th.entrances).map(([k, v]) => `${k} ${v}`).join(", ")}${th.medianInMs != null ? `, median ${th.medianInMs} ms` : ""}; on screen ${th.medianOnSec}s median; colours ${th.colors.join(" ")}` : ""}.`);
   const t = f.transitions;
-  L.push(`TRANSITIONS: ${Object.entries(t.counts).map(([k, v]) => `${k} ${v}`).join(", ") || "no cuts"} (${t.nonCutPerMin} that are not plain cuts a minute; set_transition dip-white | dip-black | whip).`);
+  L.push(`TRANSITIONS: ${Object.entries(t.counts).map(([k, v]) => `${k} ${v}`).join(", ") || "no cuts"} (${t.nonCutPerMin} that are not plain cuts a minute; set_transition flash (an overexposure flash) | dip-white | dip-black | whip).`);
   const z = f.zooms;
   L.push(z ? `ZOOMS: ${z.punchIns} punch-ins and ${z.punchOuts} punch-outs at cuts (${z.perMin} a minute${z.typicalScale ? `, typically ${z.typicalScale}x: add_zoom scale ${z.typicalScale}` : ""}); ${z.slow.length} slow zooms inside shots${z.slow.length ? ` (${z.slow.slice(0, 5).map((s) => `${s.start}-${s.end}s ${s.change > 0 ? "+" : ""}${Math.round(s.change * 100)}%`).join(", ")})` : ""}.` : "ZOOMS: not measured (no face measurements on this video).");
   const g = f.grade;

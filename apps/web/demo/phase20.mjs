@@ -1,5 +1,5 @@
 // Phase 20 in the editor: the transition picker on a V1 clip offers Iris box, Iris cross, Venetian blinds (with a
-// direction), Checker wipe and Wedge wipe, and they stay picked; the Export window offers GIFs up to ten minutes.
+// direction), Checker wipe and Wedge wipe, and the overexposure flash, and they stay picked; the Export window offers GIFs up to ten minutes.
 // Runs on the demo build (node demo/build.mjs first) in Playwright's Chromium.
 //   node demo/phase20.mjs   (from apps/web)
 import { readFileSync } from "node:fs";
@@ -55,6 +55,10 @@ check(await page.locator("#transition-type").inputValue() === "checker" && await
 // footage lengths, so it plans no transition windows to draw.)
 await page.locator("#transition-type").selectOption("box"); await sleep(300);
 check(await page.locator("#transition-type").inputValue() === "box", "Iris box picked");
+// The overexposure flash (set_transition flash), next to the white dip.
+check(opts.includes("Flash (overexposure)") && opts.includes("Dip to white"), "the overexposure flash is offered, apart from the dip to white");
+await page.locator("#transition-type").selectOption("flash"); await sleep(400);
+check(await page.locator("#transition-type").inputValue() === "flash" && await page.locator("#transition-dir").count() === 0, "Flash picked: no direction");
 await page.locator("#tool-back").click({ timeout: 800 }).catch(() => {}); await sleep(200);
 // The Export window: GIF up to ten minutes.
 const exp = page.locator("#render-final");

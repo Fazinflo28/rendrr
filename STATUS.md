@@ -21,6 +21,23 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Overexposure flash transition (22 November)
+
+- Asked: the overexposure flash in a reference clip (the picture blowing out to white on the cut and coming back), which
+  Claude could not make: Rendrr's only "white flash" was dip-white, a flat white layer fading in and out.
+- New transition `flash` (set_transition type flash, 0.5 s by default; the editor's Transition menu: Flash
+  (overexposure)). The picture itself is blown out, not covered: in float RGB its exposure and black level are set frame
+  by frame (sendcmd), so the highlights go white first and a dark shirt comes up to a light grey; what goes over white
+  glows (blurred, screened over). The curve (flashLevel) builds over the last frames before the cut, peaks on the cut's
+  first frame, falls fast and fades out softly. Fitted to the user's clip: through Rendrr's own render its frames are
+  221, 108, 88, 80, 76 against the clip's 228, 117, 90, 81, 76 (of 255, on a frame of 70). On a first clip it opens on the
+  flash. HDR stays under SDR white. The editor's player draws the same values (CSS brightness under a white layer;
+  checked in Chromium against the render's map).
+- Claude's tool text says what flash is and how it differs from dip-white; the library's "Transition: overexposure
+  flash" and analyze_reference's white flashes now use it.
+- Tests: packages/shared/test/flash.test.ts, apps/worker/test/flash-render.test.ts (FFmpeg frame by frame, and the
+  player's CSS), the editor's menu in demo/phase20.mjs.
+
 ## Cloud renders, the Mac seen as closed, and storyboards shown again (22 November)
 
 - **Every cloud render of one edit failed at "Cutting clips"** ("Stream specifier ':v' ... matches no streams"). A

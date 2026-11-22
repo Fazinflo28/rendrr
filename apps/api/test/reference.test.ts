@@ -90,7 +90,7 @@ describe("analyze_reference, then 10 library items from it", { skip: (!ready || 
     assert.ok(pr > 200 && pg > 70 && pg < 130 && pb > 130 && pb < 200, `pink box ${card![2]}`);
     assert.match(t, /^14(?:\.\d+)?s text \d+% wide at the middle, #F[0-9A-F]{5}, \w+, [\d.]+% tall; in: pop from \d+% \d+ ms/m);
     assert.match(t, /^TRANSITIONS: (cut 1, flash 1, dip-black 1|flash 1, dip-black 1, cut 1)/m);
-    assert.match(t, /^6s white flash at the cut \(\d+ ms\)$/m);
+    assert.match(t, /^6s white flash \(set_transition flash\) at the cut \(\d+ ms\)$/m);
     assert.match(t, /^12s dip to black at the cut \(\d+ ms\)$/m);
     const duck = /its low end is ([\d.]+) dB lower under the voice \(ducking: set_audio duck about (\d+)\); a sound hit on 1 of 3 cuts/.exec(t);
     assert.ok(duck && Number(duck[1]) > 9 && Number(duck[1]) < 15, t);
@@ -132,7 +132,7 @@ describe("analyze_reference, then 10 library items from it", { skip: (!ready || 
     }
     const tl = (await prisma.project.findUniqueOrThrow({ where: { id: p.id } })).timeline as { background?: { gradient?: { from: string } }; tracks: { v1: { transition?: { type: string } }[]; v3: { kind?: string; graphicId?: string }[] } };
     assert.equal(tl.tracks.v3.filter((x) => x.kind === "graphic" && x.graphicId?.startsWith("lib_")).length, 8);
-    assert.equal(tl.tracks.v1.filter((x) => x.transition?.type === "dip-white").length, 1);
+    assert.equal(tl.tracks.v1.filter((x) => x.transition?.type === "flash").length, 1);
     assert.equal(tl.background?.gradient?.from.toLowerCase(), pink);
     // A quick look at one over the footage: under 10 s, the real worker (Chromium, ffmpeg).
     const t0 = Date.now();

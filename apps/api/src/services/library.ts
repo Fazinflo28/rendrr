@@ -248,7 +248,7 @@ export async function addLibraryItem(userId: string, i: AddInput, apply: Apply):
     const cuts = view.clips.slice(1).filter((c) => c.pieces.length);
     if (!cuts.length) throw new AppError("This edit has one clip on V1: there is no cut for a transition. Split it first (split_clip) or add clips.", 400, "invalid-input");
     const near = cuts.reduce((b, c) => (Math.abs(c.start - t) < Math.abs(b.start - t) ? c : b));
-    const type = ({ lib_tr_flash: "dip-white", lib_tr_dip: "dip-black", lib_tr_whip: "whip", lib_tr_zoom_punch: "zoom", lib_tr_slide: "slide" } as Record<string, string>)[it.id];
+    const type = ({ lib_tr_flash: "flash", lib_tr_dip: "dip-black", lib_tr_whip: "whip", lib_tr_zoom_punch: "zoom", lib_tr_slide: "slide" } as Record<string, string>)[it.id];
     const op = { op: "set_transition", clipId: near.id, type, duration: p.duration, ...(p.dir ? { dir: p.dir } : {}) } as EditOp;
     const r = await apply([op], i.note);
     return { text: `${r.text} (${it.name}: set_transition ${type} on the cut at edit ${near.start.toFixed(2)}s, before clip ${near.id}${Math.abs(near.start - t) > 0.05 ? `, the cut nearest ${t.toFixed(2)}s` : ""}.)`, data: r.data };

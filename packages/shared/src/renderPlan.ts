@@ -5,7 +5,7 @@
 import { catalogMusic, catalogSfx, findTemplate } from "./catalog";
 import { aspectSize, type Aspect, type CaptionLook } from "./constants";
 import { cutRegions, editOf, fmtClock, isSequence, mainVideoOf, mergeRanges, normalSpeed, rateOf, sequenceView, srcAt, subtractRanges, type Attached, type PicturePart, type Range, type SeqClip, type SequenceView, type SoundPart } from "./sequence";
-import { dirVec, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, xfadeOf, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
+import { dirVec, FLASH_GLOW, FLASH_LIFT, FLASH_STOPS, flashLevel, keyTracks, motionExpr, scaleRange, smoothExpr, USES_HANDLES, WHIP_BLUR, xfadeOf, ZOOM_PEAK, type Dir, type Key, type TransitionType } from "./motion";
 import type { Snapshot, V2Clip, V3Clip, A2Clip, A3Clip, Framing, Resolution, Codec } from "./timeline";
 import { allWords, type Transcript, type Word } from "./transcript";
 import { ffmpegArgsA, planRenderA } from "./renderPlanA";
@@ -1153,8 +1153,9 @@ export function planTransitions(view: SequenceView, clipById: Map<string, SeqCli
     const base = { clipId: pl.id, ...(tr.dir ? { dir: tr.dir } : {}), ...(tr.face === false ? { face: false as const } : {}), at: r3(at), asked: tr.duration, a: [] as Seg[], b: [] as Seg[] };
     let half = Math.min(f(tr.duration / 2), f((pl.end - pl.start) / (has(live[k + 1]?.id) ? 2 : 1)));
     if (k === 0) {
-      // The first clip: a dip or a dissolve fades in from the colour (black for a dissolve).
+      // The first clip: a dip or a dissolve fades in from the colour (black for a dissolve); a flash opens on its peak.
       if (tr.type === "dip-black" || tr.type === "dip-white" || tr.type === "dissolve") out.push({ ...base, type: tr.type === "dip-white" ? "dip-white" : "dip-black", start: 0, end: r3(half), ...(tr.type === "dissolve" ? { note: "first clip: fades in from black" } : {}) });
+      else if (tr.type === "flash") out.push({ ...base, type: "flash", start: 0, end: r3(half), note: "first clip: opens on the flash" });
       else out.push({ ...base, type: tr.type, start: r3(at), end: r3(at), note: "left out: no clip before it" });
       return;
     }
@@ -1869,6 +1870,33 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       const D = t.end - t.start;
       if (D < 1 / FPS - 1e-9 || t.type === "zoom") return;
       const span = `enable='between(t,${n6(t.start)},${n6(t.end - 0.5 / FPS)})':eof_action=pass`;
+      if (t.type === "flash") {
+        // Overexposure flash: the picture itself over the window, in float RGB, its exposure and black level set frame
+        // by frame (sendcmd; flashLevel: building to the cut, the peak on its first frame, a fast fall and a soft tail),
+        // so the highlights blow out first and the shadows come up to grey. What goes over white (the exposure 2 stops
+        // down, past a quarter) glows: blurred and screened over. The picture is clipped to 0-1 first (16-bit RGB), so a
+        // colour out of range in YUV does not glow. HDR: kept under SDR white.
+        // Counted in frames (the cut's frame kc is the peak; on a first clip kc is 0: it opens on the peak).
+        // The window on whole frames (its times are kept to the millisecond): frames k0 .. k0+n-1, taken and laid back by
+        // half-frame margins so none is lost or shifted.
+        const n = Math.max(1, Math.round(D * FPS)), k0 = Math.round(t.start * FPS), kc = Math.min(n - 1, Math.max(0, Math.round((t.at - t.start) * FPS)));
+        const S = n6((k0 - 0.5) / FPS), E = n6((k0 + n - 0.5) / FPS);
+        const mat = hdr ? "bt2020" : "bt709", sigma = Math.max(1, Math.round(Math.min(W, H) * FLASH_GLOW));
+        const cmds = Array.from({ length: n }, (_, k) => {
+          const f = flashLevel(k < kc ? (0.5 * k) / kc : 0.5 + (0.5 * (k - kc)) / (n - kc));
+          return `${n3(Math.max(0, (k - 0.5) / FPS))} exposure@fx${i} exposure ${(FLASH_STOPS * f).toFixed(3)}, exposure@fx${i} black ${(-FLASH_LIFT * f ** 3).toFixed(3)}`;
+        }).join(";");
+        const over = "max(0,val-16384)*3";
+        const cap = hdr ? `,lutrgb=r='min(val,${Math.round(sdrToHdr(1, 1, 1, hdr.transfer)[0] * 65535)})':g='min(val,${Math.round(sdrToHdr(1, 1, 1, hdr.transfer)[1] * 65535)})':b='min(val,${Math.round(sdrToHdr(1, 1, 1, hdr.transfer)[2] * 65535)})'` : "";
+        g.push(`[${v}]split[fo${i}][fw${i}]`);
+        g.push(`[fw${i}]trim=start=${S}:end=${E},setpts=PTS-STARTPTS,scale=in_color_matrix=${mat}:in_range=tv:flags=accurate_rnd,format=gbrp16le,format=gbrpf32le,sendcmd=c='${cmds}',exposure@fx${i}=exposure=0,split[fm${i}][fg${i}]`);
+        g.push(`[fm${i}]format=gbrp16le[fc${i}]`);
+        g.push(`[fg${i}]exposure=exposure=-2,format=gbrp16le,lutrgb=r='${over}':g='${over}':b='${over}',gblur=sigma=${sigma}[fb${i}]`);
+        g.push(`[fc${i}][fb${i}]blend=all_mode=screen${cap},scale=out_color_matrix=${mat}:out_range=tv:flags=accurate_rnd,format=${PF},settb=${TB},setpts=PTS-STARTPTS+${k0}[fl${i}]`);
+        g.push(`[fo${i}][fl${i}]overlay=enable='between(t,${S},${E})':eof_action=pass${hdr ? `:format=auto,format=${PF}` : ""}[vf${i}]`);
+        v = `vf${i}`;
+        return;
+      }
       if (t.type === "dip-black" || t.type === "dip-white") {
         const up = t.at - t.start, down = t.end - t.at;
         // In an HDR output white is SDR white (203 nits), as everything SDR is placed.
