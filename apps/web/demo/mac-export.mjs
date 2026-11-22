@@ -23,7 +23,7 @@ const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const errors = []; page.on("pageerror", (e) => errors.push(e.message));
 await page.addInitScript(() => {
   // Pretend to be the Mac app once signed in (the login form stays the browser's).
-  Object.defineProperty(window, "rendrrDesktop", { configurable: true, get: () => (globalThis.__pretendMac ? { app: "mac", version: "0.1.7" } : null) });
+  Object.defineProperty(window, "rendrrDesktop", { configurable: true, get: () => (globalThis.__pretendMac ? { app: "mac", version: "0.1.7", onWake: (cb) => { globalThis.__wake = cb; return () => {}; } } : null) });
   window.__opened = []; window.open = (u) => { window.__opened.push(String(u)); return null; };
   globalThis.__demoMacExports = [
     { renderId: "r1", fileName: "Promo final v3.mp4", url: "https://files.example/promo-v3.mp4" },
@@ -45,6 +45,17 @@ check(await until(async () => (await page.locator(".toast", { hasText: "saving t
 check(await until(async () => (await page.locator(".toast", { hasText: "did not finish" }).count()) > 0), "a failed export is said");
 const left = await page.evaluate(() => globalThis.__demoMacExports.map((x) => x.renderId));
 check(left.length === 1 && left[0] === "r2", `the one still rendering waits for the next look (${left.join(",")})`);
+
+// Back from sleep: it tells Rendrr at once (not 20 s later).
+const before = await page.evaluate(() => globalThis.__demoMacPings);
+await page.evaluate(() => globalThis.__wake());
+check(await until(async () => (await page.evaluate(() => globalThis.__demoMacPings)) === before + 1, 2000), "after a wake-up it tells Rendrr straight away");
+// Online but Rendrr cannot be reached for a while: said once; and said again when it is back.
+await page.evaluate(() => { globalThis.__demoMacPingFail = 3; });
+for (let i = 0; i < 3; i++) { await page.evaluate(() => globalThis.__wake()); await sleep(250); }
+check(await until(async () => (await page.locator(".toast", { hasText: "can't reach Rendrr right now" }).count()) === 1, 3000), "it says this Mac can't reach Rendrr, so renders go to the cloud");
+await page.evaluate(() => globalThis.__wake());
+check(await until(async () => (await page.locator(".toast", { hasText: "connected to Rendrr again" }).count()) === 1, 3000), "and says when it is connected again");
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close();
 if (fails.length) { console.log(`${fails.length} failed`); process.exit(1); }

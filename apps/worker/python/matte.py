@@ -284,12 +284,20 @@ def main():
         if p != last:
             last = p
             print(f"PROGRESS {min(p, 100)}", file=sys.stderr, flush=True)
-    rd.wait()
+    read_ok = rd.wait() == 0
     run.close()
     locate.close()
     wr.stdin.close()
     if wr.wait() != 0:
         raise SystemExit("ffmpeg could not write the matte")
+    # A matte with no frames (the footage could not be read) would be kept and break every render that reads it:
+    # failing here makes the job try again instead.
+    if not read_ok or n == 0:
+        try:
+            os.remove(a.out)
+        except OSError:
+            pass
+        raise SystemExit(f"the footage could not be read ({n} of {total} frames)")
     print(json.dumps({"frames": n, "fps": fps, "width": W, "height": H, "from": a.start, "to": a.end, "seconds": round(time.time() - t0, 2),
                       "msPerFrame": {k: round(v * 1000 / max(1, n), 1) for k, v in spent.items()}}))
 

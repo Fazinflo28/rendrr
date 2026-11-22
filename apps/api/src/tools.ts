@@ -11,7 +11,7 @@ import { otherSources, otherVideoIds } from "./services/sequence";
 import { copyProject, createFolder, createProject, findOrMakeFolder, getOwnedProject, graphicPlacements, moveToFolder, resolveReference } from "./services/projects";
 import { checkPhotos, createPick, ownPick, pickLink, type Pick, type PickSource } from "./services/picks";
 import { samplesOut, samplesView, startSamples } from "./services/samples";
-import { startStoryboard, storyboardImages, storyboardOut } from "./services/storyboard";
+import { boardLine, startStoryboard, storyboardImages, storyboardOut } from "./services/storyboard";
 import type { AppOpen } from "@rendrr/shared";
 import { createCanvas } from "./services/canvas";
 import { addFont, fetchFont, fontsText, listFonts } from "./services/fonts";
@@ -644,6 +644,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       ...(await binLine(c.userId, p.timeline as unknown as Timeline)),
       preview ? `Latest preview: v${preview.version}${preview.version === p.currentVersion ? " (current)" : " (older than the current version)"}.` : "No preview yet.",
       ...[await pendingLine(p.id)].filter(Boolean),
+      ...[await boardLine(c.userId, p.id)].filter((x): x is string => !!x),
       `Exports: ${nextExportText(await macStatus(c.userId))}`].join("\n")) };
   },
 

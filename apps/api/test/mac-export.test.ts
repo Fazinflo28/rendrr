@@ -56,6 +56,24 @@ describe("export to the Mac app, else the cloud and Drive", { skip: !ready && "n
     await prisma.render.updateMany({ where: { userId }, data: { status: "done", outputKey: `renders/test-${run}/a.mp4` } });
   });
 
+  it("with the Mac app silent since this morning: Claude hears when and where it was last seen, and what to check", async () => {
+    const { noteMacDevice } = await import("@rendrr/core");
+    await noteMacDevice(userId, { id: "air-12345678", name: "MacBook Air", platform: "mac", version: "0.1.40", render: null });
+    // Its last ping was 3 hours ago.
+    const raw = JSON.parse((await redis().hget(`mac:devices:${userId}`, "air-12345678"))!);
+    await redis().hset(`mac:devices:${userId}`, "air-12345678", JSON.stringify({ ...raw, at: Date.now() - 3 * 3600_000 }));
+    await redis().del(`mac:on:${userId}`);
+    const st = (await app.inject({ method: "GET", url: "/desktop/status", headers: headers() })).json();
+    assert.equal(st.online, false);
+    assert.equal(st.lastSeen.name, "MacBook Air");
+    const proj = await TOOL_HANDLERS.get_project(c(), { projectId });
+    assert.match(proj.text, /is not open, so finals your AI exports go to Google Drive \(or a download link\)\. Rendrr last heard from the Rendrr Mac app on "MacBook Air" 3 hours ago/);
+    const r = await TOOL_HANDLERS.render_preview(c(), { projectId, newRequest: true });
+    assert.match(r.text, /^Rendering on Rendrr's cloud server: no Rendrr app is open now\. Rendrr last heard from the Rendrr Mac app on "MacBook Air" 3 hours ago/);
+    await redis().del(`mac:devices:${userId}`);
+    await prisma.render.updateMany({ where: { userId, status: { in: ["queued", "running"] } }, data: { status: "done", outputKey: `renders/test-${run}/b.mp4` } });
+  });
+
   it("with an older Mac app open (it cannot render): made in the cloud, exported to the Mac, which takes the final once it is done", async () => {
     const ping = await app.inject({ method: "POST", url: "/desktop/ping", headers: headers(), payload: { version: "0.1.7", device: "Studio-Mac.local" } });
     assert.equal(ping.statusCode, 200, ping.body);

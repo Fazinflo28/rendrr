@@ -6,7 +6,7 @@
 // Redis and storage (as in .env).
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import type { AppSamples, BoardStyle } from "@rendrr/shared";
+import type { AppOpen, AppSamples, BoardStyle } from "@rendrr/shared";
 import { storyboardOut } from "../src/services/storyboard";
 
 const style: BoardStyle = {
@@ -63,7 +63,7 @@ describe("storyboards in Rendrr", { skip: !ready && "needs DATABASE_URL, REDIS_U
   const { createProject } = await import("../src/services/projects");
   const { TOOL_HANDLERS } = await import("../src/tools");
   const { APP_HANDLERS } = await import("../src/services/claudeApp");
-  const { approveStoryboard, listStoryboards, startStoryboard, storyboardView } = await import("../src/services/storyboard");
+  const { approveStoryboard, latestBoardId, listStoryboards, startStoryboard, storyboardView } = await import("../src/services/storyboard");
   const { queue, redis } = await import("@rendrr/core");
   let userId = "", projectId = "";
   const c = () => ({ userId, ai: "claude" as const });
@@ -128,5 +128,21 @@ describe("storyboards in Rendrr", { skip: !ready && "needs DATABASE_URL, REDIS_U
     const back = await approveStoryboard(userId, r.id, false);
     assert.equal(back.board?.status, "review");
     await assert.rejects(storyboardView(userId, (await prisma.render.create({ data: { projectId, userId, kind: "sample", version: 1, status: "done", steps: [], plan: { samples: { items: [] } } as never } })).id), /not a storyboard/);
+  });
+
+  it("Claude shows a storyboard again in the chat: open_projects renderId, or storyboard with the edit; get_project names the newest", async () => {
+    const first = await prisma.render.findFirstOrThrow({ where: { projectId, kind: "sample" }, orderBy: { createdAt: "asc" } });
+    const shown = await tool("open_projects", { renderId: first.id });
+    assert.match(shown.text, /^Showing the storyboard "Launch board v2" of "[^"]+" \([^)]+\) in the Rendrr app: 2 panels, in review, 1 change asked\. The user can look at each one, ask a change on it, approve it and render the video there\./);
+    assert.equal((shown.data as AppOpen).samples?.renderId, first.id, "the app opens the board");
+    const newest = await latestBoardId(userId, projectId);
+    assert.ok(newest && newest !== first.id, "the board left to Rendrr is the newest");
+    assert.equal(((await tool("open_projects", { projectId, storyboard: true })).data as AppOpen).samples?.renderId, newest);
+    // A storyboard's id given as the edit's opens it too.
+    assert.equal(((await tool("open_projects", { projectId: first.id })).data as AppOpen).samples?.renderId, first.id);
+    assert.match((await tool("get_project", { projectId })).text, new RegExp(`\\nStoryboard: ${newest} "[^"]+" \\(v\\d+, 0 panels, being drawn\\)\\. open_projects renderId shows it to the user again`));
+    const none = await tool("open_projects", { renderId: "nope" });
+    assert.match(none.text, /No storyboard or samples have the id "nope"/);
+    assert.equal((none.data as AppOpen).samples ?? null, null, "the list instead");
   });
 });

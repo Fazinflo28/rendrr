@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deviceName, macOriginalOf, nextExportText, platformOf, whereShort, whereText, type RenderWhere } from "../src/where";
+import { agoText, deviceName, lastSeenText, macOriginalOf, nextExportText, platformOf, whereShort, whereText, type RenderWhere } from "../src/where";
 
 const w = (delivery: Partial<RenderWhere["delivery"]>): RenderWhere => ({ renders: "cloud", region: "US East", device: null, delivery: { to: "download", device: null, state: null, folder: null, at: null, ...delivery } });
 const mac = (device: string | null): RenderWhere => ({ renders: "mac", region: "US East", device, delivery: { to: "mac", device, state: "sent", folder: null, at: null } });
@@ -42,6 +42,17 @@ describe("where a render is made and where it goes", () => {
     expect(nextExportText({ online: false, device: null, version: null, seenAt: null })).toMatch(/not open, so finals your AI exports go to Google Drive/);
     expect(nextExportText({ online: true, device: "Studio Mac", version: "0.2.0", seenAt: 1, renders: true })).toMatch(/^Renders run on the user's Mac: the Rendrr Mac app is open on "Studio Mac", so previews and finals are made there/);
     expect(nextExportText({ online: true, device: null, version: "0.1.9", seenAt: 1, renders: false, why: "rendering on the Mac is turned off in the Mac app" })).toMatch(/^Renders run on Rendrr's cloud server \(rendering on the Mac is turned off in the Mac app\)\. The Rendrr Mac app is open/);
+  });
+  it("no app open, but one was today: says when Rendrr last heard from it and what the user can check", () => {
+    const now = Date.now();
+    const t = nextExportText({ online: false, device: null, version: null, seenAt: null, lastSeen: { name: "MacBook Air", platform: "mac", at: now - 13 * 3600_000 } });
+    expect(t).toMatch(/not open, so finals your AI exports go to Google Drive \(or a download link\)\. Rendrr last heard from the Rendrr Mac app on "MacBook Air" 13 hours ago; an open app checks in every 20 seconds\./);
+    expect(t).toMatch(/stays in the Dock/);
+    expect(t).toMatch(/quit Rendrr and open it again/);
+    expect(t).toMatch(/logged in to this same account/);
+    expect(lastSeenText({ name: null, platform: "windows", at: now - 5 * 60_000 }, now)).toMatch(/^Rendrr last heard from the Rendrr Windows app on the user's PC 5 minutes ago;.*stays in the taskbar/);
+    expect(agoText(61_000)).toBe("1 minute ago");
+    expect(agoText(90 * 60_000)).toBe("2 hours ago");
   });
   it("several computers: listed, and the next render asks which (or says the one picked)", () => {
     const d = (id: string, name: string, platform: "mac" | "windows") => ({ id, name, platform, version: "0.2.0", seenAt: 1, renders: true, busy: false, why: null });

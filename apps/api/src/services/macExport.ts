@@ -1,6 +1,6 @@
-import { deviceWhy, driveSaveOf, finalType, MAC_RENDER_PROTOCOL, macDevices, macExportsKey, noteMacDevice, redis, renderChoice, setRenderChoice, signGet, type MacRenderInfo, type RenderProgress } from "@rendrr/core";
+import { deviceWhy, driveSaveOf, finalType, MAC_RENDER_PROTOCOL, macDevices, macExportsKey, macLastSeen, noteMacDevice, redis, renderChoice, setRenderChoice, signGet, type MacRenderInfo, type RenderProgress } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
-import { CLOUD, CLOUD_REGION, deviceLabel, deviceName, devicesText, platformOf, type Delivery, type DesktopPlatform, type DeviceStatus, type MacStatus, type RenderWhere } from "@rendrr/shared";
+import { CLOUD, CLOUD_REGION, deviceLabel, deviceName, devicesText, lastSeenText, platformOf, type Delivery, type DesktopPlatform, type DeviceStatus, type MacStatus, type RenderWhere } from "@rendrr/shared";
 
 // The user's Mac: while the Rendrr Mac app is open it says so every few seconds (macPing), with what it can render.
 // Renders are then made on that Mac (core/macRender.ts: the worker hands it the encode; routes/macRender.ts); a final
@@ -39,7 +39,10 @@ export async function macStatus(userId: string): Promise<MacStatus> {
     const renders = !!d.render && d.render.ready && d.render.enabled;
     return { id: d.id, name: d.name, platform: d.platform, version: d.version, seenAt: d.at, renders, busy: !!d.render?.busy, why: renders ? null : deviceWhy(d) };
   });
-  if (!devices.length) return { online: false, device: null, version: null, seenAt: null, renders: false, why: null, devices: [], choice };
+  if (!devices.length) {
+    const seen = await macLastSeen(userId).catch(() => null);
+    return { online: false, device: null, version: null, seenAt: null, renders: false, why: null, devices: [], choice, lastSeen: seen ? { name: seen.name, platform: seen.platform, at: seen.at } : null };
+  }
   const main = devices.find((d) => d.id === choice) ?? devices.find((d) => d.renders) ?? devices[0];
   return { online: true, device: main.name, version: main.version, seenAt: main.seenAt, renders: main.renders, why: main.why, platform: main.platform, deviceId: main.id, devices, choice };
 }
@@ -71,7 +74,9 @@ export async function pickTarget(userId: string, asked: string | null | undefine
     await setRenderChoice(userId, d.id);
     return { target: d.id, device: d, ask: null, note: say(d) };
   }
-  if (!able.length) return { target: null, device: null, ask: null, note: null };
+  // None can render: Rendrr's cloud. None open at all, though one was today: when Rendrr last heard from it, so the AI
+  // can tell a user who expected their computer to render what to check.
+  if (!able.length) return { target: null, device: null, ask: null, note: !all.length && st.lastSeen ? `Rendering on ${CLOUD}: no Rendrr app is open now. ${lastSeenText(st.lastSeen)}` : null };
   const must = o.prefer ? able.find((d) => d.id === o.prefer) : undefined;
   if (must) return { target: must.id, device: must, ask: null, note: several ? `Rendering on ${deviceLabel(must)}: it keeps this footage's original.` : null };
   if (st.choice === "cloud") return { target: "cloud", device: null, ask: null, note: several ? `Rendering on ${CLOUD} (the user's pick: pass device to switch).` : null };

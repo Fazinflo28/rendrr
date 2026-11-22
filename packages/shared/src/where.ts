@@ -29,7 +29,27 @@ export type DeviceStatus = { id: string; name: string | null; platform: DesktopP
 /** renders: the desktop app is open and renders there (on, ready, not turned off); why: why not, when it is open but
  *  does not; platform: a Mac or a Windows PC. The top fields are the main computer (the one picked, else the first
  *  that renders); devices: every computer online; choice: the one the user picked ("cloud": Rendrr's cloud), if any. */
-export type MacStatus = { online: boolean; device: string | null; version: string | null; seenAt: number | null; renders?: boolean; why?: string | null; platform?: DesktopPlatform; deviceId?: string | null; devices?: DeviceStatus[]; choice?: string | null };
+export type MacStatus = { online: boolean; device: string | null; version: string | null; seenAt: number | null; renders?: boolean; why?: string | null; platform?: DesktopPlatform; deviceId?: string | null; devices?: DeviceStatus[]; choice?: string | null;
+  /** None open now: the computer Rendrr heard from last today (its name, platform and when). */
+  lastSeen?: { name: string | null; platform: DesktopPlatform; at: number } | null };
+
+/** "3 minutes ago", "5 hours ago". */
+export function agoText(ms: number): string {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  if (m < 60) return `${m} ${m === 1 ? "minute" : "minutes"} ago`;
+  const h = Math.round(m / 60);
+  return `${h} ${h === 1 ? "hour" : "hours"} ago`;
+}
+
+/**
+ * No Rendrr app open now, but one was today: when Rendrr last heard from it and what the user can check, for the AI
+ * to say instead of only "not open" (the user often sees the app in the Dock and thinks it is open).
+ */
+export function lastSeenText(seen: NonNullable<MacStatus["lastSeen"]>, now = Date.now()): string {
+  const m = machineWord(seen.platform), appName = desktopAppName(seen.platform);
+  const where = seen.platform === "windows" ? "the taskbar" : "the Dock";
+  return `Rendrr last heard from the ${appName} on ${seen.name ? `"${seen.name}"` : `the user's ${m}`} ${agoText(now - seen.at)}; an open app checks in every 20 seconds. If the user says it is open: its window may have been closed (an older ${appName} stops checking in then, though it stays in ${where}), the ${m} may have slept, or it cannot reach Rendrr. Ask them to quit Rendrr and open it again (or update it from the Rendrr app's update bar), and check it is logged in to this same account. It shows as open here within 20 seconds; then render again.`;
+}
 
 /** "Studio Mac" (Mac), or "Gaming PC" (PC). */
 export const deviceLabel = (d: Pick<DeviceStatus, "name" | "platform">) => `"${d.name || "this computer"}" (${machineWord(d.platform)})`;
@@ -90,7 +110,7 @@ export function nextExportText(mac: MacStatus): string {
   if (mac.online && mac.renders) return `Renders run on the user's ${m}: the ${appName} is open${on}, so previews and finals are made there (graphics, the person's cut-out and checks on ${CLOUD}) and finals are saved to its Downloads. If the ${m} cannot take one, ${CLOUD} makes it.`;
   return mac.online
     ? `Renders run on ${CLOUD}${mac.why ? ` (${mac.why})` : ""}. The ${appName} is open${on}, so finals your AI exports go to that ${m}'s Downloads.`
-    : `Renders run on ${CLOUD}. The Rendrr app (Mac or Windows) is not open, so finals your AI exports go to Google Drive (or a download link).`;
+    : `Renders run on ${CLOUD}. The Rendrr app (Mac or Windows) is not open, so finals your AI exports go to Google Drive (or a download link).${mac.lastSeen ? ` ${lastSeenText(mac.lastSeen)}` : ""}`;
 }
 
 /**

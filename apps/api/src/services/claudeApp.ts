@@ -10,7 +10,7 @@ import { renderResult, renderStatus, startRender } from "./render";
 import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
 import { createReviewLink } from "../routes/reviews";
 import { samplesView } from "./samples";
-import { approveStoryboard } from "./storyboard";
+import { approveStoryboard, latestBoardId } from "./storyboard";
 import type { ToolCtx, ToolOut } from "../tools";
 
 /** "Mac" or "PC" when a render was made on the user's computer (the card's chip says "PC render"), else nothing. */
@@ -143,18 +143,33 @@ function openText(page: AppProjectsPage | null, open: AppProjectView | null): st
  * The app with the user's edits, or one edit open (projectId): then only that edit and its preview are sent, not the
  * list and its picture links (the app loads the list when the user goes back to it).
  */
-export async function openProjects(c: ToolCtx, i: { projectId?: string; folderId?: string }): Promise<ToolOut> {
+export async function openProjects(c: ToolCtx, i: { projectId?: string; folderId?: string; renderId?: string; storyboard?: boolean }): Promise<ToolOut> {
+  // A storyboard or a set of samples, shown again in the chat (renderId; or storyboard: true with projectId, the
+  // edit's newest board). An id given as the edit's that is a storyboard's opens it too.
+  const rid = (i.renderId || "").trim() || (i.projectId ? (await prisma.render.findFirst({ where: { id: i.projectId.trim(), userId: c.userId, kind: "sample" }, select: { id: true } }))?.id ?? "" : "");
+  let note = "";
+  if (rid || (i.storyboard && i.projectId)) {
+    const id = rid || (await latestBoardId(c.userId, i.projectId!.trim()));
+    const r = id ? await prisma.render.findFirst({ where: { id, userId: c.userId, kind: "sample" }, select: { id: true } }) : null;
+    if (r) {
+      const v = await samplesView(c.userId, r.id);
+      const data: AppOpen = { open: null, webUrl: WEB(), samples: v };
+      const what = v.board ? `the storyboard "${v.board.title}"` : "the samples";
+      const open = v.comments.filter((x) => !x.resolved).length;
+      return { text: `Showing ${what} of "${v.project.name}" (${v.renderId}, v${v.version}) in the Rendrr app: ${v.items.length} ${v.board ? "panels" : "samples"}, ${v.status === "done" ? (v.board ? (v.board.status === "approved" ? "approved" : "in review") : "done") : v.status}${open ? `, ${open} ${open === 1 ? "change" : "changes"} asked` : ""}. The user can look at each one, ask a change on it, ${v.board ? "approve it and render the video" : "and render the preview"} there. get_samples reads it.`, data };
+    }
+    note = rid ? ` No storyboard or samples have the id "${rid.slice(0, 40)}".` : " This edit has no storyboard yet: create_storyboard makes one.";
+  }
   // The AI often has a project (folder) where an edit is meant, or a name: whatever it gives opens what it names,
   // and an id that names nothing shows the list with a line saying so (the call never fails on it).
-  const asked = (i.projectId || i.folderId || "").trim();
-  let note = "";
+  const asked = rid ? "" : (i.projectId || i.folderId || "").trim();
   if (asked) {
     const named = { equals: asked, mode: "insensitive" as const };
     const edit = !i.folderId ? await prisma.project.findFirst({ where: { userId: c.userId, deletedAt: null, OR: [{ id: asked }, { name: named }] }, orderBy: { updatedAt: "desc" }, select: { id: true } }) : null;
     if (edit) {
       const open = await appProject(c.userId, edit.id);
       const data: AppOpen = { open, webUrl: WEB() };
-      return { text: openText(null, open), data };
+      return { text: openText(null, open) + note, data };
     }
     const folder = await prisma.folder.findFirst({ where: { userId: c.userId, OR: [{ id: asked }, { name: named }] }, orderBy: { createdAt: "desc" }, select: { id: true } });
     if (folder) {
@@ -162,7 +177,7 @@ export async function openProjects(c: ToolCtx, i: { projectId?: string; folderId
       const data: AppOpen = { ...page, open: null, webUrl: WEB() };
       return { text: folderText(page), data };
     }
-    note = ` No edit or project is called "${asked.slice(0, 80)}", so the list is shown (list_projects has the ids).`;
+    note += ` No edit or project is called "${asked.slice(0, 80)}", so the list is shown (list_projects has the ids).`;
   }
   const page = await appProjects(c.userId, {});
   const data: AppOpen = { ...page, open: null, webUrl: WEB() };

@@ -21,6 +21,24 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Cloud renders, the Mac seen as closed, and storyboards shown again (22 November)
+
+- **Every cloud render of one edit failed at "Cutting clips"** ("Stream specifier ':v' ... matches no streams"). A
+  block of the person's cut-out (remove_background) had been made with no frames when the worker could not read the
+  footage, kept, and joined into every render after; "Render again" read the same block. matte.py now fails when its
+  reader fails or reads nothing (the job tries again), the worker checks a block has a picture before keeping it, and a
+  kept block with no picture is taken out of storage and made again (test/matte-kept.test.ts).
+- **Claude said the Mac was not connected while the Rendrr app sat in the Dock.** The logs showed the app's ping every
+  20 s until the evening, then nothing: on a Mac, closing the window closed the page that pings, while the app stayed in
+  the Dock. Now closing the last window hides it (the page keeps running, pinging and rendering; the Dock icon brings it
+  back; Cmd+Q quits). The app also pings at once after a wake-up or screen unlock, reloads a page that crashed or froze
+  for 30 s, and says once when the computer cannot reach Rendrr (renders then go to the cloud). With no app open but one
+  seen today, Claude is told when and where it was last seen and what to ask the user (get_project's Exports line and
+  the render answers), instead of only "not open". Needs the new desktop build for the window part.
+- **Claude could not show a storyboard again.** Only the first create_storyboard answer opened it in the chat.
+  open_projects now takes renderId (a storyboard or samples) or storyboard: true with the edit, and get_project names
+  the edit's newest storyboard.
+
 ## Storyboard mode (22 November)
 
 - Asked: an optional storyboard before the whole render. A board of frames and short clips made from the user's ask,

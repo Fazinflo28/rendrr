@@ -4,7 +4,7 @@
 // browser, links to other sites in the default browser, an offline page, full speed while the window is hidden, and
 // renders made on this computer (render.js: Rendrr hands the app each render's encode while it is open; its own FFmpeg
 // makes it).
-const { app, BrowserWindow, Menu, Notification, ipcMain, screen, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, Notification, ipcMain, powerMonitor, screen, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName } = require("./links");
@@ -46,6 +46,8 @@ if (!SMOKE_OUT && !app.requestSingleInstanceLock()) app.quit();
 // ---- Log in through the browser: the Allow page hands the login back with rendrr://auth?grant=… ----
 app.setAsDefaultProtocolClient("rendrr");
 let pendingLink = null; // a link that opened the app before it was ready
+let quitting = false; // Quit (Cmd+Q): windows close for real
+app.on("before-quit", () => { quitting = true; });
 function openAuthLink(url) {
   const grant = authGrant(url);
   if (!grant) return;
@@ -198,8 +200,33 @@ function createWindow(url = START_URL) {
   return win;
 }
 
+// Every Rendrr window (not the sign-in popups): a Mac keeps the last one running hidden, and each hears of a wake-up.
+const appWindows = new Set();
+const liveWindows = () => Array.from(appWindows).filter((w) => !w.isDestroyed());
+
 function watchAppWindow(win) {
   const wc = win.webContents;
+  appWindows.add(win);
+  win.on("closed", () => appWindows.delete(win));
+  // On a Mac, closing the last Rendrr window keeps the app in the Dock (as Mac apps do), so its page keeps running
+  // hidden: Rendrr still hears from this Mac every 20 s and renders on it, and Claude sees it as open. Before, the
+  // page closed with the window and the Mac counted as offline while the app sat in the Dock. The Dock icon shows the
+  // window again; Quit (Cmd+Q) ends it.
+  win.on("close", (e) => {
+    if (quitting || process.platform !== "darwin" || SMOKE_OUT) return;
+    if (liveWindows().some((w) => w !== win && w.isVisible())) return;
+    e.preventDefault();
+    if (win.isFullScreen()) { win.once("leave-full-screen", () => win.hide()); win.setFullScreen(false); } else win.hide();
+  });
+  // The page crashed, or froze for 30 s (it can after a long sleep): it loads again, so Rendrr hears from this
+  // computer again instead of a dead window that looks open.
+  wc.on("render-process-gone", (_e, d) => {
+    if (d?.reason === "clean-exit") return;
+    setTimeout(() => { if (!win.isDestroyed()) wc.reload(); }, 1000);
+  });
+  let stuck = null;
+  win.on("unresponsive", () => { clearTimeout(stuck); stuck = setTimeout(() => { if (!win.isDestroyed()) wc.forcefullyCrashRenderer(); }, 30_000); });
+  win.on("responsive", () => { clearTimeout(stuck); stuck = null; });
   // The web app moves its top bar out of the way of the window buttons, except in full screen where they hide.
   const sendFull = () => !wc.isDestroyed() && wc.send("rendrr:fullscreen", win.isFullScreen());
   win.on("enter-full-screen", sendFull);
@@ -288,10 +315,13 @@ function allowFor(url) { const k = linkKind(url || ""); return k === "app" || k 
 
 // ---- Menus (the Edit menu is what makes Cmd+C / Cmd+V work in text boxes on a Mac; on Windows the menu bar is hidden
 // and its shortcuts still work) ----
-function focused() { return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null; }
+function focused() { return BrowserWindow.getFocusedWindow() || liveWindows()[0] || BrowserWindow.getAllWindows()[0] || null; }
+/** The window shown (a Mac keeps the last one hidden when it is closed) and in front. */
+function bringUp(w) { if (!w || w.isDestroyed()) return; if (w.isMinimized()) w.restore(); if (!w.isVisible()) w.show(); w.focus(); }
 function go(p) {
   const w = focused();
   if (!w) return createWindow(new URL(p, START_URL).toString());
+  bringUp(w);
   w.webContents.loadURL(new URL(p, START_URL).toString());
 }
 function buildMenu() {
@@ -360,11 +390,18 @@ app.whenReady().then(() => {
   const win = createWindow(pendingLink || START_URL);
   pendingLink = null;
   if (SMOKE_OUT) smokeTest(win);
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  // The Dock icon: the window closed earlier comes back as it was (its page kept running), else a new one.
+  app.on("activate", () => {
+    const hidden = liveWindows().find((w) => !w.isVisible());
+    if (hidden && !liveWindows().some((w) => w.isVisible())) return bringUp(hidden);
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+  // Back from sleep, or the screen unlocked: each page tells Rendrr this computer is here at once, not 20 s later.
+  for (const ev of ["resume", "unlock-screen"]) powerMonitor.on(ev, () => { for (const w of liveWindows()) w.webContents.send("rendrr:wake"); });
 });
 
 app.on("second-instance", (_e, argv) => {
   if (linkIn(argv)) { openAuthLink(linkIn(argv)); return; } // Windows: the browser handing a login back
-  const w = focused(); if (w) { if (w.isMinimized()) w.restore(); w.focus(); }
+  bringUp(focused());
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

@@ -105,6 +105,14 @@ export async function macDevices(userId: string, freshMs = DEVICE_ONLINE_MS): Pr
   return out.sort((x, y) => y.at - x.at);
 }
 
+/** The computer Rendrr heard from last when none is open now (it pinged within the day): for saying when and where
+ *  the app was last seen, so the AI can tell the user what to check. null: one is open, or none pinged today. */
+export async function macLastSeen(userId: string): Promise<MacDevice | null> {
+  const all = await macDevices(userId, 86400_000);
+  if (!all.length || Date.now() - all[0].at <= DEVICE_ONLINE_MS) return null;
+  return all[0];
+}
+
 /** Why this computer cannot make a render needing these FFmpeg features now (null: it can). */
 export function deviceWhy(d: MacDevice, needs: string[] = []): string | null {
   const m = d.platform === "windows" ? "PC" : "Mac", app = d.platform === "windows" ? "Windows app" : "Mac app";

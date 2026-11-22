@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("rendrrDesktop", Object.freeze({
   keepOriginal: (videoId, file) => { let p = ""; try { p = webUtils.getPathForFile(file); } catch { /* not a file from this Mac */ } return p ? ipcRenderer.invoke("rendrr:keep-original", String(videoId), p) : Promise.resolve(null); },
   // Renders on this Mac: what it can make, turning it on or off, making one Rendrr handed it, and hearing when it
   // starts or finishes one. The page never touches the files or FFmpeg itself.
+  // The computer woke from sleep or its screen unlocked: the page tells Rendrr at once that this computer is here.
+  onWake: (cb) => { const f = () => cb(); ipcRenderer.on("rendrr:wake", f); return () => ipcRenderer.removeListener("rendrr:wake", f); },
   render: Object.freeze({
     info: () => ipcRenderer.invoke("rendrr:render-info"),
     setEnabled: (on) => ipcRenderer.invoke("rendrr:render-enable", !!on),

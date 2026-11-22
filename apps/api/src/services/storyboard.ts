@@ -66,6 +66,22 @@ export async function listStoryboards(userId: string, projectId: string, take = 
   return Promise.all(boards.map((r) => samplesView(userId, r.id)));
 }
 
+/** The edit's newest storyboard still there (drawing or drawn), or null. */
+export async function latestBoardId(userId: string, projectId: string): Promise<string | null> {
+  const rs = await prisma.render.findMany({ where: { projectId, userId, kind: "sample", status: { in: ["queued", "running", "done"] } }, orderBy: { createdAt: "desc" }, take: 12, select: { id: true, plan: true } });
+  return rs.find((r) => planOf(r)?.board)?.id ?? null;
+}
+
+/** A line for get_project: the edit's newest storyboard, and how to show it to the user again. */
+export async function boardLine(userId: string, projectId: string): Promise<string | null> {
+  const rs = await prisma.render.findMany({ where: { projectId, userId, kind: "sample", status: { in: ["queued", "running", "done"] } }, orderBy: { createdAt: "desc" }, take: 12, select: { id: true, plan: true, version: true, status: true } });
+  const r = rs.find((x) => planOf(x)?.board);
+  const b = r ? planOf(r)!.board! : null;
+  if (!r || !b) return null;
+  const n = (planOf(r)!.done ?? planOf(r)!.items ?? []).length;
+  return `Storyboard: ${r.id} "${b.title}" (v${r.version}, ${n} panels, ${r.status === "done" ? (b.status === "approved" ? "approved" : "in review") : "being drawn"}). open_projects renderId shows it to the user again; get_samples reads it with their changes.`;
+}
+
 /** The user approves the board (or takes the approval back). Only a finished board can be approved. */
 export async function approveStoryboard(userId: string, renderId: string, approved = true): Promise<AppSamples> {
   await prisma.$transaction(async (tx) => {

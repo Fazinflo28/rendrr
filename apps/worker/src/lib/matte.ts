@@ -1,4 +1,4 @@
-import { downloadFile, headObject, queue, signGet, uploadFile } from "@rendrr/core";
+import { deleteObject, downloadFile, headObject, queue, signGet, uploadFile } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { MATTE_BLOCK, matteJobId, matteKey, type VisionSummary } from "@rendrr/shared";
 import type { RenderPlan } from "@rendrr/shared/renderPlan";
@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { JobError, run } from "./ffmpeg";
+import { JobError, probe, run } from "./ffmpeg";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MATTE_PY = join(HERE, "../../python/matte.py");
@@ -43,8 +43,15 @@ export async function makeMatteBlock(v: MatteVideo, k: number, dir: string, sign
   // Where the time went (reading the footage, the models, the edge, writing), for tuning on the worker's CPUs.
   const sum = stdout.trim().split("\n").pop() ?? "";
   console.log(`[matte] ${v.id} block ${k} (${from}-${to}s) made in ${((Date.now() - t0) / 1000).toFixed(1)} s: ${sum.slice(0, 300)}`);
+  if (!(await matteReadable(out, signal))) throw new JobError(`The person's cut-out of ${from}-${to}s came out empty. Render again.`, "matte-empty", true);
   await uploadFile(matteKey(v.userId, v.id, v.turn, k), out, "video/mp4");
   return out;
+}
+
+/** A matte block has a picture to read: one with no video stream (made when the footage could not be read) breaks
+ *  every render that joins it (FFmpeg's concat reader takes its streams from the first file). */
+export async function matteReadable(path: string, signal?: AbortSignal): Promise<boolean> {
+  try { const p = await probe(path, { signal }); return p.hasVideo && p.width > 0 && p.height > 0; } catch { return false; }
 }
 
 /**
@@ -91,8 +98,15 @@ export async function ensureMattes(plan: RenderPlan, userId: string, dir: string
   await Promise.all(Array.from({ length: Math.min(AT_ONCE, todo.length) }, async () => {
     while (next < todo.length) {
       const b = todo[next++], id = `${b.v.id}:${b.k}`, key = matteKey(b.v.userId, b.v.id, b.v.turn, b.k);
-      if (await headObject(key) || await waitForBlock(key, matteJobId(b.v.id, b.v.turn, b.k), 4 * 60_000, signal)) await downloadFile(key, b.path);
-      else await makeMatteBlock(b.v, b.k, dir, signal, (f) => { done.set(id, f); report(); });
+      let kept = !!(await headObject(key)) || await waitForBlock(key, matteJobId(b.v.id, b.v.turn, b.k), 4 * 60_000, signal);
+      if (kept) await downloadFile(key, b.path);
+      // A kept block with no picture (made by an older worker when the footage could not be read): made again.
+      if (kept && !(await matteReadable(b.path, signal))) {
+        console.warn(`[matte] ${b.v.id} block ${b.k}: the kept matte has no picture; making it again`);
+        await deleteObject(key).catch(() => {});
+        kept = false;
+      }
+      if (!kept) await makeMatteBlock(b.v, b.k, dir, signal, (f) => { done.set(id, f); report(); });
       done.set(id, 1);
       report();
     }

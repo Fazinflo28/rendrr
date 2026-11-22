@@ -331,10 +331,20 @@ function useMacExports(user, toast) {
   useEffect(() => {
     const d = typeof window !== "undefined" ? window.rendrrDesktop : null;
     if (!d || !user) return;
-    let live = true;
+    let live = true, fails = 0;
+    const M = d.app === "windows" ? "PC" : "Mac";
     const tick = async () => {
       try {
-        await api.macPing(d.version || "", d.device || "", d.render ? await d.render.info().catch(() => null) : null, d.app === "windows" ? "windows" : "mac", deviceIdOf(d));
+        try {
+          await api.macPing(d.version || "", d.device || "", d.render ? await d.render.info().catch(() => null) : null, d.app === "windows" ? "windows" : "mac", deviceIdOf(d));
+        } catch (e) {
+          // Online, yet Rendrr cannot be reached for a minute (a network or firewall blocking it): say so once, as
+          // Rendrr and your AI then count this computer as closed and render in the cloud.
+          if (e?.code === "network" && ++fails === 3 && navigator.onLine !== false) toast(`This ${M} can't reach Rendrr right now, so your AI's renders go to the cloud. Rendrr keeps trying.`, { icon: "alert" });
+          throw e;
+        }
+        if (fails >= 3) toast(`This ${M} is connected to Rendrr again`, { icon: "check", tone: "brand" });
+        fails = 0;
         for (const x of await api.macExports(deviceIdOf(d))) {
           if (!live || (!x.url && !x.failed)) continue;
           const { claimed } = await api.macClaim(x.renderId, deviceIdOf(d));
@@ -346,9 +356,15 @@ function useMacExports(user, toast) {
     };
     tick();
     const t = setInterval(tick, 20_000);
+    // Back from sleep, the connection back, or the window shown again: Rendrr hears from this computer at once.
+    const now = () => { if (live) tick(); };
+    const vis = () => { if (document.visibilityState === "visible") now(); };
+    const offWake = d.onWake ? d.onWake(now) : null;
+    window.addEventListener("online", now);
+    document.addEventListener("visibilitychange", vis);
     // The Mac starting or finishing a render (or rendering turned on or off) is told to Rendrr at once.
     const off = d.render?.onState ? d.render.onState((info) => { api.macPing(d.version || "", d.device || "", info || null, d.app === "windows" ? "windows" : "mac", deviceIdOf(d)).catch(() => {}); }) : null;
-    return () => { live = false; clearInterval(t); if (off) off(); };
+    return () => { live = false; clearInterval(t); if (off) off(); if (offWake) offWake(); window.removeEventListener("online", now); document.removeEventListener("visibilitychange", vis); };
   }, [user?.id]);
 }
 

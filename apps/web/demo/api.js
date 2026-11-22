@@ -249,7 +249,7 @@ Object.assign(api, {
     return reference ? api.updateProject(p.id, { reference }) : p;
   },
   // The Mac app's exports (a test fills globalThis.__demoMacExports): one claim per final.
-  macPing: async (version, device, render, platform, deviceId) => { globalThis.__demoMacPings = (globalThis.__demoMacPings || 0) + 1; globalThis.__demoMacPing = { version, device, platform: platform || "mac", deviceId: deviceId || "", render: render || null }; return { ok: true }; },
+  macPing: async (version, device, render, platform, deviceId) => { if (globalThis.__demoMacPingFail > 0) { globalThis.__demoMacPingFail--; throw Object.assign(new Error("Can't reach Rendrr."), { friendly: true, code: "network" }); } globalThis.__demoMacPings = (globalThis.__demoMacPings || 0) + 1; globalThis.__demoMacPing = { version, device, platform: platform || "mac", deviceId: deviceId || "", render: render || null }; return { ok: true }; },
   setRenderChoice: async (device) => { globalThis.__demoChoice = device; const m = globalThis.__demoMac; if (m) m.choice = device; return m || { online: false }; },
   macStatus: async () => globalThis.__demoMac || { online: false, device: null, version: null, seenAt: null, renders: false, why: null },
   // Renders waiting for this Mac (a test fills globalThis.__demoMacTasks); a claim hands back the task once.
