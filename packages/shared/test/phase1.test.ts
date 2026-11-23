@@ -259,7 +259,8 @@ describe("footage position and scale", () => {
     const plan = planRender({ kind: "preview", snapshot: s.snap, transcript: tr, source });
     const graph = ffmpegArgs(plan, { source: "a", output: "b" }, source, { loudnessGainDb: 0 }).filterGraph;
     // 540x960 preview: scaled to 622x1104, centred (-41, -72) then 34% down (+326) => (-41, 254)
-    expect(graph).toMatch(/color=c=black:s=540x960:r=30\[fcanvas\]/);
+    // (Moved down that far it no longer covers the frame: laid on black, a frame that ends a second after the edit.)
+    expect(graph).toMatch(/color=c=black:s=540x960:r=30:d=41\.000000\[fcanvas\]/);
     expect(graph).toMatch(/\[vfit\]scale=622:1104,setsar=1\[fscaled\]/);
     expect(graph).toMatch(/overlay=x=-41:y=254:shortest=1/);
     expect(editCheck(s.snap, tr)).toMatch(/footage framed scale 1.15, moved down 34%/);

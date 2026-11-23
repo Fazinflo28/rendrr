@@ -9,6 +9,12 @@ import { joinPiecesArgs, piecesList } from "./deliver";
 import { filterThreads } from "./ffmpeg";
 import type { MacRun } from "./macTask";
 
+/**
+ * Why the user's computer gave up was its memory: the system stopped FFmpeg (older apps said "FFmpeg failed (null)"),
+ * or it froze (a Mac swapping stops moving). Such a final is made there again in pieces.
+ */
+export const macRanOutOfRoom = (why: string | null | undefined) => !!why && /stopped by the system|froze at|FFmpeg failed \(null\)/.test(why);
+
 /** A final made on the user's computer in pieces from the start (lower than the cloud's piecesFirst: less memory). */
 export const macPiecesFirst = (kind: string, g: { inputs: number; scalers: number }) => kind === "final" && (g.inputs >= 12 || g.scalers >= 60);
 

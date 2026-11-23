@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join, relative } from "node:path";
-import { createMacTask, deleteObjects, expireMacTask, headObject, MAC_CLAIM_MS, MAC_QUIET_MS, originOf, stopMacTask, uploadFile, viewMacTask, type MacInput, type MacTaskSpec } from "@rendrr/core";
+import { copyObject, createMacTask, deleteObjects, expireMacTask, headObject, MAC_CLAIM_MS, MAC_QUIET_MS, originOf, stopMacTask, uploadFile, viewMacTask, type MacInput, type MacTaskSpec } from "@rendrr/core";
 import { PREFIX } from "@rendrr/shared";
 import { JobError } from "./ffmpeg";
 
@@ -125,6 +125,14 @@ export async function macTaskFor(o: {
     const local = o.macSources?.get(path);
     if (local) inputs.set(name, { name, local: { videoId: local.videoId, size: local.size } });
     else if (o.driveSource && o.driveSource.path === path) inputs.set(name, { name, drive: { fileId: o.driveSource.fileId, ...(o.driveSource.version ? { version: o.driveSource.version } : {}) }, size });
+    // A graphic's recording is the task's own copy (made inside storage: nothing goes up): its recordings are dropped
+    // the moment its code changes, and a Mac that fetched the old one after that got a 404 and lost the render.
+    else if (!body && origin && (origin.size == null || origin.size === size) && origin.key.startsWith(PREFIX.graphics)) {
+      const key = `${PREFIX.mac}${o.renderId}/${name}`;
+      await copyObject(origin.key, key);
+      temps.push(key);
+      inputs.set(name, { name, key, size });
+    }
     else if (!body && origin && (origin.size == null || origin.size === size)) inputs.set(name, { name, key: origin.key, size, ...(origin.etag ? { etag: origin.etag } : {}) });
     else if ((body?.length ?? size) <= INLINE_MAX) inputs.set(name, { name, data: (body ?? (await readFile(path))).toString("base64") });
     else {

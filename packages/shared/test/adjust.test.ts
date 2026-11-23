@@ -62,7 +62,9 @@ describe("the render", () => {
     expect(g).toMatch(/split\[ajo0\]\[ajw0\]/);
     expect(g).toMatch(/\[ajw0\]trim=start=2\.000000:end=5\.000000,setpts=PTS-2\.000000\/TB\[aji0\]/);
     expect(g).toMatch(/lut3d=file=.*colorchannelmixer=rr=0\.600:gg=0\.600:bb=0\.600/s);
-    expect(g).toMatch(/setpts=PTS\+2\.000000\/TB\[ajl0\]/);
+    // Laid from frame 0: 60 blank frames (2 s at 30), then the layer's own on the grid (never read ahead).
+    expect(g).toMatch(/color=c=black@0:s=960x540:r=30,format=yuv420p,setsar=1,trim=end_frame=60\[ajl0lead\]/);
+    expect(g).toMatch(/\[ajl0lead\]\[ajl0own\]concat=n=2:v=1:a=0,settb=1\/30,setpts=N\[ajl0\]/);
     expect(g).toMatch(/\[ajo0\]\[ajl0\]overlay=enable='between\(t,2\.000000,4\.983333\)':eof_action=pass\[ajv0\]/);
     // Captions go on after the layer: they are not graded.
     expect(g.indexOf("[ajv0]")).toBeLessThan(g.indexOf("ass=filename"));

@@ -172,3 +172,14 @@ test("a run that fails is reported, with FFmpeg's reason", async () => {
   const failed = got.reports.filter((x) => x.what === "failed").at(-1);
   assert.match(failed.body.error, /^the (Mac|PC) could not render it: FFmpeg failed/);
 });
+
+test("an FFmpeg the system stops (memory ran out) is reported as that, not as 'FFmpeg failed (null)'", { skip: process.platform === "win32" }, async () => {
+  // A stand-in FFmpeg that says its version, then is ended by a signal it was not sent by the app (as macOS ends the
+  // biggest program when memory runs out).
+  const fake = path.join(tmp, "ffmpeg-killed.sh");
+  fs.writeFileSync(fake, '#!/bin/sh\ncase "$*" in *-version*) echo "ffmpeg version 7.1"; exit 0;; esac\nkill -9 $$\n', { mode: 0o755 });
+  const r = await runTask(task(), { ...opts(), ffmpeg: fake });
+  assert.equal(r.ok, false);
+  const failed = got.reports.filter((x) => x.what === "failed").at(-1);
+  assert.match(failed.body.error, /^the (Mac|PC) could not render it: FFmpeg was stopped by the system \(SIGKILL\) at 0\.0 s, most likely out of memory$/);
+});

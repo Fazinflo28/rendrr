@@ -4,7 +4,7 @@ import { prisma, type Prisma } from "@rendrr/db";
 import { bestResolution, desktopAppName, fmtClock, formatFile, isBestQuality, isSoundFormat, lengthTolerance, SOUND_QUALITY, withExportFormat, type ExportFormat, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { audioSettings, audioText, boardStyle, lookText, onScreenAt, storyboardAutoPanels, type Board, type BoardPanel } from "@rendrr/shared";
 import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSideFiles } from "../lib/deliver";
-import { macPieceRuns, macPiecesFirst } from "../lib/macPieces";
+import { macPieceRuns, macPiecesFirst, macRanOutOfRoom } from "../lib/macPieces";
 import { dropTemps, fetchEtaSec, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
 import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
@@ -745,7 +745,25 @@ export async function renderJob(ctx: Ctx) {
         runs.push({ args: wPass.args, graph: wPass.filterGraph, seconds: plan.outputSeconds }, { args: mergeOverlayArgs(files.output, join(ctx.dir, "out-w.mkv"), finalPath) });
       } else if (fmt === "gif") runs.push({ args: gifArgs(files.output, finalPath, plan.width, plan.height, plan.outputSeconds) });
       est.encStart = Date.now();
-      macDone = await onMac(mac, runs, [{ path: finalPath, key: outKey, type: ff.type, ...(kind === "final" ? { save: `${stem}.${ff.ext}` } : {}) }], (cmd, sec) => { const pc = pieceAt.get(cmd); if (pc) onProgress(pc.a + Math.min(sec, pc.b - pc.a)); else if (!pieceAt.size && cmd === macPre.length) onProgress(sec); });
+      const macOuts: MacOut[] = [{ path: finalPath, key: outKey, type: ff.type, ...(kind === "final" ? { save: `${stem}.${ff.ext}` } : {}) }];
+      const macT0 = Date.now();
+      macDone = await onMac(mac, runs, macOuts, (cmd, sec) => { const pc = pieceAt.get(cmd); if (pc) onProgress(pc.a + Math.min(sec, pc.b - pc.a)); else if (!pieceAt.size && cmd === macPre.length) onProgress(sec); });
+      // Out of memory there in one pass (the system stopped FFmpeg, or it froze): a final is made on the Mac once more,
+      // in pieces (each draws only its own stretch), before the cloud, which has less memory than most Macs. The time it
+      // spent is given back to the job's limit.
+      let again: Awaited<ReturnType<typeof macPieceRuns>> = null;
+      if (!macDone && !inPieces && canPiece && fmt !== "gif" && kind === "final" && macRanOutOfRoom(where.why)) {
+        again = await macPieceRuns({ plan, files, source: sourceInfo, dir: ctx.dir, cpus: mac.cpus, budgets, gainDb: mixLoudness?.gainDb, audioBitrate: best ? "320k" : "192k" });
+        if (again) {
+          const was = where.why;
+          console.error(`[render] ${r.id}: the Mac ran out of memory in one pass (${was}): making it there again in ${again.count} pieces`);
+          if (plan.operations[plan.operations.length - 1]?.startsWith("Made on Rendrr's cloud server")) plan.operations.pop();
+          ctx.extend?.(Date.now() - macT0);
+          const at = again.at;
+          macDone = await onMac(mac, [...macPre, ...again.runs], macOuts, (cmd, sec) => { const pc = at.get(cmd); if (pc) onProgress(pc.a + Math.min(sec, pc.b - pc.a)); });
+          if (macDone) plan.operations.push(`Made on your ${machineWord(mac.platform)} in ${again.count} pieces: in one pass it ran out of memory there (${was})`);
+        }
+      }
       if (macDone) {
         await downloadFile(outKey, finalPath); files.output = finalPath;
         if (inPieces) plan.operations.push(`Made on your ${machineWord(mac.platform)} in ${inPieces.count} pieces (a heavy edit: ${fit.inputs} inputs, ${fit.scalers} scalers), joined under one sound`);

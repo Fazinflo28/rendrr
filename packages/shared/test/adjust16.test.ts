@@ -70,21 +70,23 @@ describe("the render", () => {
   it("the graph keeps the layer's alpha, scales it by its strength and ramps it in and out", () => {
     const s = edit(base(), { op: "adjustment_layer", start: 2, end: 5, edit: true, grade: { saturation: 0 }, masks: [sky], opacity: 0.6, fadeIn: 0.5, fadeOut: 1 } as Op).snap;
     const { g } = graph(s);
-    expect(g).toMatch(/\[loaj0\]format=yuva420p,lutyuv=a='val\*0\.600',fade=t=in:st=0:d=0\.500000:alpha=1,fade=t=out:st=2\.000000:d=1\.000000:alpha=1,setpts=PTS\+2\.000000\/TB\[ajl0\]/);
+    expect(g).toMatch(/\[loaj0\]format=yuva420p,lutyuv=a='val\*0\.600',fade=t=in:st=0:d=0\.500000:alpha=1,fade=t=out:st=2\.000000:d=1\.000000:alpha=1\[ajr0\]/);
+    expect(g).toMatch(/color=c=black@0:s=960x540:r=30,format=yuva420p,setsar=1,trim=end_frame=60\[ajl0lead\]/);
     expect(g).toMatch(/\[ajo0\]\[ajl0\]overlay=enable='between\(t,2\.000000,[\d.]+\)':eof_action=pass,format=yuv420p\[ajv0\]/);
     expect(g).toMatch(/alphamerge\[loaj0\]/);
   });
   it("without masks, strength or fades the graph is as before (no alpha)", () => {
     const s = edit(base(), { op: "adjustment_layer", start: 2, end: 5, edit: true, grade: { saturation: 0 } } as Op).snap;
     const { g } = graph(s);
-    expect(g).toMatch(/\[loaj0\]format=yuv420p,setpts=PTS\+2\.000000\/TB\[ajl0\]/);
+    expect(g).toMatch(/\[loaj0\]format=yuv420p\[ajr0\]/);
+    expect(g).toMatch(/format=yuv420p,setsar=1,trim=end_frame=60\[ajl0lead\]/);
     expect(g).not.toMatch(/alphamerge\[loaj0\]/);
   });
   it("strength alone: the alpha is made from the layer's strength (no mask picture)", () => {
     const s = edit(base(), { op: "adjustment_layer", start: 2, end: 5, edit: true, grade: { saturation: 0 }, opacity: 0.25 } as Op).snap;
     const { g, p } = graph(s);
     expect(p.looks![layer(s).id].mask).toBeUndefined();
-    expect(g).toMatch(/\[loaj0\]format=yuva420p,lutyuv=a='val\*0\.250',setpts/);
+    expect(g).toMatch(/\[loaj0\]format=yuva420p,lutyuv=a='val\*0\.250'\[ajr0\]/);
   });
 });
 

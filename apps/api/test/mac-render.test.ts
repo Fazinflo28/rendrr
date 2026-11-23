@@ -125,6 +125,24 @@ describe("renders made on the user's Mac", { skip: !ready && "needs DATABASE_URL
     assert.match(probe, /Audio: aac/); assert.match(probe, /Duration: 00:00:0[34]/);
   });
 
+  it("a graphic's recording kept in storage goes in the task as the task's own copy: dropped meanwhile (its code changed), the Mac still has it", async () => {
+    // As a render holds a graphic it fetched from storage: its recording's key noted for the file in the job's folder.
+    const g = join(dir, "graphic-g1.webm"), gKey = `${PREFIX.graphics}mac-${run}/g1-v-abc.webm`, size = (await stat(g)).size;
+    await core.uploadFile(gKey, g, "video/webm"); keys.push(gKey);
+    core.noteOrigin(g, gKey, { size });
+    try {
+      const { spec, temps } = await macTaskFor({ renderId: `r4-${run}`, userId, kind: "preview", label: "Preview v4", dir, runs: [{ args: ["-hide_banner", "-nostdin", "-y", "-c:v", "libvpx-vp9", "-i", "graphic-g1.webm", "-frames:v", "1", "out.png"] }], outputs: [{ path: join(dir, "out.png"), key: `${PREFIX.tests}mac-${run}/r4.png`, type: "image/png" }] });
+      keys.push(...temps);
+      const input = spec.inputs.find((x) => x.name === "graphic-g1.webm") as { key?: string; size?: number } | undefined;
+      assert.equal(input?.key, `${PREFIX.mac}r4-${run}/graphic-g1.webm`, "the task's own copy, not the recording's key");
+      assert.equal(input?.size, size);
+      assert.ok(temps.includes(input!.key!), "dropped with the task's other files when it is over");
+      // The graphic's code changes: its recordings are dropped. The task's copy is still there for the Mac.
+      await core.deleteObject(gKey);
+      assert.equal((await core.headObject(input!.key!))?.size, size);
+    } finally { core.forgetOrigins(g); }
+  });
+
   it("a Mac that does not pick it up: the cloud makes it", async () => {
     const a = argsFor(join(dir, "out.mp4"), 2);
     const { spec } = await macTaskFor({ renderId: `r2-${run}`, userId, kind: "preview", label: "Preview v2", dir, runs: [{ args: a.args, graph: a.filterGraph }], outputs: [{ path: join(dir, "out.mp4"), key: outKey, type: "video/mp4" }], fontsDir: (files as { fontsDir: string }).fontsDir });

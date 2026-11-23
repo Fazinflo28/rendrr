@@ -4,7 +4,7 @@
 // browser, links to other sites in the default browser, an offline page, full speed while the window is hidden, and
 // renders made on this computer (render.js: Rendrr hands the app each render's encode while it is open; its own FFmpeg
 // makes it).
-const { app, BrowserWindow, Menu, Notification, ipcMain, powerMonitor, screen, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, Notification, ipcMain, powerMonitor, powerSaveBlocker, screen, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName } = require("./links");
@@ -130,6 +130,10 @@ ipcMain.handle("rendrr:render-run", (e, task) => {
   if (!fromApp(e) || !renders.ready || !renders.enabled || renders.busy) return { started: false };
   try { render.checkTask(task); } catch (err) { return { started: false, error: String(err.message || err) }; }
   renders.busy = true; renders.current = String(task.label || "A render").slice(0, 120);
+  // Awake while it makes the render: a Mac that went to sleep part way stopped reporting, Rendrr gave up on it ("your
+  // Mac stopped answering") and made the whole render again on its cloud server. The screen may still turn off.
+  let awake = null;
+  try { awake = powerSaveBlocker.start("prevent-app-suspension"); } catch { /* not on this system */ }
   tellWindows();
   const progress = (st) => {
     const v = st.phase === "download" ? 0.1 * (st.frac || 0) : st.phase === "render" ? 0.1 + 0.85 * (st.frac || 0) : 0.95 + 0.05 * (st.frac || 0);
@@ -144,6 +148,7 @@ ipcMain.handle("rendrr:render-run", (e, task) => {
     })
     .catch(() => { /* runTask reports its own failures */ })
     .finally(() => {
+      if (awake != null && powerSaveBlocker.isStarted(awake)) powerSaveBlocker.stop(awake);
       renders.busy = false; renders.current = null;
       for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setProgressBar(-1);
       tellWindows();

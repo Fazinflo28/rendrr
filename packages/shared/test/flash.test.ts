@@ -58,7 +58,10 @@ describe("the overexposure flash", () => {
     // goes over white, a Gaussian of 9% of the short side (540 in a preview) screened over; laid back only inside it.
     expect(g).toMatch(/\[fw0\]trim=start=3\.750000:end=4\.216667,setpts=PTS-STARTPTS,scale=in_color_matrix=bt709:in_range=tv:flags=accurate_rnd,format=gbrp16le,format=gbrpf32le,sendcmd/);
     expect(g).toMatch(/\[fg0\]exposure=exposure=-2,format=gbrp16le,lutrgb=r='max\(0,val-16384\)\*3'.*gblur=sigma=49\[fb0\]/);
-    expect(g).toMatch(/\[fc0\]\[fb0\]blend=all_mode=screen,scale=out_color_matrix=bt709:out_range=tv:flags=accurate_rnd,format=yuv420p,settb=1\/30,setpts=PTS-STARTPTS\+113\[fl0\]/);
+    expect(g).toMatch(/\[fc0\]\[fb0\]blend=all_mode=screen,scale=out_color_matrix=bt709:out_range=tv:flags=accurate_rnd,format=yuv420p\[flw0\]/);
+    // Laid from frame 0: 113 blank frames, then the flash's own (the overlay never reads ahead to frame 113).
+    expect(g).toMatch(/trim=end_frame=113\[fl0lead\]/);
+    expect(g).toMatch(/\[fl0lead\]\[fl0own\]concat=n=2:v=1:a=0,settb=1\/30,setpts=N\[fl0\]/);
     expect(g).toMatch(/\[fo0\]\[fl0\]overlay=enable='between\(t,3\.750000,4\.216667\)':eof_action=pass\[vf0\]/);
     // A white dip stays a white layer.
     expect(graph(edit(two(), { op: "set_transition", clipId: "b", type: "dip-white", duration: 0.5 }))).not.toMatch(/exposure@/);

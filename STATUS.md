@@ -21,6 +21,40 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Exports failing on the Mac, then on the cloud too (23 November)
+
+"PT Clinic Owners V2" (51 clips from one 4K DJI original, framed 1.22 and moved up, graded, keyframes on the first
+clip, 3 full-length graphics, music, 4 morphs) failed on the MacBook Air ("FFmpeg froze at 0.0 s", "FFmpeg failed
+(null)") and then on the cloud ("killed (out of memory)", even in 3.7 s pieces). Rebuilt here with stand-in footage:
+its 540p preview took over 14 GB in 28 s and never made a frame. Four faults:
+- **A sliver that never ended.** A transition was centred on its clip's start, which falls between two frames, while
+  the picture changes on a frame. At the last morph (92.617 s, frame 2778.5) the B side began with 0.016 s of the clip
+  before it: no frame at all. Framed (scale 1.22), that empty stretch was laid on a black frame with overlay
+  (shortest), which never ends when its picture has no frame; the morph's reverse kept every frame it was given.
+  Now the cut is the picture's own frame (planTransitions), a side reads at least its frames of footage, the frame
+  under a framed picture ends a second after it, and the reverse is given no more than B's frames. This one also gave
+  a whip or slide a black B side.
+- **Late layers made FFmpeg read ahead.** A transition, a flash, an adjustment layer or a blended layer was laid with
+  its first frame at its start; overlay reads that frame before it lays frame 0, so FFmpeg made, and kept, all of the
+  edit before it. From one window (a final from a 4K original) a dissolve near the end took 2.6 GB at 540p (10 GB at
+  1080p). Each is now laid from frame 0 behind blank frames that share one picture (fromStart): 0.24 GB.
+- **Morph memory.** A plain morph's motion interpolation sets aside 288 bytes a pixel for each morph when the render
+  starts (600 MB a morph at 1080p, 2.4 GB at 4K). It works at a 540p frame's worth at most now, scaled back up.
+- **Each clip's framing kept its frames.** Clips drawn on their own (any keyframes make it so) kept their framing's
+  black frame and layer until the end: ~24 MB a clip at 1080p. A framed clip that still covers the frame is now cut
+  out of the scaled picture (crop) instead.
+The same edit now: preview 1.34 GB (was 14+ GB, never finished), 1080p final from one window 2.3 GB (3.8 GB before the
+last two fixes). Also:
+- **A 404 on the Mac.** A graphic's recordings are dropped the moment its code changes; a Mac fetching the old one got
+  a 404 (21 November). A Mac task now gets its own copy of each graphic recording (copied inside storage), dropped
+  with the task.
+- **Out of memory on the Mac:** a final is made there once more in pieces before the cloud (which has less memory than
+  most Macs), and the time spent is given back to the job's limit. The Mac app now says "FFmpeg was stopped by the
+  system (SIGKILL) ..., most likely out of memory" instead of "FFmpeg failed (null)", and keeps the Mac awake while it
+  makes a render ("your Mac stopped answering" twice on 20-21 November). New Mac app.
+- Tests: packages/shared/test/heavy-graph.test.ts; apps/worker/test/heavy-graph-render.test.ts renders a small copy
+  with a memory watch (the old code ran past 1.5 GB and was stopped; now under 0.7 GB, every frame, no black morph).
+
 ## Slow exports on the Mac (23 November)
 
 Watched a live V3 final on the MacBook Air: 15 minutes on "Getting the files to your Mac", then about 45 minutes of

@@ -284,12 +284,15 @@ function runFfmpeg(ffmpeg, args, { cwd, onSeconds, signal, stallSec = 120 }) {
     p.stdout.on("data", (d) => { for (const m of String(d).matchAll(/out_time_(?:us|ms)=(\d+)/g)) { const s = Number(m[1]) / 1e6; if (s > at) { at = s; moved = Date.now(); } if (onSeconds) onSeconds(s); } });
     p.stderr.on("data", (d) => { if (err.length < 60000) err += d; });
     p.on("error", (e) => { if (watch) clearInterval(watch); reject(e); });
-    p.on("close", (code) => {
+    p.on("close", (code, sig) => {
       if (watch) clearInterval(watch);
       if (signal) signal.removeEventListener("abort", kill);
       if (signal && signal.aborted) return reject(Object.assign(new Error("stopped"), { stopped: true }));
       if (froze) return reject(new Error(`FFmpeg froze at ${Math.max(0, at).toFixed(1)} s`));
       if (code === 0) return resolve();
+      // Ended by a signal it was not sent here: the system stopped it (macOS and Windows end the biggest program when
+      // memory runs out). It said "FFmpeg failed (null)" before.
+      if (code == null) return reject(Object.assign(new Error(`FFmpeg was stopped by the system (${sig || "a signal"}) at ${Math.max(0, at).toFixed(1)} s, most likely out of memory`), { killed: true }));
       reject(new Error(`FFmpeg failed (${code}): ${err.length > 1500 ? `${err.slice(0, 900)} … ${err.slice(-600)}` : err}`.trim()));
     });
   });

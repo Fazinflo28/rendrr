@@ -281,6 +281,9 @@ export const rateText = (fps: number) => (Math.abs(fps - Math.round(fps)) < 1e-6
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 /** A video's footage further on than this past what its decoder has given is read from a new, seeked input. */
 const WINDOW_GAP = 10;
+/** The most pixels a plain morph's motion interpolation works at (a 540p preview's worth); bigger frames are made there
+ *  and scaled up, so each morph sets aside at most ~150 MB (minterpolate keeps 288 bytes a pixel). */
+export const MORPH_PIXELS = 960 * 540;
 
 export function outputSize(aspect: Aspect, kind: RenderKind, resolution?: Resolution | null) {
   // Phase 7: a final's short side follows its export resolution (720, 1080 or 2160); previews stay 540.
@@ -1149,7 +1152,12 @@ export function planTransitions(view: SequenceView, clipById: Map<string, SeqCli
   live.forEach((pl, k) => {
     const tr = clipById.get(pl.id)!.transition;
     if (!tr || tr.type === "cut") return;
-    const at = pl.start;
+    // The cut where the picture changes: the picture's parts are on the output's frames, the clip's start may fall
+    // between two of them. Centred on the clip's own start, a side took a sliver of the other clip under a frame long
+    // (no frame at all), and drawn on its own that sliver never ended: the render held frames until memory ran out.
+    const near = (p: PicturePart) => p.start > 1e-9 && Math.abs(p.start - pl.start) <= 0.5 / FPS + 1e-6;
+    const cut = k > 0 ? pic.find((p) => near(p) && p.clipIds[0] === pl.id) ?? pic.find(near) : undefined;
+    const at = cut ? cut.start : pl.start;
     const base = { clipId: pl.id, ...(tr.dir ? { dir: tr.dir } : {}), ...(tr.face === false ? { face: false as const } : {}), at: r3(at), asked: tr.duration, a: [] as Seg[], b: [] as Seg[] };
     let half = Math.min(f(tr.duration / 2), f((pl.end - pl.start) / (has(live[k + 1]?.id) ? 2 : 1)));
     if (k === 0) {
@@ -1689,6 +1697,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
   const noPicture = !!opts.measure || opts.sound === "only" || ((plan.format === "audio" || plan.format === "wav") && !opts.still && !opts.pictureAs);
   if (!noPicture) {
     const vt = (k: { srcIn: number; srcOut: number }) => `trim=start=${n6(k.srcIn)}:end=${n6(k.srcOut)},setpts=PTS-STARTPTS`;
+    /** The stretch made at least n frames long (its end moved on), so it holds n frames of footage on the grid. */
+    const fill = <K extends { srcIn: number; srcOut: number }>(k: K, n: number): K => ({ ...k, srcOut: Math.max(k.srcOut, k.srcIn + n / FPS) });
     const turnOf = (r: number) => (r === 90 ? "transpose=1," : r === 270 ? "transpose=2," : r === 180 ? "hflip,vflip," : "");
     // HDR originals are tone-mapped to SDR BT.709 exactly like the preview copy, so the final looks like the preview
     // (Phase 6: unless the output keeps HDR; a graded or keyed HDR clip is still graded on that SDR picture).
@@ -1706,8 +1716,19 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
       // a clear frame when keyframes move it next). A card: its shadow under it, its border over it.
       const sw = even(W * f.scale), sh = even(H * f.scale);
       const ox = Math.round((W - sw) / 2 + f.x * W), oy = Math.round((H - sh) / 2 + f.y * H);
-      if (canvas === "black") g.push(`color=c=black:s=${W}x${H}:r=${R}${hdr ? `,format=${PF}` : ""}[fcanvas${tag}]`);
-      else if (canvas === "clear") g.push(`color=c=black@0:s=${W}x${H}:r=${R},format=${PFA}[fcanvas${tag}]`);
+      // Zoomed in and still covering the whole frame (a punch-in, a reframe): nothing shows around it, so it is cut out
+      // of the scaled picture (crop hands on the same picture, no copy) instead of laid on a frame. Each clip drawn on
+      // its own keeps its filters' frames until the render ends: the frame and the layer held ~24 MB a clip at 1080p,
+      // 1.2 GB over a 51-clip edit.
+      if (typeof canvas !== "object" && !card && ox <= 0 && oy <= 0 && ox + sw >= W && oy + sh >= H) {
+        g.push(`[${from}]scale=${sw}:${sh},setsar=1,crop=${W}:${H}:${-ox}:${-oy}:exact=1,format=${canvas === "clear" ? PFA : PF}[${to}]`);
+        return;
+      }
+      // The frame ends a second after the picture should: overlay (shortest) ends with the picture, but a picture with no
+      // frame at all never ends it, and an endless frame filled memory wherever it was waited for (a morph's reverse).
+      const d = frames ? `:d=${n6(frames / FPS + 1)}` : "";
+      if (canvas === "black") g.push(`color=c=black:s=${W}x${H}:r=${R}${d}${hdr ? `,format=${PF}` : ""}[fcanvas${tag}]`);
+      else if (canvas === "clear") g.push(`color=c=black@0:s=${W}x${H}:r=${R}${d},format=${PFA}[fcanvas${tag}]`);
       let under = typeof canvas === "object" ? canvas.base : `fcanvas${tag}`;
       const fmt = canvas === "clear" ? PFA : PF;
       if (card?.shadow && frames) { fillOver(under, card.shadow, frames, `fsh${tag}`, fmt); under = `fsh${tag}`; }
@@ -1769,13 +1790,15 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 2 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 2 / FPS)},fps=${R},settb=1/90000,setpts=(PTS-STARTPTS)/${n6(r)},minterpolate=fps=${R}:${mi}${pad},${look}`;
       }
       else if (r !== 1) chain = `[${branch(x.videoId, x.srcIn, x.srcOut + 1 / FPS)}]trim=start=${n6(x.srcIn)}:end=${n6(x.srcOut + 1 / FPS)},${pick(r)}${pad},${look}`;
-      else chain = `[${branch(x.videoId, x.srcIn, x.srcOut)}]${vt(x)}${cp ? "" : stab(x)}${exact ? pad : ""},${look}`;
+      // A side of a transition reads at least its N frames of footage: a stretch shorter than a frame can hold none, and
+      // nothing to pad from left the side empty (see ends below).
+      else chain = `[${branch(x.videoId, x.srcIn, exact ? Math.max(x.srcOut, x.srcIn + N / FPS) : x.srcOut)}]${vt(exact ? fill(x, N) : x)}${cp ? "" : stab(x)}${exact ? pad : ""},${look}`;
       // remove_background: the matte through the same trim, speed, turn and fit (not reversed clips: they keep theirs).
       // Phase 2: a main part under a layer behind the person reads one too (plan.person.parts), kept apart.
       const personM = /^\d+$/.test(tag) ? plan.person?.parts[Number(tag)] : undefined;
       // A stream in footage time made to follow this segment as its picture does (its trim, speed, freeze).
       const steps = r < 0 ? undefined : r === 0 ? `trim=start=${n6(x0.srcIn)}:end=${n6(x0.srcIn + 1 / FPS)},setpts=PTS-STARTPTS,fps=${R},tpad=stop_mode=clone:stop=${N},trim=end_frame=${N}`
-        : r !== 1 ? `trim=start=${n6(x0.srcIn)}:end=${n6(x0.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(x0)}${cp ? "" : stab(x0)}${exact ? pad : ""}`;
+        : r !== 1 ? `trim=start=${n6(x0.srcIn)}:end=${n6(x0.srcOut + 1 / FPS)},${pick(r)}${pad}` : `${vt(exact ? fill(x0, N) : x0)}${cp ? "" : stab(x0)}${exact ? pad : ""}`;
       if ((lk?.subject || personM) && r >= 0) {
         const mt = matteIn(lk?.subject?.matte ?? personM!, x0.srcIn, r === 0 ? x0.srcIn + 1 / FPS : x0.srcOut + 1 / FPS);
         const both = !!lk?.subject && !!personM;
@@ -1922,7 +1945,8 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         g.push(`[fw${i}]trim=start=${S}:end=${E},setpts=PTS-STARTPTS,scale=in_color_matrix=${mat}:in_range=tv:flags=accurate_rnd,format=gbrp16le,format=gbrpf32le,sendcmd=c='${cmds}',exposure@fx${i}=exposure=0,split[fm${i}][fg${i}]`);
         g.push(`[fm${i}]format=gbrp16le[fc${i}]`);
         g.push(`[fg${i}]exposure=exposure=-2,format=gbrp16le,lutrgb=r='${over}':g='${over}':b='${over}',gblur=sigma=${sigma}[fb${i}]`);
-        g.push(`[fc${i}][fb${i}]blend=all_mode=screen${cap},scale=out_color_matrix=${mat}:out_range=tv:flags=accurate_rnd,format=${PF},settb=${TB},setpts=PTS-STARTPTS+${k0}[fl${i}]`);
+        g.push(`[fc${i}][fb${i}]blend=all_mode=screen${cap},scale=out_color_matrix=${mat}:out_range=tv:flags=accurate_rnd,format=${PF}[flw${i}]`);
+        fromStart(g, `flw${i}`, k0, `fl${i}`, { W, H, rate: R, fmt: PF });
         g.push(`[fo${i}][fl${i}]overlay=enable='between(t,${S},${E})':eof_action=pass${hdr ? `:format=auto,format=${PF}` : ""}[vf${i}]`);
         v = `vf${i}`;
         return;
@@ -1943,6 +1967,9 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         return name;
       };
       const a = side(t.a, `ta${i}_`), b = side(t.b, `tb${i}_`);
+      // B's frames (each side is exactly its frames long): a morph reverses B to reach its last frame, and reverse holds
+      // everything until its input ends, so it is given no more than those.
+      const nB = t.b.reduce((acc, s) => acc + Math.max(1, Math.round((s.end - s.start) * FPS)), 0);
       const [dx, dy] = dirVec(t.dir);
       const p = `(t/${n6(D)})`;
       const xf = xfadeOf(t.type, t.dir);
@@ -1976,7 +2003,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         };
         const hold = (src: string, take: string) => `[${src}]${take}trim=end_frame=1,setpts=PTS-STARTPTS,loop=loop=${n - 1}:size=1:start=0,settb=${TB},setpts=N,format=${PF}`;
         g.push(`${hold(a, "")},split[mfa${i}][mfw${i}]`);
-        g.push(`${hold(b, "reverse,")},split[mfb${i}][mfv${i}]`);
+        g.push(`${hold(b, `trim=end_frame=${nB},reverse,`)},split[mfb${i}][mfv${i}]`);
         g.push(`[mfw${i}]${persp(w.ca, `exp(${k(ls)}*${u})`, `(${k(w.th)}*${u})`)}[mwa${i}]`);
         g.push(`[mfv${i}]${persp(w.cb, `exp(${k(ls)}*(${u}-1))`, `(${k(w.th)}*(${u}-1))`)}[mwb${i}]`);
         g.push(`[mwa${i}][mwb${i}]blend=all_expr='A+(B-A)*N/${n}'[mal${i}]`);
@@ -1993,10 +2020,15 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         // from one place to the other instead of jumping. minterpolate gives nothing for two frames (it needs the frames
         // round the pair) and stops at a scene change: each frame goes in twice, the stretch between the second A and the
         // first B is kept, and scene detection is off.
+        // minterpolate keeps 288 bytes for every pixel (its motion vectors, weights and references), set aside for every
+        // morph when the render starts: 150 MB at 540x960, 600 MB at 1080x1920, 2.4 GB at 4K, each. It works at most
+        // MORPH_PIXELS (a 540p frame) and the result is scaled back up; a morph lasts a fraction of a second.
         const n = Math.max(1, Math.round(D * FPS)), ms = Math.round(D * 1000);
-        g.push(`[${a}]trim=end_frame=1,setpts=PTS-STARTPTS,split[mfa${i}][mfc${i}]`);
-        g.push(`[${b}]reverse,trim=end_frame=1,setpts=PTS-STARTPTS,split[mfb${i}][mfd${i}]`);
-        g.push(`[mfa${i}][mfc${i}][mfb${i}][mfd${i}]concat=n=4:v=1:a=0,settb=1/1000,setpts=N*${ms},minterpolate=fps=${R}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:search_param=64:scd=none,trim=start=${n6(ms / 1000)},setpts=PTS-STARTPTS,trim=end_frame=${n},format=${PF}[tx${i}]`);
+        const mk = Math.min(1, Math.sqrt(MORPH_PIXELS / (W * H))), mw = even(W * mk), mh = even(H * mk);
+        const down = mk < 1 ? `,scale=${mw}:${mh}` : "", up = mk < 1 ? `,scale=${W}:${H}:flags=bicubic,setsar=1` : "";
+        g.push(`[${a}]trim=end_frame=1,setpts=PTS-STARTPTS${down},split[mfa${i}][mfc${i}]`);
+        g.push(`[${b}]trim=end_frame=${nB},reverse,trim=end_frame=1,setpts=PTS-STARTPTS${down},split[mfb${i}][mfd${i}]`);
+        g.push(`[mfa${i}][mfc${i}][mfb${i}][mfd${i}]concat=n=4:v=1:a=0,settb=1/1000,setpts=N*${ms},minterpolate=fps=${R}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:search_param=64:scd=none,trim=start=${n6(ms / 1000)},setpts=PTS-STARTPTS,trim=end_frame=${n}${up},format=${PF}[tx${i}]`);
       }
       else if (t.type === "slide") g.push(`[${a}][${b}]overlay=x='${-dx * W}*(1-${smoothExpr(p)})':y='${-dy * H}*(1-${smoothExpr(p)})':eval=frame${hdr ? ":format=auto" : ""},format=${PF}[tx${i}]`);
       else {
@@ -2007,7 +2039,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
         g.push(`[wc${i}][${a}]overlay=x='${dx * W}*${e}':y='${dy * H}*${e}':eval=frame${hdr ? ":format=auto" : ""}[wa${i}]`);
         g.push(`[wa${i}][${b}]overlay=x='${dx * W}*(${e}-1)':y='${dy * H}*(${e}-1)':eval=frame${hdr ? ":format=auto" : ""},sendcmd=c='${cmds}',gblur@wp${i}=sigma=0.01:sigmaV=0.01,format=${PF}[tx${i}]`);
       }
-      g.push(`[tx${i}]settb=${TB},setpts=PTS-STARTPTS+${Math.round(t.start * FPS)}[txo${i}]`);
+      fromStart(g, `tx${i}`, Math.round(t.start * FPS), `txo${i}`, { W, H, rate: R, fmt: PF });
       g.push(`[${v}][txo${i}]overlay=${span}${hdr ? `:format=auto,format=${PF}` : ""}[vt${i}]`);
       v = `vt${i}`;
     });
@@ -2102,6 +2134,23 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
  * multiplies its alpha. The curves are the same tables the player reads (motion.ts). opaque: laid on black (V1);
  * otherwise it keeps its alpha (b-roll, graphics). `offset`: seconds into the clip at the picture's first frame.
  */
+/**
+ * A layer that starts k output frames in (a transition, a flash, an adjustment layer, a blended layer), its frames put
+ * on the output's grid from frame k, ready to lay with overlay: k blank frames go first (the colour source draws its
+ * picture once and hands out that one picture, so they cost nothing), then the layer's own (setpts=N). Laid with its
+ * first frame at k (a later pts) instead, the overlay reads that frame before it can lay down frame 0 of the picture,
+ * and when the layer is made from the same footage as the picture (a transition's sides, the picture itself) FFmpeg
+ * had to make, and keep in memory, everything before it first: the whole edit, for a transition near the end of a
+ * final read in one window. The layer must be W x H in fmt.
+ */
+export function fromStart(g: string[], inp: string, k: number, out: string, o: { W: number; H: number; rate: string; fmt: string }) {
+  const TB = timeBase(o.rate);
+  if (k <= 0) { g.push(`[${inp}]settb=${TB},setpts=PTS-STARTPTS[${out}]`); return; }
+  g.push(`color=c=black@0:s=${o.W}x${o.H}:r=${o.rate},format=${o.fmt},setsar=1,trim=end_frame=${k}[${out}lead]`);
+  g.push(`[${inp}]setsar=1[${out}own]`);
+  g.push(`[${out}lead][${out}own]concat=n=2:v=1:a=0,settb=${TB},setpts=N[${out}]`);
+}
+
 export function motionChain(g: string[], inp: string, out: string, keys: Key[], offset: number, frames: number, W: number, H: number, opaque: boolean, tag: string, o: { base?: string; hdr?: boolean; fr?: { fps: number; rate: string }; anchor?: { x: number; y: number }; blur?: number } = {}) {
   const FPS = o.fr?.fps ?? 30, RATE = o.fr?.rate ?? String(FPS);
   const tracks = keyTracks(keys);
@@ -2208,7 +2257,8 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     g.push(`[la${tag}]alphaextract,format=${GR}${o < 1 ? `,lut=c0='val*${n3(o)}'` : ""},split=3[l0${tag}][l1${tag}][l2${tag}]`);
     g.push(`[l0${tag}][l1${tag}][l2${tag}]mergeplanes=0x001020:${RGB}[lm${tag}]`);
     g.push(bf.layerOnTop ? `[lr${tag}][bp${tag}]${bf.filter}[lf${tag}]` : `[bp${tag}][lr${tag}]${bf.filter}[lf${tag}]`);
-    g.push(`[bq${tag}][lf${tag}][lm${tag}]maskedmerge,scale=out_color_matrix=${mat}:out_range=tv:flags=accurate_rnd,format=${cc.PF},setpts=PTS+${S}/TB[lw${tag}]`);
+    g.push(`[bq${tag}][lf${tag}][lm${tag}]maskedmerge,scale=out_color_matrix=${mat}:out_range=tv:flags=accurate_rnd,format=${cc.PF}[lwr${tag}]`);
+    fromStart(g, `lwr${tag}`, Math.ceil(op.start * FPS - 1e-6), `lw${tag}`, { W, H, rate: R, fmt: cc.PF });
     g.push(`[bo${tag}][lw${tag}]overlay=enable='between(t,${S},${n6(op.end - 0.5 / FPS)})':eof_action=pass${deep ? `:format=auto,format=${cc.PF}` : ""}[lv${tag}]`);
     return `lv${tag}`;
   };
@@ -2345,7 +2395,9 @@ function overlays(plan: RenderPlan, files: PlanFiles, g: string[], inputs: strin
     const len = n / FPS, fi = Math.min(a.fadeIn ?? 0, len), fo = Math.min(a.fadeOut ?? 0, len);
     const ramp = [a.opacity != null && a.opacity < 1 ? `lutyuv=a='val*${n3(a.opacity)}'` : "", fi ? `fade=t=in:st=0:d=${n6(fi)}:alpha=1` : "", fo ? `fade=t=out:st=${n6(len - fo)}:d=${n6(fo)}:alpha=1` : ""].filter(Boolean);
     const clear = c.alpha || ramp.length > 0;
-    g.push(`[${c.out}]format=${clear ? cc.PFA : cc.PF}${ramp.map((x) => "," + x).join("")},setpts=PTS+${S}/TB[ajl${k}]`);
+    g.push(`[${c.out}]format=${clear ? cc.PFA : cc.PF}${ramp.map((x) => "," + x).join("")}[ajr${k}]`);
+    // (Its first frame is the first on the output's grid at or after its start, as the trim gave it.)
+    fromStart(g, `ajr${k}`, Math.ceil(a.start * FPS - 1e-6), `ajl${k}`, { W, H, rate: R, fmt: clear ? cc.PFA : cc.PF });
     g.push(`[ajo${k}][ajl${k}]overlay=enable='between(t,${S},${n6(a.end - 0.5 / FPS)})':eof_action=pass${plan.hdr ? `:format=auto,format=${cc.PF}` : clear ? `,format=${cc.PF}` : ""}[ajv${k}]`);
     v = `ajv${k}`;
   });
