@@ -86,6 +86,15 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
     check((await text(page, "#render-where")) === "Rendering on Studio Mac by the Rendrr Mac app", `${tag}: made on the Mac, the Export window says so (${await text(page, "#render-where")})`);
     await page.locator("#render-done").waitFor({ timeout: 30000 }).catch(() => {});
     check((await text(page, "#render-made")) === "Made on Studio Mac · saved to Downloads", `${tag}: the finished final says it was made on that Mac and is in Downloads (${await text(page, "#render-made")})`);
+    // Getting it ready on the cloud first (the footage, graphics, checks), the Mac making the video next: it says so,
+    // not "not on this computer".
+    await page.evaluate(() => { globalThis.__demoMadeOn = { on: "cloud", next: "Studio Mac" }; });
+    await page.keyboard.press("Escape"); await sleep(400);
+    await page.locator("#render-final").click(); await page.locator("#export-panel").waitFor();
+    await page.locator("#export-render").click(); await page.locator("#export-run").waitFor({ timeout: 6000 });
+    await sleep(700);
+    check((await text(page, "#render-where")) === "Getting it ready on Rendrr's server; Studio Mac makes the video next", `${tag}: the cloud getting it ready for the Mac says so (${await text(page, "#render-where")})`);
+    await page.locator("#render-done").waitFor({ timeout: 30000 }).catch(() => {});
     await page.evaluate(() => { globalThis.__demoMadeOn = null; });
     // Two computers can render: the Export window offers them and Rendrr's cloud; the one chosen goes with the export.
     await page.evaluate(`globalThis.__demoMac = (${two.toString()})(); globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1;`);

@@ -652,12 +652,13 @@ api.listGallery = async (...a) => {
 };
 
 // Where a demo render is made (a test sets globalThis.__demoMadeOn = { on: "mac", device }): its progress and result say so.
+// { on: "cloud", next: "Studio Mac" }: the cloud gets it ready and that Mac makes the video next.
 for (const name of ["renderPreview", "renderFinal"]) {
   const run0 = api[name];
   api[name] = async (projectId, onProgress, opts) => {
     (globalThis.__demoRenders ||= []).push(name); // which renders a test started
     const m = globalThis.__demoMadeOn || null;
-    const r = await run0(projectId, (p) => onProgress?.(m ? { ...p, on: m.on, device: m.device ?? null } : p), opts);
+    const r = await run0(projectId, (p) => onProgress?.(m ? { ...p, on: m.on, device: m.device ?? null, ...(m.next ? { next: { device: m.next, platform: "mac" } } : {}) } : p), opts);
     return m && r ? { ...r, where: { renders: m.on, device: m.device ?? null, region: "US East", delivery: { to: m.on === "mac" && name === "renderFinal" ? "mac" : "download", device: m.device ?? null, state: m.on === "mac" ? "sent" : null, folder: null, at: null } } } : r;
   };
 }

@@ -22,7 +22,9 @@ export type DeliveryTo = "mac" | "drive" | "download";
 export type MacState = "waiting" | "sent";
 export type Delivery = { to: DeliveryTo; device: string | null; state: MacState | null; folder: string | null; at: number | null; platform?: DesktopPlatform };
 /** renders: where it is (or was) made; device: the computer's name when on the user's computer; platform: which kind. */
-export type RenderWhere = { renders: "cloud" | "mac"; region: string; device: string | null; delivery: Delivery; platform?: DesktopPlatform };
+export type RenderWhere = { renders: "cloud" | "mac"; region: string; device: string | null; delivery: Delivery; platform?: DesktopPlatform;
+  /** Still on the cloud, getting it ready; the user's computer makes the video next. */
+  next?: { device: string | null; platform?: DesktopPlatform } | null };
 /** One of the user's computers with the Rendrr app open (one account can be open on several): id (the app's own),
  *  name, platform; renders: it can render (on, ready, not turned off); busy: rendering now; why: why it cannot. */
 export type DeviceStatus = { id: string; name: string | null; platform: DesktopPlatform; version: string | null; seenAt: number; renders: boolean; busy: boolean; why: string | null };
@@ -76,6 +78,8 @@ export function whereText(w: RenderWhere, kind: "preview" | "final" | string, do
     if (kind !== "final") return `${made} It plays in Rendrr and in the chat's card.`;
     return `${made} ${done ? "Saved" : "It is saved"} in that ${machineWord(w.platform)}'s Downloads folder${done ? "" : " the moment it is done"}; it downloads from Rendrr too.`;
   }
+  // Getting it ready on the cloud (the footage, graphics, checks); the user's computer makes the video next.
+  if (!done && w.next) return `Getting it ready on ${CLOUD} (the footage, graphics and checks); ${onMac(w.next.device, w.next.platform)} makes the video next${kind === "final" ? ` and saves it to Downloads` : ""}.`;
   const made = `${done ? "Rendered" : "Rendering"} on ${CLOUD} (${w.region}), not on your computer.`;
   if (kind !== "final") return `${made} It plays in Rendrr and in the chat's card.`;
   const d = w.delivery;
@@ -91,6 +95,7 @@ export function whereText(w: RenderWhere, kind: "preview" | "final" | string, do
 export function whereShort(w: RenderWhere, kind: "preview" | "final" | string): string {
   const mac = w.device ? `"${w.device}"` : `your ${machineWord(w.platform)}`;
   if (w.renders === "mac") return kind === "final" ? `Made on ${mac} · Saved to Downloads` : `Made on ${mac}`;
+  if (w.next) return `Getting ready · then on ${w.next.device ? `"${w.next.device}"` : `your ${machineWord(w.next.platform)}`}`;
   if (kind !== "final") return "Made on Rendrr's cloud server";
   const d = w.delivery;
   if (d.to === "mac") return `Made in the cloud · ${d.state === "sent" ? "Saved to" : "Going to"} ${d.device ? `"${d.device}"` : `your ${machineWord(d.platform)}`}`;

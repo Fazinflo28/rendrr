@@ -90,7 +90,7 @@ export async function pickTarget(userId: string, asked: string | null | undefine
  * Where a render is (or was) made, the user's Mac or Rendrr's cloud server, and where its file goes: the Mac app,
  * Google Drive or a download. live: its progress now (the Mac's name while the Mac app makes it).
  */
-export function renderWhere(r: Pick<Render, "delivery" | "driveSave" | "made">, live?: Pick<RenderProgress, "on" | "device" | "platform"> | null): RenderWhere {
+export function renderWhere(r: Pick<Render, "delivery" | "driveSave" | "made">, live?: Pick<RenderProgress, "on" | "device" | "platform" | "next"> | null): RenderWhere {
   const made = r.made && typeof r.made === "object" ? (r.made as { on?: string; device?: string | null; platform?: string }) : null;
   const on: "mac" | "cloud" = made ? (made.on === "mac" ? "mac" : "cloud") : live?.on === "mac" ? "mac" : "cloud";
   const madeOn = on === "mac" ? (made?.device ?? live?.device ?? null) : null;
@@ -101,7 +101,8 @@ export function renderWhere(r: Pick<Render, "delivery" | "driveSave" | "made">, 
     ? { to: "mac", device: mac.device || null, state: mac.state === "sent" ? "sent" : "waiting", folder: null, at: mac.at ?? null, platform: platformOf(mac.platform) }
     : drive ? { to: "drive", device: null, state: null, folder: drive.path || null, at: null }
     : { to: "download", device: null, state: null, folder: null, at: null };
-  return { renders: on, region: CLOUD_REGION, device: madeOn, delivery, ...(platform ? { platform } : {}) };
+  const next = !made && on === "cloud" && live?.next ? { device: live.next.device ?? null, platform: platformOf(live.next.platform) } : null;
+  return { renders: on, region: CLOUD_REGION, device: madeOn, delivery, ...(platform ? { platform } : {}), ...(next ? { next } : {}) };
 }
 
 /** A final for the desktop app to save when it is done; the render remembers it goes to that computer (a Mac or a PC).

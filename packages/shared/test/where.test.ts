@@ -5,6 +5,15 @@ const w = (delivery: Partial<RenderWhere["delivery"]>): RenderWhere => ({ render
 const mac = (device: string | null): RenderWhere => ({ renders: "mac", region: "US East", device, delivery: { to: "mac", device, state: "sent", folder: null, at: null } });
 
 describe("where a render is made and where it goes", () => {
+  it("the cloud getting it ready (the footage, graphics, checks) for the Mac that makes the video next: says so, not \"not on your computer\"", () => {
+    const soon: RenderWhere = { renders: "cloud", region: "US East", device: null, delivery: { to: "download", device: null, state: null, folder: null, at: null }, next: { device: "Ronnii's MacBook Air", platform: "mac" } };
+    expect(whereText(soon, "final", false)).toBe(`Getting it ready on Rendrr's cloud server (the footage, graphics and checks); your Mac ("Ronnii's MacBook Air") makes the video next and saves it to Downloads.`);
+    expect(whereText(soon, "preview", false)).toBe(`Getting it ready on Rendrr's cloud server (the footage, graphics and checks); your Mac ("Ronnii's MacBook Air") makes the video next.`);
+    expect(whereShort(soon, "final")).toBe(`Getting ready · then on "Ronnii's MacBook Air"`);
+    // Done: where it was made, not what was planned.
+    expect(whereText(soon, "final", true)).toMatch(/^Rendered on Rendrr's cloud server/);
+  });
+
   it("made on the user's Mac (the Mac app open): says so, names the Mac, and a final is in its Downloads", () => {
     expect(whereText(mac("Studio Mac"), "preview", false)).toBe(`Rendering on your Mac ("Studio Mac") by the Rendrr Mac app (graphics and checks on Rendrr's cloud server). It plays in Rendrr and in the chat's card.`);
     expect(whereText(mac(null), "final", true)).toMatch(/^Rendered on your Mac by the Rendrr Mac app .* Saved in that Mac's Downloads folder; it downloads from Rendrr too\.$/);

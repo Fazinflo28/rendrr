@@ -75,7 +75,7 @@ export async function renderJob(ctx: Ctx) {
   const planKind: "preview" | "final" = kind === "final" ? "final" : "preview";
   // Where it is being made: Rendrr's cloud server until the user's Mac app takes the encode (then that Mac); why: why
   // the Mac did not make it, when the app was open.
-  const where: { on: "mac" | "cloud"; device: string | null; why: string | null; platform?: "mac" | "windows" } = { on: "cloud", device: null, why: null };
+  const where: { on: "mac" | "cloud"; device: string | null; why: string | null; platform?: "mac" | "windows"; next?: { device: string | null; platform: "mac" | "windows" } | null } = { on: "cloud", device: null, why: null };
 
   // Preview has a tighter limit than the queue's 15 minutes.
   const ac = new AbortController();
@@ -110,10 +110,14 @@ export async function renderJob(ctx: Ctx) {
     }
     return prior != null ? Math.max(5, Math.round(prior * est.outSeconds - (now - t0) / 1000)) : null;
   };
-  const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)), etaSec: etaSec(), on: where.on, device: where.device, ...(where.platform ? { platform: where.platform } : {}) });
+  const send = (step: number, frac: number) => publishRender(r.id, { status: "running", step, steps, percent: Math.min(99, Math.round(((step + Math.max(0, Math.min(1, frac))) / steps.length) * 100)), etaSec: etaSec(), on: where.on, device: where.device, ...(where.platform ? { platform: where.platform } : {}), ...(where.on === "cloud" && where.next ? { next: where.next } : {}) });
   const sendThrottled = throttle(send, 400);
   const claimed = await prisma.render.updateMany({ where: { id: r.id, status: { in: ["queued", "running"] } }, data: { status: "running", startedAt: new Date(), error: null, errorCode: null } });
   if (!claimed.count) return;
+  // The user's computer open and able: it makes the video once the cloud has it ready (the footage, graphics, checks),
+  // so the export says so meanwhile (it said "not on this computer" while the cloud got it ready).
+  const soon = await macForRender(video.userId, [], r.target ?? null).catch(() => null);
+  if (soon?.info && !soon.why) where.next = { device: soon.info.device, platform: soon.info.platform };
   let i = 0;
   await send(0, 0);
 
@@ -451,6 +455,7 @@ export async function renderJob(ctx: Ctx) {
     const macCpus = async (): Promise<{ cpus: number; have: string[]; platform: "mac" | "windows"; id: string } | null> => {
       const m = await macForRender(video.userId, [], macMain?.deviceId ?? r.target ?? null).catch(() => ({ info: null, why: null }));
       if (m.why && (m.info || (r.target && r.target !== "cloud"))) where.why = m.why; // (no computer open: nothing to say)
+      if (!m.info || m.why) where.next = null; // the cloud makes the video after all
       return m.info && !m.why ? { cpus: m.info.cpus, have: m.info.have, platform: m.info.platform, id: m.info.id } : null;
     };
     // While the user's computer fetches the files: the job's limit is moved later as the fetch goes, and a preview's own
@@ -465,6 +470,7 @@ export async function renderJob(ctx: Ctx) {
     const onMac = async (mac: { have: string[]; platform?: "mac" | "windows"; id?: string }, runs: MacRun[], outputs: MacOut[], onRender: (cmd: number, seconds: number) => void): Promise<MacDone | null> => {
       const W = machineWord(mac.platform); // "Mac" or "PC"
       let task: Awaited<ReturnType<typeof macTaskFor>>;
+      where.next = null; // from here, the export says where it is: on the computer once it takes it, else the cloud
       try { task = await macTaskFor({ deviceId: mac.id ?? null, renderId: r.id, userId: video.userId, kind, label, dir: ctx.dir, fontsDir: FONTS_DIR, runs, outputs, driveSource, macSources }); }
       catch (e) {
         // Whatever stops the hand-off (a render the Mac cannot be given, storage refusing a file): the cloud makes it.
@@ -479,7 +485,7 @@ export async function renderJob(ctx: Ctx) {
       try {
         const res = await runOnMac(task.spec, {
           signal, machine: W,
-          onClaim: (device, platform) => { where.on = "mac"; where.device = device; where.platform = platform; where.why = null; steps[at] = `Getting the files to your ${machineWord(platform)}`; void send(at, 0); },
+          onClaim: (device, platform) => { where.on = "mac"; where.device = device; where.platform = platform; where.why = null; where.next = null; steps[at] = `Getting the files to your ${machineWord(platform)}`; void send(at, 0); },
           onDownload: (f) => {
             const now = Date.now();
             if (!est.dl) { est.dl = { start: now, frac: 0 }; dlHeld = now; if (pt) { clearTimeout(pt); pt = null; previewHeld = true; } }
@@ -493,7 +499,7 @@ export async function renderJob(ctx: Ctx) {
         steps[at] = was;
         if (res.ok) { console.log(`[render] ${r.id}: made on the user's Mac${res.device ? ` "${res.device}"` : ""}`); return res; }
         console.error(`[render] ${r.id}: the Mac did not make it (${res.why}): making it on the cloud`);
-        where.on = "cloud"; where.device = null; where.platform = undefined; where.why = res.why;
+        where.on = "cloud"; where.device = null; where.platform = undefined; where.why = res.why; where.next = null;
         plan.operations.push(`Made on Rendrr's cloud server: ${res.why}`);
         await send(at, 0);
         return null;

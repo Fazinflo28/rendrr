@@ -39,6 +39,10 @@ encode left, then "The render took too long".
   the Mac fetches the files, up to two hours in all; a preview's own clock stops meanwhile. The stuck-render sweep
   leaves a render alone while it still reports progress.
 - **"About 5 s left" for the whole download.** The time left now follows the download's own pace, then the encode.
+- **"Rendering on Rendrr's cloud server, not on this computer" with the Mac app open.** The cloud gets a render ready
+  first (the original from Drive, graphics, voice cleanup, checks) and hands the Mac only the encode; during that first
+  part the export said "not on this computer". Now, when the Mac app is open and able, it says "Getting it ready on
+  Rendrr's server; <Mac> makes the video next" (progress.next), and the Mac's name once it takes it.
 
 ## Exports failing: the Mac app seen as closed, the cloud out of memory (22 November)
 
