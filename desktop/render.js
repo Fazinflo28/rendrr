@@ -76,6 +76,7 @@ function checkTask(t, { allowHttp = false } = {}) {
     // An original kept on this Mac: named by its video, never by a path (the app knows where it is).
     if (i.local != null) { if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(i.local.videoId)) || !(Number(i.local.size) > 0)) throw bad("bad original"); continue; }
     if (!linkOk(i.url, allowHttp)) throw bad(`bad link for ${i.name}`);
+    if (i.keep != null && (typeof i.keep !== "string" || i.keep.length > 300)) throw bad(`bad cache key for ${i.name}`);
     for (const h of Object.keys(i.headers || {})) if (h.toLowerCase() !== "authorization") throw bad("bad header");
   }
   for (const f of t.fonts || []) if (!/^[A-Za-z0-9._-]+$/.test(f.name) || !linkOk(f.url, allowHttp)) throw bad(`bad font ${f.name}`);
@@ -108,16 +109,41 @@ async function report(t, what, body) {
   } catch { return null; }
 }
 
-/** Downloads a link to a file (via a .part file, size checked). onBytes: each chunk's length. */
-async function download(url, dest, { headers, size, onBytes, signal } = {}) {
+/** Big files come in several ranged requests at once (one connection to a far-away server is slow; a few fill the line). */
+const PAR = { min: 64 << 20, chunk: 16 << 20, streams: 6 };
+const refused = (status) => status === 401 || status === 403;
+
+/**
+ * Downloads a link to a file (via a .part file, size checked). onBytes: each chunk's length (a part that is fetched
+ * again gives its bytes back first, as a negative count). relink(): a fresh link and headers, when the server says the
+ * one in hand is no longer good (a Google Drive sign-in lasts an hour; a big original can take longer).
+ */
+async function download(url, dest, { headers, size, onBytes, signal, relink, par = PAR } = {}) {
+  const link = { url, headers: headers || {} };
+  let renewing = null, renewals = 0;
+  // One fresh link for every request that was refused at the same time (three at most: a link refused again and again
+  // is not a stale sign-in).
+  const renew = async (was) => {
+    if (!relink) return false;
+    if (link.url !== was.url || link.headers !== was.headers) return true;
+    if (!renewing && renewals >= 3) return false;
+    if (!renewing) renewals++;
+    renewing = renewing || Promise.resolve(relink()).then((l) => { if (l && l.url) { link.url = l.url; link.headers = l.headers || {}; return true; } return false; }, () => false).finally(() => { renewing = null; });
+    return renewing;
+  };
+  if (size && size >= par.min) {
+    const got = await inRanges(link, dest, { size, onBytes, signal, renew, par });
+    if (got != null) return got;
+  }
   let last;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     const part = `${dest}.${process.pid}.${Date.now()}.part`;
+    const was = { ...link };
+    let got = 0;
     try {
-      const r = await fetch(url, { headers: headers || {}, signal });
-      if (!r.ok || !r.body) throw new Error(`download failed (${r.status})`);
+      const r = await fetch(was.url, { headers: was.headers, signal });
+      if (!r.ok || !r.body) { if (refused(r.status) && (await renew(was))) { attempt--; throw new Error(`download refused (${r.status})`); } throw new Error(`download failed (${r.status})`); }
       const out = fs.createWriteStream(part);
-      let got = 0;
       for await (const chunk of r.body) {
         got += chunk.length; if (onBytes) onBytes(chunk.length);
         if (!out.write(chunk)) await new Promise((res) => out.once("drain", res));
@@ -128,12 +154,76 @@ async function download(url, dest, { headers, size, onBytes, signal } = {}) {
       return got;
     } catch (e) {
       last = e;
+      if (got && onBytes) onBytes(-got);
       await fsp.rm(part, { force: true });
       if (signal && signal.aborted) throw e;
       await new Promise((res) => setTimeout(res, 1000 * (attempt + 1)));
     }
   }
   throw last;
+}
+
+/**
+ * The file in ranges, par.streams at a time, each written where it goes. Null: the server does not send ranges (the
+ * caller fetches it in one piece). Each range is tried four times; a link refused is renewed once per refusal.
+ */
+async function inRanges(link, dest, { size, onBytes, signal, renew, par }) {
+  const part = `${dest}.${process.pid}.${Date.now()}.part`;
+  const fh = await fsp.open(part, "w");
+  const ranges = [];
+  for (let a = 0; a < size; a += par.chunk) ranges.push([a, Math.min(size, a + par.chunk) - 1]);
+  let ok = false;
+  const one = async ([a, b], first) => {
+    let last;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const was = { ...link };
+      let pos = a;
+      try {
+        const r = await fetch(was.url, { headers: { ...was.headers, range: `bytes=${a}-${b}` }, signal });
+        // No ranges (200), or anything odd on the first: fetched in one piece instead.
+        if (first && r.status !== 206 && !refused(r.status)) { await r.body?.cancel().catch(() => {}); return false; }
+        if (r.status !== 206 || !r.body) {
+          await r.body?.cancel().catch(() => {});
+          if (refused(r.status) && (await renew(was))) { attempt--; throw new Error(`download refused (${r.status})`); }
+          throw new Error(`download failed (${r.status})`);
+        }
+        const cr = /bytes (\d+)-(\d+)\/(\d+|\*)/.exec(r.headers.get("content-range") || "");
+        if (!cr || Number(cr[1]) !== a || Number(cr[2]) !== b || (cr[3] !== "*" && Number(cr[3]) !== size)) {
+          await r.body.cancel().catch(() => {});
+          if (first) return false; // not the file it said it was, or not the range asked: fetched in one piece
+          throw new Error("download range mismatch");
+        }
+        for await (const c of r.body) {
+          if (pos + c.length > b + 1) throw new Error("download range overran");
+          await fh.write(c, 0, c.length, pos);
+          pos += c.length; if (onBytes) onBytes(c.length);
+        }
+        if (pos !== b + 1) throw new Error(`download incomplete (${pos - a} of ${b + 1 - a} bytes)`);
+        return true;
+      } catch (e) {
+        last = e;
+        if (pos > a && onBytes) onBytes(-(pos - a));
+        if (signal && signal.aborted) throw e;
+        await new Promise((res) => setTimeout(res, 1000 * (attempt + 1)));
+      }
+    }
+    throw last;
+  };
+  try {
+    // The first range alone: it says whether the server sends ranges at all.
+    if (!(await one(ranges[0], true))) return null;
+    let next = 1, failed = null;
+    const worker = async () => { while (!failed && next < ranges.length) { const r = ranges[next++]; try { await one(r, false); } catch (e) { failed = failed || e; } } };
+    await Promise.all(Array.from({ length: Math.min(par.streams, ranges.length - 1) }, worker));
+    if (failed) throw failed;
+    await fh.close();
+    if ((await fsp.stat(part)).size !== size) throw new Error("download incomplete");
+    await fsp.rename(part, dest);
+    ok = true;
+    return size;
+  } finally {
+    if (!ok) { await fh.close().catch(() => {}); await fsp.rm(part, { force: true }); }
+  }
 }
 
 /** Uploads a file to a signed link with a PUT (its length set: storage refuses a stream without one). */
@@ -159,14 +249,17 @@ async function upload(url, file, type, onBytes, signal) {
   }
 }
 
-/** A file in the cache by its key (the storage key and version): fetched once, then linked into each render. */
+/**
+ * A file in the cache by its key (cache: the storage key and version; keep: an original in the user's Google Drive, by
+ * its file, size and when it last changed): fetched once, then linked into each render.
+ */
 async function cached(cacheDir, input, onBytes, signal) {
   const dir = path.join(cacheDir, "media");
   await fsp.mkdir(dir, { recursive: true });
-  const file = path.join(dir, crypto.createHash("sha256").update(String(input.cache)).digest("hex"));
+  const file = path.join(dir, crypto.createHash("sha256").update(String(input.cache || input.keep)).digest("hex"));
   const st = await fsp.stat(file).catch(() => null);
   if (st && (!input.size || st.size === input.size)) { const now = new Date(); await fsp.utimes(file, now, now).catch(() => {}); onBytes && onBytes(input.size || st.size); return file; }
-  await download(input.url, file, { size: input.size, onBytes, signal });
+  await download(input.url, file, { headers: input.headers, size: input.size, onBytes, signal, relink: input.relink });
   return file;
 }
 
@@ -273,8 +366,12 @@ async function runTask(t, o) {
         const asArg = t.commands.some((c) => c.args.includes(i.name));
         if (!(await linkInto(file, dest, { direct: asArg }))) direct[i.name] = file;
       }
-      else if (i.cache) await linkInto(await cached(o.cacheDir, i, onBytes, ac.signal), dest);
-      else await download(i.url, dest, { headers: i.headers, size: i.size, onBytes, signal: ac.signal });
+      else {
+        // A link that stops working mid-way (a Google Drive sign-in lasts an hour): Rendrr gives a fresh one.
+        const relink = async () => { const r = await report(t, "link", { name: i.name }); return r && linkOk(r.url, !!o.allowHttp) ? { url: r.url, headers: r.headers && r.headers.authorization ? { authorization: String(r.headers.authorization) } : {} } : null; };
+        if (i.cache || (i.keep && i.size)) await linkInto(await cached(o.cacheDir, { ...i, relink }, onBytes, ac.signal), dest);
+        else await download(i.url, dest, { headers: i.headers, size: i.size, onBytes, signal: ac.signal, relink });
+      }
     }
     if ((t.fonts || []).length) {
       const fonts = path.join(o.cacheDir, "fonts");
@@ -329,4 +426,4 @@ async function runTask(t, o) {
   }
 }
 
-module.exports = { PROTOCOL, FEATURES, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs, linkInto };
+module.exports = { PROTOCOL, FEATURES, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs, linkInto, download };

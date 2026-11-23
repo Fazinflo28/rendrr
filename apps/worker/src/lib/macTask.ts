@@ -70,7 +70,7 @@ export async function macTaskFor(o: {
   /** The only computer that may take it (its id). */
   deviceId?: string | null;
   renderId: string; userId: string; kind: string; label: string; dir: string; fontsDir?: string;
-  runs: MacRun[]; outputs: MacOut[]; driveSource?: { path: string; fileId: string } | null;
+  runs: MacRun[]; outputs: MacOut[]; driveSource?: { path: string; fileId: string; version?: string } | null;
   /** Files here that stand for originals kept on the user's Mac (their preview copies): the Mac reads the original. */
   macSources?: Map<string, { videoId: string; size: number }>;
 }): Promise<{ spec: MacTaskSpec; temps: string[] }> {
@@ -124,7 +124,7 @@ export async function macTaskFor(o: {
     const origin = originOf(path);
     const local = o.macSources?.get(path);
     if (local) inputs.set(name, { name, local: { videoId: local.videoId, size: local.size } });
-    else if (o.driveSource && o.driveSource.path === path) inputs.set(name, { name, drive: { fileId: o.driveSource.fileId }, size });
+    else if (o.driveSource && o.driveSource.path === path) inputs.set(name, { name, drive: { fileId: o.driveSource.fileId, ...(o.driveSource.version ? { version: o.driveSource.version } : {}) }, size });
     else if (!body && origin && (origin.size == null || origin.size === size)) inputs.set(name, { name, key: origin.key, size, ...(origin.etag ? { etag: origin.etag } : {}) });
     else if ((body?.length ?? size) <= INLINE_MAX) inputs.set(name, { name, data: (body ?? (await readFile(path))).toString("base64") });
     else {
@@ -185,6 +185,16 @@ export async function runOnMac(spec: MacTaskSpec, o: {
     }
     await new Promise((r) => setTimeout(r, o.pollMs ?? 500));
   }
+}
+
+/**
+ * Seconds left while the user's computer fetches a task's files (a big original the first time): the download's own pace
+ * so far, then afterSec for the encode. Null until there is a pace to go by.
+ */
+export function fetchEtaSec(dl: { start: number; frac: number }, now: number, afterSec: number): number | null {
+  const spent = (now - dl.start) / 1000;
+  if (!(dl.frac > 0.02) || spent < 2) return null;
+  return Math.max(5, Math.round(spent / Math.min(1, dl.frac) - spent + afterSec));
 }
 
 /** The files uploaded for a task only, removed when it is over (the daily cleanup is the safety net). */

@@ -29,6 +29,7 @@ describe("renders made on the user's Mac", { skip: !ready && "needs DATABASE_URL
   const { applyOp, buildInitialTimeline, stubTranscript, PREFIX } = await import("@rendrr/shared");
   const { ffmpegArgs, planRender } = await import("@rendrr/shared/renderPlan");
   const { macTaskFor, runOnMac } = await import("../../worker/src/lib/macTask");
+  const { macPieceRuns, macPiecesFirst } = await import("../../worker/src/lib/macPieces");
   const { buildServer } = await import("../src/server");
   // The Mac app's own render code (CommonJS).
   const mac = (await import("../../../desktop/render.js")) as unknown as { runTask: (t: unknown, o: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; stopped?: string; outputs?: Record<string, number> }> };
@@ -186,14 +187,73 @@ describe("renders made on the user's Mac", { skip: !ready && "needs DATABASE_URL
     await rm(disk, { recursive: true, force: true }); await rm(job, { recursive: true, force: true });
   });
 
+  it("a heavy final on the Mac is made in pieces (the sound once, each piece, joined): the same file as one pass", async () => {
+    // A 40 s edit of six clips (pieces of about 15 s).
+    const job = await mkdtemp(join(tmpdir(), "mac-pieces-")), LONG = 48;
+    await ff(["-f", "lavfi", "-i", `testsrc2=s=${W}x${H}:r=30:d=${LONG}`, "-f", "lavfi", "-i", `sine=f=440:d=${LONG}`, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-f", "mp4", join(job, "source")]);
+    const skey = `${PREFIX.tests}mac-${run}/long.mp4`;
+    await core.uploadFile(skey, join(job, "source"), "video/mp4"); keys.push(skey);
+    core.noteOrigin(join(job, "source"), skey, { size: (await stat(join(job, "source"))).size });
+    const src = { width: W, height: H, fps: 30, seconds: LONG, hasAudio: true };
+    const ctx = { videoId: "v", transcript: [], silences: [], sceneCuts: [], duration: LONG, getStyle: () => undefined, getVideo: () => undefined, getGraphic: () => undefined } as never;
+    const clips = [[1, 8], [9, 15], [16, 23], [24, 31], [32, 38], [39, 46]].map(([a, b], k) => ({ id: `c${k}`, start: a, end: b, label: "" }));
+    const snap = applyOp({ timeline: buildInitialTimeline([], LONG, "clean", [], "v"), name: "e", aspect: "16:9", styleId: "s2" } as never, { op: "batch", ops: [{ op: "set_captions", on: false }, { op: "set_audio", loudness: null }, { op: "set_clips", track: "v1", clips }] } as never, ctx).snap;
+    const fplan = planRender({ kind: "final", snapshot: snap, transcript: [], source: src, videoId: "v" });
+    const ffiles = { source: join(job, "source"), output: join(job, "out.mp4"), broll: {}, graphics: {}, graphicSeconds: {}, audio: {}, videos: {}, under: {}, looks: {} } as never;
+    assert.equal(macPiecesFirst("final", { inputs: 7, scalers: 129 }), true, "the V3 short (129 scalers) goes in pieces on a Mac");
+    assert.equal(macPiecesFirst("final", { inputs: 3, scalers: 20 }), false);
+    assert.equal(macPiecesFirst("preview", { inputs: 40, scalers: 200 }), false, "previews stay one pass");
+    const pr = await macPieceRuns({ plan: fplan, files: ffiles, source: src, dir: job, cpus: 2, audioBitrate: "192k" });
+    assert.ok(pr && pr.count >= 2, `in pieces (${pr?.count})`);
+    assert.equal(pr!.runs.length, pr!.count + 2, "the sound, each piece, the join");
+    const joinArgs = pr!.runs.at(-1)!.args;
+    assert.ok(joinArgs.includes("concat") && !joinArgs.includes("-safe"), "joined in FFmpeg's safe mode (names beside the list only)");
+    const key = `${PREFIX.tests}mac-${run}/pieces.mp4`;
+    keys.push(key);
+    const { spec } = await macTaskFor({ renderId: `r6-${run}`, userId, kind: "final", label: "Final v6", dir: job, runs: pr!.runs, outputs: [{ path: join(job, "out.mp4"), key, type: "video/mp4" }] });
+    const list = spec.inputs.find((x) => x.name === "pieces.txt");
+    assert.equal(Buffer.from(list!.data!, "base64").toString(), Array.from({ length: pr!.count }, (_, n) => `file 'piece-${n}.mov'`).join("\n") + "\n", "the list names the pieces as the Mac makes them");
+    const heard: number[] = [];
+    const [res, macRes] = await Promise.all([runOnMac(spec, { signal: new AbortController().signal, pollMs: 100, onClaim: () => {}, onDownload: () => {}, onRender: (cmd) => { if (!heard.includes(cmd)) heard.push(cmd); }, onUpload: () => {} }), macTakes()]);
+    assert.equal(macRes.ok, true, macRes.error);
+    assert.equal(res.ok, true, (res as { why?: string }).why);
+    assert.ok([...pr!.at.keys()].some((k) => heard.includes(k)), `the worker heard the pieces render (${heard.join(", ")})`);
+    // The Mac's file against one pass of the same edit.
+    const fromMac = join(job, "from-mac.mp4");
+    await core.downloadFile(key, fromMac);
+    const one = ffmpegArgs(fplan, { ...(ffiles as object), output: join(job, "one.mp4") } as never, src, { threads: 2, filterThreads: 2, inputThreads: 4 });
+    await writeFile(join(job, "one.txt"), one.filterGraph);
+    await sh("ffmpeg", one.args.map((x) => (x === "__FILTER_SCRIPT__" ? join(job, "one.txt") : x)), { maxBuffer: 1 << 26 });
+    const { stderr } = await sh("ffmpeg", ["-hide_banner", "-i", fromMac, "-i", join(job, "one.mp4"), "-lavfi", "[0:v][1:v]psnr", "-f", "null", "-"], { maxBuffer: 1 << 26 });
+    const psnr = Number((stderr.match(/average:([\d.]+|inf)/) || [])[1]?.replace("inf", "99"));
+    assert.ok(psnr > 35, `the same picture (PSNR ${psnr})`);
+    const dur = async (f: string) => Number((await sh("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f])).stdout);
+    assert.ok(Math.abs((await dur(fromMac)) - (await dur(join(job, "one.mp4")))) < 0.1, "the same length");
+    const probe = (await sh("ffmpeg", ["-hide_banner", "-i", fromMac]).catch((e) => e)).stderr as string;
+    assert.match(probe, /Audio: aac/);
+    await rm(job, { recursive: true, force: true });
+  });
+
   it("the API: a wrong token or another user's claim gets nothing", async () => {
-    const id = await core.createMacTask({ renderId: "x", userId, kind: "preview", label: "x", inputs: [], commands: [{ args: ["-version"] }], outputs: [{ name: "out.mp4", key: outKey, type: "video/mp4" }], needs: [] });
+    const id = await core.createMacTask({ renderId: "x", userId, kind: "preview", label: "x", inputs: [{ name: "source", key: keys[0], size: 10 }], commands: [{ args: ["-version"] }], outputs: [{ name: "out.mp4", key: outKey, type: "video/mp4" }], needs: [] });
     assert.equal(await core.claimMacTask(`someone-else-${run}`, id, null), null);
     const got = await core.claimMacTask(userId, id, null);
-    for (const what of ["progress", "done", "failed"]) {
-      const r = await app.inject({ method: "POST", url: `/desktop/tasks/${id}/${what}`, headers: { "x-rendrr-task-token": "wrong" }, payload: {} });
+    for (const what of ["progress", "done", "failed", "link"]) {
+      const r = await app.inject({ method: "POST", url: `/desktop/tasks/${id}/${what}`, headers: { "x-rendrr-task-token": "wrong" }, payload: { name: "source" } });
       assert.equal(r.statusCode, 404, what);
     }
+    // A fresh link for one of its files (the one it has was refused mid-way); none for a file it does not have.
+    const link = await app.inject({ method: "POST", url: `/desktop/tasks/${id}/link`, headers: { "x-rendrr-task-token": got!.token }, payload: { name: "source" } });
+    assert.equal(link.statusCode, 200);
+    assert.match(link.json().url, /^https?:\/\//);
+    const fetched = await fetch(link.json().url);
+    assert.equal(fetched.status, 200, "the fresh link works");
+    await fetched.arrayBuffer();
+    const none = await app.inject({ method: "POST", url: `/desktop/tasks/${id}/link`, headers: { "x-rendrr-task-token": got!.token }, payload: { name: "other" } });
+    assert.equal(none.statusCode, 404);
+    // An original in Drive is kept in the Mac's cache by its file, size and when it last changed.
+    assert.equal(core.driveKeep({ fileId: "f1", version: "1700000000000" }, 123), "drive:f1#123#1700000000000");
+    assert.notEqual(core.driveKeep({ fileId: "f1", version: "1700000000001" }, 123), core.driveKeep({ fileId: "f1", version: "1700000000000" }, 123));
     const ok = await app.inject({ method: "POST", url: `/desktop/tasks/${id}/progress`, headers: { "x-rendrr-task-token": got!.token }, payload: { phase: "render", seconds: 1 } });
     assert.deepEqual(ok.json(), { stop: null });
     await core.stopMacTask(id, "stopped");

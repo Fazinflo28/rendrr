@@ -2,7 +2,7 @@
 // waiting for a Mac and takes one (signed in as the user); the Mac app's own process then downloads, renders and
 // uploads, reporting here with the task's token (handed only to the Mac that took it). Done or failed, the worker
 // waiting on the task carries on: it checks the file, or makes the render on Rendrr's cloud server instead.
-import { claimMacTask, env, failMacTask, finishMacTask, listMacTasks, macManifest, reportMacTask, type MacReport } from "@rendrr/core";
+import { claimMacTask, env, failMacTask, finishMacTask, listMacTasks, macInputLink, macManifest, reportMacTask, type MacReport } from "@rendrr/core";
 import { deviceName } from "@rendrr/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authenticate } from "../auth";
@@ -26,6 +26,13 @@ export default async function macRender(app: FastifyInstance) {
     const b = (req.body ?? {}) as { outputs?: Record<string, number>; saved?: string | null };
     const ok = id ? await finishMacTask(id, tokenOf(req), b.outputs && typeof b.outputs === "object" ? b.outputs : {}, typeof b.saved === "string" ? b.saved : null) : false;
     return ok ? { ok: true } : gone(reply);
+  });
+  // A fresh link for one of its files, when the one it has is refused mid-way (a Google Drive sign-in lasts an hour).
+  app.post("/desktop/tasks/:id/link", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (req, reply) => {
+    const id = idOf(req);
+    const name = String(((req.body ?? {}) as { name?: unknown }).name ?? "").slice(0, 300);
+    const link = id && name ? await macInputLink(id, tokenOf(req), name).catch(() => null) : null;
+    return link ?? gone(reply);
   });
   app.post("/desktop/tasks/:id/failed", async (req, reply) => {
     const id = idOf(req);

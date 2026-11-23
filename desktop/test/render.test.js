@@ -26,6 +26,12 @@ before(async () => {
   execFileSync(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=3", "-f", "lavfi", "-i", "sine=f=440:d=3", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path.join(tmp, "clip.mp4")]);
   server = http.createServer((req, res) => {
     const u = new URL(req.url, "http://x");
+    // An original in "Google Drive": needs a fresh sign-in (the task's own has run out; Rendrr gives a fresh one).
+    if (req.method === "GET" && u.pathname.startsWith("/drive/")) {
+      got.gets[u.pathname] = (got.gets[u.pathname] || 0) + 1;
+      if (req.headers.authorization !== "Bearer fresh") { res.statusCode = 401; return res.end(); }
+      return fs.createReadStream(path.join(tmp, path.basename(u.pathname))).pipe(res);
+    }
     if (req.method === "GET" && u.pathname.startsWith("/files/")) {
       const f = u.pathname === "/files/font.ttf" ? path.join(fontDir, font) : path.join(tmp, path.basename(u.pathname));
       got.gets[u.pathname] = (got.gets[u.pathname] || 0) + 1;
@@ -42,7 +48,7 @@ before(async () => {
         const what = u.pathname.split("/").pop(), body = JSON.parse(b || "{}");
         got.reports.push({ what, body, token: req.headers["x-rendrr-task-token"] });
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify(what === "progress" ? { stop: stopAfter && body.phase === "render" ? stopAfter : null } : { ok: true }));
+        res.end(JSON.stringify(what === "progress" ? { stop: stopAfter && body.phase === "render" ? stopAfter : null } : what === "link" ? { url: `${base}/drive/${body.name === "source" ? "clip.mp4" : "none"}`, headers: { authorization: "Bearer fresh" } } : { ok: true }));
       });
       return;
     }
@@ -126,6 +132,27 @@ test("a render: fetched, made with captions in its fonts, uploaded, kept in Down
   assert.equal(r2.ok, true, r2.error);
   assert.equal(got.gets["/files/clip.mp4"], before, "from the cache");
   assert.equal(path.basename(r2.savedPath), "Test final v1 (2).mp4");
+});
+
+test("an original in Google Drive: a sign-in that ran out is renewed, and it is kept, so the next final fetches nothing", async () => {
+  const o = opts();
+  const drive = (n) => task({ id: `11111111-2222-3333-4444-55555555555${n}`, inputs: [
+    { name: "source", url: `${base}/drive/clip.mp4`, headers: { authorization: "Bearer stale" }, size: size("clip.mp4"), keep: "drive:file1#" + size("clip.mp4") + "#1700000000000" },
+    { name: "captions.ass", data: Buffer.from(ass).toString("base64") },
+  ], outputs: [{ name: "out.mp4", url: `${base}/up/finals/u/p/d${n}.mp4`, type: "video/mp4" }] });
+  const r = await runTask(drive(1), o);
+  assert.equal(r.ok, true, r.error);
+  assert.ok(got.puts["/up/finals/u/p/d1.mp4"].body.length > 1000);
+  assert.ok(got.reports.some((x) => x.what === "link" && x.body.name === "source"), "asked Rendrr for a fresh link");
+  const fetched = got.gets["/drive/clip.mp4"];
+  assert.equal(fetched, 2, "refused once, then fetched with the fresh sign-in");
+  const r2 = await runTask(drive(2), o);
+  assert.equal(r2.ok, true, r2.error);
+  assert.equal(got.gets["/drive/clip.mp4"], fetched, "the second final takes it from the cache");
+  // A changed file in Drive (another size or time) is a new key: fetched again.
+  const r3 = await runTask(task({ id: "11111111-2222-3333-4444-555555555553", inputs: [{ name: "source", url: `${base}/drive/clip.mp4`, headers: { authorization: "Bearer fresh" }, size: size("clip.mp4"), keep: "drive:file1#" + size("clip.mp4") + "#1800000000000" }, { name: "captions.ass", data: Buffer.from(ass).toString("base64") }], outputs: [{ name: "out.mp4", url: `${base}/up/finals/u/p/d3.mp4`, type: "video/mp4" }] }), o);
+  assert.equal(r3.ok, true, r3.error);
+  assert.equal(got.gets["/drive/clip.mp4"], fetched + 1, "changed in Drive: fetched again");
 });
 
 test("Rendrr says stop (the user stopped it, or the cloud took over): it stops and says nothing more", async () => {

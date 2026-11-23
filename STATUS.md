@@ -21,6 +21,25 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Slow exports on the Mac (23 November)
+
+Watched a live V3 final on the MacBook Air: 15 minutes on "Getting the files to your Mac", then about 45 minutes of
+encode left, then "The render took too long".
+- **The Drive original was downloaded on every final.** Footage in Rendrr's storage was kept in the Mac's cache, but an
+  original in Google Drive (V3: 4K DJI, 8 min 41 s, several GB) was fetched whole each time. Now it is kept too, by its
+  Drive file, size and when it last changed (a changed file is fetched again): the next final of the same footage
+  fetches nothing. A Drive sign-in lasts an hour; a download that outlasts it asks Rendrr for a fresh one
+  (POST /desktop/tasks/:id/link). Big files now come in six ranged requests at once (one connection to a far-away
+  server is slow); a server without ranges gives the file in one piece. New Mac app needed (desktop/render.js).
+- **The encode crawled.** One pass of a heavy edit (V3: 62 cuts, punch-ins, 3 full-length graphics, 4K footage) needs
+  about 3.7 GB; on an 8 GB MacBook Air with the app and a browser open it swaps (the same final takes 3 minutes on
+  four cloud cores). A heavy final (12+ inputs or 60+ scalers) on a Mac is now made in pieces of about 15 s, as the
+  cloud makes one: the sound once, each piece's picture, joined under the sound (lib/macPieces.ts).
+- **The time limit counted the download.** The job's limit (13 minutes plus allowances for V3) is now moved later while
+  the Mac fetches the files, up to two hours in all; a preview's own clock stops meanwhile. The stuck-render sweep
+  leaves a render alone while it still reports progress.
+- **"About 5 s left" for the whole download.** The time left now follows the download's own pace, then the encode.
+
 ## Exports failing: the Mac app seen as closed, the cloud out of memory (22 November)
 
 - **The Mac app counted as closed all day.** At 03:59 UTC the Mac app started while the API was restarting: its first

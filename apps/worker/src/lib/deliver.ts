@@ -49,8 +49,17 @@ export async function writeSideFiles(dir: string, plan: { subtitles?: { start: n
  */
 export async function joinPieces(dir: string, pieces: string[], output: string, audioBitrate: string, signal?: AbortSignal, sound?: string) {
   const list = join(dir, "pieces.txt");
-  await writeFile(list, pieces.map((m) => `file '${m.replace(/'/g, "'\\''")}'`).join("\n") + "\n");
+  await writeFile(list, piecesList(pieces));
+  await run("ffmpeg", joinPiecesArgs(list, output, audioBitrate, sound), { signal });
+}
+/** The concat list naming the pieces in order. */
+export const piecesList = (pieces: string[]) => pieces.map((m) => `file '${m.replace(/'/g, "'\\''")}'`).join("\n") + "\n";
+/**
+ * The run that joins the pieces (listed in `list`) under the one sound. relative: the list names them by plain names
+ * beside it (on the user's Mac: FFmpeg's safe mode, nothing outside the render's folder can be named).
+ */
+export function joinPiecesArgs(list: string, output: string, audioBitrate: string, sound?: string, relative = false): string[] {
   const audio = sound ? ["-i", sound, "-map", "0:v", "-map", "1:a"] : ["-map", "0:v", "-map", "0:a?"];
-  await run("ffmpeg", ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, ...audio, "-c:v", "copy", "-c:a", "aac", "-b:a", audioBitrate, "-ar", "48000", "-movflags", "+faststart", output], { signal });
+  return ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-f", "concat", ...(relative ? [] : ["-safe", "0"]), "-i", list, ...audio, "-c:v", "copy", "-c:a", "aac", "-b:a", audioBitrate, "-ar", "48000", "-movflags", "+faststart", output];
 }
 

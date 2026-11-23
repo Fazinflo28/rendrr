@@ -7,7 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobError } from "./ffmpeg";
 
-export type Ctx = { signal: AbortSignal; dir: string; job: Job; isLastAttempt: boolean };
+/** extend(ms): move the job's time limit later (time spent waiting on something that is not this server's work: the
+ *  user's computer fetching a render's files). Capped at EXTEND_MAX_MS in all. */
+export type Ctx = { signal: AbortSignal; dir: string; job: Job; isLastAttempt: boolean; extend?: (ms: number) => void };
+/** The most a job's time limit can be moved later, in all. */
+export const EXTEND_MAX_MS = 2 * 3600_000;
 
 /** Jobs running in this worker now (the thread watchdog restarts the worker only when none is). */
 let running = 0;
@@ -59,8 +63,16 @@ export function guarded<T>(queue: string, timeoutMs: number | ((job: Job) => Pro
     const limit = typeof timeoutMs === "number" ? timeoutMs : await timeoutMs(job).catch(() => 15 * 60_000);
     // The limit wins even when some step ignores the abort signal (a stalled download, a database call):
     // the job fails on time, the temp folder is removed and the queue moves on.
-    let timer: NodeJS.Timeout | undefined;
-    const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; ac.abort(); reject(new Error(`${queue} job over its ${Math.round(limit / 1000)} s limit`)); }, limit); });
+    let timer: NodeJS.Timeout | undefined, deadline = started + limit, extended = 0;
+    let expire: (e: Error) => void = () => {};
+    const expired = new Promise<never>((_, reject) => { expire = reject; });
+    const arm = () => { clearTimeout(timer); timer = setTimeout(() => { timedOut = true; ac.abort(); expire(new Error(`${queue} job over its ${Math.round((deadline - started) / 1000)} s limit`)); }, Math.max(0, deadline - Date.now())); };
+    arm();
+    const extend = (ms: number) => {
+      const add = Math.min(Math.max(0, Number(ms) || 0), EXTEND_MAX_MS - extended);
+      if (timedOut || !(add > 0)) return;
+      extended += add; deadline += add; arm();
+    };
     running++;
     let dir = "";
     try { dir = await mkdtemp(join(tmpdir(), `rendrr-${queue}-`)); } catch (e) { running--; clearTimeout(timer); throw e; }
@@ -73,7 +85,7 @@ export function guarded<T>(queue: string, timeoutMs: number | ((job: Job) => Pro
     let ok = false;
     await jobStarted(costKey, queue).catch(() => {});
     try {
-      const work = costScope(notes, () => fn({ signal: ac.signal, dir, job, isLastAttempt }));
+      const work = costScope(notes, () => fn({ signal: ac.signal, dir, job, isLastAttempt, extend }));
       work.catch(() => {}); // if the limit wins, a late failure must not become an unhandled rejection
       // A stop ends the job at once too, even while a step ignores the signal.
       const halted = new Promise<never>((_, reject) => ac.signal.addEventListener("abort", () => { if (stopped.has(key)) reject(new Error("stopped by the user")); }, { once: true }));

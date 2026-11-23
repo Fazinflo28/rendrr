@@ -18,7 +18,9 @@ While the app is open, previews and finals are made on this Mac with its own FFm
 the checks still use Rendrr's cloud. Finals made here go straight to Downloads (and Rendrr keeps a copy to share). If
 this Mac cannot take a render, or you quit the app, Rendrr's cloud makes it. Closing the window keeps Rendrr running in
 the Dock (it still renders here); quit it with Cmd+Q. Turn it off in Rendrr > Settings >
-Where renders run. Footage this Mac fetches is kept in ~/Library/Caches/Rendrr (up to 20 GB).
+Where renders run. Footage this Mac fetches is kept in ~/Library/Caches/Rendrr (up to 20 GB), originals from your
+Google Drive too, so the next export of the same footage downloads nothing. Big files download in several parts at
+once, and heavy exports are made in pieces so a MacBook Air does not run out of memory.
 
 Finals you save go straight to your Downloads folder. Links to other sites open in your browser.
 

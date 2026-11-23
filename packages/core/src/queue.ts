@@ -111,8 +111,13 @@ export const projectChannel = (id: string) => `project:${id}`;
 export async function publishRender(id: string, p: RenderProgress) {
   const r = redis();
   await r.set(renderChannel(id), JSON.stringify(p), "EX", 6 * 3600);
+  await r.set(renderAlive(id), "1", "EX", 600);
   await r.publish(renderChannel(id), JSON.stringify(p));
 }
+/** Set with each progress report for ten minutes: a render past its time limit that still reports is not stuck (its
+ *  limit was moved later while the user's computer fetched its files). */
+export const renderAlive = (id: string) => `render:${id}:alive`;
+export async function renderIsAlive(id: string): Promise<boolean> { return (await redis().exists(renderAlive(id))) > 0; }
 export async function readRender(id: string): Promise<RenderProgress | null> {
   const s = await redis().get(renderChannel(id));
   return s ? (JSON.parse(s) as RenderProgress) : null;

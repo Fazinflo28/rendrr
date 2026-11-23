@@ -1,8 +1,8 @@
-import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix, planWithoutFiles, purgeTrash, renderFileKeys, snapshotStorage } from "@rendrr/core";
+import { abortMultipart, abortStaleMultipart, deleteObject, deleteObjects, deletePrefix, listPrefix, planWithoutFiles, purgeTrash, renderFileKeys, renderIsAlive, snapshotStorage } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
 import { DAY_MS, PREFIX, PREVIEW_RETENTION_DAYS, processTimeoutMs, renderLimitMs, TEMP_ORIGINAL_HOURS, type Breakdown } from "@rendrr/shared";
 import { ensureAssets } from "../lib/assets";
-import type { Ctx } from "../lib/job";
+import { EXTEND_MAX_MS, type Ctx } from "../lib/job";
 import { framesPrefix, queueMissingBreakdowns } from "./breakdown";
 
 /**
@@ -101,9 +101,14 @@ export async function sweepStuck(now = new Date()) {
   const out = { stuckRenders: 0, stuckVideos: 0, stuckStyles: 0, stuckGraphics: 0 };
   const hourAgo = new Date(now.getTime() - 3600_000);
   const active = await prisma.render.findMany({ where: { status: { in: ["queued", "running"] } }, select: { id: true, kind: true, quality: true, status: true, createdAt: true, startedAt: true, project: { select: { timeline: true, video: { select: { seconds: true } } } } } });
-  const dead = active.filter((r) => r.status === "running"
-    ? now.getTime() - (r.startedAt ?? r.createdAt).getTime() > renderLimitMs(r.kind === "final" ? "final" : "preview", r.project.video.seconds, r.quality, r.project.timeline) + 15 * 60_000
-    : now.getTime() - r.createdAt.getTime() > 6 * 3600_000);
+  // A running render past its limit that still reports progress is not stuck: its limit was moved later (up to
+  // EXTEND_MAX_MS) while the user's computer fetched its files.
+  const dead: typeof active = [];
+  for (const r of active) {
+    if (r.status !== "running") { if (now.getTime() - r.createdAt.getTime() > 6 * 3600_000) dead.push(r); continue; }
+    const over = now.getTime() - (r.startedAt ?? r.createdAt).getTime() - renderLimitMs(r.kind === "final" ? "final" : "preview", r.project.video.seconds, r.quality, r.project.timeline) - 15 * 60_000;
+    if (over > EXTEND_MAX_MS || (over > 0 && !(await renderIsAlive(r.id).catch(() => false)))) dead.push(r);
+  }
   if (dead.length) await prisma.render.updateMany({ where: { id: { in: dead.map((r) => r.id) }, status: { in: ["queued", "running"] } }, data: { status: "failed", error: "Render did not finish. Nothing was lost. Try again.", finishedAt: now } });
   out.stuckRenders = dead.length;
   for (const p of await prisma.project.findMany({ where: { status: "Rendering", updatedAt: { lt: hourAgo } }, select: { id: true } })) {

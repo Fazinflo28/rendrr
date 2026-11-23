@@ -4,7 +4,8 @@ import { prisma, type Prisma } from "@rendrr/db";
 import { bestResolution, desktopAppName, fmtClock, formatFile, isBestQuality, isSoundFormat, lengthTolerance, SOUND_QUALITY, withExportFormat, type ExportFormat, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { audioSettings, audioText, boardStyle, lookText, onScreenAt, storyboardAutoPanels, type Board, type BoardPanel } from "@rendrr/shared";
 import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSideFiles } from "../lib/deliver";
-import { dropTemps, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
+import { macPieceRuns, macPiecesFirst } from "../lib/macPieces";
+import { dropTemps, fetchEtaSec, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
 import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
@@ -91,9 +92,12 @@ export async function renderJob(ctx: Ctx) {
   // made up: null (the UI says "Estimating") until one of the two exists.
   const t0 = Date.now();
   const prior = await workPerSecond(video.userId, kind, r.quality);
-  const est = { outSeconds: video.seconds || 0, encStart: 0, encFrac: 0, encEnd: 0, matte: null as null | { start: number; frac: number } };
+  const est = { outSeconds: video.seconds || 0, encStart: 0, encFrac: 0, encEnd: 0, matte: null as null | { start: number; frac: number }, dl: null as null | { start: number; frac: number } };
   const etaSec = (): number | null => {
     const now = Date.now();
+    // While the user's computer fetches the files (a big original the first time): the download's own pace, then the
+    // encode. (It said "about 5 s left" for the whole of a long download.)
+    if (est.dl) return fetchEtaSec(est.dl, now, prior != null ? prior * est.outSeconds : 30);
     // While the person is cut out (remove_background): that work's own pace, then the render as usual.
     if (est.matte) {
       const spent = (now - est.matte.start) / 1000;
@@ -118,7 +122,7 @@ export async function renderJob(ctx: Ctx) {
     const src = join(ctx.dir, "source");
     let tempOriginalIds: string[] = [];
     // The original read from the user's Drive: a render on their Mac fetches it there itself.
-    let driveSource: { path: string; fileId: string } | null = null;
+    let driveSource: { path: string; fileId: string; version?: string } | null = null;
     // Originals that stay on the user's Mac (footage added in the Rendrr Mac app, never uploaded): the plan is made from
     // their preview copies at the originals' size, and only that Mac can make the final (it reads the files itself).
     const macSources = new Map<string, { videoId: string; size: number }>();
@@ -146,7 +150,7 @@ export async function renderJob(ctx: Ctx) {
       const body = Readable.fromWeb(res.body as never);
       body.on("data", (c: Buffer) => { got += c.length; if (total) sendThrottled(0, got / total); });
       await pipeline(body, createWriteStream(src));
-      driveSource = { path: src, fileId: video.driveFileId! };
+      driveSource = { path: src, fileId: video.driveFileId!, ...(f.date ? { version: String(f.date) } : {}) };
       i = 1;
     } else {
       const orig = await prisma.tempOriginal.findFirst({ where: { projectId: project.id, videoId: video.id, completed: true, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } });
@@ -449,6 +453,15 @@ export async function renderJob(ctx: Ctx) {
       if (m.why && (m.info || (r.target && r.target !== "cloud"))) where.why = m.why; // (no computer open: nothing to say)
       return m.info && !m.why ? { cpus: m.info.cpus, have: m.info.have, platform: m.info.platform, id: m.info.id } : null;
     };
+    // While the user's computer fetches the files: the job's limit is moved later as the fetch goes, and a preview's own
+    // clock stops (started again after, with what was left of it).
+    let dlHeld = 0, previewHeld = false;
+    const fetched = () => {
+      if (!est.dl) return;
+      ctx.extend?.(Date.now() - dlHeld);
+      if (previewHeld) { previewHeld = false; pt = armPreview(Math.max(60_000, previewLimit - (est.dl.start - t0))); }
+      est.dl = null;
+    };
     const onMac = async (mac: { have: string[]; platform?: "mac" | "windows"; id?: string }, runs: MacRun[], outputs: MacOut[], onRender: (cmd: number, seconds: number) => void): Promise<MacDone | null> => {
       const W = machineWord(mac.platform); // "Mac" or "PC"
       let task: Awaited<ReturnType<typeof macTaskFor>>;
@@ -467,8 +480,14 @@ export async function renderJob(ctx: Ctx) {
         const res = await runOnMac(task.spec, {
           signal, machine: W,
           onClaim: (device, platform) => { where.on = "mac"; where.device = device; where.platform = platform; where.why = null; steps[at] = `Getting the files to your ${machineWord(platform)}`; void send(at, 0); },
-          onDownload: (f) => sendThrottled(at, 0.98 * f),
-          onRender: (cmd, sec) => { if (steps[at] !== was) steps[at] = was; onRender(cmd, sec); },
+          onDownload: (f) => {
+            const now = Date.now();
+            if (!est.dl) { est.dl = { start: now, frac: 0 }; dlHeld = now; if (pt) { clearTimeout(pt); pt = null; previewHeld = true; } }
+            // The time limits do not count the fetch (the user's line, not this server's work): moved later as it goes.
+            ctx.extend?.(now - dlHeld); dlHeld = now;
+            est.dl.frac = f; sendThrottled(at, 0.98 * f);
+          },
+          onRender: (cmd, sec) => { if (est.dl) { fetched(); est.encStart = Date.now(); } if (steps[at] !== was) steps[at] = was; onRender(cmd, sec); },
           onUpload: () => { if (steps[at] !== was) steps[at] = was; },
         }).catch((e) => { if (signal.aborted) throw e; return { ok: false as const, why: `the hand-off to your ${W} broke (${(e as Error).message.slice(0, 120)})` }; });
         steps[at] = was;
@@ -478,7 +497,7 @@ export async function renderJob(ctx: Ctx) {
         plan.operations.push(`Made on Rendrr's cloud server: ${res.why}`);
         await send(at, 0);
         return null;
-      } finally { steps[at] = was; await dropTemps(task.temps); }
+      } finally { steps[at] = was; fetched(); await dropTemps(task.temps); }
     };
 
     // ---- Measuring loudness: the mix, audio only, so the render can set it to the target exactly ----
@@ -709,14 +728,22 @@ export async function renderJob(ctx: Ctx) {
         return ffmpegArgs(plan, f, sourceInfo, { ...o, filterThreads: filterThreads(ffmpegArgs(plan, f, sourceInfo, { ...o, filterThreads: 4 }).filterGraph) });
       };
       const a0 = mArgs(files.output);
-      const runs: MacRun[] = [...macPre, { args: a0.args, graph: a0.filterGraph, seconds: plan.outputSeconds }];
+      const runs: MacRun[] = [...macPre];
+      // A heavy final: in pieces there too (lib/macPieces), its progress each piece's own stretch of the edit.
+      const inPieces = canPiece && fmt !== "gif" && macPiecesFirst(kind, fit) ? await macPieceRuns({ plan, files, source: sourceInfo, dir: ctx.dir, cpus: mac.cpus, budgets, gainDb: mixLoudness?.gainDb, audioBitrate: best ? "320k" : "192k" }) : null;
+      const pieceAt = inPieces?.at ?? new Map<number, { a: number; b: number }>();
+      if (inPieces) runs.push(...inPieces.runs);
+      else runs.push({ args: a0.args, graph: a0.filterGraph, seconds: plan.outputSeconds });
       if (fmt === "overlay") {
         const wPass = mArgs(join(ctx.dir, "out-w.mkv"), "white");
         runs.push({ args: wPass.args, graph: wPass.filterGraph, seconds: plan.outputSeconds }, { args: mergeOverlayArgs(files.output, join(ctx.dir, "out-w.mkv"), finalPath) });
       } else if (fmt === "gif") runs.push({ args: gifArgs(files.output, finalPath, plan.width, plan.height, plan.outputSeconds) });
       est.encStart = Date.now();
-      macDone = await onMac(mac, runs, [{ path: finalPath, key: outKey, type: ff.type, ...(kind === "final" ? { save: `${stem}.${ff.ext}` } : {}) }], (cmd, sec) => { if (cmd === macPre.length) onProgress(sec); });
-      if (macDone) { await downloadFile(outKey, finalPath); files.output = finalPath; }
+      macDone = await onMac(mac, runs, [{ path: finalPath, key: outKey, type: ff.type, ...(kind === "final" ? { save: `${stem}.${ff.ext}` } : {}) }], (cmd, sec) => { const pc = pieceAt.get(cmd); if (pc) onProgress(pc.a + Math.min(sec, pc.b - pc.a)); else if (!pieceAt.size && cmd === macPre.length) onProgress(sec); });
+      if (macDone) {
+        await downloadFile(outKey, finalPath); files.output = finalPath;
+        if (inPieces) plan.operations.push(`Made on your ${machineWord(mac.platform)} in ${inPieces.count} pieces (a heavy edit: ${fit.inputs} inputs, ${fit.scalers} scalers), joined under one sound`);
+      }
       else if (macSources.size) throw needMac();
     }
     if (!macDone) {
