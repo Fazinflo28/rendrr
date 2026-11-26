@@ -19,6 +19,8 @@ const hooked = block.replace("if (file) localFiles[v.id] = file;", "if (file) { 
 const res = await build({
   entryPoints: [resolve(here, "entry.js")],
   bundle: true, format: "iife", platform: "browser", target: "es2020", minify: true, write: false,
+  // The app loads FFmpeg from its own /ffmpeg/ folder at run time (local.ts); the demo has none to bundle.
+  external: ["/ffmpeg/*"],
   define: { "process.env.NODE_ENV": '"production"', "process.env.NEXT_PUBLIC_API_URL": '""' },
   plugins: [{
     name: "demo",

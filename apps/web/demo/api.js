@@ -167,8 +167,9 @@ Object.assign(api, {
     const auto = [{ at: 0.5, title: "Opening", onScreen: "STILL DOWNLOADING ICONS" }, { at: 4.5, title: "Meet Fontora", onScreen: "Meet Fontora" }, { at: 9.3, title: "Scene 2", onScreen: "A LIVE ICON LIBRARY" },
       { at: 14, end: 18, title: "Graphic" }, { at: 22.4, title: "B-roll" }, { at: 30.3, title: "Scene 4", onScreen: "STAY ON BRAND" }];
     const panels = req.panels?.length ? req.panels : auto;
-    const items = panels.map((p, k) => ({ kind: p.end != null || p.clip ? "clip" : "frame", at: p.at, end: p.end ?? (p.clip ? p.at + 4 : null), note: p.note || null, title: p.title || null, caption: p.caption || null, shot: p.shot || null, onScreen: p.onScreen || null, still: sampleStill(p.title || "Panel " + (k + 1), k), clip: null }));
-    const board = { title: req.title || "Fontora launch", rules: req.rules || [], palette: (req.palette || []).map((c) => ({ hex: c.hex.toUpperCase(), name: c.name || "palette" })), status: "review", approvedAt: null, latestVersion: 1, url: null,
+    const pics = req.frames === "images";
+    const items = panels.map((p, k) => ({ kind: !pics && (p.end != null || p.clip) ? "clip" : "frame", at: p.at, end: pics ? null : p.end ?? (p.clip ? p.at + 4 : null), ...(pics && (p.end != null || p.clip) ? { video: [p.at, p.end ?? p.at + 4] } : {}), note: p.note || null, title: p.title || null, caption: p.caption || null, shot: p.shot || null, onScreen: p.onScreen || null, still: sampleStill(p.title || "Panel " + (k + 1), k), clip: null }));
+    const board = { title: req.title || "Fontora launch", rules: req.rules || [], palette: (req.palette || []).map((c) => ({ hex: c.hex.toUpperCase(), name: c.name || "palette" })), status: "review", approvedAt: null, latestVersion: 1, url: null, frames: pics ? "images" : "video",
       style: { aspect: "16:9", seconds: 42, width: 960, height: 540, captions: { font: "Inter", weight: 700, size: 7.4, color: "#FFFFFF", highlight: "#34C759", stroke: "#000000", box: null, case: "upper", wordsAtOnce: 3, lines: 1, position: "bottom", animation: "3 words at a time, the spoken word lit in #34C759" },
         fonts: [{ font: "Inter", weight: 700, use: "captions" }, { font: "Poppins", weight: 600, use: "titles and text" }], texts: { count: 2, animations: ["pop"] },
         colors: [{ hex: "#34C759", name: "brand green, spoken word" }, { hex: "#FFFFFF", name: "caption text" }, { hex: "#0B3D2E", name: "title text" }],
@@ -624,6 +625,8 @@ Object.assign(api, {
 });
 
 export { api };
+// The browser tests reach the demo API (to set up a board as Claude would make it).
+globalThis.__rendrrDemoApi = api;
 export const API_BASE = "";
 
 // The real server refuses to delete a video that edits use until the user says the edits go too (409 in-use); a

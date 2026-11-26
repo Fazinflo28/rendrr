@@ -342,6 +342,34 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 }
 @media (pointer: coarse) { .keyhint { display: none; } }
 
+/* Storyboard (create_storyboard): frame cards in the video's own shape, two to a row, scrolling; the whole frame shows.
+   A tap opens the frame's comment box under its row. */
+.fgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.fcard { display: flex; flex-direction: column; min-width: 0; text-align: left; border-radius: var(--r-md); overflow: hidden; background: var(--surface); box-shadow: 0 0 0 1px var(--hair); transition: box-shadow .15s var(--ease), transform .15s var(--ease); }
+.fcard:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px var(--accent-ring); }
+.fcard.on { box-shadow: 0 0 0 2px var(--accent); }
+.fcard .pic { position: relative; width: 100%; background: #000; }
+.fcard .pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.fcard .pic .wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; background: linear-gradient(90deg, var(--raised), var(--raised-strong), var(--raised)); background-size: 200% 100%; animation: sk 1.2s linear infinite; }
+.fcard .n { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; line-height: 16px; min-width: 18px; text-align: center; padding: 1px 5px; border-radius: 6px; font-weight: 600; }
+.fcard .len { position: absolute; right: 6px; bottom: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; line-height: 16px; padding: 1px 6px; border-radius: 6px; font-variant-numeric: tabular-nums; }
+.fcard .dot { position: absolute; right: 6px; top: 6px; min-width: 18px; height: 18px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; padding: 0 5px; }
+.fcard .cap { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; padding: 7px 10px 8px; font-size: 13px; line-height: 18px; min-width: 0; }
+.fcard .cap b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.fcard .cap .small { flex: none; font-variant-numeric: tabular-nums; }
+.fbox { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: var(--r-md); background: var(--panel); box-shadow: 0 0 0 1px var(--accent-ring); }
+.fhead { gap: 6px; font-size: 13px; line-height: 20px; }
+.fhead b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.nav-s { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: var(--ink); background: var(--raised); font-size: 18px; line-height: 1; flex: none; }
+.nav-s svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.fbody { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.fbody.tall { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr); align-items: start; }
+.fmedia { position: relative; width: 100%; background: #000; border-radius: var(--r-sm); overflow: hidden; }
+.fmedia img, .fmedia video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.fside { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.fwords { font-size: 13px; line-height: 20px; color: var(--dim); display: flex; flex-direction: column; gap: 2px; }
+@media (max-width: 520px) { .fbody.tall { grid-template-columns: 1fr; } .fbody.tall .fmedia { max-width: 260px; margin: 0 auto; } }
+
 /* Samples (render_samples): a storyboard of a few frames and short clips, like a generations card: the one picked big,
    the strip under it, what Claude meant by it, and a box to ask for a change on it. */
 .sv { display: flex; flex-direction: column; gap: 10px; }
@@ -684,7 +712,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const same = state.samples && state.samples.renderId === v.renderId;
     stopPolling(); player = null;
     state.samples = v; state.view = "samples";
-    if (!same) { state.sampleSel = 0; state.sampleDraft = ""; sampleMedia = null; }
+    if (!same) { state.sampleSel = 0; state.sampleOpen = null; state.sampleDraft = ""; sampleMedia = null; }
     state.sampleSel = Math.min(state.sampleSel || 0, Math.max(0, v.items.length - 1));
     render();
     clearTimeout(samplePoll);
@@ -702,6 +730,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   // The changes asked on a sample: the comments at its moment (a clip: anywhere in it).
   const changesOn = (v, x) => v.comments.filter((c) => (x.kind === "clip" ? c.time >= x.at - 0.05 && c.time <= x.end + 0.05 : Math.abs(c.time - x.at) < 0.05));
   function samplesView() {
+    if (state.samples.board) return boardView();
     const v = state.samples, p = v.project, n = v.items.length, k = state.sampleSel || 0, x = v.items[k];
     const back = iconBtn("back", "Open the edit", () => { clearTimeout(samplePoll); state.samples = null; sampleMedia = null; openProject(p.id); }, "ghost");
     const frames = v.items.filter((i) => i.kind === "frame").length, clips = n - frames;
@@ -770,6 +799,95 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const askBox = x && v.status === "done" ? h("div", { class: "ask" }, ta, h("div", { class: "row" }, add)) : null;
     return h("div", { class: "sv" }, top, viewer, strip, notes, words, said, list, askBox, v.status === "done" ? h("div", { class: "sendbar" }, send, good) : null,
       state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
+  }
+  // ---------------- storyboard (create_storyboard): frame cards ----------------
+  // The video as frame cards in its own shape (a horizontal video gives horizontal frames), two to a row, scrolling
+  // down. A tap opens that frame's comment box right under its row: the frame big (a video frame plays there), its
+  // words, the changes asked on it and a box to add one. "Send to Claude" sends them all; "Approve" renders the video.
+  // A board of picture frames only offers to make the video frames.
+  function boardView() {
+    const v = state.samples, p = v.project, b = v.board, n = v.items.length;
+    const k = state.sampleOpen == null ? -1 : Math.min(state.sampleOpen, n - 1), x = k >= 0 ? v.items[k] : null;
+    const back = iconBtn("back", "Open the edit", () => { clearTimeout(samplePoll); state.samples = null; state.sampleOpen = null; sampleMedia = null; openProject(p.id); }, "ghost");
+    const clips = v.items.filter((i) => i.kind === "clip").length;
+    const top = h("div", { class: "row top" }, back,
+      h("div", { class: "grow" }, h("h1", { title: b.title }, "Storyboard · " + b.title),
+        h("div", { class: "meta" }, ["v" + v.version, n + (n === 1 ? " frame" : " frames") + (clips ? " (" + clips + " video)" : b.frames === "images" ? " (pictures)" : ""), p.aspect, b.status === "approved" ? "Approved" : "In review"].join(" · "))),
+      h("div", { class: "acts row" }, fsButton(), b.url ? iconBtn("external", "Open the board in Rendrr (draw on a frame there)", () => openLink(b.url)) : null));
+    // The frames' shape: the board's own size once drawn, else the edit's aspect.
+    const asp = String(p.aspect || "16:9").split(":").map(Number), aw = asp[0] > 0 ? asp[0] : 16, ah = asp[1] > 0 ? asp[1] : 9;
+    const W = v.width > 0 && v.height > 0 ? v.width : aw, H = v.width > 0 && v.height > 0 ? v.height : ah;
+    const ratio = W + " / " + H, tall = H > W * 1.05;
+    const notes = [];
+    if (v.status === "queued" || v.status === "running") notes.push(h("div", { class: "note" }, h("div", { class: "row" }, h("span", { class: "grow" }, v.status === "queued" ? "Waiting to draw the storyboard" : "Drawing the storyboard · " + v.percent + "%" + (v.step ? " · " + v.step : "")), h("span", { class: "muted small" }, left(v.etaSec))), h("div", { class: "prog" }, h("div", { style: "width:" + Math.max(3, v.percent) + "%" }))));
+    else if (v.status === "failed") notes.push(h("div", { class: "note err" }, "The storyboard did not draw: " + (v.error || "unknown error")));
+    const open = (j) => { state.sampleOpen = state.sampleOpen === j ? null : j; state.sampleDraft = ""; sampleMedia = null; render(); };
+    const cards = v.items.map((it, j) => {
+      const asked = changesOn(v, it).filter((c) => !c.resolved).length;
+      return h("button", { class: "fcard" + (j === k ? " on" : ""), "data-frame": String(j), "aria-expanded": j === k ? "true" : "false", "aria-label": "Frame " + (j + 1) + (it.title ? ", " + it.title : "") + ": comment on it", onClick: () => open(j) },
+        h("div", { class: "pic", style: "aspect-ratio:" + ratio },
+          it.still ? h("img", { src: it.still, alt: "", loading: "lazy", decoding: "async" }) : h("span", { class: "wait" }, v.status === "failed" ? "Not drawn" : "Drawing…"),
+          h("span", { class: "n" }, String(j + 1)),
+          it.kind === "clip" ? h("span", { class: "len" }, "▶ " + (Math.round((it.end - it.at) * 10) / 10) + "s") : null,
+          asked ? h("span", { class: "dot", title: asked + (asked === 1 ? " change asked" : " changes asked") }, String(asked)) : null),
+        h("div", { class: "cap" }, h("b", {}, it.title || "Frame " + (j + 1)), h("span", { class: "muted small" }, sampleTime(it.at))));
+    });
+    if (x) cards.splice(Math.min(n, k - (k % 2) + 2), 0, frameBox());
+    function frameBox() {
+      let media;
+      if (x.kind === "clip" && x.clip) {
+        if (!sampleMedia || sampleMedia.dataset.src !== x.clip) {
+          sampleMedia = h("video", { src: x.clip, poster: x.still || null, playsinline: true, controls: true, loop: true, preload: "metadata", "data-src": x.clip });
+          sampleMedia.addEventListener("play", () => tellOthers());
+        }
+        media = sampleMedia;
+      } else if (x.still) media = h("img", { src: x.still, alt: "Frame " + (k + 1), onClick: () => { state.lightbox = x.still; render(); }, style: "cursor:zoom-in" });
+      else media = h("div", { class: "wait" }, "Drawing…");
+      const words = h("div", { class: "fwords" }, x.caption ? h("div", {}, "Says: " + x.caption) : null, x.onScreen ? h("div", { class: "muted small" }, "On screen: " + x.onScreen) : null,
+        x.shot ? h("div", { class: "muted small" }, "Shows: " + x.shot) : null, x.note ? h("div", { class: "muted small" }, aiName() + ": " + x.note) : null);
+      const mine = changesOn(v, x);
+      const list = mine.length ? h("div", { class: "chgs" }, mine.map((c) => h("div", { class: "chg" + (c.resolved ? " done" : "") },
+        h("span", { class: "t" }, sampleTime(c.time)), h("span", { class: "grow" }, c.text || "(a drawing)"),
+        c.mine && !c.resolved ? h("button", { class: "x", title: "Take this comment back", "aria-label": "Take this comment back", onClick: () => dropChange(c) }, "×") : null))) : null;
+      const canAsk = () => !!state.sampleDraft.trim() && !state.sending && v.status === "done";
+      const ta = h("textarea", { placeholder: "Your comment on frame " + (k + 1) + ": what should change?", "aria-label": "Comment on frame " + (k + 1), maxlength: "2000", "data-key": "sdraft",
+        onInput: (e) => { state.sampleDraft = e.target.value; add.disabled = !canAsk(); },
+        onKeydown: (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); ask(); } } });
+      ta.value = state.sampleDraft || "";
+      const add = h("button", { class: "btn primary", disabled: !canAsk(), onClick: () => ask() }, state.sending ? "Saving…" : "Add comment");
+      async function ask() {
+        if (!canAsk()) return;
+        const text = state.sampleDraft.trim();
+        // A video frame's comment at the moment it is paused on; a picture's at the picture.
+        const t = x.kind === "clip" && sampleMedia && isFinite(sampleMedia.currentTime) ? Math.min(x.end - 1 / 30, x.at + sampleMedia.currentTime) : x.at;
+        state.sending = true; add.disabled = true; add.textContent = "Saving…";
+        try {
+          await callTool("app_add_comment", { projectId: p.id, time: Math.round(t * 1000) / 1000, text, renderId: v.renderId });
+          tellModel("In the Rendrr app the user commented on frame " + (k + 1) + " (" + sampleName(x) + ") of the storyboard of \"" + p.name + "\" (storyboard " + v.renderId + "): " + text);
+          state.sampleDraft = ""; state.sending = false; toast("Comment added.");
+          await reloadSamples();
+        } catch (e) { state.sending = false; toast(e.message); render(); }
+      }
+      const askBox = v.status === "done" ? h("div", { class: "ask" }, ta, h("div", { class: "row" }, add)) : null;
+      return h("div", { class: "fbox", role: "region", "aria-label": "Comment on frame " + (k + 1), "data-key": "fbox" },
+        h("div", { class: "row fhead" }, h("b", { class: "grow" }, (k + 1) + ". " + (x.title || "Frame " + (k + 1)) + " · " + sampleName(x)),
+          h("button", { class: "nav-s", "aria-label": "Previous frame", disabled: k === 0, onClick: () => open(k - 1) }, icon("prev")),
+          h("button", { class: "nav-s", "aria-label": "Next frame", disabled: k >= n - 1, onClick: () => open(k + 1) }, icon("next")),
+          h("button", { class: "nav-s", "aria-label": "Close the comment box", onClick: () => open(k) }, "×")),
+        h("div", { class: "fbody" + (tall ? " tall" : "") }, h("div", { class: "fmedia", style: "aspect-ratio:" + ratio }, media), h("div", { class: "fside" }, askBox, list, words)));
+    }
+    const grid = h("div", { class: "fgrid" + (tall ? " tall" : "") }, cards);
+    const opened = v.comments.filter((c) => !c.resolved);
+    const send = h("button", { class: "btn primary", disabled: !opened.length || state.sending, onClick: () => sendChanges(v) }, "Send " + (opened.length ? opened.length + " " : "") + (opened.length === 1 ? "change" : "changes") + " to " + aiName());
+    const good = h("button", { class: "btn ghost", disabled: v.status !== "done" || state.sending, onClick: () => looksGood(v) }, b.status === "approved" ? "Approved: render the video" : "Approve: render the video");
+    const vid = b.frames === "images" && v.status === "done" ? h("button", { class: "btn ghost", disabled: state.sending, onClick: () => askVideoFrames(v) }, "Add video frames") : null;
+    return h("div", { class: "sv" }, top, notes, n ? h("div", { class: "muted small" }, "Tap a frame to comment on it.") : null, grid, v.status === "done" ? h("div", { class: "sendbar" }, send, good, vid) : null,
+      state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
+  }
+  async function askVideoFrames(v) {
+    const text = "Make the video frames for the storyboard of my Rendrr edit \"" + v.project.name + "\" (" + v.project.id + ", storyboard " + v.renderId + "): create_storyboard again with frames \"video\" and show it to me.";
+    try { const r = await sendMessage(text); if (r && r.isError) throw new Error(); toast("Sent to " + aiName() + "."); }
+    catch { try { await navigator.clipboard.writeText(text); toast("Could not send. Copied: paste it in the chat."); } catch { toast("Could not send to " + aiName() + "."); } }
   }
   async function dropChange(c) {
     const v = state.samples;

@@ -2,7 +2,7 @@ import { billableMinutes, deleteObject, deleteObjects, downloadFile, drive, driv
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
 import { bestResolution, desktopAppName, pieceCachePrefix, fmtClock, formatFile, isBestQuality, isSoundFormat, lengthTolerance, SOUND_QUALITY, withExportFormat, type ExportFormat, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
-import { audioSettings, audioText, boardStyle, lookText, onScreenAt, storyboardAutoPanels, type Board, type BoardPanel } from "@rendrr/shared";
+import { audioSettings, audioText, boardStyle, lookText, onScreenAt, settlePanels, storyboardAutoPanels, type Board, type BoardPanel } from "@rendrr/shared";
 import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSideFiles } from "../lib/deliver";
 import { macPieceRuns, macPiecesFirst, macRanOutOfRoom } from "../lib/macPieces";
 import { ffmpegVersion, pieceKey, previewPieceCache } from "../lib/pieceCache";
@@ -270,9 +270,12 @@ export async function renderJob(ctx: Ctx) {
     const first = planRender(planBase);
     // Storyboard mode, panels left to Rendrr: the opening, the scenes, the titles, graphics and b-roll of this plan.
     if (samples?.board?.auto && !samples.items.length) {
-      samples.items = storyboardAutoPanels(first);
+      samples.items = storyboardAutoPanels(first, undefined, samples.board.frames);
       if (!samples.items.length) throw new JobError("This edit has nothing to put on a storyboard yet.", "empty", false);
     }
+    // Storyboard mode: no picture taken mid-motion (a title popping in, a card sliding in): a frame moves to where it
+    // has landed, a clip's picture is taken there.
+    if (samples?.board) samples.items = settlePanels(samples.items, { outputSeconds: first.outputSeconds, fps: first.fps, texts: first.texts, graphics: first.graphics, transitions: first.transitions }).sort((a, b) => a.at - b.at || (a.kind === "frame" ? -1 : 1));
     const graphicsReady: Record<string, boolean> = {};
     const graphicErrors: string[] = [];
     // Only graphics that are still in the edit, each drawn for the time it is on screen.
@@ -532,6 +535,8 @@ export async function renderJob(ctx: Ctx) {
       const items = samples.items, fps = plan.fps || 30;
       const base = `${PREFIX.previews}${video.userId}/${project.id}/${r.id}`;
       const weightOf = (it: (typeof items)[number]) => (it.kind === "clip" ? it.end! - it.at : 0.5);
+      // A clip's picture: its first frame, or where its motion has landed (stillAt, storyboards).
+      const stillOffset = (it: (typeof items)[number]) => (it.stillAt != null ? Math.max(0, Math.min(it.end! - it.at - 1 / fps, it.stillAt - it.at)) : 0);
       const total = items.reduce((acc, it) => acc + weightOf(it), 0);
       const done: SampleDone[] = [], keys: string[] = [];
       let spent = 0, bytes = 0;
@@ -550,7 +555,7 @@ export async function renderJob(ctx: Ctx) {
           const a = ffmpegArgs(sub, f, sourceInfo, { ...o, filterThreads: filterThreads(ffmpegArgs(sub, f, sourceInfo, { ...o, filterThreads: 4 }).filterGraph) });
           runs.push({ args: a.args, graph: a.filterGraph, seconds: Math.max(0.04, w.to - w.from) }); cmdItem.push(k);
           const stillKey = `${base}-s${k}.jpg`, clipKey = still ? undefined : `${base}-c${k}.mp4`;
-          if (!still) { runs.push({ args: frameArgs(out, 0, stillPath, plan.width) }); cmdItem.push(k); }
+          if (!still) { runs.push({ args: frameArgs(out, stillOffset(it), stillPath, plan.width) }); cmdItem.push(k); }
           outs.push({ path: stillPath, key: stillKey, type: "image/jpeg" });
           if (clipKey) outs.push({ path: out, key: clipKey, type: "video/mp4" });
           made.push({ ...it, still: stillKey, ...(clipKey ? { clip: clipKey } : {}) });
@@ -584,7 +589,7 @@ export async function renderJob(ctx: Ctx) {
           throw new JobError(`Sample ${k + 1} (${it.kind} at ${it.at.toFixed(2)} s) could not be rendered. Nothing was lost. Try again.`, "ffmpeg", true);
         }
         const stillPath = still ? out : join(ctx.dir, `sample-${k}.jpg`);
-        if (!still) await frameAt(out, 0, stillPath, plan.width, signal);
+        if (!still) await frameAt(out, stillOffset(it), stillPath, plan.width, signal);
         const stillKey = `${base}-s${k}.jpg`;
         await uploadFile(stillKey, stillPath, "image/jpeg");
         keys.push(stillKey);

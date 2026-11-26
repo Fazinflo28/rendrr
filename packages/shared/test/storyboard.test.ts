@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyOp, boardPanelsText, boardStyle, boardStyleText, buildInitialTimeline, buildTranscript, captionAnimation, captionStyleOf, onScreenAt, panelOf, sampleClock,
-  storyboardAutoPanels, storyboardItems, StoryboardRequestSchema, STORYBOARD_MAX_CLIPS, STORYBOARD_MAX_PANELS, type EditContext, type Op, type Snapshot,
+  settledAt, settlePanels, storyboardAutoPanels, storyboardItems, StoryboardRequestSchema, STORYBOARD_MAX_CLIPS, STORYBOARD_MAX_PANELS, type EditContext, type Op, type Snapshot,
 } from "../src/index";
 import { planRender, type SourceInfo } from "../src/renderPlan";
 
@@ -104,5 +104,38 @@ describe("how Claude reads a board", () => {
     expect(panelOf(items, 0.3)).toBe(0);
     expect(panelOf(items, 12)).toBe(-1);
     expect(sampleClock(4)).toBe("0:04.0");
+  });
+});
+
+describe("picture frames only, and pictures taken once the motion lands", () => {
+  it("frames \"images\": clip panels become pictures (the clip kept for video frames later), Rendrr's own panels have no clips", () => {
+    const items = storyboardItems([{ at: 1, title: "Hook" }, { at: 4, end: 7, title: "Reveal" }, { at: 10, clip: true }], 12, 30, "images");
+    expect(items.map((x) => [x.kind, x.at, x.end ?? null, x.video ?? null])).toEqual([["frame", 1, null, null], ["frame", 4, null, [4, 7]], ["frame", 10, null, [10, 12]]]);
+    expect(storyboardItems(Array.from({ length: STORYBOARD_MAX_CLIPS + 3 }, (_, i) => ({ at: i, clip: true })), 60, 30, "images").every((x) => x.kind === "frame")).toBe(true);
+    const auto = storyboardAutoPanels({ outputSeconds: 10, parts: [{ start: 0, end: 10, clipIds: ["a"] }], graphics: [{ clipId: "g", start: 3, end: 6 }], broll: [] }, 12, "images");
+    expect(auto.length).toBeGreaterThan(0);
+    expect(auto.every((x) => x.kind === "frame")).toBe(true);
+    expect(storyboardAutoPanels({ outputSeconds: 10, parts: [{ start: 0, end: 10, clipIds: ["a"] }], graphics: [{ clipId: "g", start: 3, end: 6 }], broll: [] }).some((x) => x.kind === "clip")).toBe(true);
+    expect(StoryboardRequestSchema.parse({ frames: "images" }).frames).toBe("images");
+    expect(StoryboardRequestSchema.safeParse({ frames: "gifs" }).success).toBe(false);
+  });
+  it("a clip that starts as a card slides in gets its picture after the slide; a frame mid-fade moves past it", () => {
+    const m = { outputSeconds: 12, fps: 30, texts: [
+      { start: 0, end: 4, anim: "pop" as const }, { start: 4, end: 8, anim: "slide" as const }, { start: 8, end: 12, anim: "fade" as const },
+    ] };
+    const [hook, reveal, benefit, still] = settlePanels([{ kind: "frame" as const, at: 1 }, { kind: "clip" as const, at: 4, end: 7 }, { kind: "frame" as const, at: 8 }, { kind: "frame" as const, at: 10 }], m);
+    expect(hook).toEqual({ kind: "frame", at: 1 });
+    expect(reveal.at).toBe(4); expect(reveal.end).toBe(7);
+    expect(reveal.stillAt).toBeCloseTo(4.367, 2);
+    expect(benefit.at).toBeCloseTo(8.367, 2);
+    expect(still).toEqual({ kind: "frame", at: 10 });
+  });
+  it("waits at most 1.2 s, never past the end, and not for a layer gone before it lands", () => {
+    const keyed = { outputSeconds: 30, texts: [{ start: 2, end: 20, anim: "none" as const, keys: [{ t: 0 }, { t: 0.8 }, { t: 9 }] }] };
+    expect(settledAt(keyed, 2)).toBeCloseTo(2.8, 5);
+    expect(settledAt({ outputSeconds: 30, graphics: [{ start: 5, end: 15 }] }, 5)).toBeCloseTo(6, 5);
+    expect(settledAt({ outputSeconds: 5.1, texts: [{ start: 5, end: 5.1, anim: "slide" as const }] }, 5)).toBe(5);
+    expect(settledAt({ outputSeconds: 30, transitions: [{ start: 3, end: 3.5 }] }, 3.2)).toBeCloseTo(3.534, 2);
+    expect(settledAt({ outputSeconds: 30, transitions: [{ start: 3, end: 6 }] }, 3)).toBeCloseTo(4.2, 5);
   });
 });

@@ -88,10 +88,14 @@ export type AppProjectsPage = { projects: AppProjectCard[]; total: number; offse
 /** Samples (render_samples): a few frames and short clips of an edit, shown as a storyboard to ask changes on. */
 export type AppSampleItem = { kind: "frame" | "clip"; at: number; end: number | null; note: string | null; still: string | null; clip: string | null;
   /** A storyboard's panel: its beat, the words said, what we see, and the captions and text on screen there. */
-  title?: string | null; caption?: string | null; shot?: string | null; onScreen?: string | null };
+  title?: string | null; caption?: string | null; shot?: string | null; onScreen?: string | null;
+  /** A board of picture frames: the clip a panel was asked as ([start, end]), for video frames later. */
+  video?: [number, number] };
 /** A storyboard's board (Storyboard mode): its title, rules, palette, the edit's style sheet, and the user's approval.
  *  latestVersion: the edit's version now (a board of an older one shows the edit before later changes). */
-export type AppBoard = { title: string; rules: string[]; palette: { hex: string; name: string }[]; style: BoardStyle | null; status: "review" | "approved"; approvedAt: number | null; latestVersion: number; url: string | null };
+export type AppBoard = { title: string; rules: string[]; palette: { hex: string; name: string }[]; style: BoardStyle | null; status: "review" | "approved"; approvedAt: number | null; latestVersion: number; url: string | null;
+  /** "images": picture frames only; "video": pictures and short video frames. */
+  frames?: "images" | "video" };
 export type AppSamples = {
   renderId: string; project: { id: string; name: string; aspect: string; version: number; editorUrl: string | null };
   /** The edit's version the samples show. */

@@ -5,7 +5,7 @@
 // draws on it; Claude reads that (get_samples), changes the edit and makes the board again; once the user approves it,
 // the whole video is rendered. A storyboard is a set of samples (kind "sample") with a board in its plan.
 import { z } from "zod";
-import type { CaptionStyle, StyledCaption, TextLayer } from "./captions";
+import { ANIM_IN, type CaptionStyle, type StyledCaption, type TextLayer } from "./captions";
 import { SAMPLE_CLIP_DEFAULT, SAMPLE_MAX_CLIP, SampleError, sampleClock, type SampleItem } from "./samples";
 
 /** A board's most panels, and of them the most that are short clips. */
@@ -16,6 +16,10 @@ export const STORYBOARD_AUTO_PANELS = 12;
 export const STORYBOARD_MAX_RULES = 12;
 export const STORYBOARD_MAX_COLORS = 10;
 export const STORYBOARD_STEPS = ["Reading timeline", "Measuring loudness", "Drawing the storyboard", "Packing the board"] as const;
+/** What the frames are: "images" only pictures (stills, quick to look over first); "video" pictures plus short video
+ *  frames where something moves (the default). */
+export const STORYBOARD_FRAMES = ["images", "video"] as const;
+export type StoryboardFrames = (typeof STORYBOARD_FRAMES)[number];
 
 const text = (max: number, what: string) => z.string().trim().max(max).optional().describe(what);
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, "a colour like #34C759");
@@ -36,13 +40,16 @@ export const StoryboardRequestShape = {
   panels: z.array(StoryboardPanelSchema).max(STORYBOARD_MAX_PANELS).optional().describe(`The beats in order, up to ${STORYBOARD_MAX_PANELS} (${STORYBOARD_MAX_CLIPS} of them clips). Left out: Rendrr picks the scenes, titles and graphics itself`),
   rules: z.array(z.string().trim().min(1).max(200)).max(STORYBOARD_MAX_RULES).optional().describe("The visual rules the video keeps, one per line: \"Captions centred, 3 words at a time\", \"Green #34C759 for highlights only\", \"Cut on every sentence\""),
   palette: z.array(z.object({ hex, name: z.string().trim().max(40).optional() })).max(STORYBOARD_MAX_COLORS).optional().describe("The colours, with what each is for (\"brand green\", \"background\")"),
+  frames: z.enum(STORYBOARD_FRAMES).optional().describe("\"images\": picture frames only (no video frames; clip panels become pictures), for when the user wants the image frames first. \"video\" (default): pictures plus short video frames where something moves"),
 };
 export const StoryboardRequestSchema = z.object(StoryboardRequestShape);
 export type StoryboardRequest = z.infer<typeof StoryboardRequestSchema>;
 
 /** A panel as the board keeps it: a sample with its words. onScreen: the captions and text on screen at that moment
  *  (Rendrr reads them from the edit when it draws the panel). */
-export type BoardPanel = SampleItem & { title?: string; caption?: string; shot?: string; onScreen?: string };
+export type BoardPanel = SampleItem & { title?: string; caption?: string; shot?: string; onScreen?: string;
+  /** On a board of picture frames: the clip this panel was asked as ([start, end], edit seconds), for video frames later. */
+  video?: [number, number] };
 export type BoardFont = { font: string; weight: number; use: string };
 export type BoardColor = { hex: string; name: string };
 /** The edit's style sheet, read from the edit when the board is drawn. */
@@ -65,10 +72,12 @@ export type BoardStatus = "review" | "approved";
 export type Board = {
   title: string; rules: string[]; palette: BoardColor[]; auto?: boolean; style?: BoardStyle;
   status: BoardStatus; approvedAt?: number | null;
+  /** "images": picture frames only. Left out: pictures and video frames. */
+  frames?: StoryboardFrames;
 };
 
 /** The panels asked for, checked and put on the edit's frames, in edit order. */
-export function storyboardItems(panels: StoryboardPanel[], outputSeconds: number, fps = 30): BoardPanel[] {
+export function storyboardItems(panels: StoryboardPanel[], outputSeconds: number, fps = 30, frames: StoryboardFrames = "video"): BoardPanel[] {
   const grid = (t: number) => Math.round(t * fps) / fps;
   const last = Math.max(0, grid(outputSeconds) - 1 / fps);
   const out: BoardPanel[] = [];
@@ -81,7 +90,11 @@ export function storyboardItems(panels: StoryboardPanel[], outputSeconds: number
     const want = p.end ?? p.at + SAMPLE_CLIP_DEFAULT;
     if (want <= p.at) throw new SampleError(`Panel ${k + 1}'s clip at ${sampleClock(p.at)}: its end must be after its start.`);
     if (want - p.at > SAMPLE_MAX_CLIP + 1e-6) throw new SampleError(`Panel ${k + 1}'s clip is ${Math.round((want - p.at) * 10) / 10} s: a panel's clip is at most ${SAMPLE_MAX_CLIP} s.`);
-    out.push({ kind: "clip", at, end: Math.min(grid(outputSeconds), Math.max(at + 1 / fps, grid(want))), ...words });
+    const end = Math.min(grid(outputSeconds), Math.max(at + 1 / fps, grid(want)));
+    // Picture frames only: a clip panel is drawn as one picture (moved past its motion when the board is drawn); the
+    // clip it was is kept (video), so video frames can be made later.
+    if (frames === "images") { out.push({ kind: "frame", at: Math.min(last, at), video: [at, end], ...words }); continue; }
+    out.push({ kind: "clip", at, end, ...words });
   }
   if (out.filter((x) => x.kind === "clip").length > STORYBOARD_MAX_CLIPS) throw new SampleError(`A storyboard has at most ${STORYBOARD_MAX_CLIPS} clip panels (${out.filter((x) => x.kind === "clip").length} asked).`);
   return out.sort((a, b) => a.at - b.at || (a.kind === "frame" ? -1 : 1));
@@ -102,7 +115,7 @@ export type PlanBeats = {
  * each graphic (a short clip, so its animation shows) and each b-roll, closer than 1.5 s joined, at most `max`, spread
  * over the edit when there are more. Titled by what they show.
  */
-export function storyboardAutoPanels(plan: PlanBeats, max = STORYBOARD_AUTO_PANELS): BoardPanel[] {
+export function storyboardAutoPanels(plan: PlanBeats, max = STORYBOARD_AUTO_PANELS, frames: StoryboardFrames = "video"): BoardPanel[] {
   const fps = plan.fps || 30, T = plan.outputSeconds;
   const grid = (t: number) => Math.min(Math.max(0, Math.round(T * fps) / fps - 1 / fps), Math.max(0, Math.round(t * fps) / fps));
   type Beat = { at: number; rank: number; title: string; clip?: number };
@@ -134,12 +147,65 @@ export function storyboardAutoPanels(plan: PlanBeats, max = STORYBOARD_AUTO_PANE
   }
   let clips = 0;
   return pick.map((b) => {
-    if (b.clip && clips < Math.min(4, STORYBOARD_MAX_CLIPS) && b.at + 0.2 < T) {
+    if (frames !== "images" && b.clip && clips < Math.min(4, STORYBOARD_MAX_CLIPS) && b.at + 0.2 < T) {
       clips++;
       const at = grid(b.at);
       return { kind: "clip" as const, at, end: Math.min(Math.round(T * fps) / fps, Math.max(at + 1 / fps, grid(b.at + b.clip))), title: b.title };
     }
     return { kind: "frame" as const, at: grid(b.at), title: b.title };
+  });
+}
+
+/** What moves onto the screen, for where a panel's picture is taken: text layers (how they come on, their keys),
+ *  graphics (their animation) and transitions. */
+export type PlanMotion = {
+  outputSeconds: number; fps?: number;
+  texts?: Pick<TextLayer, "start" | "end" | "anim" | "keys">[];
+  graphics?: { start: number; end: number }[];
+  transitions?: { start: number; end: number }[];
+};
+/** The longest a picture is moved to wait for motion to land. */
+export const SETTLE_MAX = 1.2;
+/** Where each thing on screen has landed: its start plus how it comes on (text), its first keys, or part of a graphic. */
+function landings(m: PlanMotion): { start: number; end: number; land: number }[] {
+  const out: { start: number; end: number; land: number }[] = [];
+  for (const t of m.texts ?? []) {
+    const keysEnd = Math.max(0, ...(t.keys ?? []).map((k) => k.t).filter((x) => x <= SETTLE_MAX));
+    const anim = ANIM_IN[t.anim] ?? 0;
+    const wait = Math.min(SETTLE_MAX, Math.max(anim > 0 ? anim + 0.1 : 0, keysEnd));
+    if (wait > 0) out.push({ start: t.start, end: t.end, land: t.start + wait });
+  }
+  for (const g of m.graphics ?? []) out.push({ start: g.start, end: g.end, land: g.start + Math.min(1, Math.max(0, (g.end - g.start) * 0.4)) });
+  for (const x of m.transitions ?? []) if (x.end > x.start) out.push({ start: x.start, end: x.end + 1, land: x.end + 1 / 30 });
+  return out;
+}
+/**
+ * The moment at or after t where whatever is coming on at t has landed (a title popped in, a card slid in, a
+ * transition done), at most SETTLE_MAX later and before `until`. A blank picture taken as a card starts is the miss.
+ */
+export function settledAt(m: PlanMotion, t: number, until = m.outputSeconds): number {
+  const fps = m.fps || 30;
+  const cap = Math.floor(Math.min(t + SETTLE_MAX, until - 1 / fps) * fps + 1e-6) / fps;
+  if (cap <= t) return t;
+  const ls = landings(m);
+  let at = t;
+  for (let n = 0; n < 8; n++) {
+    let next = at;
+    for (const l of ls) if (l.start <= at + 1e-6 && at < l.land - 1e-6 && l.land < l.end) next = Math.max(next, l.land);
+    if (next === at) break;
+    at = next;
+  }
+  return Math.min(cap, Math.max(t, Math.ceil(at * fps - 1e-6) / fps));
+}
+/**
+ * Panels whose picture would be taken mid-motion: a frame moves to where the motion lands (its at changes, so the
+ * picture and its comments agree), a clip keeps its window and gets stillAt, the second its picture is taken.
+ */
+export function settlePanels<T extends Pick<BoardPanel, "kind" | "at" | "end">>(items: T[], m: PlanMotion): (T & { stillAt?: number })[] {
+  return items.map((x) => {
+    if (x.kind === "frame") { const at = settledAt(m, x.at); return at > x.at + 1e-6 ? { ...x, at } : x; }
+    const at = settledAt(m, x.at, x.end ?? x.at);
+    return at > x.at + 1e-6 ? { ...x, stillAt: at } : x;
   });
 }
 

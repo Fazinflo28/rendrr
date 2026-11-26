@@ -22,8 +22,8 @@ export async function startStoryboard(userId: string, projectId: string, req: St
   const video = await prisma.video.findUniqueOrThrow({ where: { id: p.videoId } });
   if (!video.proxyKey || video.status === "expired") throw new AppError("The preview copy of this footage expired. Rebuild it from your Library, then make the storyboard again.", 409, "expired");
   let items: BoardPanel[];
-  try { items = req.panels?.length ? storyboardItems(req.panels, p.outputSeconds || 24 * 3600) : []; } catch (e) { if (e instanceof SampleError) throw new AppError(e.message, 400, "storyboard"); throw e; }
-  const board: Board = { title: (req.title || p.name).slice(0, 120), rules: req.rules ?? [], palette: (req.palette ?? []).map((c) => ({ hex: c.hex.toUpperCase(), name: c.name || "palette" })), ...(items.length ? {} : { auto: true }), status: "review" };
+  try { items = req.panels?.length ? storyboardItems(req.panels, p.outputSeconds || 24 * 3600, 30, req.frames ?? "video") : []; } catch (e) { if (e instanceof SampleError) throw new AppError(e.message, 400, "storyboard"); throw e; }
+  const board: Board = { title: (req.title || p.name).slice(0, 120), rules: req.rules ?? [], palette: (req.palette ?? []).map((c) => ({ hex: c.hex.toUpperCase(), name: c.name || "palette" })), ...(items.length ? {} : { auto: true }), ...(req.frames === "images" ? { frames: "images" as const } : {}), status: "review" };
   const made = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${"samples:" + projectId}))`;
     const latest = await tx.projectVersion.findFirst({ where: { projectId }, orderBy: { v: "desc" }, select: { v: true, updatedAt: true } });
@@ -33,6 +33,7 @@ export async function startStoryboard(userId: string, projectId: string, req: St
     for (const r of near) {
       const sp = planOf(r);
       if (!sp?.board || !!sp.board.auto !== !!board.auto) continue;
+      if ((sp.board.frames ?? "video") !== (board.frames ?? "video")) continue; // picture frames only, or with video frames
       if (!board.auto && words(sp.items) !== words(items)) continue;
       if (r.status === "done" && !((r.framesKeys as string[]) || []).length) continue; // its files were cleaned up
       if (r.status !== "done" && r.status !== "running" && r.status !== "queued") continue;
@@ -98,7 +99,7 @@ export async function approveStoryboard(userId: string, renderId: string, approv
 export function storyboardOut(v: AppSamples): string {
   const b = v.board!;
   const items: BoardPanel[] = v.items.map((x) => ({ kind: x.kind, at: x.at, ...(x.end != null ? { end: x.end } : {}), ...(x.note ? { note: x.note } : {}), ...(x.title ? { title: x.title } : {}), ...(x.caption ? { caption: x.caption } : {}), ...(x.shot ? { shot: x.shot } : {}), ...(x.onScreen ? { onScreen: x.onScreen } : {}) }));
-  const head = `Storyboard "${b.title}" of v${v.version}`;
+  const head = `Storyboard "${b.title}" of v${v.version}${b.frames === "images" ? " (picture frames only)" : ""}`;
   if (v.status === "failed") return `${head} failed: ${v.error}`;
   if (v.status !== "done") return `${head} is ${v.status === "queued" ? "queued" : `at ${v.percent}% (${v.step ?? "starting"})`} (render id ${v.renderId}). get_samples {renderId: "${v.renderId}", wait_seconds: 60} waits for it.${items.length ? `\nPanels:\n${boardPanelsText(items)}` : " Rendrr is picking its panels."}`;
   const state = b.status === "approved" ? `APPROVED by the user${b.approvedAt ? ` (${new Date(b.approvedAt).toISOString().slice(0, 16).replace("T", " ")} UTC)` : ""}` : "in review";
@@ -109,7 +110,8 @@ export function storyboardOut(v: AppSamples): string {
   const changes = open.length
     ? `\nThe user's changes (comment id | panel | text | what it carries):\n${open.map((c) => `${c.id} | ${where(c)} at ${sampleClock(c.time)} | ${c.text.replace(/\s+/g, " ").slice(0, 600) || "(no words)"}${ink(c)}`).join("\n")}\nMake them in one apply_edits, then create_storyboard again (the board of the new version), and resolve_comment each.`
     : "\nNo changes asked on it yet.";
-  const next = b.status === "approved" ? "\nThe user approved it: render_preview renders the whole video (render_final when they ask for the export)." : "\nWhen the user approves it (in Rendrr, or by saying so), render_preview renders the whole video.";
+  const next = (b.status === "approved" ? "\nThe user approved it: render_preview renders the whole video (render_final when they ask for the export)." : "\nWhen the user approves it (in Rendrr, or by saying so), render_preview renders the whole video.")
+    + (b.frames === "images" ? " When they want the video frames too, create_storyboard again with frames \"video\" (the same panels, clips where things move)." : "");
   return [
     `${head}, ${v.width}x${v.height}, ${state}${stale}. The user sees it at ${b.url ?? "the editor's Storyboard"} and in the chat.`,
     ...(b.style ? ["Style sheet (read from the edit):", ...boardStyleText(b.style).map((l) => `- ${l}`)] : []),
@@ -133,7 +135,7 @@ export async function storyboardImages(userId: string, v: AppSamples): Promise<{
   }
   for (const [k, x] of v.items.entries()) {
     if (urls.length >= 12) break;
-    if (x.still) { urls.push(x.still); said.push(`${urls.length}. panel ${k + 1}${x.kind === "clip" ? " (the clip's first frame)" : ""}`); }
+    if (x.still) { urls.push(x.still); said.push(`${urls.length}. panel ${k + 1}${x.kind === "clip" ? " (a picture from the clip, once its motion has landed)" : ""}`); }
   }
   return { urls, said };
 }
