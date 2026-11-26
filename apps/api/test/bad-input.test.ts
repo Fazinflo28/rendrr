@@ -43,7 +43,15 @@ describe("bad input", { skip: !ready && "needs DATABASE_URL and REDIS_URL" }, as
       assert.equal(r.statusCode, 200, r.body);
       assert.equal(r.json().projectId ?? projectId, projectId);
     }
-    assert.equal(await prisma.reviewComment.count({ where: { reviewToken: token } }), 3);
+    assert.equal(await prisma.reviewComment.count({ where: { reviewToken: token, text: "Tighter here" } }), 3);
+  });
+
+  it("a review comment carries the name its writer typed in; none (an older page) is Client", async () => {
+    const send = (payload: object) => app.inject({ method: "POST", url: `/public/reviews/${token}/comments`, payload: { time: 2, text: "Louder music", ...payload } });
+    assert.equal((await send({ name: "  Maya   Patel " })).json().author, "Maya Patel");
+    assert.equal((await send({ name: "Sam Lee" })).json().author, "Sam Lee");
+    assert.equal((await send({})).json().author, "Client");
+    assert.equal((await send({ name: "x".repeat(81) })).statusCode, 400);
   });
 
   it("a like pressed twice at once is one like; pressed again it is taken away", async () => {

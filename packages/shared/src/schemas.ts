@@ -102,11 +102,13 @@ export const CreateReviewInput = z.object({
 });
 /** A pin's spot on the picture: shares of the frame, 0-1 from the top left. */
 export const PinCoord = z.number().finite().min(0).max(1);
-export const ReviewCommentInput = z.object({ time: z.number().min(0).max(24 * 3600), text: z.string().trim().min(1, "Write a comment first.").max(2000, "That comment is too long."), x: PinCoord.optional(), y: PinCoord.optional() });
-export const ProjectCommentInput = ReviewCommentInput;
+export const ProjectCommentInput = z.object({ time: z.number().min(0).max(24 * 3600), text: z.string().trim().min(1, "Write a comment first.").max(2000, "That comment is too long."), x: PinCoord.optional(), y: PinCoord.optional() });
+/** Who wrote a comment on a review link: the full name each viewer types in before their first comment. */
+export const ReviewerName = z.string().trim().max(80, "That name is too long.").optional().nullable();
+export const ReviewCommentInput = ProjectCommentInput.extend({ name: ReviewerName });
 export const PlanInput = z.object({ plan: z.enum(["Free", "Pro", "Studio"], { errorMap: () => ({ message: "Pick Free, Pro or Studio." }) }) });
 export const ReviewPasswordInput = z.object({ password: z.string().max(100) });
-export const RequestChangesInput = z.object({ note: z.string().max(4000).optional().nullable() });
+export const RequestChangesInput = z.object({ note: z.string().max(4000).optional().nullable(), name: ReviewerName });
 export const ResolveCommentInput = z.object({ resolved: z.boolean().default(true) });
 
 export const PublishInput = z.object({

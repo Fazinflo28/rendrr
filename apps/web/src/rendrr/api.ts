@@ -611,7 +611,7 @@ export const api: any = {
     try { sessionStorage.setItem("rendrr-review-" + t, r.key); } catch { /* private mode: unlock lasts this page only */ }
     return { ok: true };
   },
-  addReviewComment: (t: string, { time, text, projectId, x, y }: any) => post(`/public/reviews/${enc(t)}/comments`, { time, text, projectId, ...(x != null && y != null ? { x, y } : {}) }, { auth: false, headers: reviewHeaders(t) }),
+  addReviewComment: (t: string, { time, text, projectId, x, y, name }: any) => post(`/public/reviews/${enc(t)}/comments`, { time, text, projectId, ...(name ? { name } : {}), ...(x != null && y != null ? { x, y } : {}) }, { auth: false, headers: reviewHeaders(t) }),
   resolveComment: (commentId: string, resolved = true) => patch(`/comments/${enc(commentId)}`, { resolved }),
   // "Send to Claude": the edit's open comments (or `ids`) go to the connected AI; returns its chat link with them ready.
   sendComments: (projectId: string, ai: "claude" | "chatgpt", ids?: string[]) => post(`/projects/${enc(projectId)}/comments/send`, { ai, ...(ids?.length ? { ids } : {}) }),
@@ -628,7 +628,7 @@ export const api: any = {
     return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: (text || "").trim(), ...(drawing?.strokes?.length ? { drawing } : {}), ...(images?.length ? { images } : {}), ...(renderId ? { renderId } : {}), ...(x != null && y != null ? { x, y } : {}) });
   },
   approveReview: (t: string) => post(`/public/reviews/${enc(t)}/approve`, {}, { auth: false, headers: reviewHeaders(t) }),
-  requestChanges: (t: string, note: string) => post(`/public/reviews/${enc(t)}/changes`, { note }, { auth: false, headers: reviewHeaders(t) }),
+  requestChanges: (t: string, note: string, name?: string) => post(`/public/reviews/${enc(t)}/changes`, { note, ...(name ? { name } : {}) }, { auth: false, headers: reviewHeaders(t) }),
 
   // ---- ai ----
   getConnectStatus: () => get("/connect"),

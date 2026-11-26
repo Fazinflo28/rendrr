@@ -838,11 +838,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       const d = storedDrawing(n), ims = storedImages(n), on = renders.find((r) => r.id === n.renderId), sam = sampleSets.find((r) => r.id === n.renderId);
       return [on ? `on preview v${on.version}` : sam ? `on samples ${sam.id} of v${sam.version} (get_samples)` : "", d ? drawingText(d) : "", ims.length ? `${ims.length} ${ims.length === 1 ? "picture" : "pictures"}` : "", n.editedAt ? "edited" : ""].filter(Boolean).map((x) => " | " + x).join("");
     };
-    const csRows = await Promise.all(cs.map(async (x) => row(x, await pinText(x))));
+    // Who left it: the name each viewer of the review link typed in ("Client" on older comments).
+    const csRows = await Promise.all(cs.map(async (x) => row({ ...x, text: `${x.author || "Client"}: ${x.text}` }, await pinText(x))));
     const noteRows = await Promise.all(notes.map(async (n) => row(n, noteExtra(n) + (await pinText(n)))));
     const pinned = [...cs, ...notes].some((x) => !x.resolved && pinOfRow(x));
     const parts = [
-      cs.length ? "Client comments (id | output time of the version they watched | text | state):\n" + csRows.join("\n") : "No client comments.",
+      cs.length ? "Client comments (id | output time of the version they watched | who: text | state; several people can comment on one link):\n" + csRows.join("\n") : "No client comments.",
       notes.length ? "The user's notes (id | time in the edited video | text | what it carries | state):\n" + noteRows.join("\n") : "",
       pinned ? "A PINNED comment was left by clicking that spot of the picture at that moment: change the layer it names (\"most likely about\"), not the whole frame. images true shows each pinned frame with the spot ringed, and a close-up." : "",
       await sentLines(c.userId, p.id, c.ai), // sent from the Rendrr app ("Send to Claude"): now read
