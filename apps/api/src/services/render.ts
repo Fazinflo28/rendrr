@@ -1,5 +1,5 @@
 import { chapterProblems, chaptersText, macOriginalOf, type Chapter } from "@rendrr/shared";
-import { AppError, enqueue, macForRender, publishRender, queue, readRender, redis, RENDER_QUEUES, renderQueueOf, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
+import { AppError, enqueue, macForRender, publishRender, queue, readRender, redis, RENDER_QUEUES, renderAhead, renderQueueOf, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, isFourKQuality, isSoundFormat, PREVIEW_STEPS, qualityLabel, SOUND_QUALITY, type ExportFormat } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
@@ -124,6 +124,8 @@ export async function renderStatus(r: Render) {
     status: r.status === "done" || r.status === "failed" ? r.status : base.status,
     step: base.step, steps: base.steps.length ? base.steps : steps, percent: r.status === "done" ? 100 : base.percent, etaSec: r.status === "done" || r.status === "failed" ? null : base.etaSec ?? null,
     error: r.error ?? base.error ?? undefined, code: r.errorCode ?? base.code ?? undefined,
+    // Still waiting its turn: how many renders are ahead of it (audit #27).
+    ahead: r.status === "queued" ? await renderAhead(r.id, r.kind).catch(() => null) : null,
     result: r.status === "done" ? (r.kind === "sample" ? { renderId: r.id, samples: await samplesView(r.userId, r.id) } : await renderResult(r)) : undefined,
     // Where it is made (the user's Mac while its Rendrr app makes it, else Rendrr's cloud server) and where the file goes.
     where: renderWhere(r, live),
