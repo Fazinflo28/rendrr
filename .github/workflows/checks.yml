@@ -1,0 +1,376 @@
+# Checks every change before it is merged: types, tests and the web build, each as its own job so a failure says
+# exactly where. Runs on pull requests into the live branch, and by hand. Every step has a time limit.
+name: Checks
+
+on:
+  pull_request:
+    branches: [claude/rendrr-backend-mcp-1vbkgg]
+  workflow_dispatch:
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
+      REDIS_URL: redis://localhost:6379
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: rendrr-test
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_FORCE_PATH_STYLE: "true"
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      INTERNAL_API_SECRET: ci-internal-secret-not-real
+      PUBLIC_API_URL: http://localhost:4000
+      PUBLIC_WEB_URL: http://localhost:3000
+      PUBLIC_MCP_URL: http://localhost:4100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+      - name: Prisma client
+        run: pnpm db:generate
+        timeout-minutes: 5
+      - name: Typecheck
+        run: pnpm turbo run typecheck --continue
+        timeout-minutes: 20
+  shared:
+    name: Tests shared
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
+      REDIS_URL: redis://localhost:6379
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: rendrr-test
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_FORCE_PATH_STYLE: "true"
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      INTERNAL_API_SECRET: ci-internal-secret-not-real
+      PUBLIC_API_URL: http://localhost:4000
+      PUBLIC_WEB_URL: http://localhost:3000
+      PUBLIC_MCP_URL: http://localhost:4100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+      - name: Prisma client
+        run: pnpm db:generate
+        timeout-minutes: 5
+      - name: Tests shared
+        run: pnpm --filter @rendrr/shared test
+        timeout-minutes: 20
+  core:
+    name: Tests core
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rendrr
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_DEFAULT_BUCKETS: rendrr-test
+        ports: ["9000:9000"]
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
+      REDIS_URL: redis://localhost:6379
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: rendrr-test
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_FORCE_PATH_STYLE: "true"
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      INTERNAL_API_SECRET: ci-internal-secret-not-real
+      PUBLIC_API_URL: http://localhost:4000
+      PUBLIC_WEB_URL: http://localhost:3000
+      PUBLIC_MCP_URL: http://localhost:4100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+      - name: Prisma client
+        run: pnpm db:generate
+        timeout-minutes: 5
+      - name: Database tables
+        run: pnpm --filter @rendrr/db exec prisma migrate deploy
+        timeout-minutes: 5
+      - name: Tests core
+        run: pnpm --filter @rendrr/core test
+        timeout-minutes: 20
+  mcp:
+    name: Tests mcp
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rendrr
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_DEFAULT_BUCKETS: rendrr-test
+        ports: ["9000:9000"]
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
+      REDIS_URL: redis://localhost:6379
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: rendrr-test
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_FORCE_PATH_STYLE: "true"
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      INTERNAL_API_SECRET: ci-internal-secret-not-real
+      PUBLIC_API_URL: http://localhost:4000
+      PUBLIC_WEB_URL: http://localhost:3000
+      PUBLIC_MCP_URL: http://localhost:4100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+      - name: Prisma client
+        run: pnpm db:generate
+        timeout-minutes: 5
+      - name: Database tables
+        run: pnpm --filter @rendrr/db exec prisma migrate deploy
+        timeout-minutes: 5
+      - name: Tests mcp
+        run: pnpm --filter @rendrr/mcp test
+        timeout-minutes: 20
+  api:
+    name: Tests api
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rendrr
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_DEFAULT_BUCKETS: rendrr-test
+        ports: ["9000:9000"]
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
+      REDIS_URL: redis://localhost:6379
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: rendrr-test
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_FORCE_PATH_STYLE: "true"
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      INTERNAL_API_SECRET: ci-internal-secret-not-real
+      PUBLIC_API_URL: http://localhost:4000
+      PUBLIC_WEB_URL: http://localhost:3000
+      PUBLIC_MCP_URL: http://localhost:4100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+      - name: Prisma client
+        run: pnpm db:generate
+        timeout-minutes: 5
+      - name: FFmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+        timeout-minutes: 8
+      - name: Database tables
+        run: pnpm --filter @rendrr/db exec prisma migrate deploy
+        timeout-minutes: 5
+      - name: Tests api
+        run: pnpm --filter @rendrr/api test
+        timeout-minutes: 20
+  worker:
+    name: Tests worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rendrr
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_DEFAULT_BUCKETS: rendrr-test
+        ports: ["9000:9000"]
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
+      REDIS_URL: redis://localhost:6379
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: rendrr-test
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_FORCE_PATH_STYLE: "true"
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      INTERNAL_API_SECRET: ci-internal-secret-not-real
+      PUBLIC_API_URL: http://localhost:4000
+      PUBLIC_WEB_URL: http://localhost:3000
+      PUBLIC_MCP_URL: http://localhost:4100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+      - name: Prisma client
+        run: pnpm db:generate
+        timeout-minutes: 5
+      - name: FFmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+        timeout-minutes: 8
+      - name: Database tables
+        run: pnpm --filter @rendrr/db exec prisma migrate deploy
+        timeout-minutes: 5
+      - name: Tests worker
+        run: pnpm --filter @rendrr/worker test
+        timeout-minutes: 20
+  web:
+    name: Web build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
+      REDIS_URL: redis://localhost:6379
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: rendrr-test
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_FORCE_PATH_STYLE: "true"
+      ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      INTERNAL_API_SECRET: ci-internal-secret-not-real
+      PUBLIC_API_URL: http://localhost:4000
+      PUBLIC_WEB_URL: http://localhost:3000
+      PUBLIC_MCP_URL: http://localhost:4100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+      - name: Prisma client
+        run: pnpm db:generate
+        timeout-minutes: 5
+      - name: Web build
+        run: pnpm --filter @rendrr/web build
+        timeout-minutes: 20
+  desktop:
+    name: Tests desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+        timeout-minutes: 10
+      - name: FFmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+        timeout-minutes: 8
+      - name: Tests desktop
+        run: npm test
+        timeout-minutes: 15
