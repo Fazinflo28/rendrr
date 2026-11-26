@@ -1827,3 +1827,31 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
   .seg > button.on, .tabs > button.on { anchor-name: --rd-on; background: transparent; box-shadow: none; }
   .seg:has(> button.on)::before, .tabs:has(> button.on)::before { content: ""; position: absolute; z-index: 0; position-anchor: --rd-on; top: anchor(top); bottom: anchor(bottom); left: anchor(left); right: anchor(right); border-radius: var(--r-sm); background: var(--raised-strong); box-shadow: var(--shadow-indicator); transition: left .26s var(--ease-out), right .26s var(--ease-out); }
 }
+
+/* ---------- full-screen video viewer: the video big over a blurred copy of itself, details on glass ---------- */
+@keyframes rdFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rdSideIn { from { opacity: 0; translate: 16px 0; } to { opacity: 1; translate: 0 0; } }
+.gv { position: fixed; inset: 0; z-index: 85; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 12px; padding: 12px; background: #050607; animation: rdFade .24s var(--ease-out); }
+.gv-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.gv-bg img, .gv-bg video { position: absolute; inset: -10%; width: 120%; height: 120%; object-fit: cover; filter: blur(64px) saturate(1.3); opacity: .5; animation: rdFade .5s var(--ease-out); }
+.gv-bg::after { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,.6)); }
+.gv-stage { position: relative; min-width: 0; min-height: 0; display: grid; place-items: center; }
+.gv-media { display: grid; place-items: center; width: 100%; max-width: 100%; max-height: calc(100dvh - 24px); animation: rdModalIn var(--t-slow) var(--ease-out); }
+.gv-media .gvid.big { max-height: calc(100dvh - 24px); max-width: 100%; border-radius: var(--r-md); box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+.gv-media .sv.modal-sv { max-height: calc(100dvh - 120px); width: min(960px, 100%); border-radius: var(--r-md); }
+.gv-nav { position: absolute; top: 50%; translate: 0 -50%; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.45); backdrop-filter: blur(10px); color: #fff; box-shadow: 0 0 0 1px rgba(255,255,255,.14); opacity: 0; transition: opacity var(--t-base) var(--ease-out), background-color var(--t-fast) var(--ease-out), scale var(--t-base) var(--ease-spring); }
+.gv-nav.prev { left: 12px; } .gv-nav.prev svg { rotate: 180deg; } .gv-nav.next { right: 12px; }
+.gv-stage:hover .gv-nav, .gv-nav:focus-visible { opacity: 1; }
+.gv-nav:hover { background: rgba(0,0,0,.65); } .gv-nav:active { scale: .92; }
+.gv-side { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 16px; padding: 16px; min-height: 0; overflow: auto; border-radius: var(--r-lg); background: rgba(22,24,27,.72); backdrop-filter: blur(24px) saturate(1.2); box-shadow: 0 0 0 1px var(--hair-strong), 0 24px 60px rgba(0,0,0,.5); animation: rdSideIn var(--t-slow) var(--ease-out) .04s backwards; }
+.gv-head { display: flex; align-items: center; gap: 10px; }
+.gv-head .gava { width: 36px; height: 36px; font-size: 13px; }
+.gv-who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.gv-who b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .gv-who span { font-size: 12px; color: var(--muted); }
+.gv-x { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--raised); color: var(--ink); transition: background-color var(--t-fast) var(--ease-out), scale var(--t-base) var(--ease-spring); }
+.gv-x:hover { background: var(--raised-strong); } .gv-x:active { scale: .92; }
+.gv-title { font: 700 22px/28px var(--font-display); letter-spacing: -.01em; }
+.gv-stats { display: flex; gap: 16px; font-size: 13px; color: var(--ink-dim); } .gv-stats span { display: inline-flex; align-items: center; gap: 6px; }
+.gv-actions { margin-top: auto; display: flex; flex-direction: column; gap: 8px; } .gv-actions > .btn { width: 100%; height: 44px; }
+.gv-hint { text-align: center; font-size: 12px; color: var(--ink-ghost); }
+@media (max-width: 900px) { .gv { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; } .gv-side { max-height: 45dvh; } .gv-nav { opacity: 1; } .gv-hint { display: none; } }

@@ -49,7 +49,7 @@ check(!t.paused && t.time > 0.2 && t.muted, `it plays muted while the pointer is
 await page.mouse.move(5, 5); await sleep(300);
 check(await tile.evaluate((v) => v.paused && v.currentTime === 0), "it stops when the pointer leaves");
 await tile.click(); await sleep(1200);
-const big = page.locator(".modal video.gvid.big");
+const big = page.locator(".gv video.gvid.big");
 check(await big.count() === 1 && await big.evaluate((v) => v.controls), "opening it plays the video with controls");
 const st = await big.evaluate((v) => ({ t: v.currentTime, paused: v.paused, muted: v.muted, rs: v.readyState }));
 check(st.t > 0.1 && !st.paused, `the window's video plays (${st.t.toFixed(2)} s${st.muted ? ", muted: the browser wants a tap for sound" : ", with sound"})`);
