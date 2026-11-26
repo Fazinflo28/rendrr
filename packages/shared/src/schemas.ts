@@ -100,7 +100,9 @@ export const CreateReviewInput = z.object({
   allowDownload: z.boolean().optional(),
   showLogo: z.boolean().optional(),
 });
-export const ReviewCommentInput = z.object({ time: z.number().min(0).max(24 * 3600), text: z.string().trim().min(1, "Write a comment first.").max(2000, "That comment is too long.") });
+/** A pin's spot on the picture: shares of the frame, 0-1 from the top left. */
+export const PinCoord = z.number().finite().min(0).max(1);
+export const ReviewCommentInput = z.object({ time: z.number().min(0).max(24 * 3600), text: z.string().trim().min(1, "Write a comment first.").max(2000, "That comment is too long."), x: PinCoord.optional(), y: PinCoord.optional() });
 export const ProjectCommentInput = ReviewCommentInput;
 export const PlanInput = z.object({ plan: z.enum(["Free", "Pro", "Studio"], { errorMap: () => ({ message: "Pick Free, Pro or Studio." }) }) });
 export const ReviewPasswordInput = z.object({ password: z.string().max(100) });

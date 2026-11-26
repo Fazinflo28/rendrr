@@ -1,6 +1,6 @@
 import { AppError, applyTimelineChange, matteBlockUrls, notFound, projectChannel, restoreVersion, signGet } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
-import { COMMENT_IMAGES_MAX, CommentImageInput, CreateFolderInput, CreateProjectInput, DrawingInput, UseFootageInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot, type Timeline } from "@rendrr/shared";
+import { COMMENT_IMAGES_MAX, CommentImageInput, PinCoord, CreateFolderInput, CreateProjectInput, DrawingInput, UseFootageInput, ProjectCommentInput, RenameFolderInput, UpdateProjectInput, type Snapshot, type Timeline } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { faceTracks, skinFaceAreas, speakerCentres } from "../services/color";
@@ -277,7 +277,7 @@ export default async function projects(app: FastifyInstance) {
   // A drawing on the picture and pictures (up to 4) can come with it, as from the app in the chat; then the text may be
   // empty.
   // renderId: the render it is on (a storyboard's panel: the comment's time is the panel's).
-  const NoteInput = z.object({ time: ProjectCommentInput.shape.time, text: z.string().trim().max(2000, "That comment is too long.").default(""), drawing: DrawingInput.optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional(), renderId: z.string().max(100).optional() });
+  const NoteInput = z.object({ time: ProjectCommentInput.shape.time, text: z.string().trim().max(2000, "That comment is too long.").default(""), drawing: DrawingInput.optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional(), renderId: z.string().max(100).optional(), x: PinCoord.optional(), y: PinCoord.optional() });
   app.post("/projects/:id/comments", { bodyLimit: 8 * 1024 * 1024 }, async (req) => {
     const p = await getOwnedProject(req.user!.id, (req.params as { id: string }).id);
     const i = NoteInput.parse(req.body);

@@ -5,6 +5,7 @@ import { createHmac } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { authenticate } from "../auth";
 import { commentOut, galleryOut, reviewOut } from "../serialize";
+import { pinOf } from "../services/commentMedia";
 import { isWatchableKey, latestRender } from "../services/projects";
 import { startRender } from "../services/render";
 import { deleteGalleryMedia, galleryMedia, prepareGalleryMedia } from "../services/galleryMedia";
@@ -188,7 +189,7 @@ export default async function reviews(app: FastifyInstance) {
       const raw = (req.body as { projectId?: unknown }).projectId;
       const projectId = typeof raw === "string" && raw.length <= 64 ? raw : undefined; // anything else: the review's own edit
       const valid = projectId && (r.projectId === projectId || (r.folderId && (await prisma.project.count({ where: { id: projectId, folderId: r.folderId } }))));
-      const c = await prisma.reviewComment.create({ data: { reviewToken: r.token, projectId: valid ? projectId! : r.projectId, time: Math.round(b.time * 100) / 100, text: b.text, author: "Client" } });
+      const c = await prisma.reviewComment.create({ data: { reviewToken: r.token, projectId: valid ? projectId! : r.projectId, time: Math.round(b.time * 100) / 100, text: b.text, author: "Client", ...(pinOf(b) ?? {}) } });
       return commentOut(c);
     });
     pub.post("/public/reviews/:token/approve", async (req) => {

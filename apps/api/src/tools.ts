@@ -24,6 +24,7 @@ import { elementFromSource, elementsText, elementText } from "./services/element
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
+import { layersAt, layoutTimeline, pinLayersText, pinWhere, type PinPoint } from "@rendrr/shared";
 import { lutsFor, speakerCentres, withMeasurements } from "./services/color";
 import { allMarks, inRange, markScope, retakesOf } from "./services/marks";
 import { audioFramesOf, deepOf, visionDetailsOf } from "./services/deep";
@@ -810,15 +811,39 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const renders = await prisma.render.findMany({ where: { projectId: p.id, kind: "preview" }, select: { id: true, version: true, status: true, outputKey: true, createdAt: true }, orderBy: { createdAt: "desc" } });
     const sampleSets = await prisma.render.findMany({ where: { projectId: p.id, kind: "sample", id: { in: notes.map((n) => n.renderId).filter((x): x is string => !!x) } }, select: { id: true, version: true } });
     const short = (t: string) => (t.length > 600 ? t.slice(0, 600) + "…" : t).replace(/\s+/g, " ");
+    // Pins: a comment left on a spot of the picture. Say where, and what is there at that moment (from the edit as it
+    // is now), so the change goes on the right clip, graphic, text or caption.
+    const pinOfRow = (x: { x?: number | null; y?: number | null }): PinPoint | null => (x.x != null && x.y != null ? { x: x.x, y: x.y } : null);
+    let laid: Timeline | null | undefined;
+    const laidOut = async () => {
+      if (laid !== undefined) return laid;
+      try {
+        const v = await prisma.video.findUnique({ where: { id: p.videoId }, include: { analysis: true } });
+        const words = allWords(((v?.analysis?.transcript as unknown as Transcript) || []));
+        laid = layoutTimeline(asSequence(p.timeline as unknown as Timeline, words, p.videoId), words, p.videoId);
+      } catch { laid = null; }
+      return laid;
+    };
+    const pinText = async (x: { time: number; x?: number | null; y?: number | null }) => {
+      const pin = pinOfRow(x);
+      if (!pin) return "";
+      const tl = await laidOut();
+      const under = tl ? pinLayersText(layersAt(tl, x.time, pin, ASPECT_RATIO[p.aspect as keyof typeof ASPECT_RATIO] ?? 16 / 9)) : "";
+      return ` | PINNED at ${pinWhere(pin)} of the frame (x ${pin.x.toFixed(3)}, y ${pin.y.toFixed(3)})${under ? " | " + under : ""}`;
+    };
     const row = (x: { id: string; time: number; text: string; resolved: boolean }, extra = "") => `${x.id} | ${fmtMs(x.time)} | ${short(x.text) || "(no words)"}${extra} | ${x.resolved ? "resolved" : "open"}`;
     // The app in the chat: what a note carries besides words, said in words; the pictures themselves with images true.
     const noteExtra = (n: (typeof notes)[number]) => {
       const d = storedDrawing(n), ims = storedImages(n), on = renders.find((r) => r.id === n.renderId), sam = sampleSets.find((r) => r.id === n.renderId);
       return [on ? `on preview v${on.version}` : sam ? `on samples ${sam.id} of v${sam.version} (get_samples)` : "", d ? drawingText(d) : "", ims.length ? `${ims.length} ${ims.length === 1 ? "picture" : "pictures"}` : "", n.editedAt ? "edited" : ""].filter(Boolean).map((x) => " | " + x).join("");
     };
+    const csRows = await Promise.all(cs.map(async (x) => row(x, await pinText(x))));
+    const noteRows = await Promise.all(notes.map(async (n) => row(n, noteExtra(n) + (await pinText(n)))));
+    const pinned = [...cs, ...notes].some((x) => !x.resolved && pinOfRow(x));
     const parts = [
-      cs.length ? "Client comments (id | output time of the version they watched | text | state):\n" + cs.map((x) => row(x)).join("\n") : "No client comments.",
-      notes.length ? "The user's notes (id | time in the edited video | text | what it carries | state):\n" + notes.map((n) => row(n, noteExtra(n))).join("\n") : "",
+      cs.length ? "Client comments (id | output time of the version they watched | text | state):\n" + csRows.join("\n") : "No client comments.",
+      notes.length ? "The user's notes (id | time in the edited video | text | what it carries | state):\n" + noteRows.join("\n") : "",
+      pinned ? "A PINNED comment was left by clicking that spot of the picture at that moment: change the layer it names (\"most likely about\"), not the whole frame. images true shows each pinned frame with the spot ringed, and a close-up." : "",
       await sentLines(c.userId, p.id, c.ai), // sent from the Rendrr app ("Send to Claude"): now read
     ];
     if (!i.images) {
@@ -828,6 +853,15 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     // Up to 8 pictures: each open note's drawing on the frame of the preview it was made on (else the latest), then its pictures.
     const urls: string[] = [], said: string[] = [];
     const latest = renders.find((r) => r.status === "done" && r.outputKey);
+    // Pinned comments first: the frame with the spot ringed, then a close-up around it.
+    for (const x of [...notes, ...cs].filter((x) => !x.resolved && pinOfRow(x))) {
+      if (urls.length >= 7) break;
+      const r = renders.find((y) => y.id === (x as { renderId?: string | null }).renderId && y.status === "done" && y.outputKey) ?? latest;
+      if (!r) break;
+      const got = await framesFor(r.id, [x.time], undefined, [pinOfRow(x)]).catch(() => [] as string[]);
+      if (got[0]) { urls.push(got[0]); said.push(`${urls.length}. comment ${x.id} at ${fmtMs(x.time)}: preview v${r.version}'s frame, the pinned spot ringed in lime`); }
+      if (got[1] && urls.length < 8) { urls.push(got[1]); said.push(`${urls.length}. comment ${x.id}: close-up around the pinned spot`); }
+    }
     for (const n of notes.filter((x) => !x.resolved)) {
       const d = storedDrawing(n);
       if (d?.key && urls.length < 8) {

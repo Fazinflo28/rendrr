@@ -79,11 +79,16 @@ export const deleteEditCommentFiles = (userId: string, projectId: string) => del
 const empty = (text: string, d: unknown, imgs: number) => { if (!text.trim() && !d && !imgs) throw new AppError("Write a comment, draw on the picture or add a picture first.", 400, "empty-comment"); };
 
 /** A note at a moment of the edited video, with its drawing and pictures (the preview it was made on, when known). */
-export async function addNote(userId: string, projectId: string, i: { time: number; text: string; renderId?: string; drawing?: DrawingIn; images?: ImageIn[] }) {
+/** A pin's spot (x, y in 0-1 of the frame), only when both are there. */
+export const pinOf = (i: { x?: number | null; y?: number | null }) => (i.x != null && i.y != null && Number.isFinite(i.x) && Number.isFinite(i.y) ? { x: Math.round(Math.min(1, Math.max(0, i.x)) * 1e4) / 1e4, y: Math.round(Math.min(1, Math.max(0, i.y)) * 1e4) / 1e4 } : null);
+/** A comment's pin as it goes out (nothing for a plain comment). */
+export const pinOut = (c: { x?: number | null; y?: number | null }) => { const p = pinOf(c); return p ? { x: p.x, y: p.y } : {}; };
+
+export async function addNote(userId: string, projectId: string, i: { time: number; text: string; renderId?: string; drawing?: DrawingIn; images?: ImageIn[]; x?: number; y?: number }) {
   empty(i.text, i.drawing, i.images?.length ?? 0);
   if ((i.images?.length ?? 0) > COMMENT_IMAGES_MAX) throw new AppError(`Up to ${COMMENT_IMAGES_MAX} pictures on a comment.`, 400, "comment-media");
   const render = i.renderId ? await prisma.render.findFirst({ where: { id: i.renderId, projectId }, select: { id: true } }) : null;
-  const n = await prisma.projectComment.create({ data: { projectId, userId, time: i.time, text: i.text.trim(), renderId: render?.id ?? null } });
+  const n = await prisma.projectComment.create({ data: { projectId, userId, time: i.time, text: i.text.trim(), renderId: render?.id ?? null, ...(pinOf(i) ?? {}) } });
   try {
     const drawing = i.drawing ? await saveDrawing(userId, projectId, n.id, i.drawing) : null;
     const images = i.images?.length ? await saveImages(userId, projectId, n.id, i.images) : [];

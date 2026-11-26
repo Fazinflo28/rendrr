@@ -1,6 +1,6 @@
 // Database rows -> the exact shapes ui/rendrr-ui.html's fake api returned. Signed URLs only, never raw keys.
 import { isAdmin, signGet } from "@rendrr/core";
-import { commentMedia } from "./services/commentMedia";
+import { commentMedia, pinOut } from "./services/commentMedia";
 import type { AiAction, Folder, GalleryItem, Project, ProjectComment, Review, ReviewComment, Style, User, Video } from "@rendrr/db";
 import { DAY_MS, DRIVE_STEPS, fmtShortDate, fmtSize, LOCAL_STEPS, UPLOAD_STEPS, type ReferenceRef } from "@rendrr/shared";
 
@@ -44,13 +44,13 @@ export function projectOut(p: Project) {
 }
 
 export function commentOut(c: ReviewComment) {
-  return { id: c.id, time: c.time, text: c.text, author: c.author, resolved: c.resolved, at: c.createdAt.getTime(), projectId: c.projectId ?? undefined };
+  return { id: c.id, time: c.time, text: c.text, author: c.author, resolved: c.resolved, at: c.createdAt.getTime(), projectId: c.projectId ?? undefined, ...pinOut(c) };
 }
 
 /** The user's own note in the editor; same shape as a client comment, plus `mine`, and what the app in the chat can
  *  add to it (a drawing on the picture, pictures; edited). */
 export async function noteOut(n: ProjectComment, author: string) {
-  return { id: n.id, time: n.time, text: n.text, author: author || "You", mine: true, resolved: n.resolved, at: n.createdAt.getTime(), projectId: n.projectId, edited: !!n.editedAt, ...(await commentMedia(n)) };
+  return { id: n.id, time: n.time, text: n.text, author: author || "You", mine: true, resolved: n.resolved, at: n.createdAt.getTime(), projectId: n.projectId, edited: !!n.editedAt, ...(await commentMedia(n)), ...pinOut(n) };
 }
 
 export function activityOut(a: AiAction, project?: Project | null) {
