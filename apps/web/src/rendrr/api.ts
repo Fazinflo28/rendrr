@@ -569,7 +569,7 @@ export const api: any = {
     onProgress?.({ step: 0, steps, percent: 0 });
     const up = await post(`/projects/${enc(projectId)}/original`, { name: f.name, size: f.size, ...(seconds != null ? { seconds } : {}) });
     let parts;
-    try { parts = await localJobs.uploadParts(f, up.urls, up.partSize, (pct) => onProgress?.({ step: 0, steps, percent: Math.min(99, Math.round(pct)) }), signal); }
+    try { parts = await localJobs.uploadParts(f, up.urls, up.partSize, (pct, eta) => onProgress?.({ step: 0, steps, percent: Math.min(99, Math.round(pct)), etaSec: eta ?? null }), signal); }
     catch (e: any) {
       // Stopped (Stop export) or failed: the half-sent upload is thrown away on the storage too.
       post(`/projects/${enc(projectId)}/original/abort`, { uploadId: up.uploadId }).catch(() => {});
