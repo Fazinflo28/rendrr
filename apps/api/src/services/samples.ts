@@ -52,7 +52,7 @@ export async function startSamples(userId: string, projectId: string, req: Sampl
   if ("joined" in made && made.joined) return made.joined;
   const { made: r, steps } = made as { made: Render; steps: string[] };
   await publishRender(r.id, { status: "queued", step: 0, steps, percent: 0 });
-  await enqueue<RenderJob>("render", { renderId: r.id }, { jobId: r.id });
+  await enqueue<RenderJob>("preview", { renderId: r.id }, { jobId: r.id });
   return r;
 }
 

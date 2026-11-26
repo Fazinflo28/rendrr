@@ -89,7 +89,12 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
   hits.set(key, list);
   next();
 }
-setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (!v.some((t) => now - t < 60_000)) hits.delete(k); }, 60_000).unref();
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of hits) if (!v.some((t) => now - t < 60_000)) hits.delete(k);
+  // Names of the AIs seen, kept a day (the list only grew: audit #9).
+  for (const [k, v] of clientNames) if (now - v.at > 24 * 3600_000) clientNames.delete(k);
+}, 60_000).unref();
 
 // Same checks as Clerk's mcpAuthClerk, but every failure is a 401. (mcpAuthClerk does not await its own work, so a
 // malformed "Authorization: Bearer" header became an unhandled rejection that stopped the whole server.)

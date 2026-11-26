@@ -67,13 +67,20 @@ const styleUser = async (job: Job) => (await styleRow(job))?.userId ?? null;
 // "Stop export" (API POST /renders/:id/stop): the job running that render here stops where it stands.
 const stops = newRedis();
 stops.subscribe(STOP_CHANNEL).catch((e) => console.error("[worker] could not listen for stops:", e));
-stops.on("message", (_ch, key: string) => { if (stopJob(String(key))) console.log(`[worker] stopping ${key}`); });
+stops.on("message", (_ch, key: string) => {
+  // "render:<id>" stops that render whichever line it runs in (finals in "render", previews in "preview").
+  const k = String(key);
+  if (stopJob(k) || stopJob(k.replace(/^render:/, "preview:"))) console.log(`[worker] stopping ${k}`);
+});
 
 const conc = (name: string, d: number) => Math.max(1, Math.floor(Number(process.env[`CONCURRENCY_${name.toUpperCase()}`]) || d));
 const workers = [
   new Worker(QUEUES.proxy.name, guarded("proxy", videoLimit, "Making the preview", proxyJob, videoFailed, videoUser), { connection: newRedis(), concurrency: conc("proxy", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.analyze.name, guarded("analyze", videoLimit, "Processing", analyzeJob, videoFailed, videoUser), { connection: newRedis(), concurrency: conc("analyze", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.render.name, guarded("render", renderLimit, "The render", renderJob, (job, msg, code) => renderFailed((job.data as { renderId: string }).renderId, msg, code), renderUser), { connection: newRedis(), concurrency: conc("render", 1), lockDuration: 60_000 }),
+  // Previews, samples and storyboards on their own line (audit #2): one may run while a final runs, so nobody waits
+  // behind a long export. The thread budget (lib/threads.ts) shares the container between the two.
+  new Worker(QUEUES.preview.name, guarded("preview", renderLimit, "The render", renderJob, (job, msg, code) => renderFailed((job.data as { renderId: string }).renderId, msg, code), renderUser), { connection: newRedis(), concurrency: conc("preview", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.graphic.name, guarded("graphic", graphicLimit, "The graphic", graphicJob, (job, msg) => graphicFailed(job.data as GraphicJob, msg)), { connection: newRedis(), concurrency: conc("graphic", 1), lockDuration: 60_000 }),
   new Worker(QUEUES.frames.name, guarded("frames", async (job) => ((job.data as { track?: unknown }).track ? TRACK_TIMEOUT_MS : QUEUES.frames.timeoutMs), "Taking frames", framesJob, async () => {}), { connection: newRedis(), concurrency: conc("frames", 2), lockDuration: 60_000 }),
   new Worker(QUEUES.breakdown.name, guarded("breakdown", videoLimit, "Reading the frames", breakdownJob, async () => {}), { connection: newRedis(), concurrency: conc("breakdown", 1), lockDuration: 60_000 }),

@@ -1,5 +1,5 @@
 import { chapterProblems, chaptersText, macOriginalOf, type Chapter } from "@rendrr/shared";
-import { AppError, enqueue, macForRender, publishRender, queue, readRender, redis, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
+import { AppError, enqueue, macForRender, publishRender, queue, readRender, redis, RENDER_QUEUES, renderQueueOf, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, isFourKQuality, isSoundFormat, PREVIEW_STEPS, qualityLabel, SOUND_QUALITY, type ExportFormat } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
@@ -62,6 +62,11 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   const best = kind === "final" && !!opts.best && !sound;
   const resolution = best && (ex?.resolution === "4k" || bestResolution(p.aspect, video.width, video.height) === "4k") ? "4k" : best ? "1080p" : ex?.resolution;
   const quality = kind !== "final" ? "540p" : sound ? SOUND_QUALITY[format as "audio" | "wav"] : qualityLabel({ resolution, codec: ex?.codec, hdr: !!video.hdr && ((ex as { hdr?: string })?.hdr ?? "keep") === "keep", best });
+  // The same version already waiting or rendering: join it before the plan check (audit #10), so a second click at
+  // the plan's limit joins the render instead of being refused. The locked check below still settles races.
+  const sameKind = { projectId, kind, version, status: { in: ["queued", "running"] }, ...(kind === "final" ? { quality: best ? { contains: "best" } : { not: { contains: "best" } }, format } : {}) } as const;
+  const already = await prisma.render.findFirst({ where: sameKind as never, orderBy: { createdAt: "desc" } });
+  if (already) return already;
   // Billing: the plan must have room for this export (or preview). Gallery renders are Rendrr's own.
   if (opts.by !== "gallery") await assertMay(userId, { metric: kind === "final" ? "export" : "preview", minutes: (p.outputSeconds || video.seconds || 60) / 60, fourK: kind === "final" && isFourKQuality(quality) });
   // Asking again while the same version is already waiting or rendering joins that render, however long it has been
@@ -81,7 +86,7 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   const reviewState = ["In review", "Changes requested", "Approved"].includes(p.status);
   if (version === p.currentVersion && !reviewState) await prisma.project.update({ where: { id: projectId }, data: { status: "Rendering" } });
   await publishRender(r.id, { status: "queued", step: 0, steps, percent: 0 });
-  await enqueue<RenderJob>("render", { renderId: r.id }, { jobId: r.id });
+  await enqueue<RenderJob>(renderQueueOf(kind), { renderId: r.id }, { jobId: r.id });
   return r;
 }
 
@@ -135,8 +140,10 @@ export const STOP_CHANNEL = "rendrr:stop";
  */
 export async function stopRender(r: Render) {
   if (r.status === "done" || r.status === "failed") return { stopped: false, status: r.status };
-  const job = await queue("render").getJob(r.id).catch(() => null);
-  if (job && ((await job.isWaiting().catch(() => false)) || (await job.isDelayed().catch(() => false)))) await job.remove().catch(() => {});
+  for (const q of RENDER_QUEUES) {
+    const job = await queue(q).getJob(r.id).catch(() => null);
+    if (job && ((await job.isWaiting().catch(() => false)) || (await job.isDelayed().catch(() => false)))) await job.remove().catch(() => {});
+  }
   const error = "You stopped this export.";
   // Only while it is still waiting or running: one that finished a moment ago stays finished.
   const hit = await prisma.render.updateMany({ where: { id: r.id, status: { in: ["queued", "running"] } }, data: { status: "failed", error, errorCode: "stopped", finishedAt: new Date() } });
@@ -145,7 +152,8 @@ export async function stopRender(r: Render) {
   const p = await prisma.project.findUnique({ where: { id: r.projectId }, select: { id: true, status: true } });
   if (p && p.status === "Rendering") {
     const done = await prisma.render.findMany({ where: { projectId: p.id, status: "done", kind: { not: "sample" } }, select: { kind: true } });
-    const status = done.some((x) => x.kind === "final") ? "Final ready" : done.length || r.kind === "final" ? "Preview ready" : "Draft";
+    // Nothing finished: back to Draft (a stopped final showed "Preview ready" with no preview: audit #8).
+    const status = done.some((x) => x.kind === "final") ? "Final ready" : done.length ? "Preview ready" : "Draft";
     await prisma.project.update({ where: { id: p.id }, data: { status } });
   }
   await publishRender(r.id, { status: "failed", step: 0, steps: (r.steps as string[]) || [], percent: 0, error, code: "stopped" });

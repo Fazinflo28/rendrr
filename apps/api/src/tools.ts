@@ -292,6 +292,7 @@ const flagsOf = (text: string) => text.match(/Edit check \(nothing rendered\): (
 /** The longest a tool call waits for a job: clients drop calls after about a minute (some sooner), so a longer
  *  recording or render answers with its id and is polled (get_graphic, get_render). */
 export const TOOL_WAIT_MS = 8_000;
+// While a tool waits, it reads only the render's status each second, never the whole row (its plan can be large).
 async function waitFor<T>(fn: () => Promise<T | null>, ms: number, every = 1000): Promise<T | null> {
   const end = Date.now() + ms;
   while (Date.now() < end) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, every)); }
@@ -1210,7 +1211,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const pick = await pickTarget(c.userId, i.device, { tool: "render_preview" });
     if (pick.ask) return { text: pick.ask };
     const r = await startRender(c.userId, i.projectId, "preview", { by: c.ai ?? "claude", target: pick.target });
-    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id }, select: { status: true } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     const out = await renderOut(r.id);
     const lead = [pick.note, had ? `${changed.map((g) => `"${g.name}" (${g.id})`).join(", ")} changed since preview v${had.version}: rendering it again.` : null].filter(Boolean).join("\n");
     return lead ? { ...out, text: `${lead}\n${out.text}` } : out;
@@ -1224,7 +1225,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       if (err.code === "samples" || err.code === "expired") return { text: `${err.message} Nothing was rendered.` };
       throw e;
     }
-    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id }, select: { status: true } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     return samplesAnswer(c.userId, r.id, i.images !== false);
   },
   async create_storyboard(c, i) {
@@ -1236,7 +1237,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       if (err.code === "storyboard" || err.code === "expired") return { text: `${err.message} Nothing was drawn.` };
       throw e;
     }
-    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id }, select: { status: true } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     return samplesAnswer(c.userId, r.id, i.images !== false);
   },
   async get_samples(c, i) {
@@ -1292,7 +1293,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     // The file goes to the computer that makes it, else the main one (made in the cloud, saved to its Downloads).
     const to = pick.device ?? macNow.devices?.find((d) => d.id === macNow.deviceId) ?? null;
     if (mac && to) await queueMacExport(c.userId, r.id, fileNameFor(i.fileName, (await renderResult(r)).fileName), to.name, to.platform, to.id);
-    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id }, select: { status: true } }); return x && (x.status === "done" || x.status === "failed") ? x : null; }, TOOL_WAIT_MS);
     const out = await renderOut(r.id);
     const M = machineWord(to?.platform ?? macNow.platform), APP = desktopAppName(to?.platform ?? macNow.platform);
     const toName = to?.name ?? macNow.device;
@@ -1322,7 +1323,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     if (typeof t === "string") return { text: t };
     await askDriveSave(r, t, fileNameFor(i.fileName, (await renderResult(r)).fileName));
     // A short final is often there within the wait.
-    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id } }); const s = x && (x.driveSave as { state?: string } | null)?.state; return s === "saved" || s === "failed" ? x : null; }, TOOL_WAIT_MS);
+    await waitFor(async () => { const x = await prisma.render.findUnique({ where: { id: r.id }, select: { driveSave: true } }); const s = x && (x.driveSave as { state?: string } | null)?.state; return s === "saved" || s === "failed" ? x : null; }, TOOL_WAIT_MS);
     return { text: `Final v${r.version} (render id ${r.id}): ${driveLine(await prisma.render.findUniqueOrThrow({ where: { id: r.id } }))}`, data: { renderId: r.id } };
   },
   async get_render(c, i) {

@@ -25,8 +25,11 @@ export const FONT_ORIGINS = ["https://fonts.googleapis.com", "https://fonts.gsta
 // ---------------- forwarding to the API ----------------
 type ToolOut = { text: string; images?: string[]; data?: unknown };
 export async function callApi(w: Who, path: string, body?: unknown, method = "POST"): Promise<{ ok: boolean; json: any }> {
+  // A time limit, so a slow or stuck server never leaves the AI waiting with no answer (audit #7). Long tools answer
+  // within seconds by design (they hand back an id to poll), so two minutes is far more than any call needs.
   const r = await fetch(API() + path, {
     method,
+    signal: AbortSignal.timeout(120_000),
     headers: { "x-internal-secret": SECRET(), "x-rendrr-clerk-id": w.clerkId, "x-rendrr-ai": w.kind, "x-rendrr-ai-name": w.name, "content-type": "application/json" },
     body: method === "GET" ? undefined : JSON.stringify(body ?? {}),
   }).catch(() => null);
@@ -35,17 +38,17 @@ export async function callApi(w: Who, path: string, body?: unknown, method = "PO
 }
 
 async function imageContent(urls: string[] = []) {
-  const out: { type: "image"; data: string; mimeType: string }[] = [];
-  for (const u of urls.slice(0, 8)) {
+  // All at once, in their order, each with a time limit (they were fetched one after another: audit #17).
+  const got = await Promise.all(urls.slice(0, 8).map(async (u) => {
     try {
-      const r = await fetch(u);
-      if (!r.ok) continue;
+      const r = await fetch(u, { signal: AbortSignal.timeout(20_000) });
+      if (!r.ok) return null;
       const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.length > 900_000) continue;
-      out.push({ type: "image", data: buf.toString("base64"), mimeType: r.headers.get("content-type") || "image/jpeg" });
-    } catch { /* skip */ }
-  }
-  return out;
+      if (buf.length > 900_000) return null;
+      return { type: "image" as const, data: buf.toString("base64"), mimeType: r.headers.get("content-type") || "image/jpeg" };
+    } catch { return null; /* skip */ }
+  }));
+  return got.filter((x): x is { type: "image"; data: string; mimeType: string } => !!x);
 }
 
 /** Where the app's video and pictures come from (the storage the API signs links for), asked once in a while. */

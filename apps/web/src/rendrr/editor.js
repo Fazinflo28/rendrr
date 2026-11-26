@@ -16,6 +16,7 @@ function linkified(text) {
   out.push((text || "").slice(last));
   return out;
 }
+import { memo } from "react";
 import { CreateLinkModal, DrivePicker } from "./screens";
 import { api } from "./api";
 import { DropboxPanel, GooglePhotosPanel } from "./cloudSources";
@@ -32,6 +33,7 @@ import { Filmstrip } from "./filmstrip";
 import { ASPECT_RATIO, BLEND_MODES, lookTags, adjustCss, areaAt, objectBoxAt, hashOf, maskPicture, rateOf, blendCss, reverbSeconds, fitCrop, VOICE_PRESETS, applyOp, asSequence, audioFrames, patternPicture, peaksFromSamples, waveColumns, audioAt, cardBorderPicture, cardShadowPicture, audioSettings, CAPTION_FONTS, DIRS, EASES, KEY_PROPS, keyTracks, motionAt, showAt, speedText, TRANSITIONS, captionStyleOf, CLEANUP_KNOBS, CLEANUP_TEXT, CLEANUPS, cleanupParams, cssSize, dbToLin, drawnOf, isMatted, FONT_WEIGHTS, fontFaceCss, fontFilesOf, TEXT_ANIMS, TEXT_PRESETS, textPreset, findTemplate, isCaptionMarker, layoutTimeline, liveFrame, playerGraphicHtml, sequenceClock, sequenceView, StyleRulesSchema, templateSize, aiName, handoffTarget, elementKeys } from "@rendrr/shared";
 import { outputSize, planRender } from "@rendrr/shared/renderPlan";
 import { applyLiveFx, resumeLiveAudio } from "./liveAudio";
+import { lastWordAtOrBefore, isSortedByTime, wordIndexById, lineOfWord } from "./words";
 // Undo and redo over the whole edit state. `replace` changes without a history entry (typing), `commit` adds one.
 function useHistory(initial) {
   const [h, setH] = useState({ past: [], present: initial, future: [] });
@@ -51,7 +53,7 @@ const TRACK_HINT = { v1: "Main cut", v2: "B-roll, effects", v3: "Titles", a1: "D
 // Premiere's tools and keys.
 const TOOL_ICON = { select: "select", razor: "razor", ripple: "ripple", roll: "roll", slip: "slip", slide: "slide" };
 const TOOLS = [["select", "V", "Select", "Click to select, drag a clip to reorder it, drag an edge to trim"], ["razor", "C", "Razor", "Click a clip to split it there"], ["ripple", "B", "Ripple", "Drag an edge: the clip gets longer or shorter and the edit closes up"], ["roll", "N", "Rolling", "Drag a cut: one clip gets longer, the next shorter"], ["slip", "Y", "Slip", "Drag a clip: same place and length, other footage"], ["slide", "U", "Slide", "Drag a clip between its neighbours"]];
-const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "Pause"], ["L", "Forward 5 seconds"], ...TOOLS.map(([, k, l, d]) => [k, `${l}: ${d.charAt(0).toLowerCase() + d.slice(1)}`]), ["S", "Snapping on or off"], ["Shift Z", "Zoom the timeline to fit"], ["Cmd K", "Split at the playhead"], ["Alt drag", "Drag a dialogue edge: J or L cut"], ["Delete", "Cut selected words or clip"], ["Cmd Z", "Undo"], ["Cmd Shift Z", "Redo"], ["?", "Show shortcuts"]];
+const SHORTCUTS = [["Space", "Play or pause"], ["J", "Back 5 seconds"], ["K", "Pause"], ["L", "Forward 5 seconds"], ["Left / Right", "Back or forward one frame"], ["Shift + Left / Right", "Back or forward one second"], ["Home / End", "Go to the start or the end"], ["+ / -", "Zoom the timeline in or out"], ...TOOLS.map(([, k, l, d]) => [k, `${l}: ${d.charAt(0).toLowerCase() + d.slice(1)}`]), ["S", "Snapping on or off"], ["Shift Z", "Zoom the timeline to fit"], ["Cmd K", "Split at the playhead"], ["Alt drag", "Drag a dialogue edge: J or L cut"], ["Delete", "Cut selected words or clip"], ["Cmd Z", "Undo"], ["Cmd Shift Z", "Redo"], ["?", "Show shortcuts"]];
 // The right panel, like Higgsfield's: Edit and Comments. Edit lists the tools in two groups, each opens on its own page
 // with a back arrow. Tool key: label, icon.
 // The comment composer: pen colours (as the app in the chat), quick emoji, and a picture made small enough to keep.
@@ -959,6 +961,12 @@ function AddClipModal({ main, at, onAdd, onClose, waiting = false }) {
   <//>`;
 }
 
+// One line of the Transcript tab. It is drawn again only when its own words change (cut, picked, the one playing),
+// not on every frame of playback: a 20 minute video has about 3,000 words.
+const TranscriptLine = memo(function TranscriptLine({ l, index, cutSet, mainParts, selA, selB, nowId, onDown, onEnter }) {
+  return html`<p>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = index.get(w.id) ?? -1; const out = !mainParts.some((p) => w.t >= p.srcIn && w.t < p.srcOut); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || out ? " cut" : "") + (i >= selA && i <= selB ? " sel" : "") + (w.id === nowId ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onDown(i)} onPointerEnter=${onEnter(i)}>${w.text}</span>${" "}`; })}</p>`;
+});
+
 function EditorPage({ id }) {
   const q = useAsync(() => api.getProject(id), [id]);
   const { go } = useNav();
@@ -986,6 +994,11 @@ function EditorInner({ project, reload, ai, keep }) {
     return project.transcript.map((l) => { const ws = l.words.map((w) => { const nx = all[++i]; return w.end != null ? w : { ...w, end: r2(Math.min(nx ? nx.t : w.t + 0.6, w.t + 0.6)) }; }); return { ...l, words: ws, end: l.end ?? (ws.length ? ws[ws.length - 1].end : l.start) }; });
   }, [project]);
   const words = useMemo(() => transcript.flatMap((l) => l.words), [transcript]);
+  // Looked up once per transcript, not once per word on every frame: a word's place by its id, which line it is on,
+  // and whether the words run in time order (then the word playing is found by halving, not by scanning them all).
+  const wordIndex = useMemo(() => wordIndexById(words), [words]);
+  const wordLine = useMemo(() => lineOfWord(project.transcript), [project]);
+  const wordsInOrder = useMemo(() => isSortedByTime(words), [words]);
   const footDur = project.timeline.duration;
   // The edit is a sequence. A project stored before Phase 2 is shown converted (the server stores it so at the next save).
   const tl = useMemo(() => asSequence(project.timeline, words, project.videoId, project.video?.seconds || footDur), [project, words]);
@@ -1087,20 +1100,36 @@ function EditorInner({ project, reload, ai, keep }) {
   useEffect(() => { if (keep.current.time > 0) pb.seek(Math.min(keep.current.time, dur)); }, []);
   useEffect(() => { keep.current.time = pb.time; }, [pb.time]);
   // For the browser tests: where the playhead is, and moving it.
-  useEffect(() => { if (typeof window === "undefined") return; window.__rendrrPlayhead = () => pb.time; window.__rendrrSeek = (t) => pb.seek(t); }, [pb.time]);
+  const pbNow = useRef(pb); pbNow.current = pb;
+  useEffect(() => { if (typeof window === "undefined") return; window.__rendrrPlayhead = () => pbNow.current.time; window.__rendrrSeek = (t) => pbNow.current.seek(t); }, []);
   // "Watch preview": the rendered file plays in the same player, without the live overlays.
   const [watch, setWatch] = useState(null);
   const wpb = usePlayback(watch?.seconds || 1);
 
   // Autosave after each change.
   const first = useRef(true);
-  useEffect(() => { if (first.current) { first.current = false; return; } setSaved("Saving…"); const t = setTimeout(() => api.updateProject(project.id, { name: S.name, styleId: S.styleId, aspect: S.aspect, timeline: tlOf(S) }).then(() => { setSaved("Saved"); }).catch((e) => { if (e.code === "stale") { toast(e.message, { icon: "spark" }); reload(); } else { setSaved("Not saved"); } }), 600); return () => clearTimeout(t); }, [S]);
+  // One save at a time (audit #5): a change made while a save is on its way is sent right after it, never alongside it,
+  // so an older save can never land last and undo the newer one. saveNow is remade each render, so it sends the latest.
+  const saveQ = useRef({ busy: false, again: false });
+  const saveNow = useRef(null);
+  saveNow.current = () => {
+    const q = saveQ.current;
+    if (q.busy) { q.again = true; return; }
+    q.busy = true; q.again = false;
+    api.updateProject(project.id, { name: S.name, styleId: S.styleId, aspect: S.aspect, timeline: tlOf(S) })
+      .then(() => { if (!q.again) setSaved("Saved"); })
+      .catch((e) => { if (e.code === "stale") { q.again = false; toast(e.message, { icon: "spark" }); reload(); } else { setSaved("Not saved"); } })
+      .finally(() => { q.busy = false; if (q.again) saveNow.current(); });
+  };
+  useEffect(() => { if (first.current) { first.current = false; return; } setSaved("Saving…"); const t = setTimeout(() => saveNow.current(), 600); return () => clearTimeout(t); }, [S]);
 
   // Derived playback bits: what the render shows at this moment of the edit.
   const frame = plan && !fresh ? liveFrame(plan, pb.time, clock) : null;
   const picNow = fresh ? (clock.picture(pb.time)?.videoId === main ? clock.picture(pb.time).src : null) : frame && frame.videoId === main ? frame.src : null;
-  const curWord = picNow == null ? null : words.filter((w) => w.t <= picNow).pop();
-  const inEdit = (w) => !!plan && plan.parts.some((p) => p.videoId === main && w.t >= p.srcIn && w.t < p.srcOut);
+  const curWord = picNow == null ? null : lastWordAtOrBefore(words, picNow, wordsInOrder);
+  // The main video's parts in the edit, worked out once per plan (each word asks whether it is inside one).
+  const mainParts = useMemo(() => (plan ? plan.parts.filter((p) => p.videoId === main) : []), [plan, main]);
+  const inEdit = (w) => mainParts.some((p) => w.t >= p.srcIn && w.t < p.srcOut);
   const wordAt = (w) => view.videoToEdit(main, w.t) ?? 0; // where a word first plays
 
   // ---- editing: every change is one of the connector's ops, run here on the editor's state ----
@@ -1238,8 +1267,10 @@ function EditorInner({ project, reload, ai, keep }) {
   };
 
   // ---- keyboard ----
-  useEffect(() => {
-    const k = (e) => {
+  // The handler is made on each render (it reads the latest state); the window listener is added once and calls it
+  // (it was taken off and put back on every frame while a video played).
+  const keyRef = useRef(null);
+  keyRef.current = (e) => {
       const tag = e.target.tagName; if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target.isContentEditable) return;
       if (render || share || addOpen) return;
       const mod = e.metaKey || e.ctrlKey;
@@ -1254,14 +1285,19 @@ function EditorInner({ project, reload, ai, keep }) {
         case "j": case "J": pb.seek(pb.time - 5); break; // edit time
         case "k": case "K": pb.setPlaying(false); break;
         case "l": case "L": pb.seek(pb.time + 5); break;
+        case "ArrowLeft": e.preventDefault(); pb.seek(pb.time - (e.shiftKey ? 1 : 1 / 30)); break;
+        case "ArrowRight": e.preventDefault(); pb.seek(pb.time + (e.shiftKey ? 1 : 1 / 30)); break;
+        case "Home": e.preventDefault(); pb.seek(0); break;
+        case "End": e.preventDefault(); pb.seek(dur); break;
+        case "=": case "+": setZoom((z) => Math.min(ZMAX, Math.round(z * 1.4))); break;
+        case "-": case "_": setZoom((z) => Math.max(ZMIN, Math.round(z / 1.4))); break;
         case "s": case "S": setSnapOn((x) => { toast(x ? "Snapping off" : "Snapping on"); return !x; }); break;
         case "Delete": case "Backspace": e.preventDefault(); onDelete(); break;
         case "?": setHelp((h) => !h); break;
         case "Escape": setHelp(false); setWsel(null); setSel(null); break;
       }
     };
-    window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k);
-  });
+  useEffect(() => { const k = (ev) => keyRef.current && keyRef.current(ev); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, []);
 
   // ---- render flow ----
   const startRender = async (kind, opts = {}) => {
@@ -1318,6 +1354,11 @@ function EditorInner({ project, reload, ai, keep }) {
   const dragRef = useRef(null);
   const onWordDown = (i) => (e) => { e.preventDefault(); dragRef.current = { a: i, moved: false }; setWsel({ a: i, b: i }); };
   const onWordEnter = (i) => () => { if (dragRef.current) { dragRef.current.moved = dragRef.current.moved || i !== dragRef.current.a; setWsel({ a: dragRef.current.a, b: i }); } };
+  // The same two handlers, kept the same from one render to the next, so a transcript line is not drawn again on
+  // every frame of playback only because its handlers were made anew.
+  const wordFns = useRef(null); wordFns.current = { onWordDown, onWordEnter };
+  const stableWordDown = useCallback((i) => (ev) => wordFns.current.onWordDown(i)(ev), []);
+  const stableWordEnter = useCallback((i) => () => wordFns.current.onWordEnter(i)(), []);
   useEffect(() => { const up = () => { if (!dragRef.current) return; const d = dragRef.current; dragRef.current = null; if (!d.moved) { const w = words[d.a]; if (cutSet.has(w.id)) { restoreWord(w.id); setWsel(null); } else if (inEdit(w)) { pb.seek(wordAt(w)); } else toast("This word's clip is out of the edit. Undo, or trim the clip back, to bring it back."); } }; window.addEventListener("pointerup", up); return () => window.removeEventListener("pointerup", up); }, [words, cutSet, view, plan]);
   const inWsel = (i) => wsel && i >= Math.min(wsel.a, wsel.b) && i <= Math.max(wsel.a, wsel.b);
 
@@ -1623,7 +1664,7 @@ function EditorInner({ project, reload, ai, keep }) {
           </div>`}
           ${rtab === "transcript" && html`<div class="pb words" id="transcript" style="padding-top:12px">
             <div class="row between" style="margin-bottom:8px"><span class="t-small muted">Drag over words and press <span class="kbd">Delete</span> to cut them.</span><span class="t-small muted" style="white-space:nowrap">${S.cut.length} cut</span></div>
-            ${project.transcript.map((l) => html`<p key=${l.id}>${l.gapBefore ? html`<span class="gap">${l.gapBefore}s silence</span>` : null}<span class="ts">${fmtTime(l.start)}</span>${l.words.map((w) => { const i = words.indexOf(w); return html`<span key=${w.id} data-w=${w.id} class=${"w" + (cutSet.has(w.id) || !inEdit(w) ? " cut" : "") + (inWsel(i) ? " sel" : "") + (w === curWord ? " now" : "") + (w.filler ? " filler" : "")} onPointerDown=${onWordDown(i)} onPointerEnter=${onWordEnter(i)}>${w.text}</span>${" "}`; })}</p>`)}
+            ${project.transcript.map((l) => html`<${TranscriptLine} key=${l.id} l=${l} index=${wordIndex} cutSet=${cutSet} mainParts=${mainParts} selA=${wsel ? Math.min(wsel.a, wsel.b) : -1} selB=${wsel ? Math.max(wsel.a, wsel.b) : -2} nowId=${curWord && wordLine.get(curWord.id) === l.id ? curWord.id : null} onDown=${stableWordDown} onEnter=${stableWordEnter} />`)}
             ${selWords().length > 0 && html`<div class="selpop" id="cut-pop"><span class="t-small">${selWords().length} ${selWords().length === 1 ? "word" : "words"}</span><${Btn} size="xs" icon="scissors" id="cut-selected" onClick=${() => { cutWords(selWords()); setWsel(null); }}>Remove from video<//><${Btn} kind="quiet" size="xs" icon="play" aria-label="Play selection" onClick=${() => { const ids = selWords(); const w = words.find((x) => x.id === ids[0]); if (w) { pb.seek(wordAt(w)); pb.setPlaying(true); } }} /><${Btn} kind="quiet" size="xs" icon="x" aria-label="Clear selection" onClick=${() => setWsel(null)} /></div>`}
           </div>`}
           ${rtab === "multicam" && html`<${MulticamTab} projectId=${project.id} timeline=${timeline} lay=${lay} view=${view} main=${main} mainName=${project.video?.name} library=${(lib.library || []).filter((v) => v.status === "ready" && v.kind !== "reference")} at=${pb.time} playing=${pb.playing} urls=${urls} doOp=${doOp} addVideo=${addVideo} toast=${toast} />`}

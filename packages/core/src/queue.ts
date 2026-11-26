@@ -21,6 +21,12 @@ export function queue(name: QueueName): Queue {
   return q;
 }
 
+/** Which line a render waits in: finals in "render", everything else (previews, samples, storyboards) in "preview",
+ *  so a long final never holds up a preview. The worker takes both, each at its own pace. */
+export const renderQueueOf = (kind: string): QueueName => (kind === "final" ? "render" : "preview");
+/** Both lines a render can be in (a render queued before the preview line existed is still in "render"). */
+export const RENDER_QUEUES: QueueName[] = ["preview", "render"];
+
 export type ProxyJob = { videoId: string };
 export type AnalyzeJob = { videoId: string };
 export type RenderJob = { renderId: string };
