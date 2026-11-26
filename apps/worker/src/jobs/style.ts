@@ -71,7 +71,7 @@ export async function styleJob(ctx: Ctx) {
   const file = buildStyleFile({ video: { id: v.id, name: v.name, seconds: info.seconds || v.seconds, width: W0, height: H0 }, measure, breakdown, words, cuts, audio, vision, map });
   // The AI's notes on this reference (fonts, logo, what each scene shows) carry over from its newest earlier style file.
   const prev = await prisma.styleFile.findFirst({ where: { userId: sf.userId, videoId: v.id, status: "ready", id: { not: sf.id } }, orderBy: { createdAt: "desc" }, select: { data: true } }).catch(() => null);
-  const notes = (prev?.data as { notes?: StyleFile["notes"] } | null)?.notes;
+  const notes = (prev?.data as unknown as { notes?: StyleFile["notes"] } | null)?.notes;
   if (notes) file.notes = notes;
   await prisma.styleFile.update({ where: { id: sf.id }, data: { status: "ready", progress: 100, error: null, data: file as unknown as Prisma.InputJsonValue }, select: { id: true } });
   console.log(`[style] ${v.id}: ${Math.round(info.seconds || v.seconds)}s reference measured in ${Math.round((Date.now() - started) / 1000)}s: ${measure.texts.length} texts, ${measure.transitions.length} cuts${map ? `, ${map.moves.length} camera moves, ${map.animations.length} animations, ${map.sfx.length} sound effects` : ", no map"}`);
