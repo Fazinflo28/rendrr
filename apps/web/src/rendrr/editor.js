@@ -11,7 +11,7 @@ import { isSortedByTime, lastWordAtOrBefore, lineOfWord, wordIndexById } from ".
 import { ASPECT_RATIO, StyleRulesSchema, aiName, applyOp, areaAt, asSequence, audioSettings, elementKeys, findTemplate, handoffTarget, isCaptionMarker, layoutTimeline, liveFrame, lookTags, objectBoxAt, sequenceClock, sequenceView } from "@rendrr/shared";
 import { MediaBin, SourceMonitor, useLibrary } from "./media";
 import { ColorTab, MaskOverlay, pickColor, useLutData } from "./color";
-import { planRender } from "@rendrr/shared/renderPlan";
+import { usePlan } from "./editor/plan";
 import { ExportModal, QualityMenu, qualityChip, timeLeft } from "./export";
 import { MulticamTab } from "./multicam";
 import { OpSlider } from "./controls";
@@ -135,10 +135,11 @@ function EditorInner({ project, reload, ai, keep }) {
   const lutIds = Array.from(new Set([...S.tracks.v1, ...S.tracks.v2].map((c) => c.grade?.lut?.id).filter(Boolean)));
   const luts = useLutData(lutIds);
   const [colorMode, setColorMode] = useState(null); const [pathDraft, setPathDraft] = useState([]); const [boxDraft, setBoxDraft] = useState(null);
-  const plan = useMemo(() => {
+  // What the plan is made from; usePlan makes it here, or in the background once planning this edit gets slow (#19).
+  const planInput = useMemo(() => {
     try {
       const v = project.video || {};
-      return planRender({ kind: "preview", snapshot: { timeline, name: S.name, aspect: S.aspect, styleId: S.styleId }, transcript, videoId: project.videoId,
+      return ({ kind: "preview", snapshot: { timeline, name: S.name, aspect: S.aspect, styleId: S.styleId }, transcript, videoId: project.videoId,
         source: { width: v.width || 1920, height: v.height || 1080, fps: v.fps || 30, seconds: v.seconds || footDur, hasAudio: true }, captionRules,
         sources: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, { width: o.width || 1920, height: o.height || 1080, fps: 30, seconds: o.seconds || 0, hasAudio: true }])),
         transcripts: Object.fromEntries(Object.entries(others).map(([id, o]) => [id, o.transcript || []])),
@@ -147,8 +148,9 @@ function EditorInner({ project, reload, ai, keep }) {
         graphicsReady: Object.fromEntries(lay.tracks.v3.filter((c) => c.kind === "graphic").map((c) => [c.id, !!findTemplate(c.graphicId) || !!media.graphicClips[c.id]])), luts,
         // The user's own audio files (own music, the voice in place of the clips' sound), as the render reads them.
         sounds: project.sounds || {} });
-    } catch { return null; } // everything is cut
+    } catch { return null; } // no plan: everything is cut
   }, [timeline, S.aspect, captionRules, media, others, luts]);
+  const plan = usePlan(planInput);
   const clock = useMemo(() => sequenceClock(plan || { parts: [], sound: [], outputSeconds: 0 }), [plan]);
   const mattes = useMattes(project.id, plan);
   const dur = plan ? plan.outputSeconds : 0;
