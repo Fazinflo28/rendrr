@@ -114,10 +114,14 @@ export function buildMapPart(i: MapInput): MapPart {
     broll = { count: list.length, perMin: r2(list.length / min), share: r2(secs.reduce((a, b) => a + b, 0) / S), medianSec: r2(median(secs)), minSec: r2(secs.length ? Math.min(...secs) : 0), maxSec: r2(secs.length ? Math.max(...secs) : 0), types: counts(list.map((b) => b.type)), list };
   }
 
+  // In a talking head scene the speaker's own movement (head, hands) changes the picture too: only small elements that
+  // slide, grow in or type on there count as animations.
+  const talkingAt = (t: number) => scenes.some((s) => s.kind === "talking head" && t >= s.start && t < s.end);
+  const an = m.animations.filter((a) => !talkingAt(a.start) || (a.box[2] * a.box[3] < 0.2 && /^(slides|grows in|types on)/.test(a.kind)));
+  for (const s of scenes) s.animations = an.filter((x) => inside(x.start, s.start, s.end)).length;
   const moves = m.moves;
   const zi = moves.filter((x) => x.zoom > 1.03).map((x) => x.zoom), zo = moves.filter((x) => x.zoom < 0.97).map((x) => x.zoom);
   const camera: MapPart["camera"] = { count: moves.length, perMin: r2(moves.length / min), kinds: counts(moves.map((x) => x.kind)), medianMs: moves.length ? Math.round(median(moves.map((x) => x.ms))) : null, easings: counts(moves.map((x) => x.easing)), zoomIn: zi.length ? r2(median(zi)) : null, zoomOut: zo.length ? r2(median(zo)) : null, list: moves };
-  const an = m.animations;
   const animations: MapPart["animations"] = { count: an.length, perMin: r2(an.length / min), kinds: counts(an.map((a) => a.kind)), medianMs: an.length ? Math.round(median(an.map((a) => a.ms))) : null, easings: counts(an.map((a) => a.easing).filter((e): e is string => !!e)), list: an };
 
   // Music: the sections joined, described from the longest one.
