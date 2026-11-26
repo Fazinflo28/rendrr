@@ -497,6 +497,16 @@ await app.locator('button[aria-label="All projects"]').waitFor({ timeout: 5000 }
 check(/Spine clinic/i.test(await app.locator("#list-title").innerText()) && (await app.locator("[data-edit]").count()) === inFolder.length, "a project the AI opened shows its videos");
 await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card.proj").first().waitFor();
 check((await app.locator(".card.proj").count()) === 2, "and goes back to all projects");
+// A chat opened again later: the kept result's links ran out (signed days ago), so the card asks Rendrr for fresh ones
+// before it plays. (The stand-in's own links do not say when they end, so they never count as old.)
+const askedBefore = calls.filter((c) => c.name === "app_get_project" && c.args.projectId === "p1").length;
+const kept = view("p1");
+kept.preview = { ...kept.preview, url: kept.preview.url + "&X-Amz-Date=20261025T080000Z&X-Amz-Expires=25200" };
+await page.evaluate((o) => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: { open: o, webUrl: "https://app.rendrr.live" } } }, "*"), kept);
+await app.locator("video").waitFor({ timeout: 5000 }); await sleep(300);
+check(calls.filter((c) => c.name === "app_get_project" && c.args.projectId === "p1").length > askedBefore && !/X-Amz-Expires/.test((await app.locator("video").getAttribute("src")) || ""), "a kept result whose links ran out gets fresh ones from Rendrr before it plays");
+await app.locator('button[aria-label="Back to Spine clinic"]').click(); await app.locator("[data-edit]").first().waitFor({ timeout: 5000 });
+await app.locator('button[aria-label="All projects"]').click(); await app.locator(".card.proj").first().waitFor();
 
 // The host switches theme: the app keeps Rendrr's look.
 await page.evaluate(() => document.getElementById("app").contentWindow.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "dark", styles: { variables: { "--color-background-primary": "rgb(31, 30, 29)" } } } }, "*"));

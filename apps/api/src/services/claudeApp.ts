@@ -19,6 +19,9 @@ const machineOf = (w: RenderWhere | null | undefined) => (w && w.renders === "ma
 
 const WEB = () => (process.env.PUBLIC_WEB_URL || "").replace(/\/$/, "") || null;
 const LINK_SECONDS = 6 * 3600;
+/** How many edits open_projects sends: a phone-sized first page (the app's "Show more" loads the rest with
+ *  app_list_projects). Every card carries a signed picture link, and the AI is given the whole result too. */
+export const OPEN_PAGE = 10;
 
 /** The origins the app loads pictures and video from (signed storage links), for its content security policy. */
 export async function appMediaOrigins(): Promise<string[]> {
@@ -174,13 +177,13 @@ export async function openProjects(c: ToolCtx, i: { projectId?: string; folderId
     }
     const folder = await prisma.folder.findFirst({ where: { userId: c.userId, OR: [{ id: asked }, { name: named }] }, orderBy: { createdAt: "desc" }, select: { id: true } });
     if (folder) {
-      const page = await appProjects(c.userId, { folderId: folder.id });
+      const page = await appProjects(c.userId, { folderId: folder.id, limit: OPEN_PAGE });
       const data: AppOpen = { ...page, open: null, webUrl: WEB() };
       return { text: folderText(page), data };
     }
     note += ` No edit or project is called "${asked.slice(0, 80)}", so the list is shown (list_projects has the ids).`;
   }
-  const page = await appProjects(c.userId, {});
+  const page = await appProjects(c.userId, { limit: OPEN_PAGE });
   const data: AppOpen = { ...page, open: null, webUrl: WEB() };
   return { text: openText(page, null) + note, data };
 }
