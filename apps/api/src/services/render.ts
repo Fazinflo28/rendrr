@@ -142,7 +142,7 @@ export async function stopRender(r: Render) {
   if (r.status === "done" || r.status === "failed") return { stopped: false, status: r.status };
   for (const q of RENDER_QUEUES) {
     const job = await queue(q).getJob(r.id).catch(() => null);
-    if (job && ((await job.isWaiting().catch(() => false)) || (await job.isDelayed().catch(() => false)) || (await job.isPrioritized?.().catch(() => false)))) await job.remove().catch(() => {});
+    if (job && ((await job.isWaiting().catch(() => false)) || (await job.isDelayed().catch(() => false)))) await job.remove().catch(() => {});
   }
   const error = "You stopped this export.";
   // Only while it is still waiting or running: one that finished a moment ago stays finished.
