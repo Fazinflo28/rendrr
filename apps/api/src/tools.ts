@@ -574,6 +574,11 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       `SCENE CUTS (${cuts.length}): ${cuts.slice(0, 100).map((t) => t.toFixed(1)).join(", ") || "none"}`,
       ...(await deepLines(c.userId, v.id, words, i.detail === "words", { from: i.from, to: i.to })),
     ];
+    // retakes: the retake groups in the same answer, so a first pass needs one call fewer (audit #22).
+    if (i.retakes) {
+      const rt = await TOOL_HANDLERS.get_retakes(c, { videoId: v.id }).catch(() => null);
+      if (rt?.text) lines.push("", rt.text);
+    }
     return { text: clip(lines.join("\n")), images: code.images };
   },
 
