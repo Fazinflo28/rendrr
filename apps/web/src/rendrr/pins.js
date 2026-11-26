@@ -5,6 +5,8 @@
 // PinLayer sits inside the Player's screen (its `children`) and listens to clicks on the screen itself, so the
 // player and the editor need no other change.
 import { html, useState, useEffect, useRef, fmtTime, initials, useToast } from "./ui";
+import { useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { ClipMention, withClipChips } from "./footagePicker";
 import { clipRefsPlain } from "@rendrr/shared";
 
@@ -16,12 +18,83 @@ const NEAR = 1.2; // seconds either side of its moment a dot shows
 const CLOSE_MS = 170;
 const TEXT_MAX = 160; // px the box's text grows to before it scrolls
 /** Grows a text box with its words, up to TEXT_MAX, then it scrolls. */
-const fit = (el) => { if (!el) return; el.style.height = "auto"; const h = Math.min(TEXT_MAX, el.scrollHeight); el.style.height = h + "px"; el.style.overflowY = el.scrollHeight > TEXT_MAX ? "auto" : "hidden"; };
-const SEND = html`<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
+const fit = (el) => { if (!el) return; const max = Number(el.dataset.max) || TEXT_MAX; el.style.height = "auto"; const h = Math.min(max, el.scrollHeight); el.style.height = h + "px"; el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden"; };
+// Phones: the box to write a comment is a card in the middle of what shows above the keyboard (on the picture it went
+// off the top of the screen once the keyboard opened, and pushed the player up for good).
+const PHONE_Q = "(max-width: 760px), (pointer: coarse) and (max-height: 540px)";
+const isPhone = () => typeof matchMedia === "function" && matchMedia(PHONE_Q).matches;
+function usePhone() {
+  const [p, setP] = useState(isPhone);
+  useEffect(() => {
+    if (typeof matchMedia !== "function") return;
+    const m = matchMedia(PHONE_Q), on = () => setP(m.matches);
+    m.addEventListener?.("change", on);
+    return () => m.removeEventListener?.("change", on);
+  }, []);
+  return p;
+}
+const SEND = html`<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" /></svg>`;
 const r4 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 10000) / 10000;
 
 // Which way a box opens from its dot: away from the nearest edges, so it stays on the picture.
 const side = (x, y) => ({ h: x > 0.58 ? "l" : "r", v: y > 0.55 ? "u" : "d" });
+
+// The phone's card: on the page itself (not inside the player, which clips it), kept in the middle of the visible
+// part of the screen (visualViewport: what the keyboard leaves), its words shrinking to fit when the room is short.
+function Sheet({ closing, children, label, id }) {
+  const el = useRef(null);
+  useLayoutEffect(() => {
+    const box = el.current;
+    if (!box) return;
+    const vv = window.visualViewport;
+    let busy = false;
+    const place = () => {
+      if (busy) return;
+      busy = true;
+      const top = vv ? vv.offsetTop : 0, room = vv ? vv.height : window.innerHeight;
+      const ta = box.querySelector("textarea");
+      if (ta) { ta.dataset.max = String(Math.max(44, Math.min(TEXT_MAX, room - 110))); fit(ta); }
+      box.style.top = Math.round(top + Math.max(12, (room - box.offsetHeight) / 2)) + "px";
+      busy = false;
+    };
+    place();
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(place) : null;
+    ro?.observe(box);
+    vv?.addEventListener("resize", place); vv?.addEventListener("scroll", place); window.addEventListener("resize", place);
+    return () => { ro?.disconnect(); vv?.removeEventListener("resize", place); vv?.removeEventListener("scroll", place); window.removeEventListener("resize", place); };
+  }, []);
+  const node = html`<div id=${id} ref=${el} class=${"pin-box pin-sheet" + (closing ? " closing" : "")} role="dialog" aria-label=${label} onClick=${(e) => e.stopPropagation()} onPointerDown=${(e) => e.stopPropagation()}>${children}</div>`;
+  return typeof document !== "undefined" ? createPortal(node, document.body) : node;
+}
+
+// Clipping boxes (the player's screen and the boxes around it) never stay scrolled: a field focused inside one scrolls
+// it to show the field, and nothing scrolls it back (the picture stayed pushed up). The page itself is put back too,
+// once the keyboard has gone, if it is a page that does not scroll.
+const clips = (el) => { const o = getComputedStyle(el); return /hidden|clip/.test(o.overflowY) && /hidden|clip/.test(o.overflowX); };
+function useNoStuckScroll(ref) {
+  useEffect(() => {
+    const screen = ref.current?.parentElement;
+    if (!screen) return;
+    const boxes = [];
+    for (let n = screen; n && n !== document.body && n !== document.documentElement; n = n.parentElement) if (n === screen || clips(n)) boxes.push(n);
+    const back = (e) => { const n = e.currentTarget; if (n.scrollTop || n.scrollLeft) { n.scrollTop = 0; n.scrollLeft = 0; } };
+    for (const n of boxes) n.addEventListener("scroll", back, { passive: true });
+    let t = 0;
+    const settle = () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        const a = document.activeElement;
+        if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
+        for (const n of boxes) if (n.scrollTop || n.scrollLeft) { n.scrollTop = 0; n.scrollLeft = 0; }
+        const page = document.scrollingElement;
+        if (page && (page.scrollTop || page.scrollLeft) && clips(document.body) && clips(document.documentElement)) window.scrollTo(0, 0);
+      }, 250);
+    };
+    document.addEventListener("focusout", settle);
+    window.visualViewport?.addEventListener("resize", settle);
+    return () => { clearTimeout(t); for (const n of boxes) n.removeEventListener("scroll", back); document.removeEventListener("focusout", settle); window.visualViewport?.removeEventListener("resize", settle); };
+  }, []);
+}
 
 function Bubble({ x, y, closing, children, label, id }) {
   const s = side(x, y);
@@ -38,7 +111,9 @@ export function PinLayer({ projectId, comments = [], pb, off = false, me = "You"
   const [closing, setClosing] = useState(null); // "draft" | "open"
   const st = useRef({}); st.current = { draft, text, openId, off, pb };
   const textRef = useRef(null);
+  const phone = usePhone();
   useEffect(() => { fit(textRef.current); }, [draft, text]);
+  useNoStuckScroll(ref);
   const pins = comments.filter(isPinned);
 
   const close = (which, after) => {
@@ -99,7 +174,7 @@ export function PinLayer({ projectId, comments = [], pb, off = false, me = "You"
       return html`<button key=${c.id} type="button" class=${"pin-dot" + (c.id === openId ? " on" : "") + (c.mine === false ? " client" : "")} data-pin=${c.id} style=${{ left: c.x * 100 + "%", top: c.y * 100 + "%", opacity: fade }} title=${(c.author || "") + ": " + clipRefsPlain(c.text)} aria-label=${"Comment by " + (c.author || "someone") + " at " + fmtTime(c.time)} onClick=${(e) => { e.stopPropagation(); go(c); }}>${initials(c.author || me)}</button>`;
     })}
     ${draft && html`<span class="pin-dot new" style=${{ left: draft.x * 100 + "%", top: draft.y * 100 + "%" }}>${initials(me)}</span>`}
-    ${draft && html`<${Bubble} id="pin-compose" x=${draft.x} y=${draft.y} closing=${closing === "draft"} label=${label}>
+    ${draft && html`<${phone ? Sheet : Bubble} id="pin-compose" x=${draft.x} y=${draft.y} closing=${closing === "draft"} label=${label}>
       <form class="pin-compose" onSubmit=${(e) => { e.preventDefault(); post(); }}>
         <textarea id="pin-text" ref=${textRef} class="pin-text" rows="1" placeholder="Leave a comment… (@ adds a clip)" value=${text} autoFocus onInput=${(e) => { setText(e.target.value); fit(e.target); }} onKeyDown=${(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); post(); } }} />
         ${projectId && html`<${ClipMention} projectId=${projectId} inputRef=${textRef} value=${text} onChange=${setText} />`}

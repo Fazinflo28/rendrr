@@ -157,6 +157,16 @@ html.fs .stage.tall video { height: max(220px, min(60vh, calc(100vh - 620px - va
 @keyframes prot { to { transform: rotate(360deg); } }
 .pbtn { height: 30px; padding: 0 12px; font-size: 13px; }
 .pacts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+/* Phones: the box to write one is a card, not a bubble on the picture (there it went off the top once the keyboard
+   opened, and the picture stayed pushed up). Inline it sits across the top of the picture; full screen it floats in
+   the part of the panel the keyboard and Claude's bars leave (placeSheet sets its top). 16 px words: a phone zooms in
+   on anything smaller when it is tapped. */
+.pins.pinbox.sheet .pbox { left: 8px; right: 8px; top: 8px; width: auto; translate: none; margin: 0; transform-origin: 50% 0; }
+html.fs .pins.pinbox.sheet { position: fixed; left: calc(12px + var(--il, 0px)); right: calc(12px + var(--ir, 0px)); width: auto; height: auto; max-width: 520px; margin: 0 auto; z-index: 30; transition: top .18s ease; }
+html.fs .pins.pinbox.sheet .pbox { position: relative; left: 0; right: 0; top: 0; transform-origin: 50% 50%; background: rgba(16,17,19,.97); box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 18px 48px rgba(0,0,0,.6); }
+.pinbox.sheet .ptext { font-size: 16px; line-height: 22px; min-height: 22px; }
+.pinbox.sheet .pquiet { height: 34px; padding: 0 12px; font-size: 14px; }
+.pinbox.sheet .psend { width: 34px; height: 34px; }
 @keyframes pclose { from { transform: scale(1); opacity: 1; } to { transform: scale(.5); opacity: 0; filter: blur(4px); } }
 .pbody { font-size: 13px; line-height: 19px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 140px; overflow: auto; }
 @keyframes ppop { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
@@ -376,7 +386,7 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
   .top .btn { padding: 0 10px; }
   .ibtn { width: 40px; height: 40px; }
   .btn, .step { min-height: 38px; }
-  html .compose textarea { font-size: 16px; } /* 16 px or more: phones do not zoom in when it is tapped */
+  html .compose textarea, .ptext { font-size: 16px; } /* 16 px or more: phones do not zoom in when it is tapped */
   .cm .act { height: 32px; padding: 0 10px; font-size: 13px; }
   .cm .chk { width: 30px; height: 30px; }
   .pen { width: 30px; height: 30px; }
@@ -1168,7 +1178,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
       inkCanvas(canvas);
       // Nothing over the picture but the drawing: the time is in the controls, the version in the menu above.
       pinsEl = h("div", { class: "pins", "aria-live": "polite" });
-      pinBoxEl = h("div", { class: "pins pinbox" }, state.pinDraft ? pinComposer(v) : null);
+      pinBoxEl = h("div", { class: "pins pinbox" + (state.pinDraft && pinSheet() ? " sheet" : "") }, state.pinDraft ? pinComposer(v) : null);
       const frame = h("div", { class: "frame" + loadingClass(player) }, player, canvas, pinsEl, pinBoxEl,
         h("div", { class: "load", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Loading preview…"),
         h("div", { class: "fail" }, h("span", {}, "The preview did not load."), h("button", { class: "btn", onClick: retryPreview }, "Try again")));
@@ -1428,9 +1438,10 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   function showPinBox() {
     const v = current();
     if (!pinBoxEl || !pinBoxEl.isConnected || !v) { render(); return; }
+    pinBoxEl.classList.toggle("sheet", !!state.pinDraft && pinSheet());
     pinBoxEl.replaceChildren(...(state.pinDraft ? [pinComposer(v)] : []));
     drawPins(v);
-    if (state.pinDraft) requestAnimationFrame(() => { const ta = root.querySelector('[data-key="pindraft"]'); if (ta) ta.focus({ preventScroll: true }); });
+    if (state.pinDraft) requestAnimationFrame(() => { placeSheet(); const ta = root.querySelector('[data-key="pindraft"]'); if (ta) ta.focus({ preventScroll: true }); });
   }
   function closePinBox() {
     const box = pinBoxEl && pinBoxEl.querySelector(".pbox");
@@ -1438,21 +1449,63 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     if (box && !matchMedia("(prefers-reduced-motion: reduce)").matches) { box.classList.add("closing"); setTimeout(done, 170); } else done();
   }
   // Grows a text box with its words, up to 140 px, then it scrolls.
-  const fitText = (el) => { if (!el) return; el.style.height = "auto"; el.style.height = Math.min(140, el.scrollHeight) + "px"; el.style.overflowY = el.scrollHeight > 140 ? "auto" : "hidden"; };
+  const fitText = (el) => { if (!el) return; const max = Number(el.dataset.max) || 140; el.style.height = "auto"; el.style.height = Math.min(max, el.scrollHeight) + "px"; el.style.overflowY = el.scrollHeight > max ? "auto" : "hidden"; };
+  // Phones get the box as a card (see .pinbox.sheet).
+  const pinSheet = () => host.ctx.platform === "mobile" || matchMedia("(max-width: 560px), (pointer: coarse) and (max-height: 540px)").matches;
+  const cssPx = (name) => parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name)) || 0;
+  // Full screen: the card floats a little above the middle of what shows between Claude's header and its chat box
+  // (or the keyboard, where the panel says how much it covers); inline: across the top of the picture. Either way its
+  // words shrink to fit when the room is short.
+  function placeSheet() {
+    if (!pinBoxEl || !pinBoxEl.classList.contains("sheet")) return;
+    const box = pinBoxEl.querySelector(".pbox"), ta = pinBoxEl.querySelector("textarea");
+    if (!box) return;
+    if (document.documentElement.classList.contains("fs")) {
+      const vv = window.visualViewport, it = cssPx("--it"), ib = cssPx("--ib");
+      const kb = !!vv && vv.height < window.innerHeight - 120; // the keyboard covers the frame, and the frame knows it
+      const top = (vv ? vv.offsetTop : 0) + it + 8, room = Math.max(120, (vv ? vv.height : window.innerHeight) - it - 8 - (kb ? 8 : ib + 8));
+      if (ta) { ta.dataset.max = String(Math.max(44, Math.min(140, Math.round(room / 2) - 60))); fitText(ta); }
+      pinBoxEl.style.cssText = "top:" + Math.round(top + Math.max(0, (room - box.offsetHeight) * 0.35)) + "px";
+    } else if (ta) {
+      const r = pictureRect();
+      ta.dataset.max = String(Math.max(44, Math.min(140, Math.round(r.h) - 76))); fitText(ta);
+    }
+  }
+  if (window.visualViewport) { window.visualViewport.addEventListener("resize", placeSheet); window.visualViewport.addEventListener("scroll", placeSheet); }
+  addEventListener("resize", placeSheet);
+  // Boxes that clip (the player's) never stay scrolled: a field focused in one scrolls it, and nothing scrolls it back
+  // (the picture stayed pushed up). Full screen the page itself never scrolls (the app scrolls in #root), so once the
+  // keyboard has gone it is put back too.
+  document.addEventListener("scroll", (e) => { const n = e.target; if (n && n.matches && n.matches(".stage, .frame, .pins") && (n.scrollTop || n.scrollLeft)) { n.scrollTop = 0; n.scrollLeft = 0; } }, true);
+  let unstickT = 0;
+  const unstick = () => {
+    clearTimeout(unstickT);
+    unstickT = setTimeout(() => {
+      const a = document.activeElement;
+      if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
+      for (const n of document.querySelectorAll(".stage, .frame")) if (n.scrollTop || n.scrollLeft) { n.scrollTop = 0; n.scrollLeft = 0; }
+      const page = document.scrollingElement;
+      if (page && (page.scrollTop || page.scrollLeft) && (document.documentElement.classList.contains("fs") || page.scrollHeight <= window.innerHeight + 2)) window.scrollTo(0, 0);
+    }, 250);
+  };
+  document.addEventListener("focusout", unstick);
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", unstick);
   function pinComposer(v) {
     const d = state.pinDraft, sideH = d.x > 0.58 ? "l" : "r", sideV = d.y > 0.55 ? "u" : "d";
     const post = h("button", { class: "psend", "aria-label": "Post comment", title: "Post (Enter)", disabled: !d.text.trim() || d.sending, onClick: () => sendPin(v) });
     post.innerHTML = d.sending ? '<span class="pspin"></span>' : '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     const ta = h("textarea", { class: "ptext", rows: "1", maxlength: "2000", placeholder: "Leave a comment… (@ adds a clip)", "aria-label": "Comment on this spot", "data-key": "pindraft",
-      onInput: (e) => { d.text = e.target.value; post.disabled = !d.text.trim() || d.sending; fitText(e.target); },
+      onInput: (e) => { d.text = e.target.value; post.disabled = !d.text.trim() || d.sending; fitText(e.target); placeSheet(); },
       onKeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPin(v); } else if (e.key === "Escape") { e.preventDefault(); closePinBox(); } } });
     ta.value = d.text;
     attachMention(ta, v.project.id);
-    requestAnimationFrame(() => fitText(ta));
-    const box = h("div", { class: "pbox pcompose p" + sideH + sideV + (d.fresh ? "" : " settled"), style: "left:" + d.x * 100 + "%;top:" + d.y * 100 + "%", role: "dialog", "aria-label": "Comment on this spot", onClick: (e) => e.stopPropagation() },
+    requestAnimationFrame(() => { fitText(ta); placeSheet(); });
+    const sheet = pinSheet();
+    const box = h("div", { class: "pbox pcompose " + (sheet ? "psheet" : "p" + sideH + sideV) + (d.fresh ? "" : " settled"), style: sheet ? null : "left:" + d.x * 100 + "%;top:" + d.y * 100 + "%", role: "dialog", "aria-label": "Comment on this spot", onClick: (e) => e.stopPropagation() },
       ta,
       h("div", { class: "pfoot" }, h("span", { class: "pwhen" }, fmtTime(d.time, false)), h("button", { class: "pquiet", onClick: () => closePinBox() }, "Cancel"), post));
     d.fresh = false;
+    if (sheet) return box; // its dot is with the others on the picture (drawPins)
     return h("span", {}, h("span", { class: "pdot new", style: "left:" + d.x * 100 + "%;top:" + d.y * 100 + "%" }, "+"), box);
   }
   async function sendPin(v) {
@@ -1471,7 +1524,8 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   function drawPins(v) {
     if (!pinsEl || !pinsEl.isConnected || !player || !v) return;
     const r = pictureRect(), t = player.currentTime;
-    for (const el of [pinsEl, pinBoxEl]) if (el) Object.assign(el.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
+    const floating = pinBoxEl && pinBoxEl.classList.contains("sheet") && document.documentElement.classList.contains("fs");
+    for (const el of [pinsEl, floating ? null : pinBoxEl]) if (el) Object.assign(el.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
     const initial = (n) => ((n || "?").trim()[0] || "?").toUpperCase();
     const at = (x, y) => "left:" + x * 100 + "%;top:" + y * 100 + "%";
     const kids = [];
@@ -1487,7 +1541,9 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
           h("div", { class: "pbody" }, c.text ? withClipChips(c.text) : "(no words)")));
       }
     }
+    if (state.pinDraft && pinBoxEl && pinBoxEl.classList.contains("sheet")) kids.push(h("span", { class: "pdot new", style: at(state.pinDraft.x, state.pinDraft.y) }, "+"));
     pinsEl.replaceChildren(...kids);
+    if (floating) placeSheet();
   }
 
   function seek(t) {

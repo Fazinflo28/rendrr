@@ -56,6 +56,16 @@
 .scrub .mark.pin { top: 5px; width: 18px; height: 18px; display: grid; place-items: center; background: var(--accent); color: #0b0d06; font: 700 8px/1 Inter, system-ui, sans-serif; box-shadow: 0 0 0 2px var(--surface); transition: transform .2s var(--ease); }
 .scrub .mark.pin.client { background: #fff; }
 
+/* Phones: the box to write one is a card on the page, in the middle of what shows above the keyboard (pins.js Sheet
+   sets its top). 16 px words: a phone zooms in on anything smaller when it is tapped. */
+.pin-box.pin-sheet { position: fixed; top: 30%; left: max(12px, env(safe-area-inset-left, 0px)); right: max(12px, env(safe-area-inset-right, 0px));
+  width: auto; max-width: 480px; margin: 0 auto; translate: none; transform-origin: 50% 50%; z-index: 90; padding: 12px 14px;
+  background: rgba(16,17,19,.97); box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 18px 48px rgba(0,0,0,.6); transition: top .18s var(--ease); }
+.pin-sheet .pin-text { font-size: 16px; line-height: 22px; min-height: 22px; }
+.pin-sheet .pin-foot .pin-btn { height: 34px; padding: 0 12px; font-size: 14px; }
+.pin-sheet .pin-send { width: 34px; height: 34px; }
+@media (max-width: 760px), (pointer: coarse) { .pin-text { font-size: 16px; } }
+
 @keyframes pin-pop { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @keyframes pin-pulse { 0% { box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 0 0 0 var(--accent-ring); } 100% { box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 0 0 14px rgba(189,232,22,0); } }
 @keyframes pin-open { from { transform: scale(.4); opacity: 0; filter: blur(6px); } 60% { opacity: 1; } to { transform: scale(1); opacity: 1; filter: blur(0); } }
