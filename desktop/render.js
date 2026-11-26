@@ -123,6 +123,8 @@ async function report(t, what, body) {
 
 /** Big files come in several ranged requests at once (one connection to a far-away server is slow; a few fill the line). */
 const PAR = { min: 64 << 20, chunk: 16 << 20, streams: 6 };
+/** How many of a render's files are fetched at once. */
+const FETCH_AT_ONCE = 4;
 const refused = (status) => status === 401 || status === 403;
 
 /**
@@ -370,7 +372,8 @@ async function runTask(t, o) {
     let got = 0;
     const onBytes = (n) => { got += n; state = { ...state, phase: "download", frac: total ? Math.min(1, got / total) : 0 }; say(); };
     const direct = {}; // an original on another drive of a Windows PC: FFmpeg reads it by its path (the app knows it)
-    for (const i of t.inputs || []) {
+    const inflight = new Map(); // one fetch per cached file, though two inputs name it
+    const fetchOne = async (i) => {
       const dest = path.join(job, i.name);
       await fsp.mkdir(path.dirname(dest), { recursive: true });
       if (i.data != null) await fsp.writeFile(dest, Buffer.from(i.data, "base64"));
@@ -384,10 +387,25 @@ async function runTask(t, o) {
       else {
         // A link that stops working mid-way (a Google Drive sign-in lasts an hour): Rendrr gives a fresh one.
         const relink = async () => { const r = await report(t, "link", { name: i.name }); return r && linkOk(r.url, !!o.allowHttp) ? { url: r.url, headers: r.headers && r.headers.authorization ? { authorization: String(r.headers.authorization) } : {} } : null; };
-        if (i.cache || (i.keep && i.size)) await linkInto(await cached(o.cacheDir, { ...i, relink }, onBytes, ac.signal), dest);
+        if (i.cache || (i.keep && i.size)) {
+          const k = String(i.cache || i.keep);
+          if (!inflight.has(k)) inflight.set(k, cached(o.cacheDir, { ...i, relink }, onBytes, ac.signal));
+          await linkInto(await inflight.get(k), dest);
+        }
         else await download(i.url, dest, { headers: i.headers, size: i.size, onBytes, signal: ac.signal, relink });
       }
-    }
+    };
+    // A few files at a time: one at a time, an edit with many clips spent most of its render waiting on each link
+    // (from far away, every file costs a round trip or two before its first byte). The first failure stops the rest.
+    const list = t.inputs || [];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(FETCH_AT_ONCE, list.length) }, async () => {
+      while (next < list.length) {
+        if (ac.signal.aborted) throw Object.assign(new Error("stopped"), { stopped: true });
+        const i = list[next++];
+        try { await fetchOne(i); } catch (e) { ac.abort(); throw e; }
+      }
+    }));
     if ((t.fonts || []).length) {
       const fonts = path.join(o.cacheDir, "fonts");
       await fsp.mkdir(fonts, { recursive: true });
@@ -441,4 +459,36 @@ async function runTask(t, o) {
   }
 }
 
-module.exports = { PROTOCOL, FEATURES, HW_ENCODERS, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs, linkInto, download };
+/**
+ * The preview copy Rendrr edits from (audit #14), made here instead of in the page: a 720p proxy (H.264 about 2 Mbps,
+ * 30 fps, a keyframe every half second, AAC) and 16 kHz mono sound for the transcript, from the original where it is.
+ * The same files the page made with ffmpeg.wasm, many times faster: this computer's own FFmpeg, and its graphics chip
+ * (hw: a working encoder from HW_ENCODERS) when it has one; should the chip fail, the processor makes it.
+ * onPct: 0 to 100.
+ */
+async function makePreview(ffmpeg, file, dir, { hw = null, onPct, signal } = {}) {
+  const info = await probeFile(ffmpeg, file);
+  if (!info || !(info.seconds > 0)) throw new Error("not a video this computer's FFmpeg can read");
+  const proxy = path.join(dir, "proxy.mp4"), audio = path.join(dir, "audio.m4a");
+  const pct = (from, weight) => (s) => onPct && onPct(Math.min(99, from + (Math.min(s, info.seconds) / info.seconds) * weight));
+  const head = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-progress", "pipe:1"];
+  const scale = "scale='if(gte(iw,ih),-2,720)':'if(gte(iw,ih),720,-2)',fps=30,format=yuv420p";
+  const rate = ["-b:v", "2000k", "-maxrate", "2500k", "-bufsize", "4000k"];
+  const encoders = {
+    libx264: ["-c:v", "libx264", "-preset", "ultrafast", ...rate, "-sc_threshold", "0"],
+    h264_videotoolbox: ["-c:v", "h264_videotoolbox", "-allow_sw", "1", "-realtime", "1", ...rate],
+  };
+  const videoArgs = (enc) => encoders[enc] || ["-c:v", enc, ...rate];
+  const silent = info.hasAudio ? [] : ["-f", "lavfi", "-t", String(info.seconds), "-i", "anullsrc=r=48000:cl=stereo"];
+  const proxyRun = (enc) => runFfmpeg(ffmpeg, [...head, "-i", file, ...silent, "-map", "0:v:0", "-map", info.hasAudio ? "0:a:0" : "1:a:0",
+    "-vf", scale, ...videoArgs(enc), "-g", "15", "-keyint_min", "15", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+    "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "48000", "-shortest", "-movflags", "+faststart", proxy], { cwd: dir, signal, onSeconds: pct(0, 85) });
+  try { await proxyRun(hw || "libx264"); }
+  catch (e) { if (!hw || e.stopped || (signal && signal.aborted)) throw e; await proxyRun("libx264"); }
+  await runFfmpeg(ffmpeg, info.hasAudio
+    ? [...head, "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "48k", audio]
+    : [...head, "-f", "lavfi", "-t", String(info.seconds), "-i", "anullsrc=r=16000:cl=mono", "-c:a", "aac", "-b:a", "32k", audio], { cwd: dir, signal, onSeconds: pct(85, 15) });
+  return { proxy, audio, info, proxySize: (await fsp.stat(proxy)).size, audioSize: (await fsp.stat(audio)).size };
+}
+
+module.exports = { PROTOCOL, FEATURES, HW_ENCODERS, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs, linkInto, download, makePreview, upload, linkOk };

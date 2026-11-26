@@ -20,6 +20,25 @@ contextBridge.exposeInMainWorld("rendrrDesktop", Object.freeze({
   // starts or finishes one. The page never touches the files or FFmpeg itself.
   // The computer woke from sleep or its screen unlocked: the page tells Rendrr at once that this computer is here.
   onWake: (cb) => { const f = () => cb(); ipcRenderer.on("rendrr:wake", f); return () => ipcRenderer.removeListener("rendrr:wake", f); },
+  // Preview copies of footage added here, made by this computer's FFmpeg (the page gets the result's size and sends
+  // the upload links; it never touches the file). make(file, onPct): { id, info, proxySize, audioSize } or null.
+  preview: Object.freeze({
+    make: (file, onPct) => {
+      let p = ""; try { p = webUtils.getPathForFile(file); } catch { /* not a file from this computer */ }
+      if (!p) return Promise.resolve(null);
+      const job = Math.random().toString(36).slice(2);
+      const f = (_e, j, phase, pct) => { if (j === job && phase === "make" && onPct) onPct(Number(pct) || 0); };
+      ipcRenderer.on("rendrr:preview-progress", f);
+      return ipcRenderer.invoke("rendrr:preview-make", job, p).finally(() => ipcRenderer.removeListener("rendrr:preview-progress", f));
+    },
+    upload: (id, urls, onPct) => {
+      const job = Math.random().toString(36).slice(2);
+      const f = (_e, j, phase, pct) => { if (j === job && phase === "upload" && onPct) onPct(Number(pct) || 0); };
+      ipcRenderer.on("rendrr:preview-progress", f);
+      return ipcRenderer.invoke("rendrr:preview-upload", job, String(id), urls).finally(() => ipcRenderer.removeListener("rendrr:preview-progress", f));
+    },
+    drop: (id) => ipcRenderer.invoke("rendrr:preview-drop", String(id)),
+  }),
   render: Object.freeze({
     info: () => ipcRenderer.invoke("rendrr:render-info"),
     setEnabled: (on) => ipcRenderer.invoke("rendrr:render-enable", !!on),

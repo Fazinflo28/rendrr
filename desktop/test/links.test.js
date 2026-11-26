@@ -82,3 +82,37 @@ test("this Mac's name: the Computer Name, else a readable host name", () => {
   assert.equal(macName(undefined, undefined), "");
   assert.equal(macName("x".repeat(80), "").length, 40);
 });
+
+test("the Mac stays awake only while rendering here is on and ready", () => {
+  const { shouldKeepAwake } = require("../links");
+  assert.equal(shouldKeepAwake({ enabled: true, ready: true }), true);
+  assert.equal(shouldKeepAwake({ enabled: false, ready: true }), false);
+  assert.equal(shouldKeepAwake({ enabled: true, ready: false }), false);
+  assert.equal(shouldKeepAwake(null), false);
+});
+
+test("one keep-awake blocker at most, let go when no longer wanted", () => {
+  const { awakeKeeper } = require("../links");
+  const on = new Set(); let next = 1; const calls = [];
+  const blocker = { start: (t) => { calls.push(t); const id = next++; on.add(id); return id; }, stop: (id) => on.delete(id), isStarted: (id) => on.has(id) };
+  const k = awakeKeeper(blocker);
+  assert.equal(k.sync(true), true);
+  assert.equal(k.sync(true), true);
+  assert.deepEqual(calls, ["prevent-app-suspension"]); // started once
+  assert.equal(on.size, 1);
+  assert.equal(k.sync(false), false);
+  assert.equal(on.size, 0);
+  assert.equal(k.sync(false), false);
+  // Someone else stopped it (or the system did): asked again, it starts a new one.
+  k.sync(true); on.clear();
+  assert.equal(k.held(), false);
+  assert.equal(k.sync(true), true);
+  assert.equal(calls.length, 3);
+});
+
+test("a system with no keep-awake blocker does not break the app", () => {
+  const { awakeKeeper } = require("../links");
+  const k = awakeKeeper({ start: () => { throw new Error("not here"); }, stop: () => {}, isStarted: () => false });
+  assert.equal(k.sync(true), false);
+  assert.equal(k.sync(false), false);
+});

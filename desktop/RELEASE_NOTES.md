@@ -21,8 +21,9 @@ the Dock (it still renders here); quit it with Cmd+Q. Turn it off in Rendrr > Se
 Where renders run. Footage this Mac fetches is kept in ~/Library/Caches/Rendrr (up to 20 GB), originals from your
 Google Drive too, so the next export of the same footage downloads nothing. Big files download in several parts at
 once, and heavy exports are made in pieces so a MacBook Air does not run out of memory. If an export still runs out of
-memory, this Mac makes it again in pieces before Rendrr's cloud takes over. While it makes a render, the app keeps the
-Mac from going to sleep (the screen can still turn off).
+memory, this Mac makes it again in pieces before Rendrr's cloud takes over. While the app is open and rendering here is on,
+it keeps the Mac from going to sleep (the screen can still turn off), so renders keep coming to this Mac. Closing the
+lid still puts it to sleep; turning rendering off in Settings lets it sleep again.
 
 Finals you save go straight to your Downloads folder. Links to other sites open in your browser.
 
