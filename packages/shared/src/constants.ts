@@ -138,6 +138,9 @@ export const PREFIX = {
   sounds: "sounds/", // the user's own audio files (add_audio): a voice made better outside Rendrr, their own music
   uploads: "uploads/", // videos and images the AI brought in from the chat (add_footage): kept as the raw file
 } as const;
+/** Audit #13: the pieces of an edit's last cloud preview (picture only), kept so the next preview makes only the pieces
+ *  that changed. One preview's worth per edit; gone with the edit. */
+export const pieceCachePrefix = (userId: string, projectId: string) => `${PREFIX.previews}${userId}/${projectId}/pieces/`;
 /** Footage the AI brings in from the chat (add_footage): the biggest file taken through an upload link or a share link
  *  (bigger: link it from Google Drive, which copies nothing). An image becomes a still clip this long: it plays as a
  *  video anywhere one does (b-roll, a V1 clip, a background, inside text); a background loops it. */

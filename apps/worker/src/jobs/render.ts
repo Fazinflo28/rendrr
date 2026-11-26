@@ -1,10 +1,11 @@
-import { billableMinutes, deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, forgetOrigins, getBytes, getText, macExportsKey, macForRender, noteCost, publishRender, queueDriveSave, recordUsage, redis, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
+import { billableMinutes, deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, forgetOrigins, getBytes, getText, headObject, listPrefix, macExportsKey, macForRender, noteCost, publishRender, queueDriveSave, recordUsage, redis, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
-import { bestResolution, desktopAppName, fmtClock, formatFile, isBestQuality, isSoundFormat, lengthTolerance, SOUND_QUALITY, withExportFormat, type ExportFormat, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
+import { bestResolution, desktopAppName, pieceCachePrefix, fmtClock, formatFile, isBestQuality, isSoundFormat, lengthTolerance, SOUND_QUALITY, withExportFormat, type ExportFormat, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
 import { audioSettings, audioText, boardStyle, lookText, onScreenAt, storyboardAutoPanels, type Board, type BoardPanel } from "@rendrr/shared";
 import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSideFiles } from "../lib/deliver";
 import { macPieceRuns, macPiecesFirst, macRanOutOfRoom } from "../lib/macPieces";
+import { ffmpegVersion, pieceKey, previewPieceCache } from "../lib/pieceCache";
 import { dropTemps, fetchEtaSec, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
 import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, pickHwEncoder, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
@@ -671,10 +672,14 @@ export async function renderJob(ctx: Ctx) {
     // FFmpeg froze doing that (its picture waiting on its sound, the sound on the picture). The joined picture gets
     // the one sound track. A piece that still freezes (see run's stallMs) is made again with one filter thread and
     // one thread per decoder; frozen again, as two halves (down to 2 s), each the same way.
-    const renderInPieces = async (why = "FFmpeg was killed (out of memory)") => {
+    // A cloud preview (audit #13) passes `cache`: each piece is looked up in storage by its key (lib/pieceCache) and taken
+    // back when this edit's last preview made the same piece; the rest are made and stored for the next preview.
+    const renderInPieces = async (why = "FFmpeg was killed (out of memory)", cache?: { prefix: string }) => {
       const FPS = plan.fps || 30, onGrid = (t: number) => Math.round(t * FPS) / FPS;
       const queue: { a: number; b: number; simple?: boolean; froze?: boolean }[] = pieceRanges(plan);
       const made: string[] = [];
+      const used = new Set<string>(), uploads: Promise<void>[] = [], seen = new Map<string, string>();
+      let reused = 0;
       console.error(`[render] ${r.id}: ${why}: making it in ${queue.length} pieces`);
       const soundPath = join(ctx.dir, "sound.wav"), soundGraph = join(ctx.dir, "graph-sound.txt");
       const sa = ffmpegArgs(plan, { ...files, output: soundPath }, sourceInfo, { threads: 2, inputThreads: cpus * 2, loudnessGainDb: mixLoudness?.gainDb, sound: "only" });
@@ -696,6 +701,21 @@ export async function renderJob(ctx: Ctx) {
         const sub = windowPlan(plan, pc.a, pc.b);
         const argsOf = (ft: number, decode = cpus * 2) => ffmpegArgs(sub, { ...files, output: out }, sourceInfo, { threads: Number(process.env.FFMPEG_THREADS || 0) || cpus, filterThreads: ft, inputThreads: decode, windowBudget: budgets, sound: "none" });
         const go = async (a: ReturnType<typeof argsOf>) => { await writeFile(gp, a.filterGraph); await run("ffmpeg", a.args.map((x) => (x === "__FILTER_SCRIPT__" ? gp : x)), { signal, stallMs: STALL_MS, onProgress: (sec) => onProgress(pc.a + Math.min(sec, pc.b - pc.a)) }); };
+        let key: string | null = null;
+        if (cache) {
+          try {
+            const a4 = argsOf(4);
+            key = `${cache.prefix}${await pieceKey({ args: a4.args, graph: a4.filterGraph, files, output: out, dir: ctx.dir, win: { a: pc.a, b: pc.b }, version: await ffmpegVersion(), seen })}.mov`;
+            if (await headObject(key)) {
+              await downloadFile(key, out);
+              used.add(key); reused++; made.push(out); onProgress(pc.b);
+              continue;
+            }
+          } catch (e) {
+            if (signal.aborted) throw e;
+            console.error(`[render] ${r.id}: piece ${pc.a.toFixed(2)}-${pc.b.toFixed(2)} s: could not look it up (${(e as Error).message.slice(0, 200)}); making it`);
+          }
+        }
         try {
           if (pc.simple) await go(argsOf(1, 1));
           else {
@@ -719,9 +739,16 @@ export async function renderJob(ctx: Ctx) {
         }
         if (pc.froze) console.log(`[render] ${r.id}: piece ${pc.a.toFixed(2)}-${pc.b.toFixed(2)} s made with one thread each after freezing`);
         made.push(out);
+        if (key) { const k = key; uploads.push(uploadFile(k, out, "video/quicktime").then(() => { used.add(k); }, () => {})); }
       }
       await joinPieces(ctx.dir, made, files.output, kind === "preview" ? "96k" : best ? "320k" : "192k", signal, soundPath);
-      console.log(`[render] ${r.id}: made in ${made.length} pieces and joined`);
+      console.log(`[render] ${r.id}: made in ${made.length} pieces and joined${cache ? ` (${reused} taken back unchanged from the last preview)` : ""}`);
+      if (cache) {
+        await Promise.all(uploads);
+        if (reused) plan.operations.push(`Made in ${made.length} pieces: ${reused} unchanged since the last preview came back as they were, ${made.length - reused} made again`);
+        // Only this preview's pieces are kept: the next preview starts from it.
+        try { await deleteObjects((await listPrefix(cache.prefix)).map((o) => o.key).filter((k) => !used.has(k))); } catch { /* left for next time */ }
+      }
     };
     // ---- On the user's Mac first (its Rendrr app open and able): the same runs, with its own number of threads; the
     // overlay's second pass and merge, or the GIF, made there too. The file comes back here to be checked. ----
@@ -782,10 +809,22 @@ export async function renderJob(ctx: Ctx) {
         // A very heavy final (dozens of sources at once) is made in pieces from the start: in one pass it fills the
         // container's memory slowly and is killed only after many minutes (then made in pieces anyway).
         const heavy = canPiece && piecesFirst(kind, fit);
+        // A cloud preview long enough for pieces is made in them, so the next preview makes only the pieces that changed
+        // (audit #13). Should that fail for any reason, it is made in one pass as before.
+        const cacheable = !heavy && kind === "preview" && canPiece && fmt !== "gif" && previewPieceCache() && pieceRanges(plan).length > 1;
+        const inCachedPieces = async () => {
+          try { await renderInPieces("a preview: only the pieces that changed since the last one are made", { prefix: pieceCachePrefix(video.userId, project.id) }); return true; }
+          catch (e) {
+            if (signal.aborted) throw e;
+            console.error(`[render] ${r.id}: the preview in pieces failed (${(e as Error).message.slice(0, 300)}); making it in one pass`);
+            return false;
+          }
+        };
         // A nearly full container (other jobs hold its threads): wait up to a minute for room; still full, start small.
         const room = heavy || (await waitForThreads(fit.need, 60_000, signal));
         try {
           if (heavy) await renderInPieces(`a heavy final (${fit.inputs} inputs, ${fit.scalers} scalers)`);
+          else if (cacheable && (await inCachedPieces())) { /* made in pieces */ }
           else await run("ffmpeg", withGraph(room ? args : argsFor(1, 1).args), { signal, onProgress, stallMs: STALL_MS });
         } catch (e) {
           if (canPiece && killed(e)) await renderInPieces();

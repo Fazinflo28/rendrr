@@ -1,7 +1,7 @@
-import { abortMultipart, AppError, deleteObjects, notFound, placementMedia, renderFileKeys, signGet } from "@rendrr/core";
+import { abortMultipart, AppError, deleteObjects, deletePrefix, notFound, placementMedia, renderFileKeys, signGet } from "@rendrr/core";
 import { deleteEditCommentFiles } from "./commentMedia";
 import { prisma, type Folder, type Prisma, type Project } from "@rendrr/db";
-import { allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, libraryVideoIds, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip, ASPECTS, aspectSize, orientationOf, type Aspect } from "@rendrr/shared";
+import { pieceCachePrefix, allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, libraryVideoIds, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip, ASPECTS, aspectSize, orientationOf, type Aspect } from "@rendrr/shared";
 import { otherVideoIds, playerVideos } from "./sequence";
 import { activityOut, commentOut, folderOut, noteOut, projectOut, styleOut, videoOut } from "../serialize";
 import { sentByComment } from "./handoff";
@@ -370,6 +370,8 @@ export async function purgeProjectFiles(where: Prisma.ProjectWhereInput) {
   if (!ids.length) return;
   // Comments' drawings and pictures (the app in the chat).
   for (const p of ps) await deleteEditCommentFiles(p.userId, p.id).catch(() => {});
+  // The pieces kept from the last cloud preview (audit #13).
+  for (const p of ps) await deletePrefix(pieceCachePrefix(p.userId, p.id)).catch(() => {});
   const renders = await prisma.render.findMany({ where: { projectId: { in: ids } }, select: { outputKey: true, framesKeys: true, plan: true } });
   await deleteObjects(renders.flatMap(renderFileKeys));
   const originals = await prisma.tempOriginal.findMany({ where: { projectId: { in: ids } } });
