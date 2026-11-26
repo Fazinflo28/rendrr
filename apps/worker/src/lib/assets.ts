@@ -75,6 +75,20 @@ async function trimProxies(keep: string) {
   }
 }
 
+/** Runs fn on every item, at most `limit` at once, and waits for all of them (the first error is thrown once all
+ *  have stopped). Files a render needs are fetched this way instead of one after another (audit #12). */
+export async function eachLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0, failed: unknown = null;
+  const worker = async () => {
+    while (next < items.length && failed == null) {
+      const item = items[next++];
+      try { await fn(item); } catch (e) { failed ??= e; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  if (failed != null) throw failed;
+}
+
 const MAKE_ASSETS = join(dirname(fileURLToPath(import.meta.url)), "../../assets/make-assets.sh");
 const REQUIRED = ["samples/sample-talking-head.mp4", "samples/sample-portrait.mp4", "samples/sample-broll.mp4", "assets/music/m_lofi.m4a", "assets/music/m_gameshow.m4a", "assets/sfx/sfx_hit.m4a"];
 

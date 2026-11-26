@@ -16,7 +16,7 @@ import { gunzipSync } from "node:zlib";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { COVER_SIZE, cpuBudget, filterThreads, frameArgs, frameAt, graphicCover, JobError, measureFile, outOfThreads, probe, run, stalled, windowBudget } from "../lib/ffmpeg";
-import { cachedAsset, cachedCopy } from "../lib/assets";
+import { cachedAsset, cachedCopy, eachLimit } from "../lib/assets";
 import { matchFacing } from "../lib/orient";
 import { closeIdleBrowsers, renderGraphicClip } from "../lib/graphics";
 import { ensureMattes } from "../lib/matte";
@@ -322,10 +322,11 @@ export async function renderJob(ctx: Ctx) {
     }
     if (!sampleWins) est.outSeconds = plan.outputSeconds;
     if (copies.length) plan.operations.push(`Other videos without an original in Rendrr use their 720p copy: ${copies.join(", ")}`);
-    for (const b of [...plan.broll, ...(plan.under ?? [])]) {
+    // B-roll fetched 4 at a time, not one after another (audit #12).
+    await eachLimit([...plan.broll, ...(plan.under ?? [])], 4, async (b) => {
       const bv = brollVideos.find((x) => x.id === b.videoId);
       if (bv?.proxyKey) { const p = join(ctx.dir, `broll-${b.clipId}.mp4`); await cachedCopy(bv.proxyKey, p); (plan.under?.includes(b) ? files.under! : files.broll!)[b.clipId] = p; }
-    }
+    });
     if (plan.background?.videoId) {
       const bv = brollVideos.find((x) => x.id === plan.background!.videoId);
       if (bv?.proxyKey) { const p = join(ctx.dir, "background.mp4"); await cachedCopy(bv.proxyKey, p); files.background = p; }
@@ -405,20 +406,23 @@ export async function renderJob(ctx: Ctx) {
       est.matte = null;
       if (pt) pt = armPreview(Math.max(60_000, previewLimit - (v0 - t0)));
     }
+    // Every sound checked first (the same refusals, in the same order), then fetched 4 at a time (audit #12).
     for (const a of plan.audio) {
+      if (a.soundId) { if (!soundRows.find((s) => s.id === a.soundId)) throw new JobError("This edit uses an audio file that is not in your Rendrr. Remove it and try again.", "bad-audio", false); continue; }
+      // Built-in music and sound effects only (the plan takes keys from the catalog; this is a second lock).
+      if (!a.assetKey.startsWith(PREFIX.assets)) throw new JobError("This edit uses a sound that is not in the library. Remove it and try again.", "bad-audio", false);
+    }
+    await eachLimit(plan.audio, 4, async (a) => {
       // The user's own file: the one found for this user above (its key from the database, not the edit).
       if (a.soundId) {
-        const own = soundRows.find((s) => s.id === a.soundId);
-        if (!own) throw new JobError("This edit uses an audio file that is not in your Rendrr. Remove it and try again.", "bad-audio", false);
+        const own = soundRows.find((s) => s.id === a.soundId)!;
         const p = join(ctx.dir, `sound-${own.id}.m4a`);
         await cachedCopy(own.key, p);
         files.audio![a.clipId] = p;
-        continue;
+        return;
       }
-      // Built-in music and sound effects only (the plan takes keys from the catalog; this is a second lock).
-      if (!a.assetKey.startsWith(PREFIX.assets)) throw new JobError("This edit uses a sound that is not in the library. Remove it and try again.", "bad-audio", false);
       files.audio![a.clipId] = await cachedAsset(a.assetKey);
-    }
+    });
     // Music shorter than its part was looped by FFmpeg inside the edit's graph (-stream_loop); a heavy final froze
     // where the loop came round. The loop is made here instead, in a small pass of its own, as plain PCM.
     for (const a of plan.audio) {

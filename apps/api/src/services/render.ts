@@ -1,5 +1,5 @@
 import { chapterProblems, chaptersText, macOriginalOf, type Chapter } from "@rendrr/shared";
-import { AppError, enqueue, macForRender, publishRender, queue, readRender, redis, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
+import { AppError, enqueue, macForRender, publishRender, queue, readRender, redis, RENDER_QUEUES, renderQueueOf, sealLatestVersion, signGet, type RenderJob } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { bestResolution, FINAL_DRIVE_STEPS, FINAL_RENDER_STEPS, fmtSize, isFourKQuality, isSoundFormat, PREVIEW_STEPS, qualityLabel, SOUND_QUALITY, type ExportFormat } from "@rendrr/shared";
 import { getOwnedProject } from "./projects";
@@ -81,7 +81,7 @@ export async function startRender(userId: string, projectId: string, kind: "prev
   const reviewState = ["In review", "Changes requested", "Approved"].includes(p.status);
   if (version === p.currentVersion && !reviewState) await prisma.project.update({ where: { id: projectId }, data: { status: "Rendering" } });
   await publishRender(r.id, { status: "queued", step: 0, steps, percent: 0 });
-  await enqueue<RenderJob>("render", { renderId: r.id }, { jobId: r.id });
+  await enqueue<RenderJob>(renderQueueOf(kind), { renderId: r.id }, { jobId: r.id });
   return r;
 }
 
@@ -135,8 +135,10 @@ export const STOP_CHANNEL = "rendrr:stop";
  */
 export async function stopRender(r: Render) {
   if (r.status === "done" || r.status === "failed") return { stopped: false, status: r.status };
-  const job = await queue("render").getJob(r.id).catch(() => null);
-  if (job && ((await job.isWaiting().catch(() => false)) || (await job.isDelayed().catch(() => false)))) await job.remove().catch(() => {});
+  for (const q of RENDER_QUEUES) {
+    const job = await queue(q).getJob(r.id).catch(() => null);
+    if (job && ((await job.isWaiting().catch(() => false)) || (await job.isDelayed().catch(() => false)) || (await job.isPrioritized?.().catch(() => false)))) await job.remove().catch(() => {});
+  }
   const error = "You stopped this export.";
   // Only while it is still waiting or running: one that finished a moment ago stays finished.
   const hit = await prisma.render.updateMany({ where: { id: r.id, status: { in: ["queued", "running"] } }, data: { status: "failed", error, errorCode: "stopped", finishedAt: new Date() } });
