@@ -18,7 +18,7 @@ const api = createServer(async (req, res) => {
   if (req.url === "/internal/app-config") return res.end(JSON.stringify({ mediaOrigins: ["https://bucket.storage.example", "javascript:alert(1)"] }));
   if (req.url === "/internal/tools/open_projects") return res.end(JSON.stringify({ text: "Showing the Rendrr app with 1 edit.", data: { projects: [{ id: "p1", name: "Reel" }], total: 1, offset: 0, open: null, webUrl: "https://app.rendrr.live" } }));
   if (req.url === "/internal/tools/app_add_comment") return res.end(JSON.stringify({ text: "Comment added.", data: { project: { id: "p1" }, comments: [{ id: "c1", time: 1.5, text: (body as { text: string }).text }] } }));
-  if (req.url === "/internal/tools/get_editing_skill") return res.end(JSON.stringify({ text: "# Fazinflo Editing Skill (Rendrr edition)" }));
+  if (req.url === "/internal/tools/get_editing_skill") return res.end(JSON.stringify({ text: "# Rendrr Editing Skill" }));
   if (req.url === "/internal/tools/create_graphic") return res.end(JSON.stringify({ text: "Graphic g1 is recording." }));
   if (req.url === "/internal/tools/check_edit") return res.end(JSON.stringify({ text: "Check of v2", data: { ignored: true } }));
   if (req.url === "/internal/tools/render_samples") return res.end(JSON.stringify({ text: "Samples of v3", images: [], data: { open: null, webUrl: "https://app.rendrr.live", samples: { renderId: "rs1", status: "done", items: [{ kind: "frame", at: 1 }] } } }));
@@ -60,7 +60,7 @@ describe("the connector", () => {
     assert.ok(tools.some((t) => t.name === "get_editing_skill" && t.annotations?.readOnlyHint === true));
     assert.ok(tools.some((t) => t.name === "check_edit" && t.annotations?.readOnlyHint === true));
     const r = await client.callTool({ name: "get_editing_skill", arguments: {} });
-    assert.match((r.content as { text: string }[])[0].text, /^# Fazinflo Editing Skill/);
+    assert.match((r.content as { text: string }[])[0].text, /^# Rendrr Editing Skill/);
     const { resources } = await client.listResources();
     assert.ok(resources.some((x) => x.uri === "skill://rendrr/editing-skill/SKILL.md"));
     const skill = await client.readResource({ uri: "skill://rendrr/editing-skill/SKILL.md" });

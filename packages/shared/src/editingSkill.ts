@@ -1,147 +1,238 @@
 // The editing skill every connected AI gets with the connector (server instructions point to it; get_editing_skill,
-// the skill:// resource and the editing-skill prompt serve it). Adapted from the Fazinflo Editing Skill: the same
-// rules, mistakes and QA gate, written for Rendrr's tools, without anyone's private pipeline, names or clients.
+// the skill:// resource and the editing-skill prompt serve it): the Rendrr Editing Skill, one skill for setup, cuts,
+// b-roll, captions, hooks, pacing, renders and comments, built from real review notes, written for any Rendrr user.
 
 /** Sent to the AI at the start of every conversation (kept short: hosts cut long instructions). */
 export const MCP_INSTRUCTIONS = [
   "Rendrr edits video: you decide, Rendrr measures and marks (never cuts on its own), applies exactly what you send and renders. Times are seconds in the ORIGINAL footage.",
-  "Before your first edit in a chat, call get_editing_skill once and follow it (the Fazinflo Editing Skill: rules, the mistakes reviewers flag most, workflow, QA gate).",
-  "Core rules: read the whole video first; keep the best take (usually the last complete one); remove fillers, stutters, false starts and look-downs; tight, but never cut a word; no grading, audio processing, text animation, b-roll or graphics unless asked; one caption system, big and centred.",
-  "ONE render per user request: make every change, check_edit (no render), fix, then render_preview ONCE and reply. Never render again for your own fixes: Rendrr refuses a second preview until the user asks again (then newRequest: true).",
-  "Comments: get_comments, fix each spot and the same kind of mistake everywhere, one render, then resolve_comment.",
-  "Shorts from a long video: create_shorts. Another shape of an edit: create_project fromProjectId with aspect and reframe. New client: create_folder.",
-  "No footage (a SaaS promo, an explainer, animated type): create_project blank {seconds, color} is a blank canvas; build the video with create_graphic scenes, add_graphic, add_text, music and sound effects.",
-  "A video, picture, logo or music the user gives you (attached, a link, Drive): add_footage (logos: as element) or add_audio.",
-  "Export: render_final (Mac/PC app open: made there, lands in its Downloads; closed: Rendrr's cloud, ask which Drive folder). Never re-upload.",
-  "open_projects shows the user's edits, previews and comments in the chat; render_samples a few frames of a new look first. Guide: rendrr://how-to-edit.",
+  "Before your first edit in a chat, call get_editing_skill once and follow it (the Rendrr Editing Skill: rules, the mistakes reviewers flag most, b-roll, captions, hooks, pacing, QA gate).",
+  "Core rules: read the whole video; keep the best take; cut fillers, stutters, false starts and look-downs; tight, but never cut a word; add nothing not asked (no grading, audio changes, b-roll, graphics or text animation); b-roll starts on its words, keeps moving, never repeats, no talking head flash between clips; one caption system, big, centred, in one place.",
+  "ONE render per user request: make every change, check_edit (no render), fix, then render_preview ONCE, show it with open_projects and reply. Never render again for your own fixes: a second preview waits for the user's next request (newRequest: true).",
+  "Renders run on the user's computer when the Rendrr app (Mac or Windows) is open, else on Rendrr's cloud: say which in one line.",
+  "Comments: get_comments, fix each spot and the same kind of mistake everywhere, one render, resolve_comment.",
+  "Shorts: create_shorts. Another shape: create_project fromProjectId with aspect and reframe. New client: create_folder. No footage: create_project blank, then create_graphic scenes, add_graphic, add_text, music.",
+  "A video, picture, logo or music the user gives you: add_footage (logos: as element) or add_audio.",
+  "Export: render_final (app open: lands in that computer's Downloads; closed: the cloud, ask which Drive folder). Never re-upload. Guide: rendrr://how-to-edit.",
 ].join(" ");
 
-export const EDITING_SKILL = `# Fazinflo Editing Skill (Rendrr edition)
+export const EDITING_SKILL = `# Rendrr Editing Skill
 
-How to turn raw talking head footage into a tight, clean cut with Rendrr, check it before anyone sees it, and work through review comments. Use it for talking heads, Reels, ads, VSLs and client videos.
+Rendrr is where every video gets edited: talking heads, ads, Reels, YouTube, podcasts, b-roll, captions, comments, renders and exports.
+Claude plans the edit. Rendrr measures, marks, applies and renders it.
+Rendrr never cuts anything by itself. Claude decides every cut.
 
-It is built from 146 real review comments. The same mistakes kept coming back, and each one cost a full review round. The QA gate exists to catch them before the user or the client sees them. Rendrr measures and marks; you decide every cut.
+This one skill covers setup, talking head cuts, b-roll, captions, hooks, pacing, renders and comments. Everything happens in Rendrr. It is built from 146 past review notes and the closed comments on 94 Rendrr videos.
 
-## The loop
+## Golden rules
 
-Read the whole video > plan > apply_edits > check_edit > fix > render_preview ONCE > read its check > tell the user (and stop) > their next request or comments > fix each one and the same kind of mistake everywhere > apply_edits > check_edit > one render.
-
-## One render per request
-
-Every render_preview makes a version the user has to watch, and every render costs them tokens. Five previews for one request look like five different edits. The user's request goes from version 1 to version 2, never to version 5.
-
-- A revision is everything for one request from the user, or one round of comments. Put it in as few apply_edits calls as you can; every apply_edits before the render joins the same version.
-- Check before you render, with tools that render nothing: check_edit (pauses, words a cut goes through, fillers left, clips under 0.5 s, captions, text placement), get_frames and get_vision (look-downs, dark shots), get_audio and get_waveform_image (word edges), test_graphic (any graphic, in a few seconds), map_time (times).
-- Render once. Read its check. If the file shows something the edit check could not (a gap or click in the sound, loudness, a graphic not on screen, an extra word heard), fix it with apply_edits and check_edit, but do NOT render again: tell the user what you fixed and that it is in the next preview. Rendrr refuses a second preview of the same edit until the user asks for something new or comments (then render_preview with newRequest: true).
-- Never render two previews to compare options. Describe the options and ask.
-- render_preview with nothing changed returns the preview that version already has.
+1. **Render on the device first.** If the Rendrr app (Mac or Windows) is open, every preview and final renders there.
+2. **Cloud only as backup.** If the device is off, asleep or the app is closed, use Rendrr cloud and tell the user in one line.
+3. **One render per request.** Make every change, run \`check_edit\`, fix everything, then render one preview. Never render again for your own fixes.
+4. **Show the preview every time.** After any edit or change, open the Rendrr preview card with \`open_projects\`.
+5. **Footage comes from Rendrr or from what the user gives you** (a link, a file, their Drive) with \`add_footage\`. Never ask the user to turn a computer on just for footage. Never re-upload.
+6. **Client rules beat general rules.** Read them before every edit.
+7. **No em dashes.** Not in names, captions, notes or replies.
+8. **Never loop.** If a render or upload is stuck or keeps failing, stop and tell the user the exact error.
 
 ## The mistakes we keep making (read this first)
 
-| Mistake | How it happens | How to catch it in Rendrr |
+| Mistake | How often | Fix |
 |---|---|---|
-| Word got cut ("Impression", "Trust", "tightness", "takes over", "philosophy") | Transcript word end times are off by up to 150 ms; cutting on them clips the word. s, r, f and y endings are the usual victims. | Cut on the sound: get_footage detail "words" (its ALIGNMENT line), get_audio, get_waveform_image. check_edit and the render check list "Clipped words". |
-| Glitch, boop, doubled word at a join ("and and", "patient pa-patient") | A leftover half syllable, a repeated word, a 2 to 8 frame fragment. | No piece under 0.3 s; look at every clip check_edit lists under 0.5 s; read the words on both sides of every join. |
-| Gap or pause left | Pauses inside sentences not trimmed, breaths the transcript skipped. | mark_silences, list_marks breath; pauses in check_edit; gaps in speech in the render check. |
-| Tiny dropouts at joins ("5 to 10 ms gaps", words sound clipped) | A fade to silence at every cut makes steady room hiss drop out at each join. | Add no fades on dialogue clips unless asked. Rendrr softens each cut over set_audio declick (default 0.02 s); in a hissy room where joins sound like gaps, lower it (0.005). Clicks at joins come with the render check. |
-| Audio processing made it worse | Noise reduction, EQ or compression nobody asked for. | Leave set_audio alone unless the user, the brief or the style asks. |
-| Looking down at the script (once flagged 9 times in one video) | Only the audio was checked. | get_vision (looks away, head turns), list_marks off_camera and face_lost, get_frames on doubtful spots. |
-| Duplicate take missed | Retakes that start with different words, or partial takes. | get_retakes, list_marks retake, false_start and stumble; read the whole transcript. |
-| Hidden retake inside one "word" ("there are there are", a line said three times) | On long recordings the transcript skips repeated takes and stretches one word over the whole retake (a "word" lasting 2 to 4 s). | Treat any word over about 1 s as suspect: look at get_audio or get_waveform_image there. After the preview, get_preview_frames shows the words heard against the edit: extra words are a hidden retake or a leftover. |
-| Dark or bad shot left in | No picture check. | list_marks low_light, out_of_focus, face_lost; get_vision. |
-| Same mistake after a fix | The fix went to one spot only. | When a mistake is flagged once, search the WHOLE video for the same kind. |
-| Talking head flashing between b-roll (one frame, 12 times in 104 s) | Off-by-one gaps between back-to-back b-roll clips. | Back-to-back b-roll share the exact boundary (one ends where the next starts), or the talking head stays at least 1 s. |
-| Still frame in b-roll | A photo used as b-roll, or a clip shorter than its slot. | Only moving clips, each at least its slot plus 0.2 s. |
-| Two captions at once | A subtitle track and a top caption both on. | One caption system; the check flags text that covers the captions. |
-| Extra elements nobody asked for ("Don't add the reviews here") | Overlays added on the AI's own idea. | Add nothing that was not asked for. |
-| B-roll does not match the line or the mood | Picked on a keyword. | Match the meaning and the mood; no clip fits, no b-roll. |
-| Picture or logo on the face | Timed to the words, nobody checked what was under it. | test_graphic and the render check say how much of the face a graphic covers. |
-| Same b-roll twice | Clips picked spot by spot. | List every b-roll clip in the edit before rendering. |
-| Captions jump around | Key lines moved over cards or montages. | Every caption line sits in the same place. |
-| Long pause glued back | Merging short pieces across a long silence. | Never merge two pieces across a pause over about 0.25 s. |
+| Talking head flashes between b-roll clips | Most common of all | Back to back clips touch on the same frame. Speaker comes back for at least 1 s or not at all. Check every edge. |
+| Word got cut at a join | Very often | Never cut on transcript times alone. Check the waveform at every edge. |
+| Glitch, boop, doubled word at a join | Very often | No piece under 0.30 s, no half syllables, no "and and". |
+| B-roll on the wrong words | Very often | Clip starts on the word it shows and ends when the point ends. |
+| B-roll doesn't match the meaning or mood | Often | Match the idea, not one keyword. Pain shows pain, results show results. |
+| Stock or AI used when real client footage existed | Often | Client footage first, always. |
+| Dead part of a b-roll clip used (static, setting up) | Often | Use only the part with real, logical movement. |
+| Gap or pause left | Often | Trim pauses inside sentences. |
+| Look-down at the script left in | Often | Watch the eyes, not just the audio. Cut every look-down. |
+| Hidden retake or duplicate take kept | Often | Read the whole transcript first and keep only the best take. |
+| Same mistake after a fix | Often | Fix the same kind of mistake everywhere, not just the flagged spot. |
+| Same b-roll used twice | Sometimes | List every clip before render. No repeats. |
+| Still or frozen frame in b-roll | Sometimes | B-roll is always moving video and never runs out. |
+| Two captions on screen at once | Sometimes | One caption system per video. |
+| Extra things nobody asked for | Sometimes | Add nothing that wasn't asked. |
+| Audio or color "improved" without asking | Sometimes | Keep original audio and color unless asked. |
+| Logo or picture over the speaker's face | Sometimes | Pictures sit on b-roll only. |
+| Captions jump around | Sometimes | Every caption sits in the same spot. |
+
+When a mistake is flagged once, search the WHOLE video for the same kind of mistake.
 
 ## The rules (never break these)
 
-1. TIGHT, BUT NEVER CUT A WORD. Every word keeps its full sound from first to last, and no dead pause is left. A clipped word and a dead pause are equally wrong.
-2. CUT ON THE SOUND, NOT THE TRANSCRIPT. A kept piece starts 20 to 40 ms before its first sound and ends 40 to 70 ms after the sound dies (the longer pad for s, f, sh, t, k, p and breathy endings). Never place a cut where the sound is still above the room level. If the next word starts before the sound dies, keep the two words together or cut at a real gap. A word's tail stops at the dip before an abandoned take ("patient, con- contribution"): never extend it into one.
-3. NO GLITCHES. No piece shorter than 0.3 s of picture, no half syllables, no doubled words at a join, no flash frames.
-4. REMOVE EVERY UM AND AH, plus stutters ("I I think"), false starts, abandoned half sentences, crew talk and notes to the editor.
-5. REMOVE LOOK-DOWNS. Any moment the speaker looks down or away to read the script is cut, even a few frames. Cut at the nearest silence on both sides, never inside a word; if that is impossible, tell the user.
-6. READ THE WHOLE VIDEO BEFORE CUTTING. Read the full transcript end to end and find every repeated line. Keep the best take: usually the LAST complete take, after checking it is clean (no trailing off, stumble, filler that cannot be cut, look-down or dark frame).
-7. PAUSES. Trim quiet stretches over about 120 ms inside sentences. Reels: about 60 ms, first word within 0.2 s. Long form and VSLs: up to about 150 ms at the end of a big point. No dead air at the start or end. Never merge two pieces across a pause over about 0.25 s; a piece shorter than about 0.45 s rejoins its nearer neighbour only across a smaller pause.
-8. NEVER COLOUR GRADE, RETOUCH SKIN OR REMOVE THE BACKGROUND UNLESS ASKED (skin: retouch_skin, natural by default; background: remove_background, then set_background or set_under for what goes behind). Keep the original look; HDR stays HDR. When asked to match an approved video, copy its grade (copy_grade) to every video. When the user gives a LUT, or a look you built and they approved (on a frame, outside Rendrr), put that exact look in Rendrr: add_lut (upload: true for a .cube in your workspace, else its link or its Drive file), then set_grade{all: true, lut} with any extra exposure, temperature, saturation or curves, and set_effects sharpen if it was sharpened. Never rebuild an approved LUT from curves, and never grade a downloaded file outside Rendrr: the edit, its previews and its final must carry the look.
-9. KEEP THE ORIGINAL AUDIO UNLESS ASKED. Measure and report it (get_audio: loudness, room noise, background voices), but add no noise reduction, EQ or compression. Rendrr's default mix has no cleanup and only sets the level (-14 LUFS, true peak -1 dBTP); when the user says to keep the audio exactly as it is, set_audio loudness null. When cleanup is asked: set_audio cleanup; a voice that should sound like a studio microphone, with less noise, echo or room: cleanup studio (the AI takes noise, room and echo out; dereverb, enhance, level and crisp tune it); the voice stays crisp, never robotic or underwater.
-10. NEVER ANIMATE TEXT UNLESS ASKED. Captions and text appear and disappear with a hard cut (add_text anim none).
-11. CAPTIONS ARE BIG (unless asked otherwise): at least about 6.5% of the frame's short side (70 px on 1080 wide), bold, centred, 2 to 3 words a line, on screen until the words end. Yellow captions are ALL CAPS.
-12. ONE CAPTION AT A TIME. Never two caption or text layers together. A logo or a big text block replaces the caption while it shows.
-13. CAPTIONS STAY IN ONE PLACE, also over cards, montages and b-roll. Cards and graphics go around the caption, never over it or the speaker.
-14. ADD NOTHING THAT WAS NOT ASKED FOR. No review cards, testimonials, logos, stickers, graphics, zooms, b-roll or music unless the brief, the style or the user asks.
-15. B-ROLL MUST BE RELEVANT, in meaning and mood: pain lines show pain, "tried everything" shows things people try, results show happy people. Trim a clip before anyone laughs or smiles on a serious line. No clip fits, no b-roll.
-16. LET EVERY B-ROLL FINISH. A b-roll plays to its planned end. Between two b-roll clips: exactly no gap (one starts where the other ends) or at least 1 s of talking head. Moving video only: no stills, no clip that runs out.
-17. NEVER USE THE SAME B-ROLL CLIP TWICE in one video unless asked.
-18. PICTURES THE CLIENT ASKS FOR (anatomy images, logos, prices) ARE STATIC: hard on, hard off, on b-roll only, never over the caption or the face, starting and ending on a cut or a b-roll edge, at least 0.5 s on screen.
-19. ONE FRAMING PER CONTINUOUS PIECE. A zoom or punch-in changes only at a real cut, never in the middle of a sentence that plays on.
-20. MUSIC SITS UNDER THE VOICE: about 15 dB under (add_music gainDb about -18, ducking on), short fade in, longer fade out; the voice is clearly on top.
-21. COPY A REFERENCE EXACTLY WHEN ASKED. analyze_reference, then get_style its style file, and copy it end to end: structure, pacing, cuts, captions, fonts, sizes, positions, colours, animations, b-roll style, sound. Do not "improve" it or mix in other styles.
-22. NEVER REORDER THE STORY OR ADD A HOOK UNLESS ASKED. Suggest it instead.
-23. NEVER TRUST ONE LONG TRANSCRIPT FOR RETAKES. Check suspicious long words in the sound, and read what the preview says was heard.
+**Cutting**
+1. Tight, but never cut a word. Every word keeps its full sound. No dead gaps either. A clipped word and a dead pause are both mistakes.
+2. No glitches: no piece shorter than 0.30 s, no half syllables, no doubled words at a join, no flash frames.
+3. Remove every umm and ahh, stutters, false starts and abandoned half sentences.
+4. Remove look-downs: any moment the speaker looks down or away to read, even a few frames.
+5. Read the whole video before cutting. Find every repeated line. Keep the best take (usually the LAST complete take, but confirm it is clean).
+6. A word's tail is part of the word. "s", "r", "f" and "y" endings are the usual victims. Never stretch a tail into the start of an abandoned retake.
+7. No micro-cuts: two kept pieces from the same take less than about 0.10 s apart are joined into one.
+8. Never reorder the story or add a hook unless asked. Suggest it instead.
+9. Spoken edit notes in the raw ("cut this part", "show the screen recording here") are followed, never kept in the cut, and listed in the reply.
 
-## Workflow with Rendrr
+**Look and sound**
+10. Never color grade unless told to. Keep the original look. HDR stays HDR. When asked to grade "like before", copy the exact grade of the video the user points to.
+11. Keep the original audio unless asked. Report what you hear (\`get_audio\`), change nothing; when the user wants it exactly as it is, \`set_audio\` loudness null. When cleanup is asked: \`set_audio\` cleanup; for a voice that should sound like a studio microphone, cleanup studio (the AI takes noise, room and echo out); about -14 LUFS, true peak at or under -1 dB, voice stays crisp, never robotic.
+12. Music sits about 15 dB under the voice, short fade in, longer fade out.
 
-1. **Read.** list_footage, get_footage (detail "words" for exact edges), the user's brief, the style (get_style, or a style file from analyze_reference), and get_comments on earlier edits for the same client: past comments say what this reviewer cares about. Notes the speaker says to the editor ("cut this part", "show the screen recording here") are marks (list_marks director_note): follow each one, never keep it in the cut, and list them in your summary.
-2. **Measure.** mark_silences, mark_fillers, get_retakes, list_marks (stumble, false_start, retake, breath, click_pop, low_light, out_of_focus, face_lost, off_camera), get_vision for look-downs, get_audio for word edges. Rendrr measures; nothing is cut until you say so.
-3. **Plan.** Group the transcript into lines. For every retake group pick the best take and note why. Mark fillers, look-downs, dark spans and crew talk. Estimate the final length.
-4. **Edit.** create_project, then ONE apply_edits with everything: cut_words (word ids, or from/to with edges checked on the sound), captions, and only the extras that were asked for. Add a short note for the user.
-5. **Check without rendering.** check_edit. Fix everything it shows in one apply_edits and check again. Look at doubtful moments with get_frames; test any graphic with test_graphic.
-   **Samples before the first preview** of a new look (graphics, titles, a grade, a motion piece): render_samples a few key moments (the hook, a title, a graphic, a transition: up to 8 frames and 3 clips of up to 6 s, with a note on what each shows). They are drawn exactly as the preview will draw them and the user sees them as a storyboard in the chat, asking for changes on each. get_samples reads those changes: make them in one apply_edits, render_samples again until the look is agreed, then render the whole preview once. A plain talking head cut needs none.
-   **Storyboard first, only when the user asks for it** ("storyboard it first", "show me the frames before you render"): build the edit as usual (cuts, captions and their style, text, graphics, b-roll, music), then create_storyboard instead of a preview: the beats in order (up to 24 panels, 8 of them short clips), each with a title, the words said and what we see, plus the visual rules and the palette. Rendrr adds the style sheet it reads from the edit (caption font, size, colours and how they come on; text fonts; colours; look; music; pacing). The user comments and draws on panels, and approves it; get_samples reads that (images true shows each drawing on its panel). Make the changes in one apply_edits, create_storyboard again, resolve_comment each; once they approve, render_preview. Without the ask, edit and render as usual.
-6. **Render once.** render_preview, and read its check: clipped words, gaps at joins, clicks, fillers left, words heard against the edit (extra words mean a hidden retake or a leftover), loudness, graphics over the face. get_preview_frames to look at the picture and read what a viewer hears.
-7. **QA gate** (below), on the check before you render (check_edit, frames, the sound) and on the preview's check after. A fail after the render: fix it with apply_edits and check_edit, no second render; say what you fixed and that the next preview has it.
-8. **Tell the user** in 2 or 3 lines: length before and after, fillers and takes removed, look-downs removed, editor notes followed, anything uncertain (a line never said cleanly, a mixed-up take). Ask before render_final.
+**Adding things**
+13. Add nothing that was not asked for: no graphics, zooms, b-roll, review cards, logos, stickers or text animation unless the brief, the client's rules or the user asks.
+14. Copy a reference exactly when asked: same structure, pacing, captions, fonts, colors, b-roll style and length. Don't "improve" it.
+15. Pictures the client asks for (logos, anatomy, prices) are static, hard on and hard off, sit on b-roll only, never cover the caption or the face, start and end on a cut or caption change, and stay up at least 0.5 s.
+16. One framing per continuous piece. Zoom changes only at a real cut.
 
-## Shorts, other shapes and new edits
+**Captions**
+17. Captions are always BIG (at least about 3.6% of frame height, bold), centred, 2 to 3 words per line.
+18. One caption at a time. Never two caption systems on screen together.
+19. Text never animates unless asked. Hard cut in and out. A caption stays until its words finish.
+20. Captions stay in one place, also over cards, montages and b-roll.
+21. Yellow or gold captions are always ALL CAPS. Strip stray punctuation like "...".
+22. A logo or big text block replaces the caption while it shows.
 
-- **Shorts from a long video.** Read the whole transcript first (get_footage). Pick moments that stand alone: one complete idea each, a hook in the first 2 seconds (a strong line from later in the clip can open it), 15 to 60 s, ending on a full stop, not mid-thought. Then create_shorts with every short at once (stretches in footage seconds, edges on the sound as in rule 2). It makes one edit per short: cut, 9:16 (or the shape asked), reframed on the speaker, captioned. From a finished long edit use fromProjectId: the shorts keep its grade, LUT, sound and the words it cut. folderName keeps a batch together. Then polish each short with the same rules as any edit (fillers, pauses, look-downs inside the stretches), check_edit, and render_preview once per short.
-- **Another shape of an edit** (a 9:16 or 4:5 cut of a 16:9 video): create_project fromProjectId with aspect and reframe true, so the first edit stays as it is. To reshape the same edit: set_aspect, then set_framing focus "face" (the speaker kept in view in every clip). Look at a few frames of the preview: a two-person shot may need focus {x, y} by hand on some clips.
-- **Folders.** create_folder for a new client or series; list_folders shows them. Every new edit takes folderId. move_to_project moves edits into another project (footage goes in as a new edit). Library folders are different: they keep videos of one kind together in the Library, folders inside folders too (list_footage shows them as paths; move_footage sorts videos into one, "Course/Module 1" makes both levels); create_project libraryFolder makes one edit of every ready video in it and its folders, in name order.
+## B-roll rules (any kind of video, any niche)
 
-## From scratch (no footage): motion graphics like After Effects
+Only add b-roll when the brief, the client's rules or the user asks.
 
-For a video with no camera footage (a SaaS launch, a product explainer, kinetic type, an animated ad): create_project blank {seconds, color} at the shape asked. It is a blank canvas: the whole video is yours to build.
+1. **No flash frames between clips.** Back to back clips touch on the exact same frame, no gap, not even 1 frame. If there is a gap, stretch the clip before or after to cover it. If the speaker comes back between two clips, they stay on screen for at least 1 second. Never a flash.
+2. **B-roll shows what the speaker is saying right now.** Read the transcript line by line. Start each clip on the word it matches. When the topic changes, the b-roll changes with it. If a clip drifts onto the next idea, cut it short.
+3. **Match the meaning, not one keyword.** Show the idea of the sentence and its mood: a problem gets a problem shot, a win gets a win shot. Lines about the client's team, place or work show their real team, place or work. If nothing fits, stay on the speaker. No b-roll beats wrong b-roll.
+4. **Real footage first.** Order: clips the client sent for this video, the client's folder in Rendrr, the Rendrr library, stock footage, AI footage only when nothing else fits. Follow any rule on who may appear (for example women only), in every frame of the clip.
+5. **Use only the part of the clip where something happens.** Look through the whole clip first (\`get_frames\` or \`get_vision\`). Use the moments with real, logical movement that matches the words. Skip the dead parts: standing still, doing nothing, setting up, walking into frame, looking at the camera, dark openings, shaky or blurry bits, or anything that has nothing to do with the line. Never run into laughing or smiling on a serious line. If the whole clip is static or useless, pick another or stay on the speaker. Keep the subject centred and crop to the video's shape.
+6. **Timing follows the line.** Measure the point from the word where it starts to the word where it ends. A short point gets a short clip. A longer point gets a longer clip, or several clips in a row that all fit that same point. Never hold a clip past its point, and never leave a long point half covered. Rough guide only: fast lines often cut every 0.5 to 0.8 s, calm lines hold 1.5 to 3 s. The line decides, not the number.
+7. **No repeats.** Never the same clip, or the same part of a long clip, twice in one video.
+8. **Always moving.** No still photos as b-roll, and no clip that runs out and freezes on its last frame.
+9. B-roll sits over the talking head, speaker audio keeps running, b-roll audio muted. Not in the first 2 s of a Reel unless asked.
+10. HDR b-roll in an SDR video gets tone mapped so it doesn't look washed out.
+11. List every placement (time and clip) in the reply.
 
-1. **Script and storyboard first.** Write the scenes with their times (hook in the first 2 seconds, one idea per scene, a clear ending and call to action) and show the user before building when the brief is open.
-2. **Scenes as graphics.** create_graphic draws anything a browser can: HTML, CSS, SVG, canvas 2D, any of the installed fonts, easing, springs, masks, 3D CSS transforms. Make full-frame scenes with transparent false at the output size (1920x1080, 1080x1920, 1080x1080 or 1080x1350). Reuse one graphic for scenes that differ only in words or numbers (params), and place each with add_graphic at its time. Keep motion purposeful: ease in and out, stagger elements, hold each message long enough to read (about 0.3 s a word).
-3. **Product shots.** Screenshots or screen recordings the user uploads go in as b-roll (add_broll) or inside a graphic as data: URLs; frame them with set_keyframes (push in, slide) and set_card (rounded, shadow).
-4. **Type, music and sound.** add_text for simple titles, the library (list_library) for ready lower thirds, callouts, stats and transitions; add_music under it all and sound effects on the big moments; set_transition between scenes.
-5. **Check every scene.** test_graphic shows 3 to 5 s of a scene in seconds: look at each new scene before the full preview. Then check_edit and render_preview once, and look at the preview frames (get_preview_frames) for text that is cut off, overlaps or is too small on a phone.
+## Commands
 
-## Comments loop
+### Setting up a new client (when the user asks)
+1. \`list_folders\`. If the client folder exists, use it and say so. Never make a duplicate.
+2. \`create_folder\` with the exact client name.
+3. Use the same client name as the \`libraryFolder\` when adding footage.
+4. Bring in footage if given: Drive link or file with \`add_footage\` (\`driveFileId\` or \`url\`); a chat attachment with \`add_footage\` and \`upload: true\`; references with \`kind: "reference"\`. Wait until each is ready.
+5. \`create_project\` with the footage, the client \`folderId\`, a clear name (client plus video), and the right shape (9:16 for Reels and ads unless told otherwise; \`reframe: true\` when the shape changes).
+6. Edit it (workflow below), render one preview, show it with \`open_projects\`.
+7. No footage given: make the folder, open it with \`open_projects\` (\`folderId\`), and ask for footage or the Drive link in one line.
+8. Report in 2 or 3 lines: folder, footage, preview, and where it rendered.
 
-1. get_comments: read every open comment (time and text). Look at the frame at each time (get_preview_frames for the preview's times) before deciding what a note means. Notes the user gives in chat count the same.
-2. Map each time to the footage with map_time.
-3. Fix the spot, THEN search the whole video for the same kind of mistake. "Word got cut" at 17 s means check every join.
-4. All fixes in apply_edits, check_edit, ONE render_preview (newRequest: true, as these are the user's new notes), the QA gate.
-5. resolve_comment each comment once the new preview is ready. Leave a comment open if it could not be done, and say why.
-6. Remember what the reviewer taught you for the rest of the edit and for this client's next videos (add_marks keeps notes with the edit).
+## Edit workflow
 
-## QA gate (before you tell the user a preview is ready)
+1. **Load the rules.** Call \`get_editing_skill\` once per chat and follow this skill.
+2. **Read the client rules first:** memory, client notes and past comments for this client. Past comments show what the reviewer cares about. Read any brief or notes for this video.
+3. **Read the whole video.** Full transcript end to end. Use \`mark_silences\`, \`mark_fillers\` and \`get_retakes\` to find spots. These only mark. Claude decides.
+4. **Picture check.** Use \`get_frames\` / \`get_vision\` to catch look-downs, dark or bad shots and stray shots. Audio alone is not enough.
+5. **Plan.** Group into lines. Pick the best take for each line and note why. Mark fillers, retakes, look-downs, dead air, crew talk and spoken notes. Check that every phrase b-roll, captions or pictures point at is really in the kept words.
+6. **Cut.** Apply with \`apply_edits\`. Check edges against the waveform (\`get_waveform_image\`) so no word start or tail is clipped. Use \`map_time\` to move between original and edit time.
+7. **Add only what was asked** (b-roll, captions, pictures, music, graphics) following the rules above. Logos with \`add_footage\` as \`element\`.
+8. **QA gate** (below). Fix everything.
+9. **Render one preview** and show it with \`open_projects\`.
+10. **Reply** (see Reply style).
 
-1. Cut words: "Clipped words" is empty, and every planned word is heard (get_preview_frames).
-2. Doubled words: the words either side of every join do not repeat.
-3. Fragments: no clip under 0.3 s; every clip under 0.5 s is there on purpose.
-4. Gaps: no gap in speech over about 0.15 s inside a sentence.
-5. Look-downs: none left in the kept pieces.
-6. Picture: no black, dark, frozen or flash frame, no big face jump at a join.
-7. Clicks at joins: none.
-8. Duplicates: read what is heard end to end like a viewer. No line said twice, no half sentence left hanging.
-9. Repeat mistakes: every kind of mistake ever flagged on this video or client is gone everywhere, not only at the old spot.
-10. Tech: length and sync match, frame rate kept, HDR kept, no colour change unless asked.
-11. B-roll: no talking head flash between clips, no frozen clip, every clip matches its line, none used twice.
-12. Captions: one at a time, big, centred, in the same place, hard on and off, up until the words end.
-13. Overlays: each one asked for, static unless asked, on b-roll, clear of the caption and the face.
-14. Audio: original unless cleanup was asked; true peak at or under -1 dBTP; with music, the voice is clearly on top.
+## QA gate (before every preview)
+
+Run \`check_edit\` and fix everything it flags. Then check:
+
+1. **Cut words:** every planned word is there in full, nothing clipped at a join.
+2. **Doubled words and boops:** no repeat across a join, no piece under 0.30 s, no half syllable.
+3. **Gaps:** no pause over about 150 ms inside a sentence (Reels about 60 ms).
+4. **Look-downs:** none left.
+5. **Flash frames:** pull frames around every b-roll edge with \`get_preview_frames\`. Zero frames of talking head between back to back clips.
+6. **B-roll:** each clip matches its words, shows real movement, holds for the whole point, no repeats, no stills, no freezes, right people in every frame.
+7. **Duplicates:** read the cut like a viewer. No line said twice, no half sentence hanging.
+8. **Repeat mistakes:** every kind of mistake ever flagged for this client is gone everywhere.
+9. **Captions and overlays:** one caption at a time, big, centred, same spot, colors follow client rules. Every overlay was asked for, is static, sits on b-roll and stays clear of the caption and face.
+10. **Look and sound:** color and audio unchanged unless asked.
+11. **Contact sheet:** look at frames across the whole cut for dark shots, wrong people and stray shots.
+
+Only when all pass, render the preview.
+
+## Render rules (device first, cloud second)
+
+**Previews (\`render_preview\`)**
+- Call it with the \`projectId\`. Rendrr uses the device by itself when the app is open. If Rendrr asks which computer, pass the device name it gave.
+- Device not reachable: pass \`device: "cloud"\` and tell the user: "Your Rendrr app is off, so this one rendered on the cloud."
+- After a new request or new comments from the user, use \`newRequest: true\`. Never for Claude's own fixes.
+- When done, always show it with \`open_projects\`.
+
+**Finals (\`render_final\`)**
+- Only when the user says final, export or done.
+- Device open: renders there and lands in its Downloads. Say which computer.
+- Device off: renders on the cloud and saves straight to the client's Drive folder with \`driveFolder\` (ask once if unknown). Never download and re-upload.
+- \`quality: "best"\` only when the user asks.
+
+**Watching a render**
+- Check \`get_render\` a few times with gaps, not in a fast loop. If it stalls or errors, stop and report the exact error. Never start the same render again and again.
+
+## Changes and comments
+
+1. When the user says "check the changes" or sends comments, read them with \`get_comments\` (and any notes in chat or Loom).
+2. Look at the frame at each comment time before deciding what it means.
+3. Fix each spot, then fix the same kind of mistake everywhere in the video.
+4. When the user says to apply one video's notes to others, apply the same KINDS of change there.
+5. Run the QA gate, render one preview with \`newRequest: true\`, show it with \`open_projects\`.
+6. Mark each fixed comment with \`resolve_comment\`. Leave one open if it couldn't be done and say why.
+7. The user's notes win over the client's when they disagree.
+
+## Learning from every round
+
+1. **Client rules** (true only for this client: style, pacing, b-roll taste, caption look, audio): keep them where the next edit finds them (\`save_style\` for caption and cut rules, \`add_marks\` for notes on the footage) and tell the user in one line.
+2. **Common rules** (true for every client): tell the user in short plain words, once per review round, so they can keep them for every edit.
+3. Not sure which? Treat it as a client rule and mention it to the user.
+
+## Other versions
+
+- Another shape or a shorter cut: \`create_project\` with \`fromProjectId\`, plus \`aspect\` and \`reframe\`. The first edit stays untouched.
+- Shorts from a long video: \`create_shorts\`.
+- No footage (promo, explainer, animated text): \`create_project\` with \`blank\`, then build with \`create_graphic\`, text, music and sound effects. Check a look with \`test_graphic\` or \`render_samples\` first.
+
+## Hooks (first 3 to 10 s)
+
+- Start on speech or the strongest visual on frame 1. No logo stinger, slow fade or "hey guys".
+- The first 5 to 8 s are the tightest part of the video (no gap over about 0.12 s). First word within 0.2 s on Reels.
+- When a hook or intro is asked: at least 4 visual events in the first 10 s (b-roll, a zoom, a full screen graphic, a scale change). Nothing unchanged for more than 4 s. Never two shots of the same framing back to back.
+- An ad with several hooks: one version per hook, same body, each hook as tight as the rest.
+- Never add or reorder a hook unless asked. Suggest it in the reply instead.
+
+## Pacing
+
+- Default is tight: trim every pause inside a sentence (about 60 ms on Reels, up to about 150 ms at the end of a big point on YouTube and VSLs).
+- Pace like a wave when the style allows: tight, a short breath, tight again; the end a little slower. Keep 1 to 3 planned pauses (0.3 to 0.6 s) only when the brief, style or reference wants that feel.
+- J and L cuts (audio leads or trails by 0.3 to 0.8 s) into and out of b-roll and on topic changes, so cuts feel smooth.
+- Cover jump cuts with b-roll first, when b-roll is asked.
+- Zoom changes only at a real cut. Slow push-ins (100 to 110% over 8 to 10 s) on long talking head stretches, only when zooms are asked.
+- Speed ramps on b-roll and action only: eased, audio muted, 1.5 to 3 s, slow part on the subject or a beat. Never on a person talking.
+
+## Creative craft (only when a brief, reference or the user asks)
+
+- **Plan:** every short has Hook, Middle, Payoff. Write a style sheet first and keep it: 1 font family, 1 accent color, 1 corner shape, 1 motion feel. Save it as a client rule.
+- **Design:** one focus per graphic. 60/30/10 color. Text never covers the face. In 9:16, speaker in the upper third, captions on the lower third line.
+- **Motion:** never linear. Pop-ins ease out. No two big moves on the same frame. Text lands on the spoken word, never before.
+- **Sound design:** every motion event gets a sound just before it, under the voice, never the same sound twice in a row. Licensed music only.
+
+## Reels vs YouTube
+
+- Reels (9:16, usually under 90 s): extra tight.
+- YouTube and VSLs (16:9): same rules, a little more room at the end of a big point.
+- Only crop to 9:16 when asked.
 
 ## Reply style
 
-Short and direct. Lead with what changed. Say which checks passed and flag anything uncertain.
+- Short and direct. No em dashes. Lead with what changed.
+- Length before and after, fillers, takes and look-downs removed, spoken notes followed, b-roll placed.
+- Where it rendered (device or cloud), and the preview card shown.
+- Flag anything uncertain.
+
+## Quick checklist before replying
+
+- Rendered on the device? If not, did I say it used the cloud?
+- Did I show the Rendrr preview card?
+- Only one render for this request?
+- Any words cut at the start or end of a clip?
+- Any flash frames between b-roll clips?
+- Client rules followed?
+- No em dashes anywhere?
 `;

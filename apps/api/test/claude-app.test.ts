@@ -355,6 +355,6 @@ describe("the Rendrr app and one render per revision", { skip: !ready && "needs 
 
   it("get_editing_skill returns the skill", async () => {
     const out = await tool("get_editing_skill", {});
-    assert.match(out.text, /^# Fazinflo Editing Skill \(Rendrr edition\)/);
+    assert.match(out.text, /^# Rendrr Editing Skill/);
   });
 });
