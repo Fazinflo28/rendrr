@@ -7,7 +7,7 @@ import { gifArgs, joinPieces, makeGif, mergeOverlay, mergeOverlayArgs, writeSide
 import { macPieceRuns, macPiecesFirst, macRanOutOfRoom } from "../lib/macPieces";
 import { dropTemps, fetchEtaSec, macTaskFor, NotForMac, runOnMac, type MacDone, type MacOut, type MacRun } from "../lib/macTask";
 import { exportMultiplier, isFourKQuality, isHeavyPlan, allWords, asSequence, boxCover, reverbIr, wavStereo, faceOnScreenAt, isSequence, layoutTimeline, libraryVideoIds, mainVideoOf, parseCube, PREFIX, qualityLabel, sequenceView, soundJoins, sourceVideoIds, StyleRulesSchema, type ClipLook, type FileMeasure, type FileSound, type HdrTransfer, type HeardTranscript, type Lut, type SeqClip, type Snapshot, type Transcript, type V3Clip, type VisionDetails, type VisionSummary } from "@rendrr/shared";
-import { ffmpegArgs, lookFileData, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
+import { ffmpegArgs, lookFileData, pickHwEncoder, pieceRanges, planRender, RenderPlanError, windowPlan, zoomAt, type PlanFiles, type RenderPlan, type SourceInfo } from "@rendrr/shared/renderPlan";
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
@@ -733,7 +733,9 @@ export async function renderJob(ctx: Ctx) {
     if (macSources.size && !mac) throw needMac();
     if (mac) {
       const mArgs = (output: string, pictureAs?: "black" | "white") => {
-        const o = { threads: mac.cpus, inputThreads: mac.cpus * 2, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, ...(fmt === "overlay" ? { pictureAs: pictureAs ?? "black" } : {}) };
+        // The computer's graphics chip encodes when its app reported one that works (audit #11); older apps report none.
+        const hwEncoder = fmt === "mp4" || !fmt ? pickHwEncoder(mac.have) ?? undefined : undefined;
+        const o = { threads: mac.cpus, inputThreads: mac.cpus * 2, loudnessGainDb: mixLoudness?.gainDb, windowBudget: budgets, ...(hwEncoder ? { hwEncoder } : {}), ...(fmt === "overlay" ? { pictureAs: pictureAs ?? "black" } : {}) };
         const f = { ...files, output };
         return ffmpegArgs(plan, f, sourceInfo, { ...o, filterThreads: filterThreads(ffmpegArgs(plan, f, sourceInfo, { ...o, filterThreads: 4 }).filterGraph) });
       };
