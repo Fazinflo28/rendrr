@@ -80,7 +80,10 @@ const MENU = [["/assets", "Assets", "library"], ["/usage", "Usage & billing", "u
 // Rendrr's team also sees the admin panel.
 const menuFor = (user) => (user?.admin ? [...MENU, ["/admin", "Admin", "key"]] : MENU);
 function Shell({ children }) {
-  const { route, go } = useNav(); const { user, setUser, openAdd, addOpen, closeAdd, openLogin, requireUser, auth, wasIn } = useApp(); const toast = useToast();
+  const { route, go } = useNav();
+  // Each page glides in (fade and a small rise) instead of a hard cut. Skipped for reduced motion.
+  const mainRef = useRef();
+  useEffect(() => { const el = mainRef.current?.firstElementChild; if (!el?.animate || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return; el.animate([{ opacity: 0, translate: "0 8px" }, { opacity: 1, translate: "0 0" }], { duration: 280, easing: "cubic-bezier(.22,1,.36,1)" }); }, [route]); const { user, setUser, openAdd, addOpen, closeAdd, openLogin, requireUser, auth, wasIn } = useApp(); const toast = useToast();
   // While the session is checked: nothing where the account buttons go, and the signed-in frame if it was signed in.
   const pending = !user && auth === "checking"; const looksIn = !!user || (pending && wasIn);
   const [q, setQ] = useState(""); const [hits, setHits] = useState(null); const [menu, setMenu] = useState(false); const [sOpen, setSOpen] = useState(false);
@@ -121,7 +124,7 @@ function Shell({ children }) {
       : pending ? (wasIn ? html`<span class="avatar skeleton" aria-hidden="true" />` : null)
       : html`<${Btn} kind="secondary" size="sm" id="login-btn" onClick=${() => openLogin()}>Log in<//><${Btn} size="sm" id="signup-btn" onClick=${() => openLogin(null, "signup")}>Sign up<//>`}
     </header>
-    <main class="main">${children}</main>
+    <main class="main" ref=${mainRef}>${children}</main>
     ${looksIn && html`<nav class="mnav" aria-label="Main">
       ${[["/explore", "Explore", "home"], ["/projects", "Projects", "projects"], [null, "Add", "plus"], ["/assets", "Assets", "library"], ["/settings", "Account", "user"]].map(([p, l, i]) => p
         ? html`<button key=${l} class=${"mtab" + (isOn(p) || (p === "/settings" && ["/usage", "/billing", "/connect"].some((x) => route.startsWith(x))) ? " on" : "")} data-mtab=${l} onClick=${() => go(p)}><${Icon} name=${i} size="20" /><span>${l}</span></button>`
