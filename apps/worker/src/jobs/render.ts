@@ -28,6 +28,7 @@ import { detectShake, detectShakeArgs, makeStableCopy, stableCopyArgs } from "..
 import { throttle, type Ctx } from "../lib/job";
 import { measureMix, type MixLoudness } from "../lib/mix";
 import { measureSound } from "../lib/sound";
+import { previewFix } from "../lib/fixMoments";
 
 // The caption and text fonts (Phase 4): the same files the web app serves, so libass and the editor draw alike.
 // The worker image copies them to the same place in the repo layout; system fonts are the fallback (fontconfig).
@@ -295,6 +296,9 @@ export async function renderJob(ctx: Ctx) {
     }
     const plan = planRender({ ...planBase, graphicsReady });
     plan.operations.push(...graphicErrors);
+    // Show only the fix (#23): the moments this preview changed since the one its comments were made on, worked out
+    // while it renders (kept with the render for the Rendrr app's player; never fails the render).
+    const fixed = kind === "preview" && !samples ? previewFix(r, plan, { ...planBase, graphicsReady }) : Promise.resolve(null);
     // Storyboard mode: the words on screen in each panel (its frame, or a clip's middle), and the edit's style sheet.
     let boardOut: Board | undefined;
     if (samples?.board) {
@@ -964,11 +968,12 @@ export async function renderJob(ctx: Ctx) {
     // Stopped (or failed by the cleanup) while it finished: only a render still running becomes done. Otherwise what
     // it made is removed and nothing else changes (no "Final ready", no Drive copy, the original kept).
     if (signal.aborted) throw new JobError("Stopped.");
+    const fix = await fixed;
     const won = await prisma.render.updateMany({ where: { id: r.id, status: "running" }, data: {
       status: "done", outputKey: outKey, sizeBytes: BigInt(size), seconds: outInfo.seconds, framesKeys, finishedAt: new Date(), made: { on: where.on, device: where.device, why: where.why, ...(where.platform ? { platform: where.platform } : {}) },
       // A final made on the Mac is already in its Downloads (the app kept it there).
       ...(kind === "final" && macDone?.saved ? { delivery: { to: "mac", device: where.device, state: "sent", at: Date.now(), saved: macDone.saved } } : {}),
-      quality: kind === "final" ? (isSoundFormat(fmt) ? SOUND_QUALITY[fmt] : qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr, best })) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}) } as unknown as Prisma.InputJsonValue,
+      quality: kind === "final" ? (isSoundFormat(fmt) ? SOUND_QUALITY[fmt] : qualityLabel({ resolution: snapshot.timeline.export?.resolution, codec: plan.codec, hdr: !!plan.hdr, best })) : "540p", plan: { operations: plan.operations, kept: plan.parts.length, sources: plan.sources, model: plan.model, outputSeconds: plan.outputSeconds, mix: mixLoudness, width: plan.width, height: plan.height, loudness, measured, ...(heard ? { heard } : {}), ...(fmt ? { format: fmt } : {}), ...(Object.keys(sideKeys).length ? { files: sideKeys } : {}), ...(plan.chapters?.length ? { chapters: plan.chapters } : {}), ...(fix ? { fix } : {}) } as unknown as Prisma.InputJsonValue,
     } });
     if (!won.count) {
       await deleteObjects([outKey, ...framesKeys, ...Object.values(sideKeys)]).catch(() => {});

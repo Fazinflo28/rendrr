@@ -63,7 +63,10 @@ export type AppComment = { id: string; time: number; text: string; author: strin
 export type AppProjectView = {
   project: { id: string; name: string; folder: string; folderId: string; aspect: string; status: string; version: number; updated: number; seconds: number | null; editorUrl: string | null };
   /** The render being watched: the latest preview, or the version picked (a preview or a final); download: its file. */
-  preview: { renderId: string; version: number; kind: "preview" | "final"; url: string; download: string; fileName: string; seconds: number; quality: string; at: number; where?: string; machine?: string } | null;
+  preview: { renderId: string; version: number; kind: "preview" | "final"; url: string; download: string; fileName: string; seconds: number; quality: string; at: number; where?: string; machine?: string;
+    /** Show only the fix (audit #23): after a comment fix, the moments this preview changed since v`of` (edit seconds),
+     *  played first; then the whole preview. */
+    fix?: { of: number; moments: { from: number; to: number }[] } } | null;
   /** Every rendered version to pick from, newest first (a final and a preview of the same version are both there). */
   versions: { renderId: string; version: number; kind: "preview" | "final"; quality: string; at: number }[];
   /** A preview or final being made now; where: where it is made (the user's Mac or the cloud) and where the file goes. */
