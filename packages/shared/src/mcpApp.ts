@@ -53,6 +53,14 @@ export const APP_TOOLS: ToolDef[] = [
     input: z.object({ projectId: id("project"), renderId: id("render").optional() }) },
   { name: "app_cut_words", title: "Cut words from the transcript", app: true, write: true, description: "The Rendrr app: the user cut words from the transcript (cut: word ids) and brought cut ones back (restore), as one new version of the edit.",
     input: z.object({ projectId: id("project"), cut: z.array(z.string().min(1).max(40)).max(TRANSCRIPT_EDIT_MAX).optional(), restore: z.array(z.string().min(1).max(40)).max(TRANSCRIPT_EDIT_MAX).optional(), renderId: id("render").optional() }) },
+  // The @ footage picker in the app's comment boxes: the edit's client folder first, every library folder, a folder's
+  // clips (a tiny hover preview each), and which library folder shows first for a client.
+  { name: "app_footage_folders", title: "Footage folders", app: true, description: "The Rendrr app: the footage picker (@ in a comment box): the edit's client and its library folder, every library folder, and how many videos are in none.",
+    input: z.object({ projectId: id("project") }) },
+  { name: "app_footage_clips", title: "Footage clips", app: true, description: "The Rendrr app: the footage picker: one library folder's clips (folderId), the videos in no folder (loose), or clips found by name (query), each with a tiny hover preview.",
+    input: z.object({ folderId: id("library folder").optional(), loose: z.boolean().optional(), query: z.string().max(80).optional() }) },
+  { name: "app_set_client_footage", title: "Client footage folder", app: true, write: true, description: "The Rendrr app: the footage picker: show this library folder first for the edit's client (null: none).",
+    input: z.object({ projectId: id("project"), libraryFolderId: id("library folder").nullable() }) },
 ];
 
 /** What the app shows for one edit (app_get_project, open_projects with a projectId). */

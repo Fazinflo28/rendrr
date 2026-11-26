@@ -627,6 +627,18 @@ export const api: any = {
     if (!text?.trim() && !drawing?.strokes?.length && !images?.length) throw fail("Write a comment, draw on the picture or add a picture first.");
     return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: (text || "").trim(), ...(drawing?.strokes?.length ? { drawing } : {}), ...(images?.length ? { images } : {}), ...(renderId ? { renderId } : {}), ...(x != null && y != null ? { x, y } : {}) });
   },
+  // ---- the @ footage picker in comment boxes ----
+  /** The edit's client folder first (its library folder, set or guessed), then every library folder, and how many
+   *  videos are in no folder. */
+  footageFolders: (projectId: string) => get(`/projects/${enc(projectId)}/footage-folders`),
+  /** Sets (null clears) the library folder shown first for this edit's client. */
+  setClientFootage: (projectId: string, libraryFolderId: string | null) => post(`/projects/${enc(projectId)}/footage-folder`, { libraryFolderId }),
+  /** One folder's clips (folderId), the videos in no folder (loose), or a search by name (q): a picture and a short
+   *  preview link each. */
+  footageClips: (o: { folderId?: string; loose?: boolean; q?: string }) => {
+    const qs = [o.folderId ? "folderId=" + enc(o.folderId) : "", o.loose ? "loose=1" : "", o.q ? "q=" + enc(o.q) : ""].filter(Boolean).join("&");
+    return get("/library/clips" + (qs ? "?" + qs : ""));
+  },
   approveReview: (t: string) => post(`/public/reviews/${enc(t)}/approve`, {}, { auth: false, headers: reviewHeaders(t) }),
   requestChanges: (t: string, note: string) => post(`/public/reviews/${enc(t)}/changes`, { note }, { auth: false, headers: reviewHeaders(t) }),
 

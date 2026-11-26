@@ -177,7 +177,7 @@ Only when all pass, render the preview.
 ## Changes and comments
 
 1. When the user says "check the changes" or sends comments, read them with \`get_comments\` (and any notes in chat or Loom).
-   A **pinned** comment was left by clicking that exact spot of the picture: it names what is under the pin ("most likely about": the b-roll, graphic, text, caption or footage clip, with its id). Change that layer, not the whole frame; \`images\` true shows the frame with the spot ringed and a close-up.
+   A **pinned** comment was left by clicking that exact spot of the picture: it names what is under the pin ("most likely about": the b-roll, graphic, text, caption or footage clip, with its id). Change that layer, not the whole frame; \`images\` true shows the frame with the spot ringed and a close-up. A comment can also name **clips the user picked** with @ in the comment box (CLIPS PICKED: each one's name and videoId): use exactly that library video (add_broll{videoId} for b-roll), on the words the comment is about.
 2. Look at the frame at each comment time before deciding what it means.
 3. Fix each spot, then fix the same kind of mistake everywhere in the video.
 4. When the user says to apply one video's notes to others, apply the same KINDS of change there.

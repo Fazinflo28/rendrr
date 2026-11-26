@@ -12,6 +12,7 @@ import { createReviewLink } from "../routes/reviews";
 import { samplesView } from "./samples";
 import { approveStoryboard, latestBoardId } from "./storyboard";
 import { appTranscript, cutFromTranscript } from "./appTranscript";
+import { pickerClips, pickerFolders, setClientFootage } from "./footagePicker";
 import type { ToolCtx, ToolOut } from "../tools";
 
 /** "Mac" or "PC" when a render was made on the user's computer (the card's chip says "PC render"), else nothing. */
@@ -274,6 +275,18 @@ export const APP_HANDLERS: Record<string, (c: ToolCtx, input: any) => Promise<To
   async app_cut_words(c, i) {
     const r = await cutFromTranscript(c.userId, i);
     return { text: r.changed ? `v${r.version}: ${r.summary}.` : `Nothing changed: ${r.summary || "those words were already that way"}.`, data: r };
+  },
+  async app_footage_folders(c, i) {
+    const d = await pickerFolders(c.userId, { projectId: i.projectId });
+    return { text: `${d.folders.length} library folders.`, data: d };
+  },
+  async app_footage_clips(c, i) {
+    const d = await pickerClips(c.userId, { folderId: i.folderId ?? null, loose: !!i.loose, query: i.query ?? null });
+    return { text: `${d.clips.length} clips.`, data: d };
+  },
+  async app_set_client_footage(c, i) {
+    const d = await setClientFootage(c.userId, { projectId: i.projectId }, i.libraryFolderId);
+    return { text: d.client.libraryFolderId ? "Client folder set." : "Client folder cleared.", data: d };
   },
   async app_render_preview(c, i) {
     await startRender(c.userId, i.projectId, "preview");

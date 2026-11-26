@@ -22,6 +22,7 @@ import { CreateLinkModal } from "./screens";
 import { ASPECT_NAMES, EMOJI, PANEL_TOOLS, PENS, RAIL, SHORTCUTS, TOOLS, TOOL_ICON, TRACKS, TRACK_H, TRACK_HINT, ZMAX, ZMIN, clamp, drawingPng, linkified, r2, railTab, readCommentImage, useHistory } from "./editor/common";
 import { LiveOverlays, MARK_COLORS, PersonLayer, SeqMedia, WaveLayer, loadPeaks, markNote, readFlag, useMattes, writeFlag } from "./editor/layers";
 import { PinLayer, openPin } from "./pins";
+import { ClipMention, withClipChips } from "./footagePicker";
 import { AudioTab, ClipTab, dB } from "./editor/clipTab";
 import { AddClipModal, TranscriptLine } from "./editor/panels";
 import { TextTab } from "./editor/textTab";
@@ -608,7 +609,7 @@ function EditorInner({ project, reload, ai, keep }) {
   const resolve = async (c) => { try { const u = await api.resolveComment(c.id, !c.resolved); setComments((x) => x.map((i) => (i.id === c.id ? { ...i, resolved: u.resolved } : i))); } catch (e) { toast(e.message); } };
   // Pins: click the picture to leave a comment on that spot (pins.js); off while drawing or placing a colour shape.
   const addPin = async ({ time, x, y, text }) => { const c = await api.addProjectComment(project.id, { time, x, y, text }); setComments((l) => [...l, c].sort((a, b) => a.time - b.time)); return c; };
-  const pinLayer = html`<${PinLayer} comments=${comments} pb=${pb} me=${user?.name || "You"} off=${cDraw || (rtab === "color" && !!colorMode)} onAdd=${addPin} onResolve=${resolve} />`;
+  const pinLayer = html`<${PinLayer} projectId=${project.id} comments=${comments} pb=${pb} me=${user?.name || "You"} off=${cDraw || (rtab === "color" && !!colorMode)} onAdd=${addPin} onResolve=${resolve} />`;
   // "Send to Claude": the open comments go to the AI the user connected. MCP cannot push into a chat, so the AI's chat
   // opens with them ready, and Rendrr tells that AI on its next tool call too.
   const [aiConn, setAiConn] = useState(null); // { claude, chatgpt }: connected or not; null while loading
@@ -789,7 +790,7 @@ function EditorInner({ project, reload, ai, keep }) {
                       <button class=${"cmt-act" + (cDel === c.id ? " warn" : "")} aria-label="Delete comment" onClick=${() => delComment(c)}>${cDel === c.id ? "Delete?" : html`<${Icon} name="trash" />`}</button></span>
                       <button class=${"cmt-check" + (c.resolved ? " on" : "")} aria-label=${c.resolved ? "Reopen" : "Resolve"} title=${c.resolved ? "Reopen" : "Mark as done"} onClick=${() => resolve(c)}><${Icon} name="check" size="12" /></button></div>
                     ${cEdit?.id === c.id ? html`<form class="row" style="gap:6px;margin-top:6px" onSubmit=${(e) => { e.preventDefault(); saveCEdit(); }}><input class="input sm grow" aria-label="Edit comment" value=${cEdit.text} onInput=${(e) => setCEdit({ ...cEdit, text: e.target.value })} onKeyDown=${(e) => e.key === "Escape" && setCEdit(null)} autoFocus /><${Btn} size="sm" type="submit">Save<//><${Btn} size="sm" kind="quiet" type="button" onClick=${() => setCEdit(null)}>Cancel<//></form>`
-                    : html`<p class="cmt-body">${c.time > 0 && html`<button class="tc" onClick=${() => pb.seek(c.time)}>${fmtTime(c.time)}</button>`}${linkified(c.text)}</p>`}
+                    : html`<p class="cmt-body">${c.time > 0 && html`<button class="tc" onClick=${() => pb.seek(c.time)}>${fmtTime(c.time)}</button>`}${withClipChips(c.text, linkified)}</p>`}
                     ${c.sent && html`<div class="cmt-sent" title=${"Sent " + fmtAgo(c.sent.at)}><${Icon} name="spark" size="11" />Sent to ${aiName(c.sent.to)} · ${fmtAgo(c.sent.at)}</div>`}
                     ${(c.drawing || c.images?.length) ? html`<div class="row cmt-media">${c.drawing && html`<button class="cmt-badge" onClick=${() => showInk(c)}>✎ Drawing</button>`}${(c.images || []).map((im) => html`<a key=${im.id} href=${im.url} target="_blank" rel="noopener noreferrer" title=${im.name || "Picture"}><img class="cmt-img" src=${im.url} alt=${im.name || "Picture"} /></a>`)}</div>` : null}</div>
                 </div>`)}
@@ -803,7 +804,8 @@ function EditorInner({ project, reload, ai, keep }) {
               ${(cImgs.length > 0 || (cStrokes.length > 0 && !cDraw)) && html`<div class="cbox-media" id="comment-attached">
                 ${cStrokes.length > 0 && !cDraw && html`<span class="cmt-badge">✎ Drawing<button type="button" class="cbox-x" aria-label="Remove the drawing" onClick=${() => setCStrokes([])}><${Icon} name="x" size="10" /></button></span>`}
                 ${cImgs.map((im) => html`<span key=${im.local} class="cbox-thumb"><img src=${im.thumb} alt=${im.name || "Picture"} /><button type="button" class="cbox-x" aria-label="Remove this picture" onClick=${() => setCImgs((x) => x.filter((y) => y.local !== im.local))}><${Icon} name="x" size="10" /></button></span>`)}</div>`}
-              <textarea id="comment-input" ref=${cText} class="cbox-text" rows="2" placeholder="Leave a comment at this moment…" value=${draft} onInput=${(e) => setDraft(e.target.value)} onFocus=${() => pb.setPlaying(false)} onKeyDown=${(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); postComment(); } }} />
+              <textarea id="comment-input" ref=${cText} class="cbox-text" rows="2" placeholder="Leave a comment at this moment… (type @ to add a clip)" value=${draft} onInput=${(e) => setDraft(e.target.value)} onFocus=${() => pb.setPlaying(false)} onKeyDown=${(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); postComment(); } }} />
+              <${ClipMention} projectId=${project.id} inputRef=${cText} value=${draft} onChange=${setDraft} />
               <div class="cbox-bar">
                 <button type="button" class="cbox-time" id="comment-time" title="The comment goes at this moment" onClick=${() => pb.setPlaying(false)}><${Icon} name="clock" size="13" />${fmtTime(pb.time, true)}</button>
                 <button type="button" class=${"cbox-icon" + (cDraw ? " on" : "")} id="comment-draw" aria-label="Draw on the picture" aria-pressed=${cDraw} title="Draw on the picture" onClick=${() => { pb.setPlaying(false); setCDraw(!cDraw); setCEmoji(false); if (!cDraw) setTimeout(() => document.getElementById("comment-draw-layer")?.scrollIntoView({ block: "nearest", behavior: "smooth" }), 60); }}><${Icon} name="edit" size="16" /></button>

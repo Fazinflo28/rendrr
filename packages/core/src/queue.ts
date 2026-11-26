@@ -55,7 +55,9 @@ export type FramesJob = { renderId?: string; videoId?: string; times: number[]; 
   /** A pinned comment's spot (shares of the frame) at each time: that frame comes back ringed, then a close-up of it. */
   pins?: ({ x: number; y: number } | null)[]; colorSamples?: ColorSampleJob; faces?: FaceJob; track?: TrackJob;
   /** A storyboard's panel pictures (storage keys) with a comment's drawing (a clear PNG's key) laid on each. */
-  stills?: { key: string; overlay: string }[] };
+  stills?: { key: string; overlay: string }[];
+  /** The footage picker: make the tiny hover preview of this video (hoverKeyOf), once. */
+  hover?: string };
 /** Object tracking: a box drawn at footage second `at` on a clip's fitted frame (shares), followed over [srcIn, srcOut]. */
 export type TrackJob = { videoId: string; srcIn: number; srcOut: number; rotate: number; fitY: number; focus?: { x: number; y: number }; w: number; h: number; at: number; box: { x: number; y: number; w: number; h: number } };
 /** Phase 6: small frames of clips as the editor shows them (turned, fitted), for shot matching. fitY: 0.4 for V1

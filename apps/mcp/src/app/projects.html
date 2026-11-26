@@ -459,6 +459,37 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
 .ask textarea { width: 100%; min-height: 56px; resize: vertical; border: 0; outline: none; background: transparent; color: var(--ink); font-size: 14px; line-height: 20px; }
 .ask .row { justify-content: flex-end; flex-wrap: wrap; }
 .sendbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+/* The @ footage picker: a dropdown over the comment box, clip names only; the preview floats over the cursor. */
+.mp { position: fixed; z-index: 1000; display: flex; flex-direction: column; overflow: hidden; border-radius: var(--r-md); background: rgba(19,21,23,.98); box-shadow: var(--shadow-pop); font-size: 13px; line-height: 18px; animation: mp-in .16s cubic-bezier(.16,1,.3,1) both; }
+@keyframes mp-in { from { opacity: 0; transform: translateY(4px); } }
+.mp-top { display: flex; align-items: baseline; gap: 8px; padding: 9px 12px 7px; border-bottom: 1px solid var(--hair); }
+.mp-top b { font-weight: 600; }
+.mp-top span { font-size: 11px; color: var(--faint); }
+.mp-list { overflow-y: auto; padding: 4px 0 6px; overscroll-behavior: contain; }
+.mp-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px 4px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
+.mp-guess { text-transform: none; letter-spacing: 0; font-weight: 500; padding: 1px 6px; border-radius: 6px; background: var(--raised-strong); color: var(--dim); }
+.mp-note { margin: 0; padding: 4px 12px; font-size: 12px; color: var(--faint); }
+.mp-err { color: #ff8a80; }
+.mp-row { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 4px 8px; margin: 0 4px; border-radius: var(--r-sm); cursor: pointer; }
+.mp-row.on { background: var(--raised-strong); }
+.mp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-count { flex: none; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mp-chev { flex: none; width: 12px; text-align: center; color: var(--faint); transition: transform .15s var(--ease); }
+.mp-chev.open { transform: rotate(90deg); }
+.mp-ico { flex: none; color: var(--dim); font-size: 11px; }
+.mp-film { color: var(--accent); font-size: 9px; }
+.mp-clip.notready .mp-name { color: var(--faint); }
+.mp-star { flex: none; width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--faint); cursor: pointer; opacity: 0; }
+.mp-row:hover .mp-star, .mp-row.on .mp-star, .mp-star.set { opacity: 1; }
+.mp-star.set, .mp-star:hover { color: var(--accent); }
+.mp-hover { position: fixed; z-index: 1001; pointer-events: none; border-radius: 10px; overflow: hidden; background: #000; box-shadow: 0 0 0 1px rgba(255,255,255,.14), 0 14px 34px rgba(0,0,0,.55); }
+.mp-hover img, .mp-hover video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.mp-hover video { opacity: 0; transition: opacity .15s linear; }
+.mp-hover video.on { opacity: 1; }
+.mp-tag { position: absolute; left: 6px; top: 6px; padding: 2px 6px; border-radius: 6px; background: rgba(0,0,0,.6); color: #fff; font-size: 10px; line-height: 14px; }
+.mp-tag:empty { display: none; }
+.mp-len { position: absolute; right: 6px; bottom: 6px; padding: 1px 5px; border-radius: 5px; background: rgba(0,0,0,.6); color: #fff; font-size: 10px; line-height: 14px; font-weight: 600; }
+.clipchip { display: inline-block; max-width: 100%; padding: 0 6px; margin: 0 1px; border-radius: 6px; background: var(--accent-tint); color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 </style>
 </head>
 <body>
@@ -1412,10 +1443,11 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const d = state.pinDraft, sideH = d.x > 0.58 ? "l" : "r", sideV = d.y > 0.55 ? "u" : "d";
     const post = h("button", { class: "psend", "aria-label": "Post comment", title: "Post (Enter)", disabled: !d.text.trim() || d.sending, onClick: () => sendPin(v) });
     post.innerHTML = d.sending ? '<span class="pspin"></span>' : '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    const ta = h("textarea", { class: "ptext", rows: "1", maxlength: "2000", placeholder: "Leave a comment…", "aria-label": "Comment on this spot", "data-key": "pindraft",
+    const ta = h("textarea", { class: "ptext", rows: "1", maxlength: "2000", placeholder: "Leave a comment… (@ adds a clip)", "aria-label": "Comment on this spot", "data-key": "pindraft",
       onInput: (e) => { d.text = e.target.value; post.disabled = !d.text.trim() || d.sending; fitText(e.target); },
       onKeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPin(v); } else if (e.key === "Escape") { e.preventDefault(); closePinBox(); } } });
     ta.value = d.text;
+    attachMention(ta, v.project.id);
     requestAnimationFrame(() => fitText(ta));
     const box = h("div", { class: "pbox pcompose p" + sideH + sideV + (d.fresh ? "" : " settled"), style: "left:" + d.x * 100 + "%;top:" + d.y * 100 + "%", role: "dialog", "aria-label": "Comment on this spot", onClick: (e) => e.stopPropagation() },
       ta,
@@ -1452,7 +1484,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         const sideH = c.x > 0.58 ? "l" : "r", sideV = c.y > 0.55 ? "u" : "d";
         kids.push(h("div", { class: "pbox p" + sideH + sideV, style: at(c.x, c.y), role: "dialog", "aria-label": "Comment by " + (c.author || "You"), onClick: (e) => e.stopPropagation() },
           h("div", { class: "phead" }, h("b", {}, c.author || "You"), h("span", { class: "pt" }, fmtTime(c.time)), h("button", { class: "px", "aria-label": "Close", onClick: () => { state.pinOpen = null; drawPins(v); } }, "×")),
-          h("div", { class: "pbody" }, c.text || "(no words)")));
+          h("div", { class: "pbody" }, c.text ? withClipChips(c.text) : "(no words)")));
       }
     }
     pinsEl.replaceChildren(...kids);
@@ -1637,6 +1669,267 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     render();
   }
 
+  // ---------------- the @ footage picker ----------------
+  // Typing @ in a comment box opens a dropdown over it: the client's footage folder first, then every library folder.
+  // A folder opens as a list of clip names (short, to keep it easy to scroll); hovering a name shows a small preview
+  // above the cursor in the clip's own shape (tall, wide or square, never cut); clicking it puts @[name](clip:videoId)
+  // into the comment, shown as a chip, so the AI uses exactly that video. Typing after the @ searches clips by name.
+  // Keys: up and down move, Enter or Tab picks (or opens a folder), right and left open and close a folder, Esc closes.
+  // The dropdown and the preview live outside the app's page, so the app redrawing never closes them.
+  const CLIP_RE = /@\[([^\]\n]{1,120})\]\(clip:([A-Za-z0-9_-]{1,80})\)/g;
+  const clipRefName = (n) => (n || "clip").replace(/[[\]()\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "clip";
+  const clipRefOf = (n, id) => "@[" + clipRefName(n) + "](clip:" + id + ")";
+  function mentionAt(text, caret) {
+    const before = (text || "").slice(0, Math.max(0, caret));
+    const m = /(^|[\s(\[{"'])@([^@\n]{0,40})$/.exec(before);
+    if (!m) return null;
+    const q = m[2];
+    if (/\s{2,}/.test(q) || /^\s/.test(q) || q.startsWith("[")) return null;
+    return { start: before.length - q.length - 1, query: q };
+  }
+  // A comment's words with each picked clip as a chip (links stay links).
+  function withClipChips(text) {
+    const out = []; let last = 0;
+    for (const m of (text || "").matchAll(CLIP_RE)) {
+      if (m.index > last) out.push(...linkify(text.slice(last, m.index)));
+      out.push(h("span", { class: "clipchip", title: "Library clip" }, "▶ " + m[1].trim()));
+      last = m.index + m[0].length;
+    }
+    if (last < (text || "").length) out.push(...linkify(text.slice(last)));
+    return out;
+  }
+  const clipsPlain = (text) => (text || "").replace(CLIP_RE, (_m, n) => '@"' + n.trim() + '"');
+  const MP = { key: null, projectId: null, start: -1, query: "", data: null, dataFor: null, open: new Set(), clips: {}, found: null, foundQ: "", active: 0, hot: null, dismissed: -1, kbd: false, el: null, hoverEl: null, tries: {}, timer: 0, searchT: 0 };
+  const mpTa = () => (MP.key ? document.querySelector('#root [data-key="' + MP.key + '"]') : null);
+  const mpLen = (c) => (c.still ? "Picture" : (c.seconds >= 60 ? Math.floor(c.seconds / 60) + "m " + String(Math.round(c.seconds % 60)).padStart(2, "0") + "s" : Math.round(c.seconds) + "s"));
+  /** Hooks a comment box (its data-key) up to the picker; called each time the app draws the box. */
+  function attachMention(ta, projectId) {
+    const key = ta.dataset.key;
+    const look = () => {
+      const at = mentionAt(ta.value, ta.selectionStart == null ? ta.value.length : ta.selectionStart);
+      if (!at) { if (MP.dismissedKey === key) MP.dismissed = -1; if (MP.key === key) closeMention(); return; }
+      if (MP.dismissedKey === key && at.start === MP.dismissed) return;
+      const was = MP.key === key && MP.start === at.start ? MP.query : null;
+      MP.key = key; MP.projectId = projectId; MP.start = at.start;
+      if (was !== at.query) { MP.query = at.query; MP.active = 0; searchClips(); }
+      openMention();
+    };
+    ta.addEventListener("input", look); ta.addEventListener("click", look); ta.addEventListener("keyup", (e) => { if (!/^(ArrowUp|ArrowDown|Enter|Tab|Escape)$/.test(e.key)) look(); });
+    ta.addEventListener("blur", () => setTimeout(() => { const t = mpTa(); if (MP.el && MP.key === key && document.activeElement !== t && !(MP.el.contains(document.activeElement))) closeMention(); }, 150));
+    if (MP.key === key && MP.el) requestAnimationFrame(placeMention); // the app redrew the box: the dropdown follows it
+  }
+  function closeMention() {
+    clearTimeout(MP.timer); clearTimeout(MP.searchT);
+    if (MP.el) { MP.el.remove(); MP.el = null; }
+    hideClipHover();
+    MP.key = null; MP.start = -1; MP.query = ""; MP.found = null; MP.foundQ = "";
+  }
+  async function openMention() {
+    if (!MP.el) {
+      MP.el = h("div", { class: "mp", role: "listbox", "aria-label": "Pick footage", id: "footage-picker", onMousedown: (e) => e.preventDefault(), onClick: (e) => e.stopPropagation() });
+      document.body.append(MP.el);
+    }
+    drawMention();
+    if (MP.dataFor !== MP.projectId) {
+      const pid = MP.projectId;
+      MP.data = null; MP.dataFor = pid; MP.err = "";
+      try {
+        const d = await callTool("app_footage_folders", { projectId: pid });
+        if (MP.dataFor !== pid) return;
+        MP.data = d;
+        if (d && d.client && d.client.libraryFolderId) { MP.open.add("client:" + d.client.libraryFolderId); loadClips(d.client.libraryFolderId); }
+      } catch (e) { MP.err = e.message || "Could not load your folders."; MP.dataFor = null; }
+      drawMention();
+    }
+  }
+  function searchClips() {
+    clearTimeout(MP.searchT);
+    const q = MP.query.trim();
+    if (q.length < 2) { MP.found = null; MP.foundQ = ""; return; }
+    MP.searchT = setTimeout(async () => {
+      try { const d = await callTool("app_footage_clips", { query: q }); if (MP.query.trim() === q) { MP.found = d; MP.foundQ = q; drawMention(); } } catch { MP.found = { clips: [], more: 0 }; MP.foundQ = q; drawMention(); }
+    }, 220);
+  }
+  async function loadClips(id, again) {
+    if (MP.clips[id] && MP.clips[id] !== "loading" && !MP.clips[id].error && !again) return;
+    if (!again) MP.clips[id] = "loading";
+    try { MP.clips[id] = await callTool("app_footage_clips", id === "loose" ? { loose: true } : { folderId: id }); }
+    catch (e) { if (!again) MP.clips[id] = { error: e.message || "Could not load the clips." }; }
+    if (MP.hot) { const got = MP.clips[id] && MP.clips[id].clips && MP.clips[id].clips.find((x) => x.id === MP.hot.c.id); if (got) { MP.hot.c = got; showClipHover(); } }
+    drawMention();
+    // Hover previews still being made come in by themselves (asked again a few seconds later, three times at most).
+    const d = MP.clips[id];
+    if (d && d.clips && d.clips.some((x) => x.soon) && (MP.tries[id] || 0) < 3) { MP.tries[id] = (MP.tries[id] || 0) + 1; setTimeout(() => { if (MP.el) loadClips(id, true); }, 4000); }
+  }
+  async function setClientFootage(folderId) {
+    try { const d = await callTool("app_set_client_footage", { projectId: MP.projectId, libraryFolderId: folderId }); MP.data = d; if (folderId) { MP.open.add("client:" + folderId); loadClips(folderId); } drawMention(); }
+    catch (e) { toast(e.message); }
+  }
+  function toggleFolder(rowKey, id) {
+    if (MP.open.has(rowKey)) MP.open.delete(rowKey); else { MP.open.add(rowKey); loadClips(id); }
+    drawMention();
+  }
+  function pickClip(c) {
+    const ta = mpTa();
+    if (!ta) { closeMention(); return; }
+    const caret = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
+    const ins = clipRefOf(c.name, c.id) + " ";
+    const end = Math.max(caret, MP.start + 1 + MP.query.length);
+    const next = (ta.value.slice(0, MP.start) + ins + ta.value.slice(end)).slice(0, 2000);
+    const pos = Math.min(2000, MP.start + ins.length);
+    closeMention();
+    ta.value = next;
+    try { ta.focus({ preventScroll: true }); ta.setSelectionRange(pos, pos); } catch {}
+    ta.dispatchEvent(new Event("input", { bubbles: true })); // the box's own handler keeps the words (and the Send button)
+  }
+  // The rows shown, in order (for the keys).
+  function mentionRows() {
+    const rows = [], d = MP.data, q = MP.query.trim();
+    const kids = new Map();
+    for (const f of (d && d.folders) || []) { const k = f.parentId || ""; kids.set(k, [...(kids.get(k) || []), f]); }
+    const clipRows = (got, depth, prefix) => {
+      if (!got || got === "loading") rows.push({ kind: "note", depth, text: "Loading…" });
+      else if (got.error) rows.push({ kind: "note", depth, text: got.error });
+      else { for (const c of got.clips) rows.push({ kind: "clip", c, depth, rowKey: prefix + ":" + c.id }); if (got.more) rows.push({ kind: "note", depth, text: got.more + " more: type @ and a name to find one." }); return got.clips.length; }
+      return -1;
+    };
+    const folder = (f, depth, prefix) => {
+      const rowKey = prefix + ":" + f.id;
+      rows.push({ kind: "folder", f, depth, rowKey });
+      if (!MP.open.has(rowKey)) return;
+      for (const s of kids.get(f.id) || []) folder(s, depth + 1, prefix);
+      const n = clipRows(MP.clips[f.id], depth + 1, rowKey);
+      if (n === 0 && !(kids.get(f.id) || []).length) rows.push({ kind: "note", depth: depth + 1, text: "No clips in this folder." });
+    };
+    const client = (d && d.client && d.client.name) || "this client";
+    if (q.length >= 2 && MP.found && MP.foundQ === q) {
+      rows.push({ kind: "head", text: 'Clips named "' + q + '"' });
+      for (const c of MP.found.clips) rows.push({ kind: "clip", c, depth: 0, rowKey: "q:" + c.id, path: true });
+      if (!MP.found.clips.length) rows.push({ kind: "note", depth: 0, text: "No clip has that name. Keep typing, or delete the words to see your folders." });
+    } else if (d) {
+      rows.push({ kind: "head", text: client + "'s folder", client: true });
+      const cf = d.client.libraryFolderId && d.folders.find((f) => f.id === d.client.libraryFolderId);
+      if (cf) folder(cf, 0, "client"); else rows.push({ kind: "note", depth: 0, text: "No folder set for " + client + " yet. Tap ☆ on a folder below to show it here every time." });
+      rows.push({ kind: "head", text: "All folders" });
+      for (const f of kids.get("") || []) folder(f, 0, "all");
+      if (d.loose) { rows.push({ kind: "folder", f: { id: "loose", name: "Not in a folder", count: d.loose, folders: 0 }, depth: 0, rowKey: "all:loose", loose: true }); if (MP.open.has("all:loose")) clipRows(MP.clips.loose, 1, "all:loose"); }
+      if (!d.folders.length && !d.loose) rows.push({ kind: "note", depth: 0, text: "Your library has no videos yet. Add b-roll in Rendrr's Library first." });
+    }
+    return rows;
+  }
+  function drawMention() {
+    if (!MP.el) return;
+    const rows = mentionRows(), d = MP.data;
+    const pick = rows.map((r, i) => (r.kind === "folder" || r.kind === "clip" ? i : -1)).filter((i) => i >= 0);
+    MP.pick = pick; MP.rows = rows;
+    const act = pick.length ? pick[Math.min(MP.active, pick.length - 1)] : -1;
+    const old = MP.el.querySelector(".mp-list"), top = old ? old.scrollTop : 0;
+    const client = (d && d.client && d.client.name) || "this client";
+    const list = h("div", { class: "mp-list" }, rows.map((r, i) => {
+      const pad = "padding-left:" + (8 + r.depth * 16) + "px";
+      if (r.kind === "head") return h("div", { class: "mp-head" }, r.text, r.client && d && d.client.libraryFolderId && d.client.why !== "set" ? h("span", { class: "mp-guess" }, d.client.why === "name" ? "same name" : "your footage's folder") : null);
+      if (r.kind === "note") return h("p", { class: "mp-note", style: "padding-left:" + (12 + r.depth * 16) + "px" }, r.text);
+      const on = i === act;
+      if (r.kind === "folder") {
+        const f = r.f, isO = MP.open.has(r.rowKey), set = d && d.client.libraryFolderId === f.id && d.client.why === "set";
+        return h("div", { class: "mp-row" + (on ? " on" : ""), role: "option", "aria-selected": on ? "true" : "false", "aria-expanded": isO ? "true" : "false", style: pad, "data-row": r.rowKey,
+            onMouseenter: () => { MP.kbd = false; MP.active = pick.indexOf(i); markActive(); }, onClick: () => toggleFolder(r.rowKey, f.id) },
+          h("span", { class: "mp-chev" + (isO ? " open" : "") }, "›"), h("span", { class: "mp-ico" }, "▤"), h("span", { class: "mp-name" }, f.name),
+          h("span", { class: "mp-count" }, f.count + (f.folders ? " · " + f.folders + (f.folders === 1 ? " folder" : " folders") : "")),
+          r.loose ? null : h("button", { class: "mp-star" + (set ? " set" : ""), title: set ? "Shown first for " + client + ". Click to stop." : "Show this folder first for " + client, "aria-label": "Show first for " + client,
+            onClick: (e) => { e.stopPropagation(); setClientFootage(set ? null : f.id); } }, set ? "★" : "☆"));
+      }
+      const c = r.c;
+      return h("div", { class: "mp-row mp-clip" + (on ? " on" : "") + (c.ready ? "" : " notready"), role: "option", "aria-selected": on ? "true" : "false", style: pad, "data-row": r.rowKey,
+          onMouseenter: (e) => { MP.kbd = false; MP.active = pick.indexOf(i); markActive(); MP.hot = { c, x: e.clientX, y: e.clientY }; showClipHover(); },
+          onMousemove: (e) => { if (MP.kbd) return; MP.hot = { c, x: e.clientX, y: e.clientY }; showClipHover(); },
+          onMouseleave: () => { if (MP.hot && MP.hot.c.id === c.id) hideClipHover(); }, onClick: () => pickClip(c) },
+        h("span", { class: "mp-ico mp-film" }, "▶"), h("span", { class: "mp-name" }, c.name), h("span", { class: "mp-count" }, mpLen(c) + (r.path && c.path ? " · " + c.path : "") + (c.ready ? "" : " · not ready")));
+    }));
+    MP.el.replaceChildren(
+      h("div", { class: "mp-top" }, h("b", {}, "Footage"), h("span", {}, "Hover a clip to preview it, click to add it")),
+      MP.err ? h("p", { class: "mp-note mp-err" }, MP.err) : null,
+      !d && !MP.err && !MP.found ? h("p", { class: "mp-note" }, "Loading your folders…") : null,
+      list);
+    list.scrollTop = top;
+    placeMention();
+  }
+  function markActive() {
+    if (!MP.el) return;
+    const act = MP.pick && MP.pick.length ? MP.pick[Math.min(MP.active, MP.pick.length - 1)] : -1;
+    MP.el.querySelectorAll(".mp-row").forEach((el) => el.classList.remove("on"));
+    const r = MP.rows && MP.rows[act];
+    const el = r && MP.el.querySelector('[data-row="' + CSS.escape(r.rowKey) + '"]');
+    if (el) { el.classList.add("on"); if (MP.kbd) { if (el.scrollIntoView) el.scrollIntoView({ block: "nearest" }); if (r.kind === "clip") { const b = el.getBoundingClientRect(); MP.hot = { c: r.c, x: b.left + Math.min(120, b.width / 2), y: b.top }; showClipHover(); } else hideClipHover(); } }
+  }
+  // Over the box when there is more room above it (the pinned box on the video, the box under the list), else under it.
+  function placeMention() {
+    const ta = mpTa();
+    if (!MP.el || !ta) { if (MP.el && !ta) closeMention(); return; }
+    const r = ta.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    const w = Math.min(320, vw - 16), left = Math.max(8, Math.min(r.left, vw - w - 8));
+    const below = vh - r.bottom - 10, above = r.top - 10, up = below < 220 && above > below;
+    Object.assign(MP.el.style, { left: left + "px", width: w + "px", maxHeight: Math.max(140, Math.min(360, up ? above : below)) + "px", top: up ? "" : r.bottom + 6 + "px", bottom: up ? vh - r.top + 6 + "px" : "" });
+  }
+  // The preview over the cursor: the whole clip in its own shape, its picture at once, then the tiny clip playing.
+  function clipRatio(c) {
+    let r = c.w && c.h ? c.w / c.h : c.orientation === "Portrait" ? 9 / 16 : c.orientation === "Square" ? 1 : 16 / 9;
+    if (c.orientation === "Portrait" && r > 1) r = 1 / r;
+    if (c.orientation === "Landscape" && r < 1) r = 1 / r;
+    return Math.min(3, Math.max(0.3, r));
+  }
+  function showClipHover() {
+    const hot = MP.hot;
+    if (!hot) return;
+    let el = MP.hoverEl;
+    if (!el || el.dataset.id !== hot.c.id || el.dataset.p !== String(!!hot.c.preview)) {
+      if (el) el.remove();
+      const c = hot.c;
+      el = h("div", { class: "mp-hover", "aria-hidden": "true", "data-id": c.id, "data-p": String(!!c.preview) });
+      el._r = clipRatio(c);
+      const fix = (nw, nh) => { if (nw > 0 && nh > 0) { el._r = Math.min(3, Math.max(0.3, nw / nh)); sizeHover(); } };
+      if (c.thumb) { const img = h("img", { src: c.thumb, alt: "" }); img.addEventListener("load", () => fix(img.naturalWidth, img.naturalHeight)); el.append(img); }
+      if (c.preview) {
+        const vid = h("video", { src: c.preview, muted: true, autoplay: true, loop: true, playsinline: true, preload: "auto" });
+        vid.muted = true;
+        vid.addEventListener("playing", () => vid.classList.add("on"));
+        vid.addEventListener("loadedmetadata", () => fix(vid.videoWidth, vid.videoHeight));
+        el.append(vid);
+        vid.play && vid.play().catch(() => {});
+      } else el.append(h("span", { class: "mp-tag" }, c.soon ? "Preview on its way…" : c.thumb ? "" : "No preview"));
+      el.append(h("span", { class: "mp-len" }, mpLen(c)));
+      document.body.append(el);
+      MP.hoverEl = el;
+    }
+    sizeHover();
+  }
+  function sizeHover() {
+    const el = MP.hoverEl, hot = MP.hot;
+    if (!el || !hot) return;
+    const L = 200, r = el._r, w = r >= 1 ? L : Math.round(L * r), hh = r >= 1 ? Math.round(L / r) : L;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    // Whole and inside the window: shrunk to fit a small card, above the cursor, else under it.
+    const k = Math.min(1, (vw - 16) / w, (vh - 16) / hh), W = Math.round(w * k), H = Math.round(hh * k);
+    const left = Math.max(8, Math.min(hot.x - W / 2, vw - W - 8));
+    const top = Math.max(8, Math.min(hot.y - H - 16 >= 8 ? hot.y - H - 16 : hot.y + 20, vh - H - 8));
+    Object.assign(el.style, { left: left + "px", top: top + "px", width: W + "px", height: H + "px" });
+  }
+  function hideClipHover() { if (MP.hoverEl) { MP.hoverEl.remove(); MP.hoverEl = null; } MP.hot = null; }
+  // The keys, while the dropdown is open: caught before the box's own Enter and Escape.
+  document.addEventListener("keydown", (e) => {
+    if (!MP.el || e.target !== mpTa()) return;
+    const stop = () => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
+    if (e.key === "Escape") { stop(); MP.dismissed = MP.start; MP.dismissedKey = MP.key; closeMention(); return; }
+    const pick = MP.pick || [];
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { if (!pick.length) return; stop(); MP.kbd = true; const n = pick.length, cur = Math.min(MP.active, n - 1); MP.active = e.key === "ArrowDown" ? (cur + 1) % n : (cur - 1 + n) % n; markActive(); return; }
+    const r = MP.rows && MP.rows[pick[Math.min(MP.active, pick.length - 1)]];
+    if (!r) return;
+    if (e.key === "Enter" || e.key === "Tab") { stop(); if (r.kind === "clip") pickClip(r.c); else toggleFolder(r.rowKey, r.f.id); return; }
+    if (r.kind === "folder" && (e.key === "ArrowRight" || e.key === "ArrowLeft") && (e.key === "ArrowRight") !== MP.open.has(r.rowKey)) { stop(); toggleFolder(r.rowKey, r.f.id); }
+  }, true);
+  window.addEventListener("resize", () => { placeMention(); sizeHover(); });
+  document.addEventListener("scroll", () => placeMention(), true);
+
   // ---------------- links ----------------
   // Web addresses in a comment open in the browser (through the host); everything else stays plain text.
   function linkify(text) {
@@ -1670,12 +1963,13 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const at = h("button", { class: "at mono", title: "Go to this moment", onClick: () => seek(momentOf()) }, "at " + fmtTime(momentOf()));
     onTime(() => { at.textContent = "at " + fmtTime(momentOf()); });
     const canSend = () => !state.sending && (state.draft.trim() || (c.drawing && c.drawing.strokes.length) || c.images.length);
-    const ta = h("textarea", { placeholder: v.preview ? "Write a comment at this moment, paste a link or a picture…" : "Write a comment, paste a link or a picture…", "aria-label": "Comment", maxlength: "2000", "data-key": "draft",
+    const ta = h("textarea", { placeholder: v.preview ? "Write a comment at this moment, type @ to add a clip…" : "Write a comment, type @ to add a clip…", "aria-label": "Comment", maxlength: "2000", "data-key": "draft",
       onFocus: () => { if (player && !player.paused) player.pause(); },
       onInput: (e) => { state.draft = e.target.value; add.disabled = !canSend(); syncDraftPin(); },
       onPaste: (e) => { const fs = Array.from((e.clipboardData && e.clipboardData.files) || []).filter((f) => /^image\//.test(f.type)); if (fs.length) { e.preventDefault(); addImages(fs); } },
       onKeydown: (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } else if (e.key === "Escape" && c.editingId) cancelEdit(); } });
     ta.value = state.draft;
+    attachMention(ta, v.project.id);
     const add = h("button", { class: "btn primary", disabled: !canSend(), onClick: () => submit() }, state.sending ? "Saving…" : c.editingId ? "Save" : "Comment");
     const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", multiple: true, style: "display:none", onChange: (e) => { addImages(e.target.files); e.target.value = ""; } });
     async function submit() {
@@ -1720,7 +2014,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         x.mine ? h("button", { class: "act", title: "Edit", onClick: () => startEdit(x) }, "Edit") : null,
         h("button", { class: "act" + (state.confirmDelete === x.id ? " warn" : ""), title: "Delete", onClick: () => askDelete(v, x) }, state.confirmDelete === x.id ? "Delete?" : "Delete"),
         h("button", { class: "chk", title: x.resolved ? "Open again" : "Resolve", "aria-label": x.resolved ? "Open again" : "Resolve", onClick: () => resolve(v, x) }, x.resolved ? "✓" : "")),
-      h("div", { class: "body" }, h("button", { class: "t", title: "Go to " + fmtTime(x.time), onClick: () => look(x) }, fmtTime(x.time)), x.text ? h("span", { class: "txt" }, linkify(x.text)) : null),
+      h("div", { class: "body" }, h("button", { class: "t", title: "Go to " + fmtTime(x.time), onClick: () => look(x) }, fmtTime(x.time)), x.text ? h("span", { class: "txt" }, withClipChips(x.text)) : null),
       x.drawing || (x.images && x.images.length) ? h("div", { class: "media" },
         x.drawing ? h("button", { class: "badge", title: "Show the drawing on the picture", onClick: () => look(x) }, "✎ Drawing") : null,
         (x.images || []).map((im) => h("img", { class: "thumbimg", src: im.url, alt: im.name || "Picture", title: im.name || "Picture", onClick: () => { state.lightbox = im.url; render(); } }))) : null));

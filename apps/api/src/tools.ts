@@ -24,7 +24,7 @@ import { elementFromSource, elementsText, elementText } from "./services/element
 import { redeemLinkCode } from "./services/logins";
 import { createReviewLink } from "./routes/reviews";
 import { framesFor, videoFramesFor } from "./services/frames";
-import { layersAt, layoutTimeline, pinLayersText, pinWhere, type PinPoint } from "@rendrr/shared";
+import { clipRefs, clipRefsPlain, layersAt, layoutTimeline, pinLayersText, pinWhere, type PinPoint } from "@rendrr/shared";
 import { lutsFor, speakerCentres, withMeasurements } from "./services/color";
 import { allMarks, inRange, markScope, retakesOf } from "./services/marks";
 import { audioFramesOf, deepOf, visionDetailsOf } from "./services/deep";
@@ -36,6 +36,7 @@ import { analyzeReference, styleFileLines, styleFileOut } from "./services/style
 import { openProjects } from "./services/claudeApp";
 import { allowSavingText, askDriveSave, driveLine, driveTarget, fileNameFor, latestFinal } from "./services/driveSave";
 import { resolveMulticam, resolveMulticamAuto } from "./services/multicam";
+import { clipRefsText } from "./services/footagePicker";
 import { ensureLibraryFolderPath, findLibraryFolder, folderFootage, listLibraryFolders, moveVideos, projectFromLibraryFolder } from "./services/libraryFolders";
 import { syncDriveFolder, syncText } from "./services/driveLibrary";
 import { AUDIO_FILE, footageFromSource, footageText, footageUploadLink, intoEdit, resolveFootageRefs, waitForFootage } from "./services/footage";
@@ -832,7 +833,10 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       const under = tl ? pinLayersText(layersAt(tl, x.time, pin, ASPECT_RATIO[p.aspect as keyof typeof ASPECT_RATIO] ?? 16 / 9)) : "";
       return ` | PINNED at ${pinWhere(pin)} of the frame (x ${pin.x.toFixed(3)}, y ${pin.y.toFixed(3)})${under ? " | " + under : ""}`;
     };
-    const row = (x: { id: string; time: number; text: string; resolved: boolean }, extra = "") => `${x.id} | ${fmtMs(x.time)} | ${short(x.text) || "(no words)"}${extra} | ${x.resolved ? "resolved" : "open"}`;
+    // Clips picked with @ in the comment box: the comment names the exact library video (its id) to use.
+    const refInfo = await clipRefsText(c.userId, [...cs, ...notes].map((x) => x.text));
+    const clipsOf = (t: string) => { const rs = clipRefs(t); return rs.length ? ` | CLIPS PICKED (use exactly these): ${rs.map((r) => `@"${r.name}" = ${refInfo.get(r.id) ?? `videoId ${r.id}`}`).join("; ")}` : ""; };
+    const row = (x: { id: string; time: number; text: string; resolved: boolean }, extra = "") => `${x.id} | ${fmtMs(x.time)} | ${short(clipRefsPlain(x.text)) || "(no words)"}${clipsOf(x.text)}${extra} | ${x.resolved ? "resolved" : "open"}`;
     // The app in the chat: what a note carries besides words, said in words; the pictures themselves with images true.
     const noteExtra = (n: (typeof notes)[number]) => {
       const d = storedDrawing(n), ims = storedImages(n), on = renders.find((r) => r.id === n.renderId), sam = sampleSets.find((r) => r.id === n.renderId);
@@ -844,6 +848,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const parts = [
       cs.length ? "Client comments (id | output time of the version they watched | text | state):\n" + csRows.join("\n") : "No client comments.",
       notes.length ? "The user's notes (id | time in the edited video | text | what it carries | state):\n" + noteRows.join("\n") : "",
+      [...cs, ...notes].some((x) => !x.resolved && clipRefs(x.text).length) ? "CLIPS PICKED: the user chose those library videos with @ in the comment box. Use that exact videoId (add_broll{videoId, start, end} for b-roll, or the op the comment asks for), placed on the words the comment is about; do not swap in another clip." : "",
       pinned ? "A PINNED comment was left by clicking that spot of the picture at that moment: change the layer it names (\"most likely about\"), not the whole frame. images true shows each pinned frame with the spot ringed, and a close-up." : "",
       await sentLines(c.userId, p.id, c.ai), // sent from the Rendrr app ("Send to Claude"): now read
     ];

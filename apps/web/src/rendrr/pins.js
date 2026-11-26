@@ -5,6 +5,8 @@
 // PinLayer sits inside the Player's screen (its `children`) and listens to clicks on the screen itself, so the
 // player and the editor need no other change.
 import { html, useState, useEffect, useRef, fmtTime, initials, useToast } from "./ui";
+import { ClipMention, withClipChips } from "./footagePicker";
+import { clipRefsPlain } from "@rendrr/shared";
 
 const OPEN_EVENT = "rendrr:pin-open";
 /** Opens a pinned comment over the picture (from the seek bar's marker or the comment list). */
@@ -26,7 +28,7 @@ function Bubble({ x, y, closing, children, label, id }) {
   return html`<div id=${id} class=${`pin-box pin-${s.h}${s.v}` + (closing ? " closing" : "")} role="dialog" aria-label=${label} style=${{ left: x * 100 + "%", top: y * 100 + "%" }} onClick=${(e) => e.stopPropagation()} onPointerDown=${(e) => e.stopPropagation()}>${children}</div>`;
 }
 
-export function PinLayer({ comments = [], pb, off = false, me = "You", onAdd, onResolve, label = "Comment on this spot" }) {
+export function PinLayer({ projectId, comments = [], pb, off = false, me = "You", onAdd, onResolve, label = "Comment on this spot" }) {
   const ref = useRef(null);
   const toast = useToast();
   const [draft, setDraft] = useState(null); // { x, y, time }
@@ -94,18 +96,19 @@ export function PinLayer({ comments = [], pb, off = false, me = "You", onAdd, on
   return html`<div class="pin-layer" ref=${ref} aria-hidden=${off ? "true" : null}>
     ${shown.map((c) => {
       const d = Math.abs(pb.time - c.time), fade = c.id === openId ? 1 : Math.max(0.35, 1 - d / NEAR);
-      return html`<button key=${c.id} type="button" class=${"pin-dot" + (c.id === openId ? " on" : "") + (c.mine === false ? " client" : "")} data-pin=${c.id} style=${{ left: c.x * 100 + "%", top: c.y * 100 + "%", opacity: fade }} title=${(c.author || "") + ": " + c.text} aria-label=${"Comment by " + (c.author || "someone") + " at " + fmtTime(c.time)} onClick=${(e) => { e.stopPropagation(); go(c); }}>${initials(c.author || me)}</button>`;
+      return html`<button key=${c.id} type="button" class=${"pin-dot" + (c.id === openId ? " on" : "") + (c.mine === false ? " client" : "")} data-pin=${c.id} style=${{ left: c.x * 100 + "%", top: c.y * 100 + "%", opacity: fade }} title=${(c.author || "") + ": " + clipRefsPlain(c.text)} aria-label=${"Comment by " + (c.author || "someone") + " at " + fmtTime(c.time)} onClick=${(e) => { e.stopPropagation(); go(c); }}>${initials(c.author || me)}</button>`;
     })}
     ${draft && html`<span class="pin-dot new" style=${{ left: draft.x * 100 + "%", top: draft.y * 100 + "%" }}>${initials(me)}</span>`}
     ${draft && html`<${Bubble} id="pin-compose" x=${draft.x} y=${draft.y} closing=${closing === "draft"} label=${label}>
       <form class="pin-compose" onSubmit=${(e) => { e.preventDefault(); post(); }}>
-        <textarea id="pin-text" ref=${textRef} class="pin-text" rows="1" placeholder="Leave a comment…" value=${text} autoFocus onInput=${(e) => { setText(e.target.value); fit(e.target); }} onKeyDown=${(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); post(); } }} />
+        <textarea id="pin-text" ref=${textRef} class="pin-text" rows="1" placeholder="Leave a comment… (@ adds a clip)" value=${text} autoFocus onInput=${(e) => { setText(e.target.value); fit(e.target); }} onKeyDown=${(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); post(); } }} />
+        ${projectId && html`<${ClipMention} projectId=${projectId} inputRef=${textRef} value=${text} onChange=${setText} />`}
         <div class="pin-foot"><span class="pin-when">${fmtTime(draft.time)}</span><button type="button" class="pin-btn quiet" id="pin-cancel" onClick=${() => close("draft")}>Cancel</button><button type="submit" class="pin-send" id="pin-post" aria-label="Post comment" title="Post (Enter)" disabled=${!text.trim() || busy}>${busy ? html`<span class="pin-spin" />` : SEND}</button></div>
       </form>
     <//>`}
     ${opened && html`<${Bubble} id="pin-view" x=${opened.x} y=${opened.y} closing=${closing === "open"} label=${"Comment by " + (opened.author || "someone")}>
       <div class="pin-head"><span class="pin-av">${initials(opened.author || me)}</span><span class="pin-who">${opened.author || "You"}</span><span class="pin-when">${fmtTime(opened.time, true)}</span><button type="button" class="pin-x" aria-label="Close" onClick=${() => close("open")}>×</button></div>
-      <p class="pin-body">${opened.text || "(no words)"}</p>
+      <p class="pin-body">${opened.text ? withClipChips(opened.text) : "(no words)"}</p>
       ${onResolve && html`<div class="pin-acts"><button type="button" class="pin-btn quiet" id="pin-resolve" onClick=${() => { onResolve(opened); close("open"); }}>${opened.resolved ? "Open again" : "Mark done"}</button></div>`}
     <//>`}
   </div>`;
