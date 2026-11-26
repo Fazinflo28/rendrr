@@ -140,6 +140,14 @@ html.fs .stage.tall video { height: max(220px, min(60vh, calc(100vh - 620px - va
 .phead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; }
 .phead .pt { color: var(--accent); font-variant-numeric: tabular-nums; font-size: 12px; }
 .phead .px { margin-left: auto; border: 0; background: none; color: inherit; opacity: .7; font-size: 17px; cursor: pointer; }
+.pins.pinbox { z-index: 4; }
+.pbox.settled { animation: none; }
+.pbox.closing { animation: pclose .17s cubic-bezier(.4,0,1,1) both; }
+.ptext { width: 100%; box-sizing: border-box; resize: none; border: 0; outline: none; border-radius: 9px; padding: 7px 9px; background: rgba(255,255,255,.07); color: inherit; font: inherit; font-size: 13px; line-height: 19px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+.ptext:focus { box-shadow: inset 0 0 0 1px rgba(189,232,22,.6); }
+.pbtn { height: 30px; padding: 0 12px; font-size: 13px; }
+.pacts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+@keyframes pclose { from { transform: scale(1); opacity: 1; } to { transform: scale(.5); opacity: 0; filter: blur(4px); } }
 .pbody { font-size: 13px; line-height: 19px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 140px; overflow: auto; }
 @keyframes ppop { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @keyframes ppulse { 0% { box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 0 0 0 rgba(189,232,22,.5); } 100% { box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 0 0 14px rgba(189,232,22,0); } }
@@ -1095,7 +1103,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         vid.addEventListener("play", () => { const tick = () => { emit(); if (!vid.paused && !vid.ended) requestAnimationFrame(tick); }; requestAnimationFrame(tick); });
         vid.addEventListener("click", (e) => pinAt(e));
         vid.addEventListener("loadedmetadata", () => placeInk());
-        vid.addEventListener("play", () => { if (state.drawMode) { state.drawMode = false; render(); } state.viewDrawing = null; if (state.pinOpen) { state.pinOpen = null; drawPins(current()); } });
+        vid.addEventListener("play", () => { if (state.drawMode) { state.drawMode = false; render(); } state.viewDrawing = null; if (state.pinOpen) { state.pinOpen = null; drawPins(current()); } if (state.pinDraft && !state.pinDraft.text.trim()) closePinBox(); });
         new ResizeObserver(() => placeInk()).observe(vid);
         vid.addEventListener("play", () => tellOthers());
         if (fresh) setTimeout(() => toast("Preview v" + v.preview.version + " is ready. Press play to " + (v.preview.fix ? "see what changed first." : "watch.")), 50);
@@ -1106,7 +1114,8 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
       inkCanvas(canvas);
       // Nothing over the picture but the drawing: the time is in the controls, the version in the menu above.
       pinsEl = h("div", { class: "pins", "aria-live": "polite" });
-      const frame = h("div", { class: "frame" + loadingClass(player) }, player, canvas, pinsEl,
+      pinBoxEl = h("div", { class: "pins pinbox" }, state.pinDraft ? pinComposer(v) : null);
+      const frame = h("div", { class: "frame" + loadingClass(player) }, player, canvas, pinsEl, pinBoxEl,
         h("div", { class: "load", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Loading preview…"),
         h("div", { class: "fail" }, h("span", {}, "The preview did not load."), h("button", { class: "btn", onClick: retryPreview }, "Try again")));
       stage = h("div", { class: "stage" + (tall ? " tall" : "") }, frame);
@@ -1144,6 +1153,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     }
     requestAnimationFrame(placeInk);
     onTime(() => drawPins(v));
+    requestAnimationFrame(() => drawPins(v)); // once the page is on screen (a paused player sends no time to draw them)
     return h("div", { class: "pv" }, top, state.share ? h("div", { class: "shade", onClick: () => { state.share = null; render(); } }) : null, state.share ? shareView(v) : null, stage, strip, state.drawMode ? drawBar() : ctrl, notes, commentsView(v),
       state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
   }
@@ -1346,7 +1356,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   // A click on the video pauses it and pins the new comment to that spot (the box under the player takes the words).
   // Pinned comments show as dots with their author's initial around their moment; a dot opens its comment over the
   // picture. The boxes spread out of the dot.
-  let pinsEl = null;
+  let pinsEl = null, pinBoxEl = null;
   const pinned = (c) => !!c && c.x != null && c.y != null;
   const current = () => state.project;
   function pinAt(e) {
@@ -1356,17 +1366,54 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const px = e.clientX - b.left - (r.x - player.offsetLeft), py = e.clientY - b.top - (r.y - player.offsetTop);
     if (px < 0 || py < 0 || px > r.w || py > r.h) { togglePlay(); return; } // on the bars beside the picture
     player.pause();
-    const c = state.compose;
-    if (c.editingId) return;
-    c.pin = { x: Math.round((px / r.w) * 10000) / 10000, y: Math.round((py / r.h) * 10000) / 10000 };
-    c.time = Math.round(player.currentTime * 1000) / 1000;
-    render();
-    requestAnimationFrame(() => { const ta = root.querySelector('[data-key="draft"]'); if (ta) ta.focus({ preventScroll: true }); });
+    if (state.pinDraft && state.pinDraft.text.trim()) { const ta = root.querySelector('[data-key="pindraft"]'); if (ta) ta.focus({ preventScroll: true }); return; } // words written: keep the box where it is
+    state.pinDraft = { x: Math.round((px / r.w) * 10000) / 10000, y: Math.round((py / r.h) * 10000) / 10000, time: Math.round(player.currentTime * 1000) / 1000, text: "", fresh: true, sending: false };
+    showPinBox();
+  }
+  // The box to write a pinned comment, on the picture at the spot: it spreads out of the spot the first time it shows.
+  function showPinBox() {
+    const v = current();
+    if (!pinBoxEl || !pinBoxEl.isConnected || !v) { render(); return; }
+    pinBoxEl.replaceChildren(...(state.pinDraft ? [pinComposer(v)] : []));
+    drawPins(v);
+    if (state.pinDraft) requestAnimationFrame(() => { const ta = root.querySelector('[data-key="pindraft"]'); if (ta) ta.focus({ preventScroll: true }); });
+  }
+  function closePinBox() {
+    const box = pinBoxEl && pinBoxEl.querySelector(".pbox");
+    const done = () => { state.pinDraft = null; showPinBox(); };
+    if (box && !matchMedia("(prefers-reduced-motion: reduce)").matches) { box.classList.add("closing"); setTimeout(done, 170); } else done();
+  }
+  function pinComposer(v) {
+    const d = state.pinDraft, sideH = d.x > 0.58 ? "l" : "r", sideV = d.y > 0.55 ? "u" : "d";
+    const post = h("button", { class: "btn primary pbtn", disabled: !d.text.trim() || d.sending, onClick: () => sendPin(v) }, d.sending ? "Saving…" : "Comment");
+    const ta = h("textarea", { class: "ptext", rows: "2", maxlength: "2000", placeholder: "What should change here?", "aria-label": "Comment on this spot", "data-key": "pindraft",
+      onInput: (e) => { d.text = e.target.value; post.disabled = !d.text.trim() || d.sending; },
+      onKeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPin(v); } else if (e.key === "Escape") { e.preventDefault(); closePinBox(); } } });
+    ta.value = d.text;
+    const box = h("div", { class: "pbox p" + sideH + sideV + (d.fresh ? "" : " settled"), style: "left:" + d.x * 100 + "%;top:" + d.y * 100 + "%", role: "dialog", "aria-label": "Comment on this spot", onClick: (e) => e.stopPropagation() },
+      h("div", { class: "phead" }, h("b", {}, "New comment"), h("span", { class: "pt" }, fmtTime(d.time)), h("button", { class: "px", "aria-label": "Cancel", onClick: () => closePinBox() }, "×")),
+      ta,
+      h("div", { class: "pacts" }, h("button", { class: "btn ghost pbtn", onClick: () => closePinBox() }, "Cancel"), post));
+    d.fresh = false;
+    return h("span", {}, h("span", { class: "pdot new", style: "left:" + d.x * 100 + "%;top:" + d.y * 100 + "%" }, "+"), box);
+  }
+  async function sendPin(v) {
+    const d = state.pinDraft;
+    if (!d || !d.text.trim() || d.sending) return;
+    d.sending = true; showPinBox();
+    const text = d.text.trim();
+    try {
+      const nv = await callTool("app_add_comment", { projectId: v.project.id, time: d.time, text, x: d.x, y: d.y, ...(v.preview ? { renderId: v.preview.renderId } : {}) });
+      tellModel("In the Rendrr app the user added a comment pinned to a spot on the picture of \"" + v.project.name + "\" (" + v.project.id + ") at " + fmtTime(d.time) + (v.preview ? " of preview v" + v.preview.version : "") + ": " + text + " (get_comments says what is under the pin)");
+      toast("Comment pinned at " + fmtTime(d.time) + ". It is in Rendrr too.");
+      state.pinDraft = null; state.filter = "open";
+      if (nv) showProject(nv); else render();
+    } catch (e) { d.sending = false; toast(e.message); showPinBox(); }
   }
   function drawPins(v) {
     if (!pinsEl || !pinsEl.isConnected || !player || !v) return;
     const r = pictureRect(), t = player.currentTime;
-    Object.assign(pinsEl.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
+    for (const el of [pinsEl, pinBoxEl]) if (el) Object.assign(el.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
     const initial = (n) => ((n || "?").trim()[0] || "?").toUpperCase();
     const at = (x, y) => "left:" + x * 100 + "%;top:" + y * 100 + "%";
     const kids = [];
@@ -1382,8 +1429,6 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
           h("div", { class: "pbody" }, c.text || "(no words)")));
       }
     }
-    const c = state.compose;
-    if (c.pin && !c.editingId) kids.push(h("span", { class: "pdot new", style: at(c.pin.x, c.pin.y) }, "+"));
     pinsEl.replaceChildren(...kids);
   }
 
@@ -1923,6 +1968,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   document.addEventListener("keydown", (e) => {
     if (e.target && /^(TEXTAREA|INPUT)$/.test(e.target.tagName)) return;
     if (e.key === "Escape" && state.lightbox) { state.lightbox = null; render(); return; }
+    if (e.key === "Escape" && state.pinDraft) { closePinBox(); return; }
     if (e.key === "Escape" && state.drawMode) { endDraw(); return; }
     // The Transcript tab: Delete cuts the words picked, Esc lets them go, Cmd/Ctrl Enter applies the changes.
     if (state.view === "project" && state.filter === "words" && state.project) {
