@@ -9,7 +9,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/links.test.js test/render.test.js test/download.test.js",
+    "test": "node --test test/links.test.js test/render.test.js test/download.test.js test/preview.test.js",
     "dist:mac": "electron-builder --mac dmg --arm64 --x64 --publish never",
     "dist:win": "electron-builder --win nsis --x64 --publish never"
   },

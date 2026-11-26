@@ -459,4 +459,36 @@ async function runTask(t, o) {
   }
 }
 
-module.exports = { PROTOCOL, FEATURES, HW_ENCODERS, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs, linkInto, download };
+/**
+ * The preview copy Rendrr edits from (audit #14), made here instead of in the page: a 720p proxy (H.264 about 2 Mbps,
+ * 30 fps, a keyframe every half second, AAC) and 16 kHz mono sound for the transcript, from the original where it is.
+ * The same files the page made with ffmpeg.wasm, many times faster: this computer's own FFmpeg, and its graphics chip
+ * (hw: a working encoder from HW_ENCODERS) when it has one; should the chip fail, the processor makes it.
+ * onPct: 0 to 100.
+ */
+async function makePreview(ffmpeg, file, dir, { hw = null, onPct, signal } = {}) {
+  const info = await probeFile(ffmpeg, file);
+  if (!info || !(info.seconds > 0)) throw new Error("not a video this computer's FFmpeg can read");
+  const proxy = path.join(dir, "proxy.mp4"), audio = path.join(dir, "audio.m4a");
+  const pct = (from, weight) => (s) => onPct && onPct(Math.min(99, from + (Math.min(s, info.seconds) / info.seconds) * weight));
+  const head = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-progress", "pipe:1"];
+  const scale = "scale='if(gte(iw,ih),-2,720)':'if(gte(iw,ih),720,-2)',fps=30,format=yuv420p";
+  const rate = ["-b:v", "2000k", "-maxrate", "2500k", "-bufsize", "4000k"];
+  const encoders = {
+    libx264: ["-c:v", "libx264", "-preset", "ultrafast", ...rate, "-sc_threshold", "0"],
+    h264_videotoolbox: ["-c:v", "h264_videotoolbox", "-allow_sw", "1", "-realtime", "1", ...rate],
+  };
+  const videoArgs = (enc) => encoders[enc] || ["-c:v", enc, ...rate];
+  const silent = info.hasAudio ? [] : ["-f", "lavfi", "-t", String(info.seconds), "-i", "anullsrc=r=48000:cl=stereo"];
+  const proxyRun = (enc) => runFfmpeg(ffmpeg, [...head, "-i", file, ...silent, "-map", "0:v:0", "-map", info.hasAudio ? "0:a:0" : "1:a:0",
+    "-vf", scale, ...videoArgs(enc), "-g", "15", "-keyint_min", "15", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+    "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "48000", "-shortest", "-movflags", "+faststart", proxy], { cwd: dir, signal, onSeconds: pct(0, 85) });
+  try { await proxyRun(hw || "libx264"); }
+  catch (e) { if (!hw || e.stopped || (signal && signal.aborted)) throw e; await proxyRun("libx264"); }
+  await runFfmpeg(ffmpeg, info.hasAudio
+    ? [...head, "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "48k", audio]
+    : [...head, "-f", "lavfi", "-t", String(info.seconds), "-i", "anullsrc=r=16000:cl=mono", "-c:a", "aac", "-b:a", "32k", audio], { cwd: dir, signal, onSeconds: pct(85, 15) });
+  return { proxy, audio, info, proxySize: (await fsp.stat(proxy)).size, audioSize: (await fsp.stat(audio)).size };
+}
+
+module.exports = { PROTOCOL, FEATURES, HW_ENCODERS, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs, linkInto, download, makePreview, upload, linkOk };

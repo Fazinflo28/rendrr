@@ -125,6 +125,43 @@ const localFile = async (videoId, size) => {
   return st && st.isFile() && st.size === o.size && st.size === size ? o.path : null;
 };
 
+// Preview copies made here (audit #14): footage added in the app gets its 720p proxy and transcript sound from this
+// computer's FFmpeg instead of the page's (ffmpeg.wasm), then uploaded from here to the links Rendrr gives. Only a file
+// the user picked or dropped (its path comes from the preload, never from the page), only to https links.
+const previews = new Map(); // id -> { dir, proxy, audio }
+const dropPreview = (id) => { const p = previews.get(id); previews.delete(id); if (p) fs.promises.rm(p.dir, { recursive: true, force: true }).catch(() => {}); };
+ipcMain.handle("rendrr:preview-make", async (e, job, file) => {
+  if (!fromApp(e) || !renders.ready || typeof job !== "string" || job.length > 80 || typeof file !== "string" || !path.isAbsolute(file)) return null;
+  const st = await fs.promises.stat(file).catch(() => null);
+  if (!st || !st.isFile()) return null;
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "rendrr-preview-"));
+  const hw = render.HW_ENCODERS.find((x) => renders.have.includes(x)) || null;
+  try {
+    const r = await render.makePreview(ffmpegPath(), file, dir, { hw, onPct: (pct) => { if (!e.sender.isDestroyed()) e.sender.send("rendrr:preview-progress", job, "make", pct); } });
+    const id = require("node:crypto").randomUUID();
+    previews.set(id, { dir, proxy: r.proxy, audio: r.audio });
+    setTimeout(() => dropPreview(id), 6 * 3600_000).unref?.();
+    return { id, info: r.info, proxySize: r.proxySize, audioSize: r.audioSize };
+  } catch (err) {
+    fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+    return { error: String((err && err.message) || err).slice(0, 300) };
+  }
+});
+ipcMain.handle("rendrr:preview-upload", async (e, job, id, urls) => {
+  const p = previews.get(id);
+  if (!fromApp(e) || !p || typeof job !== "string" || !urls || !urls.proxy || !urls.audio) return { ok: false };
+  const parts = [[p.proxy, urls.proxy], [p.audio, urls.audio]];
+  if (parts.some(([, u]) => !render.linkOk(String(u.url)) || typeof u.contentType !== "string")) return { ok: false };
+  const total = parts.reduce((a, [f]) => a + fs.statSync(f).size, 0);
+  let sent = 0;
+  try {
+    await Promise.all(parts.map(([f, u]) => render.upload(String(u.url), f, u.contentType, (n) => { sent += n; if (!e.sender.isDestroyed()) e.sender.send("rendrr:preview-progress", job, "upload", total ? (sent / total) * 100 : 100); })));
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String((err && err.message) || err).slice(0, 300) }; }
+  finally { dropPreview(id); }
+});
+ipcMain.handle("rendrr:preview-drop", (e, id) => { if (fromApp(e)) dropPreview(id); return null; });
+
 // A render Rendrr handed this computer (the web app took it for this user): made in the background, one at a time.
 ipcMain.handle("rendrr:render-run", (e, task) => {
   if (!fromApp(e) || !renders.ready || !renders.enabled || renders.busy) return { started: false };
