@@ -872,6 +872,33 @@ function GalleryViewer({ g, list, onPick, onClose, like, recreate, unpublish, re
     </aside>
   </div>`;
 }
+// Explore's featured row: three top videos, the middle one big and playing, the others smaller and dim behind it.
+// It turns every 7 s (paused while the pointer is on it); the active pill fills like a timer. Click the middle one to open it.
+function FeaturedMedia({ g, live }) {
+  if (!g.video) return html`<${StyleVideo} s=${g.style} ori=${g.ori} className="fill" />`;
+  if (live) return html`<video class="fs-vid" src=${g.video} poster=${g.poster || undefined} muted loop autoplay playsinline />`;
+  return g.poster ? html`<img class="fs-vid" src=${g.poster} alt="" />` : html`<video class="fs-vid" src=${g.video + "#t=0.1"} muted playsinline preload="metadata" />`;
+}
+function FeaturedSlider({ items, onOpen }) {
+  const [at, setAt] = useState(0); const [hold, setHold] = useState(false); const n = items.length;
+  useEffect(() => { if (hold || n < 2 || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return; const t = setTimeout(() => setAt((a) => (a + 1) % n), 7000); return () => clearTimeout(t); }, [at, hold, n]);
+  if (!n) return null;
+  const pos = (i) => { const d = (i - at + n) % n; return d === 0 ? "mid" : d === 1 ? "next" : d === n - 1 ? "prev" : "away"; };
+  return html`<section class="fs" aria-label="Featured videos" onMouseEnter=${() => setHold(true)} onMouseLeave=${() => setHold(false)}>
+    <div class="fs-stage">${items.map((g, i) => { const p = pos(i); return html`<div key=${g.id} class=${"fs-card " + p} role="button" tabindex=${p === "mid" ? 0 : -1} aria-label=${g.title} onClick=${() => (p === "mid" ? onOpen(g) : setAt(i))} onKeyDown=${(e) => e.key === "Enter" && onOpen(g)}>
+      <${FeaturedMedia} g=${g} live=${p === "mid"} />
+      <div class="fs-info"><b>${g.title}</b><span>${g.author} · ${fmtK(g.likes)} likes</span></div></div>`; })}</div>
+    ${n > 1 && html`<div class="fs-pills">${items.map((g, i) => html`<button key=${g.id} type="button" class=${"fs-pill" + (i === at ? " on" : "")} aria-pressed=${i === at} onClick=${() => setAt(i)}>${i === at && !hold ? html`<span key=${"f" + at} class="fs-fill" style=${{ animationDuration: "7s" }} />` : null}${g.title}</button>`)}</div>`}
+  </section>`;
+}
+// A slow ticker of the most liked creators in the gallery; it stops while the pointer is on it.
+function CreatorTicker({ list }) {
+  const by = new Map(); for (const g of list) { const a = by.get(g.author) || { name: g.author, likes: 0, n: 0 }; a.likes += g.likes || 0; a.n += 1; by.set(g.author, a); }
+  const top = [...by.values()].sort((a, b) => b.likes - a.likes).slice(0, 14);
+  if (top.length < 4) return null;
+  const row = top.map((c) => html`<span class="ct-chip" key=${c.name}><span class="gava">${initials(c.name)}</span><b>${c.name}</b><span>${c.n} ${c.n === 1 ? "video" : "videos"} · ${fmtK(c.likes)} likes</span></span>`);
+  return html`<div class="ct" aria-label="Top creators"><div class="ct-track">${row}<span class="ct-dup" aria-hidden="true">${row}</span></div></div>`;
+}
 function HomePage() { return html`<${ExploreFeed} />`; }
 function ExploreFeed({ types, embedded, title = "Explore", sub }) {
   const { go } = useNav(); const toast = useToast(); const { requireUser, user } = useApp();
@@ -906,7 +933,11 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
       let shown = list.filter((g) => (!types || types.includes(g.style?.type)) && (ori === "All" || g.ori === ori) && (plat === "all" || g.platforms.includes(plat)) && (!mine || g.mine));
       shown = [...shown].sort((a, b) => sort === "newest" ? b.at - a.at : sort === "recreated" ? b.recreates - a.recreates : (b.likes * 3 + b.views / 100) - (a.likes * 3 + a.views / 100));
       const all = shown; shown = shown.slice(0, limit); shownRef.current = all;
+      // Featured: the three most liked videos with a real export (any, when fewer have one).
+      const score = (g) => g.likes * 3 + g.views / 100; const ranked = [...list].sort((x, y) => score(y) - score(x));
+      const feat = (ranked.filter((g) => g.video).length >= 3 ? ranked.filter((g) => g.video) : ranked).slice(0, 3);
       return html`<div class="col" style="gap:12px">
+        ${!embedded && !mine && html`<${FeaturedSlider} items=${feat} onOpen=${setOpen} /><${CreatorTicker} list=${list} />`}
         ${shown.length === 0 ? html`<${EmptyState} icon="search" title="Nothing here yet" text=${mine ? "You have not published a video yet." : "Try another shape or platform."} action=${mine ? html`<${Btn} size="sm" onClick=${() => setPublish(true)}>Publish a video<//>` : null} />` : html`<${Masonry} items=${shown} oriOf=${(g) => g.ori} render=${(g) => html`<div key=${g.id} class="gcard" role="button" tabindex="0" data-g=${g.id} data-ori=${g.ori} onClick=${() => setOpen(g)} onKeyDown=${(e) => e.key === "Enter" && setOpen(g)}>
             <${GalleryVideo} g=${g} />
             <div class="gtop"><span class="gauthor" title=${g.title}><span class="gava">${initials(g.author)}</span><b>${g.mine && user ? "You" : g.author}</b></span></div>
