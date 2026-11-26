@@ -35,7 +35,7 @@ export type MacRenderInfo = { protocol: number; ready: boolean; enabled: boolean
 /** A file the Mac needs: from storage (key), inline (data, base64), the user's Google Drive (drive; version: when it last
  *  changed there), or the original that stays on that Mac (local: the Mac app knows where it keeps it, by its video, and
  *  checks it is the same size). */
-export type MacInput = { name: string; key?: string; size?: number; etag?: string; data?: string; drive?: { fileId: string; version?: string }; local?: { videoId: string; size: number } };
+export type MacInput = { name: string; key?: string; size?: number; etag?: string; data?: string; drive?: { fileId: string; version?: string }; local?: { videoId: string; size: number }; cache?: string };
 /** One FFmpeg run: its arguments ("__FILTER_SCRIPT__" stands for the graph's file) with paths relative to the job's folder. */
 export type MacCommand = { args: string[]; graph?: string; seconds?: number };
 /** A file the Mac uploads when done (to key); save: also kept in the Mac's Downloads under this name. */
@@ -287,7 +287,10 @@ export async function macManifest(task: MacTask, token: string, api: string) {
     // An original in Drive is kept in the Mac's cache too (keep: by the file, its size and when it last changed), so the
     // next final of the same footage fetches nothing. (An older Mac app ignores keep and fetches it each time.)
     if (i.drive) { const m = await mediaRequest(task.userId, i.drive.fileId); return { name: i.name, url: m.url, headers: { authorization: m.headers.authorization }, size: i.size, ...(i.size ? { keep: driveKeep(i.drive, i.size) } : {}) }; }
-    return { name: i.name, url: await signGet(i.key!, life), size: i.size, cache: `${i.key}#${i.etag || i.size || ""}` };
+    // cache: the name the Mac keeps it under. A file given under a key of its own for this render (a graphic's recording,
+    // copied so a code change cannot take it away mid-render) names the recording it is a copy of, so the next render
+    // of the same graphic fetches nothing.
+    return { name: i.name, url: await signGet(i.key!, life), size: i.size, cache: i.cache ?? `${i.key}#${i.etag || i.size || ""}` };
   }));
   const fonts = await Promise.all((task.fonts ?? []).map(async (f) => ({ name: f.name, url: await signGet(f.key, life), size: f.size })));
   const outputs = await Promise.all(task.outputs.map(async (o) => ({ name: o.name, url: await signPut(o.key, o.type, life), type: o.type, ...(o.save ? { save: o.save } : {}) })));

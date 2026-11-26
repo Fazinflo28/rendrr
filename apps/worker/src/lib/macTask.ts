@@ -131,7 +131,7 @@ export async function macTaskFor(o: {
       const key = `${PREFIX.mac}${o.renderId}/${name}`;
       await copyObject(origin.key, key);
       temps.push(key);
-      inputs.set(name, { name, key, size });
+      inputs.set(name, { name, key, size, ...(origin.etag ? { cache: `${origin.key}#${origin.etag}` } : {}) });
     }
     else if (!body && origin && (origin.size == null || origin.size === size)) inputs.set(name, { name, key: origin.key, size, ...(origin.etag ? { etag: origin.etag } : {}) });
     else if ((body?.length ?? size) <= INLINE_MAX) inputs.set(name, { name, data: (body ?? (await readFile(path))).toString("base64") });
