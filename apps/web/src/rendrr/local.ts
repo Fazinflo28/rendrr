@@ -207,6 +207,25 @@ function throttle(fn: (status: string, pct: number) => Promise<unknown>, ms = 12
   };
 }
 
+/**
+ * The preview copy made by the Rendrr app's own FFmpeg (many times faster than ffmpeg.wasm, the graphics chip when it
+ * has one) and uploaded by the app to the links Rendrr gives. False: the app cannot make it here (the page does).
+ */
+async function nativePreview(videoId: string, file: File, report: (status: string, progress: number, now?: boolean) => void): Promise<boolean> {
+  const desk = isBrowser ? (window as any).rendrrDesktop : null;
+  if (!desk?.preview?.make) return false;
+  const made = await desk.preview.make(file, (p: number) => report("previewing", p)).catch(() => null);
+  if (!made?.id || !made.info) return false;
+  try {
+    report("previewing", 100, true);
+    const urls = await post(`/videos/${enc(videoId)}/local/upload-urls`);
+    const up = await desk.preview.upload(made.id, { proxy: urls.proxy, audio: urls.audio }, (p: number) => report("uploading", p));
+    if (!up?.ok) throw fail("We could not upload the preview of this file. Check your connection, then add it again.");
+    await post(`/videos/${enc(videoId)}/local/complete`, { seconds: made.info.seconds, width: made.info.width, height: made.info.height, fps: made.info.fps, proxySize: made.proxySize, audioSize: made.audioSize });
+    return true;
+  } finally { desk.preview.drop?.(made.id)?.catch?.(() => {}); }
+}
+
 async function run(videoId: string) {
   const file = files.get(videoId);
   if (!file || running.has(videoId)) return;
@@ -214,6 +233,9 @@ async function run(videoId: string) {
   const report = throttle((status, progress) => post(`/videos/${enc(videoId)}/local/progress`, { status, progress }));
   try {
     report("previewing", 1, true);
+    // In the Rendrr Mac or Windows app, that computer's own FFmpeg makes the preview copy and uploads it (audit #14);
+    // an older app, a file without a path, or a failure there: the page makes it, as before.
+    if (await nativePreview(videoId, file, report)) return;
     const { proxy, audio, info } = await makePreview(file, (p) => report("previewing", p));
     report("previewing", 100, true);
     const urls = await post(`/videos/${enc(videoId)}/local/upload-urls`);
