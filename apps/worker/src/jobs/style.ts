@@ -1,6 +1,6 @@
 import { downloadFile, getBytes, type StyleJob } from "@rendrr/core";
 import { Prisma, prisma } from "@rendrr/db";
-import { allWords, buildStyleFile, type Breakdown, type DeepAudio, type ReferenceMap, type ReferenceMeasure, type Transcript, type VisionDetails, type VisionSummary } from "@rendrr/shared";
+import { allWords, buildStyleFile, type Breakdown, type DeepAudio, type ReferenceMap, type ReferenceMeasure, type StyleFile, type Transcript, type VisionDetails, type VisionSummary } from "@rendrr/shared";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,6 +69,10 @@ export async function styleJob(ctx: Ctx) {
   const vs = (a?.vision as unknown as VisionSummary | null) ?? null;
   const vision = vs?.key ? await getBytes(vs.key).then((b) => JSON.parse(gunzipSync(b).toString()) as VisionDetails).catch(() => null) : null;
   const file = buildStyleFile({ video: { id: v.id, name: v.name, seconds: info.seconds || v.seconds, width: W0, height: H0 }, measure, breakdown, words, cuts, audio, vision, map });
+  // The AI's notes on this reference (fonts, logo, what each scene shows) carry over from its newest earlier style file.
+  const prev = await prisma.styleFile.findFirst({ where: { userId: sf.userId, videoId: v.id, status: "ready", id: { not: sf.id } }, orderBy: { createdAt: "desc" }, select: { data: true } }).catch(() => null);
+  const notes = (prev?.data as { notes?: StyleFile["notes"] } | null)?.notes;
+  if (notes) file.notes = notes;
   await prisma.styleFile.update({ where: { id: sf.id }, data: { status: "ready", progress: 100, error: null, data: file as unknown as Prisma.InputJsonValue }, select: { id: true } });
   console.log(`[style] ${v.id}: ${Math.round(info.seconds || v.seconds)}s reference measured in ${Math.round((Date.now() - started) / 1000)}s: ${measure.texts.length} texts, ${measure.transitions.length} cuts${map ? `, ${map.moves.length} camera moves, ${map.animations.length} animations, ${map.sfx.length} sound effects` : ", no map"}`);
 }
