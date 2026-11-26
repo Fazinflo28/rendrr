@@ -1,7 +1,7 @@
 // The AI tools, implemented on the API server. The MCP server forwards each call here with the user it verified.
 // Every response is small text; images only when asked for (images: true, get_frames, get_preview_frames).
 // Every write goes through applyTimelineChange.
-import { AppError, applyTimelineChange, readRender, clearVariantErrors, enqueue, graphicFailedOnServer, notFound, prewarmGraphics, putObject, readGraphic, recordGraphicAgain, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
+import { AppError, applyTimelineChange, readRender, clearVariantErrors, enqueue, graphicFailedOnServer, notFound, presetDriveRef, presetOf, presetText, prewarmGraphics, putObject, readGraphic, recordGraphicAgain, restoreVersion, signGet, type BreakdownJob, type ChangeActor, type GraphicJob, type HeardJob } from "@rendrr/core";
 import { prisma, Prisma } from "@rendrr/db";
 import {
   AddFontInput, AddLutInput, allWords, isSoundFormat, asSequence, breakdownAsText, CreateGraphicInput, customParamsSchema, describeRules, graphicDefaults, editCheck, editOf, EditOpSchema, StyleRulesPatchSchema, fmtClock, fmtT, srcAt, GRAPHIC_TEMPLATES, mergeRules, MUSIC_TRACKS, outputDuration, sequenceView, SFX,
@@ -614,7 +614,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
 
   async list_folders(c) {
     const fs = await prisma.folder.findMany({ where: { userId: c.userId }, orderBy: { updatedAt: "desc" }, include: { _count: { select: { projects: { where: { deletedAt: null } } } } } });
-    return { text: fs.length ? "Folders (id | name | edits):\n" + fs.map((f) => `${f.id} | ${f.name} | ${f._count.projects}`).join("\n") : "No folders yet." };
+    // Client presets (#24): what each folder's new edits start with (remembered from its edits).
+    return { text: fs.length ? "Folders (id | name | edits | new edits start with):\n" + fs.map((f) => `${f.id} | ${f.name} | ${f._count.projects} | ${presetText(presetOf(f.preset)) || "-"}`).join("\n") : "No folders yet." };
   },
 
   async list_projects(c, i) {
@@ -1272,10 +1273,16 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     // Where the final goes: the user's Mac when the Rendrr Mac app is open (made there when it can render, and saved to
     // Downloads), else Rendrr's cloud server renders it into Google Drive (the folder given, or asked for). Saving into Drive: the folder is found
     // and checked first, so a wrong name or a refused folder is said now, not after the render.
-    const wantsDrive = i.driveFolder != null || !!i.saveToDrive || i.to === "drive";
     const macNow = await macStatus(c.userId);
+    // Client presets (#24): the Drive folder this edit's folder remembers is used when the final goes to Drive (asked
+    // for, or made on Rendrr's cloud with no computer to save it to) and no other folder was given.
+    const own = await prisma.project.findFirst({ where: { id: i.projectId, userId: c.userId }, select: { folder: { select: { preset: true } } } });
+    const presetRef = presetDriveRef(presetOf(own?.folder.preset));
+    const usePreset = i.driveFolder == null && !!presetRef && (!!i.saveToDrive || i.to === "drive" || (i.to !== "mac" && !macNow.online));
+    const driveFolder = usePreset && presetRef ? presetRef : i.driveFolder;
+    const wantsDrive = driveFolder != null || !!i.saveToDrive || i.to === "drive";
     const mac = !wantsDrive && macNow.online;
-    const target = i.driveFolder != null || i.saveToDrive ? await driveTargetOrText(c.userId, i.driveFolder, i.createFolders) : null;
+    const target = driveFolder != null || i.saveToDrive ? await driveTargetOrText(c.userId, driveFolder, usePreset ? false : i.createFolders) : null;
     if (typeof target === "string") return { text: target };
     // Which computer makes it: the one that keeps the footage's original (only it can read it), the one the user
     // picked, the only one online, or (several) ask; else the cloud.
@@ -1307,7 +1314,8 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       : mac ? `Exporting to the user's ${M}. It renders on ${CLOUD_WORDS}${pick.target === "cloud" ? " (the user chose it)" : macNow.why ? ` (${macNow.why})` : ""}; ${onMac} is open and saves the final to that ${M}'s Downloads folder by itself the moment it is done. Tell the user in those words: it renders in Rendrr's cloud and lands in their ${M}'s Downloads.`
       : target ? null
       : `${i.to === "mac" ? "The Rendrr app (Mac or Windows) is not open, so the final cannot go to the user's computer now. " : "The Rendrr app (Mac or Windows) is not open. "}Switching to Rendrr's cloud server: the final renders there and is saved to Google Drive. Tell the user you are switching to the cloud server, and ask which Google Drive folder to export it to (a folder link or a name). Then call save_to_drive with it: it saves the moment the render is done.`;
-    const where = [pick.note, where0].filter(Boolean).join("\n") || null;
+    const fromPreset = usePreset && target ? `Saving to Google Drive › ${target.path}: the Drive folder this edit's folder remembers from its last final (pass driveFolder for another). Tell the user.` : null;
+    const where = [pick.note, fromPreset, where0].filter(Boolean).join("\n") || null;
     return where ? { ...out, text: `${where}\n${out.text}` } : out;
   },
   async save_to_drive(c, i) {

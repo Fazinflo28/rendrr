@@ -1,4 +1,4 @@
-import { abortMultipart, AppError, deleteObjects, deletePrefix, notFound, placementMedia, renderFileKeys, signGet } from "@rendrr/core";
+import { abortMultipart, AppError, deleteObjects, deletePrefix, notFound, placementMedia, presetOf, renderFileKeys, signGet } from "@rendrr/core";
 import { deleteEditCommentFiles } from "./commentMedia";
 import { prisma, type Folder, type Prisma, type Project } from "@rendrr/db";
 import { pieceCachePrefix, allWords, applyOp, asSequence, aspectFor, buildRawSequence, type EditContext, type Op, catalogMusic, catalogSfx, findTemplate, isCaptionMarker, libraryVideoIds, outputDuration, refreshFillers, type ReferenceRef, type Snapshot, type Transcript, type V3Clip, ASPECTS, aspectSize, orientationOf, type Aspect } from "@rendrr/shared";
@@ -186,10 +186,20 @@ async function firstCut(userId: string, input: FirstCutInput) {
  * (videoIds, in order): the first is the edit's footage, the others follow it whole on V1.
  */
 export async function createProject(userId: string, input: { videoId?: string; videoIds?: string[]; styleId?: string | null; reference?: { kind: ReferenceRef["kind"]; id: string } | null; name?: string | null; folderId?: string | null; cut?: string[]; aspect?: string; length?: number }, opts: { actorKind?: "user" | "claude" | "chatgpt" } = {}) {
-  const asked = input.reference ?? (input.styleId ? { kind: "style" as const, id: input.styleId } : null);
-  const reference = asked ? await resolveReference(userId, asked) : null;
   const folderId = (await ownFolder(userId, input.folderId)) ?? (await defaultFolderId(userId));
-  const { v, timeline, aspect, name, snap, note, transcript } = await firstCut(userId, input);
+  // Client presets (#24): what the folder's edits last used fills in what this one was not given: its shape, and its
+  // style as the reference for the user's AI (never applied here). A remembered style that is gone is left out.
+  const preset = presetOf((await prisma.folder.findUnique({ where: { id: folderId }, select: { preset: true } }))?.preset);
+  const fromPreset: string[] = [];
+  const askedRef = input.reference ?? (input.styleId ? { kind: "style" as const, id: input.styleId } : null);
+  const asked = askedRef ?? (preset.styleId ? { kind: "style" as const, id: preset.styleId } : null);
+  const reference = asked ? await resolveReference(userId, asked).catch((e) => { if (askedRef) throw e; return null; }) : null;
+  if (!askedRef && reference) fromPreset.push("style");
+  const shape = input.aspect ?? (input.length == null && preset.aspect ? preset.aspect : undefined);
+  if (!input.aspect && shape) fromPreset.push(shape);
+  const cut = await firstCut(userId, { ...input, aspect: shape });
+  const { v, timeline, aspect, name, snap, transcript } = cut;
+  const note = fromPreset.length ? `${cut.note} (started with this folder's preset: ${fromPreset.join(", ")})` : cut.note;
   const p = await prisma.project.create({
     data: {
       userId, folderId, videoId: v.id, styleId: null, ...(reference ? { reference } : {}), name, aspect, status: "Draft", art: v.art,

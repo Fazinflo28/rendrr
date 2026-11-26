@@ -7,6 +7,7 @@ import { AppError, notFound } from "./errors";
 import { publishProject } from "./queue";
 import { prewarmGraphics } from "./graphics";
 import { prewarmMattes } from "./matte";
+import { rememberPreset, type FolderPreset } from "./presets";
 
 // ---------------------------------------------------------------------------------------------
 // applyTimelineChange: the ONLY code path that writes a project's timeline.
@@ -96,12 +97,14 @@ const sameSnapshot = (a: Snapshot, b: Snapshot) => stable({ ...a, timeline: stri
 
 export async function applyTimelineChange(projectId: string, change: Op, actor: ChangeActor, opts: { baseVersion?: number; baseAt?: number; luts?: Record<string, Lut> } = {}): Promise<ChangeResult> {
   let words: ReturnType<typeof allWords> = [];
+  const seen: { before?: { folderId: string; styleId: string | null; aspect: string } } = {};
   const result = await prisma.$transaction(async (tx) => {
     // Lock the project row so two writers (the editor and an AI) never interleave.
     await tx.$executeRaw`SELECT 1 FROM "Project" WHERE id = ${projectId} FOR UPDATE`;
     const p = await tx.project.findUnique({ where: { id: projectId } });
     if (!p || p.deletedAt) throw notFound("We could not find that project.");
     if (p.userId !== actor.userId) throw notFound("We could not find that project.");
+    seen.before = { folderId: p.folderId, styleId: p.styleId, aspect: p.aspect };
 
     // The editor's autosave sends the whole timeline. If an AI changed it since the editor loaded, refuse:
     // the editor reloads and shows the AI's change instead of silently overwriting it.
@@ -171,6 +174,14 @@ export async function applyTimelineChange(projectId: string, change: Op, actor: 
 
   if (!result.unchanged && (actor.kind !== "user" || result.createdVersion)) {
     await publishProject(projectId, { version: result.version, by: actor.kind, text: result.summary }).catch(() => {});
+  }
+  // Client presets (#24): the folder remembers a style applied or a shape set here, for its next edits.
+  const before = seen.before;
+  if (!result.unchanged && before) {
+    const s = result.snapshot, ch: FolderPreset = {};
+    if (s.styleId && s.styleId !== before.styleId) ch.styleId = s.styleId;
+    if (s.aspect && s.aspect !== before.aspect) ch.aspect = s.aspect;
+    if (Object.keys(ch).length) await rememberPreset(before.folderId, ch);
   }
   // Custom graphics placed with their own params: their recordings start now (the editor shows them when ready).
   if (!result.unchanged) await prewarmGraphics(actor.userId, result.snapshot.timeline).catch((e) => console.error("[graphics] prewarm:", (e as Error).message));

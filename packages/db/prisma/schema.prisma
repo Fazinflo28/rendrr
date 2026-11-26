@@ -209,6 +209,9 @@ model Folder {
   workspace String
   cover     Int       @default(1)
   members   Int       @default(1)
+  // Client preset (audit #24): the style, shape and Google Drive folder its edits last used ({ styleId, aspect, drive:
+  // { folderId, path } }); a new edit in it starts with them.
+  preset    Json?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   projects  Project[]

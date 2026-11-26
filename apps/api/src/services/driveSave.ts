@@ -1,4 +1,4 @@
-import { AppError, drive, driveSaveOf, features, queueDriveSave, setDriveSave, withExt, type DriveSave } from "@rendrr/core";
+import { AppError, drive, driveSaveOf, features, queueDriveSave, rememberPreset, setDriveSave, withExt, type DriveSave } from "@rendrr/core";
 import { prisma, type Render } from "@rendrr/db";
 import { formatFile, type ExportFormat } from "@rendrr/shared";
 import { renderResult } from "./render";
@@ -36,6 +36,9 @@ export async function askDriveSave(r: Render, t: drive.DriveTarget, name: string
   const d: DriveSave = { state: "waiting", folderId: t.id, ...(t.driveId ? { driveId: t.driveId } : {}), path: t.path, name, ...(t.made.length ? { made: t.made } : {}), at: Date.now() };
   if (r.status === "done") await queueDriveSave(r.id, d);
   else await setDriveSave(r.id, d);
+  // Client presets (#24): the edit's folder remembers this Drive folder for its next finals.
+  const p = await prisma.project.findUnique({ where: { id: r.projectId }, select: { folderId: true } }).catch(() => null);
+  if (p) await rememberPreset(p.folderId, { drive: { folderId: t.id, path: t.path } });
   return d;
 }
 
