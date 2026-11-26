@@ -1319,7 +1319,33 @@ export type FfmpegOpts = {
   /** Phase 12 (overlay export): the picture under the overlays as one colour (the worker renders black and white and
    *  takes the alpha from their difference); b-roll, zooms, adjustment layers and the person matte left out. */
   pictureAs?: "black" | "white";
+  /** The user's own computer only: its graphics chip's video encoder (the desktop app reports one only after a test
+   *  encode worked there). Used for H.264 previews and standard finals; best quality, HEVC and HDR keep x264/x265. */
+  hwEncoder?: HwEncoder;
 };
+
+/** Hardware H.264 encoders a user's computer may have: Apple's VideoToolbox, NVIDIA NVENC, Intel Quick Sync, AMD AMF. */
+export type HwEncoder = "h264_videotoolbox" | "h264_nvenc" | "h264_qsv" | "h264_amf";
+export const HW_ENCODERS: HwEncoder[] = ["h264_videotoolbox", "h264_nvenc", "h264_qsv", "h264_amf"];
+/** The first hardware encoder this computer reported as working (Apple's first, then NVIDIA, Intel, AMD); null: none. */
+export function pickHwEncoder(have: readonly string[] | null | undefined): HwEncoder | null {
+  return HW_ENCODERS.find((e) => (have ?? []).includes(e)) ?? null;
+}
+/**
+ * The video settings for a hardware encoder: a bitrate from the picture's size and frame rate (about 0.2 bits a pixel
+ * for a final, 0.15 for a preview: 12 Mb/s at 1080p30, 2.3 Mb/s at 540p30), or the export's own bitrate, with peaks
+ * to 1.5x. Bitrate works the same on every chip (Intel Macs have no constant-quality mode).
+ */
+export function hwVideoArgs(enc: HwEncoder, o: { width: number; height: number; fps?: number; preview: boolean; bitrateMbps?: number | null; rate: string; gop: string }): string[] {
+  const bps = o.bitrateMbps ? o.bitrateMbps * 1e6 : Math.round(o.width * o.height * (o.fps || 30) * (o.preview ? 0.15 : 0.2));
+  const kb = (x: number) => `${Math.max(500, Math.round(x / 1000))}k`;
+  const rate = ["-b:v", kb(bps), "-maxrate", kb(bps * 1.5), "-bufsize", kb(bps * 2)];
+  const own = enc === "h264_videotoolbox" ? ["-allow_sw", "1", "-realtime", "0"]
+    : enc === "h264_nvenc" ? ["-preset", o.preview ? "p3" : "p5", "-rc", "vbr"]
+      : enc === "h264_qsv" ? ["-preset", o.preview ? "veryfast" : "medium"]
+        : ["-quality", o.preview ? "speed" : "balanced", "-rc", "vbr_peak"];
+  return ["-c:v", enc, ...own, ...rate, "-pix_fmt", "yuv420p", "-r", o.rate, "-g", o.gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+}
 
 /**
  * Each input that sets no decoder threads of its own gets its share of `total` (at least 1, at most 16), as
@@ -2525,6 +2551,13 @@ function encodeArgs(plan: RenderPlan, inputs: string[], files: PlanFiles, opts: 
     : plan.codec === "hevc"
       ? ["-c:v", "libx265", "-preset", x265Preset, "-crf", best ? "18" : "22", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-x265-params", "log-level=error:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
       : ["-c:v", "libx264", "-preset", preview ? "ultrafast" : best ? "medium" : "veryfast", "-crf", preview ? "28" : best ? "16" : "20", "-pix_fmt", "yuv420p", "-r", R, "-g", gop, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+  // On the user's own computer, its graphics chip encodes H.264 previews and standard finals (audit #11); best
+  // quality, HEVC and HDR keep the software encoders.
+  const hw = opts.hwEncoder && !best && !plan.hdr && plan.codec !== "hevc" ? opts.hwEncoder : null;
+  if (hw) {
+    const v = hwVideoArgs(hw, { width: plan.width, height: plan.height, fps: plan.fps, preview, bitrateMbps: plan.bitrate ?? null, rate: R, gop });
+    video0.splice(0, video0.length, ...v);
+  }
   // Phase 12: a bitrate the export asks for, in place of constant quality (peaks allowed to 1.5x).
   const crf = video0.indexOf("-crf");
   const video = plan.bitrate && crf >= 0 ? [...video0.slice(0, crf), "-b:v", `${plan.bitrate}M`, "-maxrate", `${Math.round(plan.bitrate * 15) / 10}M`, "-bufsize", `${plan.bitrate * 2}M`, ...video0.slice(crf + 2)] : video0;

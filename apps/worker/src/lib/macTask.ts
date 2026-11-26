@@ -15,7 +15,7 @@ const INLINE_MAX = 384 * 1024;
 const NAME_CHARS = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
 const NAME_OK = { test: (n: string) => NAME_CHARS.test(n) && !n.split("/").some((p) => p === "." || p === "..") };
 /** FFmpeg features a render may use that a Mac's FFmpeg must have (its app reports which of these it has). */
-export const MAC_FEATURES = ["ass", "lut3d", "zscale", "tonemap", "vidstabtransform", "minterpolate", "afir", "sendcmd", "libvpx-vp9", "libx264", "libx265", "prores_ks", "ffv1", "palettegen", "paletteuse", "alphamerge"] as const;
+export const MAC_FEATURES = ["ass", "lut3d", "zscale", "tonemap", "vidstabtransform", "minterpolate", "afir", "sendcmd", "libvpx-vp9", "libx264", "libx265", "prores_ks", "ffv1", "palettegen", "paletteuse", "alphamerge", "h264_videotoolbox", "h264_nvenc", "h264_qsv", "h264_amf"] as const;
 
 /** A render that cannot be handed to the Mac as it is (the cloud makes it); the message says why, for the log. */
 export class NotForMac extends Error {}
