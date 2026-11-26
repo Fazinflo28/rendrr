@@ -1,4 +1,4 @@
-import { deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, forgetOrigins, getBytes, getText, macExportsKey, macForRender, noteCost, publishRender, queueDriveSave, recordUsage, redis, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
+import { billableMinutes, deleteObject, deleteObjects, downloadFile, drive, driveSaveOf, enqueue, forgetOrigins, getBytes, getText, macExportsKey, macForRender, noteCost, publishRender, queueDriveSave, recordUsage, redis, signGet, transcriber, uploadFile, usage, type HeardJob, type RenderJob } from "@rendrr/core";
 import { fitFfmpegThreads, threadUse, waitForThreads } from "../lib/threads";
 import { prisma, type Prisma } from "@rendrr/db";
 import { bestResolution, desktopAppName, fmtClock, formatFile, isBestQuality, isSoundFormat, lengthTolerance, SOUND_QUALITY, withExportFormat, type ExportFormat, machineWord, macOriginalOf, renderLimitMs, sampleWindow, type MacOriginal, type SampleDone, type SamplePlan } from "@rendrr/shared";
@@ -621,7 +621,7 @@ export async function renderJob(ctx: Ctx) {
       // Samples are previews for billing: free on Starter, counted in the trial.
       const sampleMin = Math.round((Math.max(seconds, items.length / fps) / 60) * 1000) / 1000;
       noteCost({ kind: "render_samples", refId: r.id, outputBytes: bytes });
-      if (r.by !== "gallery") await recordUsage({ userId: video.userId, metric: "preview", quantity: sampleMin, refId: r.id, meta: { projectId: project.id, samples: true } });
+      if (r.by !== "gallery") await recordUsage({ userId: video.userId, metric: "preview", quantity: sampleMin, billable: billableMinutes({ minutes: sampleMin, on: where.on }), refId: r.id, meta: { projectId: project.id, samples: true, on: where.on } });
       await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100, on: where.on, device: where.device, ...(where.platform ? { platform: where.platform } : {}) });
       return { samples: done.length };
     }
@@ -960,7 +960,8 @@ export async function renderJob(ctx: Ctx) {
     if (r.by !== "gallery") {
       const minutes = Math.round((outInfo.seconds / 60) * 1000) / 1000;
       const fourK = kind === "final" && isFourKQuality(r.quality), heavy = isHeavyPlan(plan);
-      await recordUsage({ userId: video.userId, metric: kind === "final" ? "export" : "preview", quantity: minutes, billable: kind === "final" ? minutes * exportMultiplier({ fourK, heavy }) : minutes, refId: r.id, meta: { projectId: project.id, quality: r.quality, fourK, heavy } });
+      // Made on the user's own computer: recorded, billed 0 when local-first billing is on (LOCAL_RENDERS_FREE).
+      await recordUsage({ userId: video.userId, metric: kind === "final" ? "export" : "preview", quantity: minutes, billable: billableMinutes({ minutes, multiplier: kind === "final" ? exportMultiplier({ fourK, heavy }) : 1, on: where.on }), refId: r.id, meta: { projectId: project.id, quality: r.quality, fourK, heavy, on: where.on } });
     }
     await publishRender(r.id, { status: "done", step: steps.length, steps, percent: 100, on: where.on, device: where.device, ...(where.platform ? { platform: where.platform } : {}) });
     // A final the user asked to be saved into their Google Drive (render_final driveFolder): the copy starts now.

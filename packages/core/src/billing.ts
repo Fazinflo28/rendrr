@@ -107,6 +107,17 @@ export async function checkUsage(userId: string, ask: Ask): Promise<Check> {
 }
 
 /** One usage row; a second one for the same (metric, refId) is ignored, so retried jobs never bill twice. */
+/**
+ * Local-first billing (off until LOCAL_RENDERS_FREE=1 is set on the worker): a render made on the user's own Mac or
+ * PC costs Rendrr nothing, so it is still recorded (for the user's stats) but bills 0 minutes. Only renders made on
+ * Rendrr's cloud count toward the plan's allowance and the pay-as-you-go charge after it, on the next bill.
+ */
+export function localRendersFree(): boolean { return process.env.LOCAL_RENDERS_FREE === "1"; }
+export function billableMinutes(o: { minutes: number; multiplier?: number; on: "mac" | "cloud"; localFree?: boolean }): number {
+  if ((o.localFree ?? localRendersFree()) && o.on === "mac") return 0;
+  return o.minutes * (o.multiplier ?? 1);
+}
+
 export async function recordUsage(r: { userId: string; metric: "export" | "preview" | "footage" | "storage"; quantity: number; billable?: number; refId: string; meta?: Record<string, unknown>; at?: Date }) {
   try {
     await prisma.usageRecord.createMany({
