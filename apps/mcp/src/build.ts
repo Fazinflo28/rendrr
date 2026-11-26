@@ -146,8 +146,8 @@ export function buildServer(w: Who, base = process.env.PUBLIC_MCP_URL || "") {
   }, ({ videoId, styleId }) => ({
     messages: [{ role: "user", content: { type: "text", text:
       `Edit my footage ${videoId} in style ${styleId} with Rendrr. Follow the editing skill (get_editing_skill).\n\n` +
-      `1. get_footage("${videoId}") and get_style("${styleId}"). Read the whole transcript. Tell me in two lines what the video is about and the strongest hook.\n` +
-      `2. mark_silences, mark_fillers, get_retakes and list_marks on the footage: Rendrr measures, you decide what goes.\n` +
+      `1. get_footage("${videoId}", retakes: true) and get_style("${styleId}"). Read the whole transcript. Tell me in two lines what the video is about and the strongest hook.\n` +
+      `2. mark_silences, mark_fillers and list_marks on the footage (the retakes came with get_footage): Rendrr measures, you decide what goes.\n` +
       `3. create_project, then ONE apply_edits call with everything: apply_style ${styleId} (its captions; it lists its other rules for you), the cuts you chose (cut_words with word ids or from/to on the sound), the best take of each retake, caption fixes. Keep sentences whole. Add a short note.\n` +
       `4. check_edit (no render). Fix everything it shows in one more apply_edits.\n` +
       `5. render_preview ONCE and read its check. Then open_projects with the project id so I can watch it and comment.\n` +
