@@ -351,6 +351,23 @@ jobs:
       - name: Web build
         run: pnpm --filter @rendrr/web build
         timeout-minutes: 20
+  webtests:
+    name: Tests web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+      - name: Tests web
+        run: pnpm exec tsx --test apps/web/test/*.test.ts
+        timeout-minutes: 10
   desktop:
     name: Tests desktop
     runs-on: ubuntu-latest
