@@ -27,6 +27,18 @@ export const renderQueueOf = (kind: string): QueueName => (kind === "final" ? "r
 /** Both lines a render can be in (a render queued before the preview line existed is still in "render"). */
 export const RENDER_QUEUES: QueueName[] = ["preview", "render"];
 
+/** How many renders are ahead of this one in its line (those running and those queued before it); null once it runs
+ *  or when it is not in the line. The export window shows it while a render waits (audit #27). */
+export async function renderAhead(renderId: string, kind: string): Promise<number | null> {
+  const q = queue(renderQueueOf(kind));
+  const job = await q.getJob(renderId).catch(() => null);
+  if (!job) return null;
+  const state = await job.getState().catch(() => "unknown");
+  if (state !== "waiting" && state !== "prioritized" && state !== "delayed") return null;
+  const [waiting, active] = await Promise.all([q.getJobs(["waiting", "prioritized"], 0, 499).catch(() => []), q.getActiveCount().catch(() => 0)]);
+  return active + waiting.filter((j) => j && j.id !== job.id && j.timestamp <= job.timestamp).length;
+}
+
 export type ProxyJob = { videoId: string };
 export type AnalyzeJob = { videoId: string };
 export type RenderJob = { renderId: string };

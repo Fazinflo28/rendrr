@@ -1,4 +1,4 @@
-import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, drive, features, finalType, notFound, planWithoutFiles, readRender, redis, renderChannel, renderFileKeys, setRenderChoice, signGet, signPart } from "@rendrr/core";
+import { AppError, completeMultipart, createMultipart, abortMultipart, deleteObjects, drive, features, finalType, notFound, planWithoutFiles, readRender, redis, renderChannel, renderFileKeys, setRenderChoice, signGet, signPart, renderAhead } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { notOriginalMessage, OriginalCompleteInput, OriginalUploadInput, PREFIX, renderLimitMs, sameOriginal, TEMP_ORIGINAL_HOURS } from "@rendrr/shared";
 import type { FastifyInstance } from "fastify";
@@ -124,6 +124,19 @@ export default async function render(app: FastifyInstance) {
     if (ended) stop();
     const cur = await readRender(r.id);
     if (cur) s.send("progress", { step: cur.step, steps: cur.steps, percent: cur.percent, etaSec: cur.etaSec ?? null, on: cur.on ?? "cloud", device: cur.device ?? null });
+    // While it waits its turn, how many renders are ahead of it, every 5 s (audit #27); stops once it runs or ends.
+    if (r.status === "queued") {
+      const tick = async () => {
+        if (ended || s.isClosed()) { clearInterval(t); return; }
+        const ahead = await renderAhead(r.id, r.kind).catch(() => null);
+        if (ahead == null) { clearInterval(t); return; }
+        const now = await readRender(r.id);
+        if (now && now.status === "queued" && !ended && !s.isClosed()) s.send("progress", { step: now.step, steps: now.steps, percent: now.percent, etaSec: null, on: now.on ?? "cloud", device: now.device ?? null, ahead });
+      };
+      const t = setInterval(() => { void tick(); }, 5000);
+      s.onClose(() => clearInterval(t));
+      void tick();
+    }
     // A job that already finished between the first read and the subscribe.
     const again = await prisma.render.findUniqueOrThrow({ where: { id: r.id } });
     if (again.status === "done" || again.status === "failed") await end();

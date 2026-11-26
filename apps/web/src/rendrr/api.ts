@@ -92,7 +92,7 @@ async function followRender(started: any, label: string, minutes: number, onProg
   // Live stream first; if it drops, fall back to polling until the render ends.
   try {
     await readEvents(`/renders/${enc(id)}/events`, (ev, data) => {
-      if (ev === "progress") report?.({ step: data.step, steps: data.steps?.length ? data.steps : steps, percent: data.percent, etaSec: data.etaSec ?? null, quality: started.quality, on: data.on || "cloud", device: data.device ?? null, platform: data.platform || null });
+      if (ev === "progress") report?.({ step: data.step, steps: data.steps?.length ? data.steps : steps, percent: data.percent, etaSec: data.etaSec ?? null, ahead: data.ahead ?? null, quality: started.quality, on: data.on || "cloud", device: data.device ?? null, platform: data.platform || null });
       if (ev === "done" || ev === "failed") { final = data; return true; }
     });
   } catch { /* poll below */ }
@@ -104,7 +104,7 @@ async function followRender(started: any, label: string, minutes: number, onProg
     // Still waiting its turn behind other renders: its own limit starts when it starts, so the app keeps waiting.
     if (s.status === "queued") wait0 = Math.max(wait0, Date.now() + (Number(started.limitMs) || minutes * 60_000));
     if (s.status === "done" || s.status === "failed") final = s;
-    else report?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent, etaSec: s.etaSec ?? null, quality: started.quality, on: s.where?.renders || "cloud", device: s.where?.device ?? null, platform: s.where?.platform || null });
+    else report?.({ step: s.step, steps: s.steps?.length ? s.steps : steps, percent: s.percent, etaSec: s.etaSec ?? null, ahead: s.ahead ?? null, quality: started.quality, on: s.where?.renders || "cloud", device: s.where?.device ?? null, platform: s.where?.platform || null });
   }
   if (!final) throw fail(label + " took too long. Try again.", "timeout");
   if (final.status === "failed") throw fail(final.error || "Render did not finish. Nothing was lost. Try again.", final.code);
