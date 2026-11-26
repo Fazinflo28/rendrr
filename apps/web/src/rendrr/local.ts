@@ -172,14 +172,24 @@ export async function fileLength(file: File): Promise<number | null> {
 }
 
 // ---------------- uploads ----------------
-function put(url: string, body: Blob, contentType: string | null, onLoaded: (n: number) => void): Promise<XMLHttpRequest> {
+/** No progress for this long: the upload is taken as stuck, stopped and tried again (it once waited forever: audit #3). */
+export const UPLOAD_STALL_MS = 60_000;
+function put(url: string, body: Blob, contentType: string | null, onLoaded: (n: number) => void, signal?: AbortSignal): Promise<XMLHttpRequest> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(fail("You stopped this export.", "stopped")); return; }
     const x = new XMLHttpRequest();
+    let stall: ReturnType<typeof setTimeout> | undefined;
+    const settle = () => { if (stall) clearTimeout(stall); signal?.removeEventListener("abort", onAbort); };
+    const watch = () => { if (stall) clearTimeout(stall); stall = setTimeout(() => { x.abort(); settle(); reject(fail("The upload stopped moving. Trying again.", "upload")); }, UPLOAD_STALL_MS); };
+    // Stop (the export's Stop button) ends the part on its way at once, not only the parts after it.
+    const onAbort = () => { x.abort(); settle(); reject(fail("You stopped this export.", "stopped")); };
+    signal?.addEventListener("abort", onAbort);
     x.open("PUT", url);
     if (contentType) x.setRequestHeader("content-type", contentType);
-    x.upload.onprogress = (e) => onLoaded(e.loaded);
-    x.onload = () => (x.status >= 200 && x.status < 300 ? resolve(x) : reject(fail("The upload did not finish. Check your connection and try again.", "upload")));
-    x.onerror = () => reject(fail("The upload did not finish. Check your connection and try again.", "upload"));
+    x.upload.onprogress = (e) => { watch(); onLoaded(e.loaded); };
+    x.onload = () => { settle(); x.status >= 200 && x.status < 300 ? resolve(x) : reject(fail("The upload did not finish. Check your connection and try again.", "upload")); };
+    x.onerror = () => { settle(); reject(fail("The upload did not finish. Check your connection and try again.", "upload")); };
+    watch();
     x.send(body);
   });
 }
@@ -323,14 +333,17 @@ export const localJobs = {
         const blob = file.slice(i * partSize, Math.min(file.size, (i + 1) * partSize));
         let lastErr: unknown;
         for (let attempt = 0; attempt < 3; attempt++) {
+          // A short wait before trying a part again (1 s, then 2 s), so a dropped line has a moment to come back.
+          if (attempt) await new Promise((r) => setTimeout(r, 1000 * attempt));
+          if (signal?.aborted) throw fail("You stopped this export.", "stopped");
           try {
-            const x = await put(urls[i], blob, null, (n) => { loaded[i] = n; report(); });
+            const x = await put(urls[i], blob, null, (n) => { loaded[i] = n; report(); }, signal);
             const etag = x.getResponseHeader("ETag") || x.getResponseHeader("etag");
             if (!etag) throw fail("The storage did not confirm the upload. Try again.", "upload");
             parts.push({ PartNumber: i + 1, ETag: etag.replace(/^"?/, '"').replace(/"?$/, '"') });
             lastErr = null;
             break;
-          } catch (e) { lastErr = e; loaded[i] = 0; }
+          } catch (e) { lastErr = e; loaded[i] = 0; if ((e as any)?.code === "stopped") throw e; }
         }
         if (lastErr) throw lastErr;
       }

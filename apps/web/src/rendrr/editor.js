@@ -1108,7 +1108,20 @@ function EditorInner({ project, reload, ai, keep }) {
 
   // Autosave after each change.
   const first = useRef(true);
-  useEffect(() => { if (first.current) { first.current = false; return; } setSaved("Saving…"); const t = setTimeout(() => api.updateProject(project.id, { name: S.name, styleId: S.styleId, aspect: S.aspect, timeline: tlOf(S) }).then(() => { setSaved("Saved"); }).catch((e) => { if (e.code === "stale") { toast(e.message, { icon: "spark" }); reload(); } else { setSaved("Not saved"); } }), 600); return () => clearTimeout(t); }, [S]);
+  // One save at a time (audit #5): a change made while a save is on its way is sent right after it, never alongside it,
+  // so an older save can never land last and undo the newer one. saveNow is remade each render, so it sends the latest.
+  const saveQ = useRef({ busy: false, again: false });
+  const saveNow = useRef(null);
+  saveNow.current = () => {
+    const q = saveQ.current;
+    if (q.busy) { q.again = true; return; }
+    q.busy = true; q.again = false;
+    api.updateProject(project.id, { name: S.name, styleId: S.styleId, aspect: S.aspect, timeline: tlOf(S) })
+      .then(() => { if (!q.again) setSaved("Saved"); })
+      .catch((e) => { if (e.code === "stale") { q.again = false; toast(e.message, { icon: "spark" }); reload(); } else { setSaved("Not saved"); } })
+      .finally(() => { q.busy = false; if (q.again) saveNow.current(); });
+  };
+  useEffect(() => { if (first.current) { first.current = false; return; } setSaved("Saving…"); const t = setTimeout(() => saveNow.current(), 600); return () => clearTimeout(t); }, [S]);
 
   // Derived playback bits: what the render shows at this moment of the edit.
   const frame = plan && !fresh ? liveFrame(plan, pb.time, clock) : null;
