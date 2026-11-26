@@ -39,7 +39,19 @@ async function probeFfmpeg(ffmpeg) {
     if (t && new RegExp(`^${kind[0].toUpperCase()}${kind.slice(1)} ${f.replace(/-/g, "\\-")}\\b`, "m").test(t)) have.push(f);
   }));
   const version = (v.match(/ffmpeg version (\S+)/) || [])[1] || null;
-  return { ok: true, version, have: FEATURES.filter((f) => have.includes(f)), why: null };
+  // The graphics chip's encoders that really work here (a tiny test encode each: built in is not enough, NVENC needs
+  // an NVIDIA card). Rendrr encodes this computer's H.264 previews and finals with the first one (audit #11).
+  const hw = [];
+  for (const enc of HW_ENCODERS) if (await hwWorks(ffmpeg, enc)) hw.push(enc);
+  return { ok: true, version, have: [...FEATURES.filter((f) => have.includes(f)), ...hw], why: null };
+}
+
+/** Hardware H.264 encoders to try on this kind of computer (the same names as the worker's MAC_FEATURES). */
+const HW_ENCODERS = IS_WIN ? ["h264_nvenc", "h264_qsv", "h264_amf"] : process.platform === "darwin" ? ["h264_videotoolbox"] : [];
+/** True when a quarter second of grey encodes with this encoder, within 15 s. */
+function hwWorks(ffmpeg, enc) {
+  const args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-f", "lavfi", "-i", "color=c=gray:s=256x256:r=30:d=0.25", "-c:v", enc, "-b:v", "1M", "-pix_fmt", "yuv420p", "-f", "null", "-"];
+  return new Promise((resolve) => execFile(ffmpeg, args, { timeout: 15000, maxBuffer: 1 << 20 }, (e) => resolve(!e)));
 }
 
 /**
@@ -429,4 +441,4 @@ async function runTask(t, o) {
   }
 }
 
-module.exports = { PROTOCOL, FEATURES, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs, linkInto, download };
+module.exports = { PROTOCOL, FEATURES, HW_ENCODERS, probeFfmpeg, probeFile, checkTask, runTask, trimCache, adaptArgs, linkInto, download };
