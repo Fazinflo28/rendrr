@@ -13,7 +13,7 @@ reference.py reads text on screen, what happens at each cut, the grade and the s
   typing) and tied to the picture event next to it.
 
 Only OpenCV, NumPy and FFmpeg. Usage:
-reference_map.py --video <proxy> --seconds <s> --cuts <cuts.json> --speech <speech.json> --out <out.json>
+reference_map.py --video <proxy> --seconds <s> --cuts <cuts.json> --speech <speech.json> --out <out.json> [--width w --height h]
 Prints PROGRESS <0-100> on stderr.
 """
 import argparse, json, subprocess, sys
@@ -117,12 +117,14 @@ def palette(pixels, k=6):
 # ---------------------------------------------------------------------------------------------------------------------
 # Picture
 # ---------------------------------------------------------------------------------------------------------------------
-def picture(video, seconds, cuts_in):
+def picture(video, seconds, cuts_in, width=0, height=0):
     fps = 12 if seconds <= 360 else 6
     total = max(1, int(seconds * fps))
-    src = cv2.VideoCapture(video)
-    W0, H0 = src.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280, src.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720
-    src.release()
+    W0, H0 = width, height
+    if not (W0 and H0):
+        src = cv2.VideoCapture(video)
+        W0, H0 = src.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280, src.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720
+        src.release()
     k = 240 / min(W0, H0)
     W, H = max(2, int(round(W0 * k / 2)) * 2), max(2, int(round(H0 * k / 2)) * 2)
     border = np.zeros((H, W), bool)
@@ -585,10 +587,12 @@ def main():
     ap.add_argument("--cuts", required=True)
     ap.add_argument("--speech", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--width", type=int, default=0)
+    ap.add_argument("--height", type=int, default=0)
     o = ap.parse_args()
     cuts_in = json.load(open(o.cuts))
     speech = json.load(open(o.speech))
-    fps, size, rows, feats, samples = picture(o.video, o.seconds, cuts_in)
+    fps, size, rows, feats, samples = picture(o.video, o.seconds, cuts_in, o.width, o.height)
     cuts = find_cuts(rows, cuts_in, fps)
     progress(62)
     moves = camera_moves(rows, cuts, fps)

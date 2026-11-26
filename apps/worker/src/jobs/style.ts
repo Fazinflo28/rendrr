@@ -57,7 +57,7 @@ export async function styleJob(ctx: Ctx) {
   const mapOut = join(ctx.dir, "map.json");
   let map: ReferenceMap | null = null;
   try {
-    await run(PYTHON, [join(HERE, "../../python/reference_map.py"), "--video", proxy, "--seconds", String(info.seconds || v.seconds), "--cuts", join(ctx.dir, "cuts.json"), "--speech", join(ctx.dir, "speech.json"), "--out", mapOut],
+    await run(PYTHON, [join(HERE, "../../python/reference_map.py"), "--video", proxy, "--seconds", String(info.seconds || v.seconds), "--cuts", join(ctx.dir, "cuts.json"), "--speech", join(ctx.dir, "speech.json"), "--out", mapOut, "--width", String(W0), "--height", String(H0)],
       { signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(60_000 + Math.round((info.seconds || v.seconds) * 400))]), stallMs: 120_000, onLine: (line) => { const m = /^PROGRESS (\d+)/.exec(line); if (m) void report(63 + Math.round(Number(m[1]) * 0.33)); } });
     map = JSON.parse(await readFile(mapOut, "utf8")) as ReferenceMap;
   } catch (e) {
