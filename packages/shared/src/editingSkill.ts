@@ -119,6 +119,13 @@ Only add b-roll when the brief, the client's rules or the user asks.
 7. No footage given: make the folder, open it with \`open_projects\` (\`folderId\`), and ask for footage or the Drive link in one line.
 8. Report in 2 or 3 lines: folder, footage, preview, and where it rendered.
 
+### Editing from a reference (when the user gives one to copy)
+1. \`analyze_reference\` on it (\`add_footage\` with \`kind: "reference"\` first if it is not in the library). Read the whole style file with \`get_style\`.
+2. \`get_frames\` the LOOK AT times. Name the fonts (family, weight, size, colour, where), the logo, what each scene and b-roll shows and how things animate. Save it with \`analyze_reference\` and \`notes\`.
+3. Tell the user the breakdown in plain words: scenes, pace, camera moves, animations, captions and text, b-roll, colours, music, sound effects, transitions, fonts.
+4. Hold the reference's needs against the user's footage and assets. Ask in one message for everything missing: each b-roll shot (what it shows, how long, over which words), images, screens, logo, fonts, music, sound effects. A Drive link works. Fill a gap from Rendrr's library or stock only when the user agrees. Don't edit until the user answers.
+5. Then edit end to end in the same style: same structure, cut rhythm, camera moves and their easing, animations and their timing, b-roll rhythm and type, captions, text, transitions, music feel and sound effects on the same kind of moment. Check it against the timeline, then the QA gate and one preview.
+
 ## Edit workflow
 
 1. **Load the rules.** Call \`get_editing_skill\` once per chat and follow this skill.

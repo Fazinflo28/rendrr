@@ -5,8 +5,10 @@
 // Pure functions, no I/O.
 import type { Breakdown } from "./breakdown";
 import type { DeepAudio, VisionDetails } from "./deep";
+import { EASING_WORDS, buildMapPart, mapText, topCounts, type MapPart, type ReferenceMap, type StyleNotes } from "./referenceMap";
 
-export const STYLE_FILE_VERSION = 1;
+/** 2: the map (scenes, camera, animations, b-roll, music, sound effects, timeline, needs) and the AI's notes. */
+export const STYLE_FILE_VERSION = 2;
 
 /** What reference.py writes. */
 export type TextMotion = { kind: "cut" | "pop" | "slide" | "wipe"; ms: number; dir?: string; px?: number; from?: number; easing?: string | null };
@@ -39,6 +41,10 @@ export type StyleFile = {
   sound: null | { lufs: number | null; truePeakDb: number | null; speechDb: number | null; bed: string; bedDb: number | null; bedUnderVoiceDb: number | null; duckDb: number | null; hitsAtCuts: number; cuts: number; hits: [number, number][] };
   moments: [number, string][];
   notMeasured: string[];
+  /** v2: the reference mapped end to end (reference_map.py); absent on older files. */
+  map?: MapPart | null;
+  /** What the AI saw in the frames (analyze_reference {videoId, notes}). */
+  notes?: StyleNotes | null;
 };
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -62,11 +68,13 @@ export type StyleInput = {
   video: { id: string; name: string; seconds: number; width: number; height: number };
   measure: ReferenceMeasure;
   breakdown?: Breakdown | null;
-  /** Every word with its start and end (seconds). */
-  words: { t: number; end: number }[];
+  /** Every word with its start and end (seconds), and its text when known. */
+  words: { t: number; end: number; w?: string }[];
   cuts: number[];
   audio?: Pick<DeepAudio, "speech" | "lufs" | "truePeakDb"> | null;
   vision?: Pick<VisionDetails, "frames"> | null;
+  /** What reference_map.py measured (none when it could not run). */
+  map?: ReferenceMap | null;
 };
 
 export function buildStyleFile(i: StyleInput): StyleFile {
@@ -164,24 +172,38 @@ export function buildStyleFile(i: StyleInput): StyleFile {
     return { lufs: i.audio?.lufs ?? null, truePeakDb: i.audio?.truePeakDb ?? null, speechDb: so.speechDb, bed, bedDb: so.pauseDb != null && so.pauseDb >= -55 ? so.pauseDb : null, bedUnderVoiceDb: so.pauseDb != null && so.speechDb != null && so.pauseDb >= -55 ? r2(so.speechDb - so.pauseDb) : null, duckDb: duck, hitsAtCuts: so.hitsAtCuts.length, cuts: i.cuts.length, hits: so.hitsAtCuts };
   })() : null;
 
-  // Every graphic moment in order: texts that come and go, transitions, punch-ins, hits.
+  // The map: scenes, camera, animations, b-roll, music, sound effects, what to look at and what a new video needs.
+  const mapPart = i.map ? buildMapPart({ seconds: S, map: i.map, words: i.words, faces: i.vision?.frames?.length ? faceSizes(i.vision) : [], textStarts: textGraphics.map((t) => t.start) }) : null;
+
+  // Every graphic moment in order: texts that come and go, transitions, punch-ins, hits (and with the map, the
+  // scenes, camera moves, animations, sound effects and music: one timeline from start to end).
   const moments: [number, string][] = [
+    ...(mapPart?.timeline ?? []),
     ...textGraphics.map((t): [number, string] => [t.start, `text ${Math.round(t.box[2] * 100)}% wide at the ${t.place}, ${t.color}${t.boxColor ? ` on a ${t.boxColor} box` : ""}${t.stroke ? ` with a ${t.stroke} outline` : ""}, ${t.weight}, ${Math.round(t.heightShare * 1000) / 10}% tall; in: ${motionText(t.in)}; out: ${motionText(t.out)}; on ${r2(t.end - t.start)}s`]),
     ...transitions.list.map((x): [number, string] => [x[0], `${x[1] === "flash" ? "white flash (set_transition flash)" : x[1] === "dip-black" ? "dip to black" : "whip"} at the cut (${x[2]} ms)`]),
     ...(zooms?.list ?? []).map((x): [number, string] => [x[0], `punch ${x[1] > 1 ? "in" : "out"} at the cut (face ${x[1]}x)`]),
     ...(zooms?.slow ?? []).map((x): [number, string] => [x.start, `slow zoom ${x.change > 0 ? "in" : "out"} ${Math.round(Math.abs(x.change) * 100)}% to ${x.end}s`]),
     ...(sound?.hits ?? []).map((x): [number, string] => [x[0], `sound hit at the cut (${x[1]} dBFS)`]),
-  ].sort((a, b) => a[0] - b[0]).slice(0, 150).map(([t, s]) => [r2(t), s]);
+  ].sort((a, b) => a[0] - b[0]).slice(0, mapPart ? 320 : 150).map(([t, s]) => [r2(t), s]);
 
   return {
     v: STYLE_FILE_VERSION, video: { id: i.video.id, name: i.video.name, seconds: r2(S), size: [W, H], shape }, pacing, captions, textGraphics: textGraphics.slice(0, 120), textHabits, transitions, zooms, grade, sound, moments,
-    notMeasured: ["font family: Rendrr does not read letters; the weight is measured from the strokes", "text drawn over a busy picture with no outline can be missed", "music and sound effects are not named; only levels, ducking and hits at cuts are measured"],
+    notMeasured: mapPart
+      ? ["font family and what each scene shows: Rendrr does not read letters or name things; read them from the frames (LOOK AT) and save them as notes", "text drawn over a busy picture with no outline can be missed", "the music's genre and the sound effects' kinds are estimated from the sound, never named for sure"]
+      : ["font family: Rendrr does not read letters; the weight is measured from the strokes", "text drawn over a busy picture with no outline can be missed", "music and sound effects are not named; only levels, ducking and hits at cuts are measured"],
+    map: mapPart,
   };
 }
 
 /** The style file as text for the AI (get_style): each part with the edits it maps to. */
 export function styleFileText(id: string, name: string, f: StyleFile): string {
   const L: string[] = [`STYLE FILE ${id} "${name}" from "${f.video.name}" (${f.video.seconds}s, ${f.video.shape}). Measured, never applied for you: apply the parts you want with apply_edits / add_library_item.`];
+  if (f.map) {
+    L.push("IN PLAIN WORDS (tell the user this in your own simple words):", ...plainWords(f).map((x) => `- ${x}`));
+    L.push("WHAT A NEW VIDEO IN THIS STYLE NEEDS (before editing, check the user's footage and ask for what is missing, e.g. a Drive link; fill a gap from Rendrr's own library or stock only when the user agrees):", ...f.map.needs.map((x) => `- ${x}`));
+    if (f.map.lookAt.length) L.push(`LOOK AT (get_frames on the reference, 8 at a time): ${f.map.lookAt.join(", ")}. Read the fonts (family, weight, size, colour, where), the logo, what each scene and b-roll shows and how things animate, then save it: analyze_reference {videoId, notes}.`);
+  }
+  if (f.notes) L.push(...notesText(f.notes));
   const p = f.pacing;
   L.push(`PACING: ${p.cutsPerMin} cuts a minute, shots ${p.avgShotSec}s on average (${p.minShotSec}-${p.maxShotSec}s)${p.wordsPerMin ? `, ${p.wordsPerMin} words a minute` : ""}${p.pausesKept ? `; pauses kept between words: median ${p.pausesKept.medianMs} ms, 90% under ${p.pausesKept.p90Ms} ms, ${p.pausesKept.over500msPerMin} over 0.5 s a minute, longest ${p.pausesKept.longestMs} ms` : ""}.`);
   const c = f.captions;
@@ -196,7 +218,53 @@ export function styleFileText(id: string, name: string, f: StyleFile): string {
   if (g) L.push(`GRADE: ${g.words.join(", ")} (brightness ${g.brightness}, contrast ${g.contrast}, saturation ${g.saturation}, warmth ${g.warmth}, tint ${g.tint}).`);
   const s = f.sound;
   L.push(s ? `SOUND: ${s.lufs != null ? `${s.lufs} LUFS, peak ${s.truePeakDb} dBTP; ` : ""}${s.bed}${s.duckDb != null ? `; its low end is ${s.duckDb} dB lower under the voice${s.duckDb >= 3 ? " (ducking: set_audio duck about " + Math.round(s.duckDb) + ")" : " (no ducking measured)"}` : ""}; a sound hit on ${s.hitsAtCuts} of ${s.cuts} cuts.` : "SOUND: none.");
-  if (f.moments.length) L.push(`MOMENTS (${f.moments.length}, seconds of the reference):`, ...f.moments.map(([at, what]) => `${at}s ${what}`));
+  if (f.map) L.push(...mapText(f.map));
+  if (f.moments.length) L.push(`${f.map ? "TIMELINE" : "MOMENTS"} (${f.moments.length}, seconds of the reference):`, ...f.moments.map(([at, what]) => `${at}s ${what}`));
   L.push(`Not measured: ${f.notMeasured.join("; ")}.`);
   return L.join("\n");
+}
+
+/** The AI's notes from the frames, as lines. */
+export function notesText(n: StyleNotes): string[] {
+  const L = [`NOTES (what the AI saw in the frames${n.at ? `, ${n.at.slice(0, 10)}` : ""}):`];
+  if (n.summary) L.push(`- ${n.summary}`);
+  for (const f of n.fonts ?? []) L.push(`- font: ${f.family}${f.weight ? ` ${f.weight}` : ""}${f.color ? `, ${f.color}` : ""}, for ${f.use}`);
+  if (n.look) L.push(`- look: ${n.look}`);
+  for (const s of n.scenes ?? []) L.push(`- ${s.at}s${s.type ? ` (${s.type})` : ""}: ${s.what}`);
+  if (n.music) L.push(`- music: ${n.music}`);
+  if (n.sfx) L.push(`- sound effects: ${n.sfx}`);
+  return L;
+}
+
+/** The style file in plain words for the user: what the video is, its pace, camera, animations, text, b-roll,
+ * colours, music, sound effects, transitions and fonts. */
+export function plainWords(f: StyleFile): string[] {
+  const m = f.map;
+  if (!m) return [];
+  const S = f.video.seconds, out: string[] = [];
+  const shape = f.video.shape === "9:16" ? "vertical" : f.video.shape === "16:9" ? "landscape" : f.video.shape === "1:1" ? "square" : f.video.shape;
+  const what = m.kind === "talking head" ? "talking-head video (a person speaking to camera)" : m.kind === "motion graphics" ? "motion-graphics video (no person on camera)" : m.kind === "footage" ? "video made of camera footage" : "mix of camera shots and graphics";
+  out.push(`A ${Math.round(S)} second ${shape} ${what}, in ${m.scenes.length} scene${m.scenes.length === 1 ? "" : "s"}.`);
+  const cuts = Math.round((f.pacing.cutsPerMin * S) / 60), events = cuts + m.camera.count + m.animations.count;
+  if (events) out.push(`Pace: something new happens about every ${Math.max(0.3, Math.round((S / events) * 10) / 10)} seconds (${cuts} cuts, ${m.camera.count} camera moves, ${m.animations.count} animations).`);
+  if (m.camera.count) {
+    const e = topCounts(m.camera.easings, 1)[0]?.[0] ?? "linear";
+    out.push(`Camera: it keeps moving, ${m.camera.count} zooms and pans that take about ${Math.round((m.camera.medianMs ?? 0) / 100) / 10} s each and ${EASING_WORDS[e] ?? e}.`);
+  } else out.push("Camera: it stays still between cuts.");
+  if (f.zooms?.punchIns) out.push(`Punch-ins: it zooms in on the face ${f.zooms.punchIns} times at cuts (about ${f.zooms.typicalScale ?? 1.2}x).`);
+  if (m.animations.count) out.push(`Animations: things on screen ${topCounts(m.animations.kinds, 3).map(([k]) => k.replace(/ \(.*\)/, "")).join(", ")}, about ${Math.round(m.animations.perMin)} times a minute, each in about ${Math.round((m.animations.medianMs ?? 0) / 100) / 10} s.`);
+  const c = f.captions;
+  out.push(c ? `Captions: ${c.wordsAtOnce} word${c.wordsAtOnce === 1 ? "" : "s"} at a time, ${c.color}${c.highlight ? ` with the spoken word in ${c.highlight}` : ""}${c.box ? ` on a ${c.box} box` : ""}, ${c.y < 0.4 ? "high up" : c.y > 0.7 ? "low down" : "in the middle"}.` : "Captions: no word-by-word captions found.");
+  if (f.textHabits.count) out.push(`Text pop-ups: ${f.textHabits.count} (${Math.round(f.textHabits.perMin)} a minute), mostly ${topCounts(f.textHabits.places, 1)[0]?.[0] ?? "middle"}.`);
+  if (m.broll) out.push(m.broll.count ? `B-roll: ${m.broll.count} times (${Math.round(m.broll.perMin)} a minute), ${Math.round(m.broll.share * 100)}% of the video, about ${m.broll.medianSec} s each: ${topCounts(m.broll.types, 4).map(([k, v]) => `${v} ${k}${v > 1 ? "s" : ""}`).join(", ")}.` : "B-roll: none, the speaker stays on screen.");
+  if (m.palette.length) out.push(`Colours: ${m.palette.slice(0, 4).map((p) => p[0]).join(", ")}.`);
+  out.push(m.music ? `Music: ${m.music.words.slice(0, 2).join(", ")}${m.music.bpm ? `, about ${Math.round(m.music.bpm)} beats a minute` : ""}${m.music.share < 0.9 ? `, on for ${Math.round(m.music.share * 100)}% of the video` : ", the whole way through"}${m.music.changes.length ? `; it ${m.music.changes.slice(0, 2).map((x) => `${x[1].replace("drops quieter", "gets quieter")} at ${Math.round(x[0])} s`).join(" and ")}` : ""}.` : "Music: none found.");
+  if (m.sfx.count) out.push(`Sound effects: about ${m.sfx.count} (${topCounts(m.sfx.kinds, 3).map(([k, v]) => `${v} ${k}`).join(", ")}), mostly on ${m.sfx.list.filter((x) => x.near).length >= m.sfx.count / 2 ? "cuts, camera moves and animations" : "their own"}.`);
+  else out.push("Sound effects: none found.");
+  const tc = Object.entries(f.transitions.counts).filter(([k]) => k !== "cut");
+  out.push(tc.length ? `Transitions: ${tc.map(([k, v]) => `${v} ${k === "flash" ? "white flash" : k}`).join(", ")}, the rest hard cuts.` : "Transitions: hard cuts only.");
+  const fonts = f.notes?.fonts ?? [];
+  out.push(fonts.length ? `Fonts: ${fonts.map((x) => `${x.family}${x.weight ? ` ${x.weight}` : ""} for ${x.use}`).join("; ")}.` : "Fonts: not named yet (read from the frames).");
+  if (f.notes?.summary) out.push(f.notes.summary);
+  return out;
 }
