@@ -212,6 +212,10 @@ model Folder {
   // Client preset (audit #24): the style, shape and Google Drive folder its edits last used ({ styleId, aspect, drive:
   // { folderId, path } }); a new edit in it starts with them.
   preset    Json?
+  // The client's footage: the library folder its b-roll lives in, shown first when @ is typed in a comment (null: none
+  // set; the picker then suggests one by name or by the edit's own footage). A plain id: a folder deleted later is
+  // simply not found.
+  libraryFolderId String?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   projects  Project[]

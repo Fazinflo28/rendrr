@@ -1,18 +1,20 @@
-import { headObject, signGet, uploadFile, type ColorSampleJob, type ColorSamples, type FaceJob, type FaceSamples, type FramesJob, type TrackJob } from "@rendrr/core";
+import { headObject, redis, signGet, uploadFile, type ColorSampleJob, type ColorSamples, type FaceJob, type FaceSamples, type FramesJob, type TrackJob } from "@rendrr/core";
 import { prisma } from "@rendrr/db";
 import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { frameAt, JobError, overlayPng, pinMarks, rgbFrames } from "../lib/ffmpeg";
+import { frameAt, JobError, overlayPng, pinMarks, rgbFrames, run } from "../lib/ffmpeg";
 import { detectFaces, faceOf } from "../lib/faces";
 import { trackObject, type TrackRow } from "../lib/track";
 import type { Ctx } from "../lib/job";
 import { framesPrefix } from "./breakdown";
+import { HOVER_SECONDS, hoverKeyOf, hoverMarkKey } from "@rendrr/shared";
 
 // Frames for the AI to look at: from a preview render (get_preview_frames, output times) or from footage and
 // references (get_frames, original times). Render frames are kept next to the render and expire with it; footage
 // frames sit with the video's other frames and go when its preview copy goes.
 export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | FaceSamples | TrackRow[]> {
-  const { renderId, videoId, times, overlays, pins, colorSamples: cs, faces, track, stills } = ctx.job.data as FramesJob;
+  const { renderId, videoId, times, overlays, pins, colorSamples: cs, faces, track, stills, hover } = ctx.job.data as FramesJob;
+  if (hover) return hoverClip(ctx, hover);
   if (stills?.length) return stillsDrawn(ctx, stills, renderId);
   if (cs) return colorSamples(ctx, cs);
   if (faces) return faceSamples(ctx, faces);
@@ -115,6 +117,26 @@ async function videoFrames(ctx: Ctx, videoId: string, times: number[]): Promise<
     out.push(key);
   }
   return out;
+}
+
+/** The footage picker's hover preview (hoverKeyOf): a few seconds from about a fifth of the way in, 320 px on the long
+ *  side, 12 frames a second, no sound, small and quick to start (faststart). Made once from the preview copy. */
+async function hoverClip(ctx: Ctx, videoId: string): Promise<string[]> {
+  const v = await prisma.video.findUnique({ where: { id: videoId } });
+  if (!v?.proxyKey || v.still || v.status === "expired" || v.deletedAt) return [];
+  const key = hoverKeyOf(framesPrefix(v));
+  const mark = () => redis().set(hoverMarkKey(v.id), "1", "EX", 30 * 86400).catch(() => null);
+  if (await headObject(key)) { await mark(); return [key]; }
+  const len = Math.min(HOVER_SECONDS, Math.max(0.5, v.seconds || HOVER_SECONDS));
+  const from = v.seconds > len ? Math.min(v.seconds * 0.2, v.seconds - len) : 0;
+  const out = join(ctx.dir, "hover.mp4");
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-ss", from.toFixed(3), "-t", len.toFixed(3), "-i", await signGet(v.proxyKey, 600),
+    "-an", "-vf", "fps=12,scale='if(gte(iw,ih),320,-2)':'if(gte(iw,ih),-2,320)',format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "34", "-profile:v", "main",
+    "-movflags", "+faststart", out], { signal: ctx.signal });
+  if (!(await stat(out).then((s) => s.size > 0).catch(() => false))) return [];
+  await uploadFile(key, out, "video/mp4");
+  await mark();
+  return [key];
 }
 
 /** Phase 6: frames of clips for shot matching (4 per clip, small), from each video's preview copy: what the editor shows. */

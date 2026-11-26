@@ -14,6 +14,7 @@ import { editorMarks } from "../services/marks";
 import { createFolder, createProject, createWaitingEdit, getOwnedProject, listProjects, moveToFolder, projectFull, purgeProjectFiles, resolveReference, stylesById, useFootage } from "../services/projects";
 import { addNote, deleteComment, editNote } from "../services/commentMedia";
 import { sendComments } from "../services/handoff";
+import { pickerClips, pickerFolders, setClientFootage } from "../services/footagePicker";
 
 /** A picture of each edit for its card: a frame of its latest render (the edit as it looks), else its footage's
  *  thumbnail. Signed for an hour. */
@@ -31,6 +32,8 @@ async function editThumbs(ps: { id: string; videoId: string }[]): Promise<Map<st
 }
 
 /** Server-sent events on a raw response. Keeps CORS headers that Fastify already set. */
+const ClientFootageInput = z.object({ libraryFolderId: z.string().min(1).max(80).nullable() });
+const PickerClipsQuery = z.object({ folderId: z.string().min(1).max(80).optional(), loose: z.string().max(2).optional(), q: z.string().max(80).optional() });
 const MoveEditsInput = z.object({ ids: z.array(z.string().min(1).max(80)).min(1).max(100), folderId: z.string().min(1).max(80) });
 const SpeakerInput = z.object({ clips: z.array(z.object({ id: z.string().min(1).max(80), videoId: z.string().min(1).max(80), srcIn: z.number().min(0), srcOut: z.number().min(0), rotate: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).default(0) })).min(1).max(400) });
 const SkinAreasInput = z.object({ aspect: z.string().max(8).optional(), clips: z.array(z.object({ id: z.string().max(80), videoId: z.string().max(80), srcIn: z.number(), srcOut: z.number(), rotate: z.number().optional(), focus: z.object({ x: z.number(), y: z.number() }).nullable().optional() })).max(2000) });
@@ -91,6 +94,20 @@ export default async function projects(app: FastifyInstance) {
     await purgeProjectFiles({ folderId: f.id });
     await prisma.folder.delete({ where: { id: f.id } });
     return { ok: true };
+  });
+
+  // ---------------- the @ footage picker in comment boxes ----------------
+  // The edit's client folder first (its own library folder, set or guessed), then every library folder.
+  app.get("/projects/:id/footage-folders", async (req) => pickerFolders(req.user!.id, { projectId: (req.params as { id: string }).id }));
+  // Sets (or clears with null) the library folder shown first for this edit's client.
+  app.post("/projects/:id/footage-folder", async (req) => {
+    const b = ClientFootageInput.parse(req.body ?? {});
+    return setClientFootage(req.user!.id, { projectId: (req.params as { id: string }).id }, b.libraryFolderId);
+  });
+  // A folder's clips (a picture and a short preview each), the videos in no folder (loose=1), or a search (q).
+  app.get("/library/clips", async (req) => {
+    const q = PickerClipsQuery.parse(req.query ?? {});
+    return pickerClips(req.user!.id, { folderId: q.folderId ?? null, loose: q.loose === "1", query: q.q ?? null });
   });
 
   // ---------------- projects (edits inside folders) ----------------
