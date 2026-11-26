@@ -39,6 +39,13 @@ Examples of a month on Starter:
 | 50 shorts of 1.5 minutes | 75 | 150 | $5 + $5.00 + $1.50 = $11.50 |
 | 6 YouTube videos of 12 minutes | 72 | 180 | $5 + $4.70 + $2.00 = $11.70 |
 
+## Local-first renders (switch, off for now)
+
+Rendrr renders on the user's own Mac or PC whenever the Rendrr app is open, and on Rendrr's cloud only when it is
+closed. With `LOCAL_RENDERS_FREE=1` set on the worker, a render made on the user's computer is still recorded but
+bills 0 minutes: only cloud renders count toward the allowance and the pay-as-you-go charge after it, on the next
+bill. Leave it unset until the plan and prices are final; nothing changes while it is off.
+
 ## What it costs us (measured, not guessed)
 
 The worker measures every job: the container's CPU and memory every 2 seconds (cgroup counters), shared among the
