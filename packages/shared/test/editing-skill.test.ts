@@ -22,6 +22,15 @@ describe("editing skill", () => {
     expect(EDITING_SKILL).not.toMatch(/—/); // no em dashes
   });
 
+  it("is the Rendrr Editing Skill: b-roll, flash frames, captions, hooks, pacing, device first", () => {
+    expect(EDITING_SKILL).toMatch(/^# Rendrr Editing Skill/);
+    for (const part of ["## B-roll rules", "No flash frames between clips", "## Hooks", "## Pacing", "## QA gate", "Render on the device first", "Cloud only as backup", "One render per request"]) expect(EDITING_SKILL).toContain(part);
+    expect(EDITING_SKILL).not.toMatch(/^---/); // no skill front matter in the tool answer
+    expect(MCP_INSTRUCTIONS).toMatch(/Rendrr Editing Skill/);
+    expect(MCP_INSTRUCTIONS).toMatch(/no talking head flash between clips/);
+    expect(HOW_TO_EDIT).toMatch(/read get_editing_skill \(the Rendrr Editing Skill\) and follow it/);
+  });
+
   it("fits in one tool answer and the instructions stay short", () => {
     expect(EDITING_SKILL.length).toBeLessThan(24_000);
     expect(MCP_INSTRUCTIONS.length).toBeLessThan(1_750); // about 430 tokens: what every chat with Rendrr carries

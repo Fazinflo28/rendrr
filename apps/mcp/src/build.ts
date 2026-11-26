@@ -129,7 +129,7 @@ export function buildServer(w: Who, base = process.env.PUBLIC_MCP_URL || "") {
   server.registerResource("how-to-edit", "rendrr://how-to-edit", { title: "How to edit with Rendrr", description: "A short guide: read, style, edit in one call, check, render once, hand off.", mimeType: "text/markdown" }, async (uri) => ({
     contents: [{ uri: uri.href, mimeType: "text/markdown", text: HOW_TO_EDIT }],
   }));
-  server.registerResource("editing-skill", SKILL_URI, { title: "Fazinflo Editing Skill", description: "The editing skill that comes with Rendrr: rules, the mistakes reviewers flag most, workflow, comments loop, QA gate.", mimeType: "text/markdown" }, async (uri) => ({
+  server.registerResource("editing-skill", SKILL_URI, { title: "Rendrr Editing Skill", description: "The editing skill that comes with Rendrr: rules, the mistakes reviewers flag most, b-roll, captions, hooks, pacing, renders, comments loop, QA gate.", mimeType: "text/markdown" }, async (uri) => ({
     contents: [{ uri: uri.href, mimeType: "text/markdown", text: EDITING_SKILL }],
   }));
 
