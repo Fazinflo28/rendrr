@@ -9,6 +9,7 @@ import { pinOf } from "../services/commentMedia";
 import { isWatchableKey, latestRender } from "../services/projects";
 import { startRender } from "../services/render";
 import { deleteGalleryMedia, galleryMedia, prepareGalleryMedia } from "../services/galleryMedia";
+import { startStyleFile } from "../services/styleFiles";
 
 const keyFor = (r: Review) => createHmac("sha256", env().ENCRYPTION_KEY || env().CLERK_SECRET_KEY || "dev").update(`${r.token}:${r.passwordHash || ""}`).digest("base64url");
 const unlocked = (req: FastifyRequest, r: Review) => !r.passwordHash || req.headers["x-review-key"] === keyFor(r);
@@ -251,6 +252,8 @@ export default async function reviews(app: FastifyInstance) {
       await prisma.reference.create({ data: { id: g.id, userId: me.id, name: g.title, recipe } }).catch(() => {});
       // The real video: the edit's export copied to the item now, or a preview started if it has none yet.
       const ready = await prepareGalleryMedia(g);
+      // Explore shows the style breakdown beside it: measure the footage now if it has no current style file.
+      void startStyleFile(me.id, p.videoId, `Style of ${g.title}`).catch(() => {});
       const style = await prisma.style.findUnique({ where: { id: g.styleId } });
       return galleryOut(ready, me.id, false, style || undefined, await galleryMedia(ready));
     });

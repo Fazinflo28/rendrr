@@ -3,6 +3,7 @@ import type { Metadata, Viewport } from "next";
 import ClientRoot from "./client-root";
 import "../rendrr/styles.css";
 import "../rendrr/pins.css";
+import "../rendrr/breakdown.css";
 
 // Supabase Auth replaces Clerk once NEXT_PUBLIC_AUTH_PROVIDER=supabase (then Clerk's script is not loaded at all).
 const SUPABASE_AUTH = (process.env.NEXT_PUBLIC_AUTH_PROVIDER || "").toLowerCase() === "supabase" && !!process.env.NEXT_PUBLIC_SUPABASE_URL && !!process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;

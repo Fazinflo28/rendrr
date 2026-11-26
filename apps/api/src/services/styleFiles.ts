@@ -1,8 +1,8 @@
-// Engine Part 4.4: style files, for the AI only (never in the user interface). analyze_reference measures a reference
+// Engine Part 4.4: style files, for the AI (and, as a public breakdown, beside a video published to Explore). analyze_reference measures a reference
 // video into one (the worker's style queue); list_styles and get_style read them.
 import { AppError, enqueue, notFound, type StyleJob } from "@rendrr/core";
 import { Prisma, prisma } from "@rendrr/db";
-import { STYLE_FILE_VERSION, notesText, plainWords, styleFileText, type StyleFile, type StyleNotes } from "@rendrr/shared";
+import { STYLE_FILE_VERSION, notesText, plainWords, publicBreakdown, styleFileText, type PublicBreakdown, type StyleFile, type StyleNotes } from "@rendrr/shared";
 
 /** How long the tool waits for a short reference to finish (clients drop calls after about a minute). */
 export const STYLE_WAIT_MS = 8_000;
@@ -66,4 +66,52 @@ async function saveNotes(userId: string, v: { id: string; name: string }, add: S
   await prisma.styleFile.update({ where: { id: f.id }, data: { data: next as unknown as Prisma.InputJsonValue }, select: { id: true } });
   const plain = plainWords(next);
   return { text: [`Notes saved on style file ${f.id}.`, ...(plain.length ? ["IN PLAIN WORDS (for the user):", ...plain.map((x) => `- ${x}`)] : notesText(next.notes!))].join("\n"), data: { styleFileId: f.id } };
+}
+/** A style file still "measuring" after this long was lost (a worker restart): Explore offers to make it again. */
+const STALE_MEASURING_MS = 30 * 60_000;
+
+/** Starts measuring a video into a style file unless a current one exists or is being made. Never waits; null when
+ * the video is not the user's or not ready yet. Explore uses it when a video is published or its owner asks. */
+export async function startStyleFile(userId: string, videoId: string, name?: string): Promise<{ id: string; status: string } | null> {
+  const v = await prisma.video.findUnique({ where: { id: videoId }, select: { id: true, userId: true, name: true, status: true, proxyKey: true } });
+  if (!v || v.userId !== userId || v.status !== "ready" || !v.proxyKey) return null;
+  const old = await prisma.styleFile.findFirst({ where: { userId, videoId, status: { in: ["ready", "measuring"] } }, orderBy: { createdAt: "desc" } });
+  if (old?.status === "measuring" && Date.now() - old.createdAt.getTime() >= STALE_MEASURING_MS) {
+    await prisma.styleFile.update({ where: { id: old.id }, data: { status: "failed", error: "Measuring stopped before it finished." } });
+  } else if (old && (old.status === "measuring" || (old.data as { v?: number } | null)?.v === STYLE_FILE_VERSION)) return { id: old.id, status: old.status };
+  const sf = await prisma.styleFile.create({ data: { userId, videoId, name: (name || `Style of ${v.name}`).slice(0, 120) } });
+  await enqueue<StyleJob>("style", { styleFileId: sf.id }, { jobId: `style-${sf.id}` });
+  return { id: sf.id, status: "measuring" };
+}
+
+export type GalleryBreakdownOut = { status: "ready" | "measuring" | "failed" | "none"; progress?: number; updating?: boolean; mine: boolean; canMake: boolean; breakdown?: PublicBreakdown };
+
+/** Explore's breakdown beside a published video: the publisher's newest style file of the edit's footage, as the
+ * public breakdown (no ids, names, links or emails). Open to everyone, like the gallery itself. */
+export async function galleryBreakdown(itemId: string, me?: string): Promise<GalleryBreakdownOut> {
+  const g = await prisma.galleryItem.findUnique({ where: { id: itemId }, select: { userId: true, projectId: true } });
+  if (!g) throw notFound("That video is not in the gallery any more.");
+  const mine = !!me && me === g.userId;
+  const p = g.projectId ? await prisma.project.findUnique({ where: { id: g.projectId }, select: { videoId: true } }) : null;
+  if (!p) return { status: "none", mine, canMake: false };
+  const where = { userId: g.userId, videoId: p.videoId };
+  const [ready, newest] = await Promise.all([
+    prisma.styleFile.findFirst({ where: { ...where, status: "ready" }, orderBy: { createdAt: "desc" }, select: { data: true } }),
+    prisma.styleFile.findFirst({ where, orderBy: { createdAt: "desc" }, select: { status: true, progress: true, createdAt: true } }),
+  ]);
+  const measuring = newest?.status === "measuring" && Date.now() - newest.createdAt.getTime() < STALE_MEASURING_MS;
+  if (ready?.data) return { status: "ready", ...(measuring ? { updating: true } : {}), mine, canMake: mine, breakdown: publicBreakdown(ready.data as unknown as StyleFile) };
+  if (measuring) return { status: "measuring", progress: newest!.progress, mine, canMake: false };
+  return { status: newest?.status === "failed" ? "failed" : "none", mine, canMake: mine };
+}
+
+/** The publisher asks for the breakdown of their published video (Explore's "Make the breakdown"). */
+export async function makeGalleryBreakdown(itemId: string, me: string): Promise<GalleryBreakdownOut> {
+  const g = await prisma.galleryItem.findUnique({ where: { id: itemId }, select: { userId: true, projectId: true, title: true } });
+  if (!g || g.userId !== me) throw notFound("That video is not one of yours in the gallery.");
+  const p = g.projectId ? await prisma.project.findUnique({ where: { id: g.projectId }, select: { videoId: true } }) : null;
+  if (!p) throw new AppError("This video's project is gone, so it cannot be broken down.", 409, "no-project");
+  const started = await startStyleFile(me, p.videoId, `Style of ${g.title}`);
+  if (!started) throw new AppError("The video is not ready to be broken down yet. Try again in a minute.", 409, "not-ready");
+  return galleryBreakdown(itemId, me);
 }

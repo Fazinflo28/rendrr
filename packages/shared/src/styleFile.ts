@@ -1,7 +1,8 @@
 // Engine Part 4.4: a reference video measured into a STYLE FILE (analyze_reference). Rendrr measures (worker
 // python/reference.py: text on screen, the cuts, the grade, the sound; plus the breakdown, the words and the faces it
 // already has); this file turns the numbers into the style file the AI reads, and its text. The AI applies parts of it
-// with explicit edits; Rendrr never applies a style file on its own. Style files are never shown in the user interface.
+// with explicit edits; Rendrr never applies a style file on its own. Explore shows a public breakdown of one beside a
+// published video (publicBreakdown.ts).
 // Pure functions, no I/O.
 import type { Breakdown } from "./breakdown";
 import type { DeepAudio, VisionDetails } from "./deep";

@@ -529,6 +529,8 @@ export const api: any = {
   unpublishFromGallery: (id: string) => del(`/gallery/${enc(id)}`),
   likeGalleryItem: (id: string) => post(`/gallery/${enc(id)}/like`),
   countRecreate: (id: string) => post(`/gallery/${enc(id)}/recreate`),
+  galleryBreakdown: (id: string) => get(`/gallery/${enc(id)}/breakdown`),
+  makeGalleryBreakdown: (id: string) => post(`/gallery/${enc(id)}/breakdown`),
 
   // ---- render ----
   renderPreview: (projectId: string, onProgress?: (p: any) => void, opts?: { device?: string }) => runRender("preview", projectId, onProgress, opts),

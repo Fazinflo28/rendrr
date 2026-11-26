@@ -28,6 +28,7 @@ export * from "./library";
 export * from "./libraryHtml";
 export * from "./styleFile";
 export * from "./referenceMap";
+export * from "./publicBreakdown";
 export * from "./waveform";
 export * from "./blend";
 export * from "./samples";
