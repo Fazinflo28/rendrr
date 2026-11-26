@@ -1,7 +1,7 @@
 /* ===================== screens ===================== */
 // Ported from ui/rendrr-ui.html (screens script). Only the changes listed in apps/web/README.md.
 import {
-  useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtLen, fmtAgo, initials, Icon, Btn, Toggle, Seg, Chip, Field, StatusChip,
+  React, useState, useEffect, useRef, useMemo, useCallback, html, fmtTime, fmtLen, fmtAgo, initials, Icon, Btn, Toggle, Seg, Chip, Field, StatusChip,
   useToast, Modal, useAsync, Skeleton, GridSkeleton, EmptyState, ErrorState, Async, usePlayback, Player, Art, Thumb, OriIcon, ThemeBtn, copyText,
   Masonry, MasonrySkeleton, MoreMenu, Dropdown, useNav, useApp,
 } from "./ui";
@@ -843,32 +843,122 @@ function GalleryVideo({ g, big }) {
   const stop = () => { const v = ref.current; if (v) { v.pause(); v.currentTime = 0; } };
   return html`<video ref=${ref} class="gvid" src=${src} poster=${g.poster || undefined} muted loop playsinline preload=${g.poster ? "none" : "metadata"} style=${{ aspectRatio: ar }} onMouseEnter=${play} onMouseLeave=${stop} />`;
 }
+// Numbers that roll: each digit is a strip of 0 to 9 that slides to its value, on first show and on every change.
+const ROLL_DIGITS = "0\n1\n2\n3\n4\n5\n6\n7\n8\n9";
+function Roll({ n }) {
+  const s = fmtK(n || 0);
+  const [shown, setShown] = useState(() => s.replace(/\d/g, "0"));
+  useEffect(() => { const r = requestAnimationFrame(() => setShown(s)); return () => cancelAnimationFrame(r); }, [s]);
+  const t = shown.length === s.length ? shown : s;
+  return html`<span class="roll"><span class="roll-sr">${s}</span>${[...t].map((c, i) => (/\d/.test(c)
+    ? html`<span class="roll-d" key=${"d" + (t.length - i)} aria-hidden="true"><span class="roll-s" style=${{ "--d": c, transitionDelay: (t.length - 1 - i) * 40 + "ms" }}>${ROLL_DIGITS}</span></span>`
+    : html`<span class="roll-c" key=${"c" + (t.length - i)} aria-hidden="true">${c}</span>`))}</span>`;
+}
+// The viewer's own player: tap the video to play or pause, a slim bar with a lime scrubber, time, sound and full screen.
+const GV_PATHS = { vol: "M4 9.5h3.2L12 5.5v13l-4.8-4H4z M15.5 9a4 4 0 0 1 0 6 M18 6.5a7.5 7.5 0 0 1 0 11", mute: "M4 9.5h3.2L12 5.5v13l-4.8-4H4z M16 9.5l5 5 M21 9.5l-5 5", full: "M4 9V4h5 M15 4h5v5 M20 15v5h-5 M9 20H4v-5" };
+const GvIcon = ({ d }) => html`<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d=${d} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
+function ViewerPlayer({ g }) {
+  const wrap = useRef(null), vid = useRef(null), clock = useRef(null), scrub = useRef(null);
+  const [paused, setPaused] = useState(false), [muted, setMuted] = useState(false), [pop, setPop] = useState(null);
+  const ar = { "9:16": 9 / 16, "16:9": 16 / 9, "1:1": 1, "4:5": 4 / 5 }[g.ori] || 9 / 16;
+  const src = g.poster ? g.video : g.video + "#t=0.1";
+  const paint = () => {
+    const v = vid.current, w = wrap.current; if (!v || !w) return;
+    const d = v.duration || 0, p = d ? v.currentTime / d : 0, b = v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;
+    w.style.setProperty("--p", p); w.style.setProperty("--b", d ? Math.min(1, b / d) : 0);
+    if (clock.current) clock.current.textContent = fmtTime(v.currentTime) + " / " + fmtTime(d);
+    scrub.current?.setAttribute("aria-valuenow", String(Math.round(p * 100)));
+  };
+  // It starts with sound; where the browser wants a tap first, it plays muted.
+  useEffect(() => {
+    const v = vid.current; if (!v) return;
+    v.play().catch(() => { v.muted = true; v.play().catch(() => setPaused(true)); });
+    let raf; const tick = () => { paint(); raf = requestAnimationFrame(tick); }; raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  const toggle = () => { const v = vid.current; if (!v) return; setPop((o) => ({ n: (o?.n || 0) + 1, icon: v.paused ? "play" : "pause" })); if (v.paused) v.play().catch(() => {}); else v.pause(); };
+  const full = () => { const w = wrap.current; if (!w) return; if (document.fullscreenElement) document.exitFullscreen?.(); else w.requestFullscreen?.().catch(() => {}); };
+  const seekTo = (f) => { const v = vid.current; if (!v || !v.duration) return; v.currentTime = Math.min(1, Math.max(0, f)) * v.duration; paint(); };
+  const seekAt = (e) => { const r = e.currentTarget.getBoundingClientRect(); seekTo((e.clientX - r.left) / r.width); };
+  useEffect(() => {
+    const k = (e) => {
+      if (e.target?.closest?.("input, textarea, select, button, [contenteditable]")) return;
+      if (e.key === " ") { e.preventDefault(); toggle(); } else if (e.key === "m" || e.key === "M") { const v = vid.current; if (v) v.muted = !v.muted; } else if (e.key === "f" || e.key === "F") full();
+    };
+    window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k);
+  });
+  return html`<div ref=${wrap} class=${"gv-player" + (paused ? " paused" : "")} style=${{ "--ar": ar }}>
+    <video ref=${vid} class="gvid big" src=${src} poster=${g.poster || undefined} playsinline loop onClick=${toggle} onPlay=${() => setPaused(false)} onPause=${() => setPaused(true)} onVolumeChange=${(e) => setMuted(e.currentTarget.muted)} />
+    ${pop && html`<span class="gv-pop" key=${pop.n} aria-hidden="true"><${Icon} name=${pop.icon} size="26" /></span>`}
+    <div class="gv-bar" onClick=${(e) => e.stopPropagation()}>
+      <button class="gv-b" aria-label=${paused ? "Play" : "Pause"} onClick=${toggle}><${Icon} name=${paused ? "play" : "pause"} size="16" /></button>
+      <div ref=${scrub} class="gv-scrub" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+        onPointerDown=${(e) => { e.currentTarget.setPointerCapture?.(e.pointerId); seekAt(e); }} onPointerMove=${(e) => (e.buttons & 1) && seekAt(e)}
+        onKeyDown=${(e) => { const v = vid.current; if (!v?.duration || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return; e.preventDefault(); e.stopPropagation(); seekTo((v.currentTime + (e.key === "ArrowRight" ? 5 : -5)) / v.duration); }}><i class="gv-buf" /><i class="gv-fill" /><i class="gv-knob" /></div>
+      <span class="gv-time" ref=${clock}>00:00 / 00:00</span>
+      <button class="gv-b" aria-label=${muted ? "Turn sound on" : "Mute"} onClick=${() => { const v = vid.current; if (v) v.muted = !v.muted; }}><${GvIcon} d=${muted ? GV_PATHS.mute : GV_PATHS.vol} /></button>
+      <button class="gv-b" aria-label="Full screen" onClick=${full}><${GvIcon} d=${GV_PATHS.full} /></button>
+    </div>
+  </div>`;
+}
+// Grow from the card: the card that was clicked (it keeps focus) or the video's card in the grid, when on screen.
+const gvMotionOk = () => !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+const gvCardBox = (id) => {
+  const a = document.activeElement, el = a?.dataset?.g === id ? a : document.querySelector(`.gcard[data-g="${CSS.escape(id)}"]`);
+  if (!el) return null; const r = el.getBoundingClientRect();
+  return r.width && r.height && r.bottom > 0 && r.top < window.innerHeight ? r : null;
+};
+// Keyframes that take the video from the card's box to its own place, cropped like the card was.
+const gvFlip = (el, from) => {
+  const to = el.getBoundingClientRect(); if (!to.width || !to.height) return null;
+  const s = Math.max(from.width / to.width, from.height / to.height);
+  const ix = Math.max(0, (to.width - from.width / s) / 2), iy = Math.max(0, (to.height - from.height / s) / 2);
+  const dx = from.left + from.width / 2 - (to.left + to.width / 2), dy = from.top + from.height / 2 - (to.top + to.height / 2);
+  return [{ transform: `translate(${dx}px, ${dy}px) scale(${s})`, clipPath: `inset(${iy}px ${ix}px round ${12 / s}px)` }, { transform: "none", clipPath: "inset(0px 0px round 0px)" }];
+};
 // Full-screen viewer for a gallery video: the video big over a blurred copy of itself, details on a glass panel,
 // the arrow keys for the next or last one, Esc or Back to close. The address carries ?v=<id>, so a link opens it.
+// Opened from a card, the video grows out of that card, and shrinks back into it on close.
 function GalleryViewer({ g, list, onPick, onClose, like, recreate, unpublish, recreating }) {
   const i = list.findIndex((x) => x.id === g.id);
   const step = (d) => { if (i < 0 || list.length < 2) return; onPick(list[(i + d + list.length) % list.length]); };
+  const root = useRef(null), media = useRef(null), closing = useRef(false), alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+  const [grow] = useState(() => (gvMotionOk() ? { id: g.id, box: gvCardBox(g.id) } : null));
+  const growing = !!(grow?.box && grow.id === g.id);
+  React.useLayoutEffect(() => {
+    const el = media.current?.firstElementChild; if (!growing || !el?.animate) return;
+    const k = gvFlip(el, grow.box); if (k) el.animate(k, { duration: 480, easing: "cubic-bezier(.22,1,.36,1)" });
+  }, []);
+  const exit = () => {
+    if (closing.current) return; closing.current = true;
+    const el = media.current?.firstElementChild, box = gvMotionOk() && el?.animate ? gvCardBox(g.id) : null, k = box && gvFlip(el, box);
+    if (!k) return onClose();
+    const done = () => { if (alive.current) onClose(); };
+    root.current?.classList.add("out");
+    el.animate([k[1], k[0]], { duration: 340, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" }).finished.then(done, done);
+  };
   useEffect(() => {
-    const k = (e) => { if (e.target?.closest?.("input, textarea, select, [contenteditable]")) return; if (e.key === "Escape") onClose(); else if (e.key === "ArrowRight") step(1); else if (e.key === "ArrowLeft") step(-1); };
+    const k = (e) => { if (e.target?.closest?.("input, textarea, select, [contenteditable]")) return; if (e.key === "Escape") exit(); else if (e.key === "ArrowRight") step(1); else if (e.key === "ArrowLeft") step(-1); };
     window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k);
   });
   useEffect(() => { const o = document.body.style.overflow; document.body.style.overflow = "hidden"; return () => { document.body.style.overflow = o; }; }, []);
-  return html`<div class="gv" role="dialog" aria-modal="true" aria-label=${g.title}>
+  return html`<div ref=${root} class=${"gv" + (growing ? " grow" : "")} role="dialog" aria-modal="true" aria-label=${g.title}>
     <div class="gv-bg" aria-hidden="true">${g.poster ? html`<img key=${g.id} src=${g.poster} alt="" />` : g.video ? html`<video key=${g.id} src=${g.video} muted loop autoplay playsinline />` : null}</div>
-    <div class="gv-stage" onClick=${(e) => e.target === e.currentTarget && onClose()}>
-      <div class="gv-media" key=${g.id}><${GalleryVideo} g=${g} big /></div>
+    <div class="gv-stage" onClick=${(e) => e.target === e.currentTarget && exit()}>
+      <div class="gv-media" key=${g.id} ref=${media}>${g.video ? html`<${ViewerPlayer} g=${g} />` : html`<${GalleryVideo} g=${g} big />`}</div>
       ${list.length > 1 && html`<button class="gv-nav prev" aria-label="Previous video" onClick=${() => step(-1)}><${Icon} name="chev" size="20" /></button><button class="gv-nav next" aria-label="Next video" onClick=${() => step(1)}><${Icon} name="chev" size="20" /></button>`}
     </div>
     <aside class="gv-side" key=${"s" + g.id}>
-      <div class="gv-head"><span class="gava">${initials(g.author)}</span><div class="gv-who"><b>${g.author}</b><span>${fmtAgo(g.at)}</span></div><button class="gv-x" aria-label="Close" onClick=${onClose}><${Icon} name="x" size="18" /></button></div>
+      <div class="gv-head"><span class="gava">${initials(g.author)}</span><div class="gv-who"><b>${g.author}</b><span>${fmtAgo(g.at)}</span></div><button class="gv-x" aria-label="Close" onClick=${exit}><${Icon} name="x" size="18" /></button></div>
       <h2 class="gv-title">${g.title}</h2>
-      <div class="gv-stats"><span><${Icon} name="heart" size="14" />${fmtK(g.likes)} likes</span><span><${Icon} name="refresh" size="14" />${fmtK(g.recreates || 0)} recreates</span></div>
+      <div class="gv-stats"><span><${Icon} name="heart" size="14" /><${Roll} n=${g.likes} /> likes</span><span><${Icon} name="refresh" size="14" /><${Roll} n=${g.recreates || 0} /> recreates</span></div>
       ${!g.allowRecreate && html`<p class="t-small muted">The creator turned off recreate for this video.</p>`}
       <div class="gv-actions">
         <${Btn} id="recreate-open" icon="refresh" disabled=${!g.allowRecreate || recreating} onClick=${(e) => recreate(e, g)}>${recreating ? "Opening…" : "Recreate this"}<//>
-        <div class="row" style="gap:8px"><${Btn} kind="secondary" icon="heart" className="grow" aria-pressed=${!!g.liked} onClick=${(e) => like(e, g)}>${g.liked ? "Liked" : "Like"} · ${fmtK(g.likes)}<//>${g.mine && html`<${Btn} kind="ghost" onClick=${() => unpublish(g)}>Remove from gallery<//>`}</div>
+        <div class="row" style="gap:8px"><${Btn} kind="secondary" icon="heart" className="grow" aria-pressed=${!!g.liked} onClick=${(e) => like(e, g)}>${g.liked ? "Liked" : "Like"} · <${Roll} n=${g.likes} /><//>${g.mine && html`<${Btn} kind="ghost" onClick=${() => unpublish(g)}>Remove from gallery<//>`}</div>
       </div>
-      ${list.length > 1 && html`<p class="gv-hint">Use ← and → to browse</p>`}
+      ${list.length > 1 && html`<p class="gv-hint">Use ← and → to browse${g.video ? ", Space to pause" : ""}</p>`}
     </aside>
   </div>`;
 }
@@ -885,9 +975,9 @@ function FeaturedSlider({ items, onOpen }) {
   if (!n) return null;
   const pos = (i) => { const d = (i - at + n) % n; return d === 0 ? "mid" : d === 1 ? "next" : d === n - 1 ? "prev" : "away"; };
   return html`<section class="fs" aria-label="Featured videos" onMouseEnter=${() => setHold(true)} onMouseLeave=${() => setHold(false)}>
-    <div class="fs-stage">${items.map((g, i) => { const p = pos(i); return html`<div key=${g.id} class=${"fs-card " + p} role="button" tabindex=${p === "mid" ? 0 : -1} aria-label=${g.title} onClick=${() => (p === "mid" ? onOpen(g) : setAt(i))} onKeyDown=${(e) => e.key === "Enter" && onOpen(g)}>
+    <div class="fs-stage">${items.map((g, i) => { const p = pos(i); return html`<div key=${g.id} class=${"fs-card " + p} data-g=${g.id} role="button" tabindex=${p === "mid" ? 0 : -1} aria-label=${g.title} onClick=${() => (p === "mid" ? onOpen(g) : setAt(i))} onKeyDown=${(e) => e.key === "Enter" && onOpen(g)}>
       <${FeaturedMedia} g=${g} live=${p === "mid"} />
-      <div class="fs-info"><b>${g.title}</b><span>${g.author} · ${fmtK(g.likes)} likes</span></div></div>`; })}</div>
+      <div class="fs-info"><b>${g.title}</b><span>${g.author} · <${Roll} n=${g.likes} /> likes</span></div></div>`; })}</div>
     ${n > 1 && html`<div class="fs-pills">${items.map((g, i) => html`<button key=${g.id} type="button" class=${"fs-pill" + (i === at ? " on" : "")} aria-pressed=${i === at} onClick=${() => setAt(i)}>${i === at && !hold ? html`<span key=${"f" + at} class="fs-fill" style=${{ animationDuration: "7s" }} />` : null}${g.title}</button>`)}</div>`}
   </section>`;
 }
@@ -941,7 +1031,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
         ${shown.length === 0 ? html`<${EmptyState} icon="search" title="Nothing here yet" text=${mine ? "You have not published a video yet." : "Try another shape or platform."} action=${mine ? html`<${Btn} size="sm" onClick=${() => setPublish(true)}>Publish a video<//>` : null} />` : html`<${Masonry} items=${shown} oriOf=${(g) => g.ori} render=${(g) => html`<div key=${g.id} class="gcard" role="button" tabindex="0" data-g=${g.id} data-ori=${g.ori} onClick=${() => setOpen(g)} onKeyDown=${(e) => e.key === "Enter" && setOpen(g)}>
             <${GalleryVideo} g=${g} />
             <div class="gtop"><span class="gauthor" title=${g.title}><span class="gava">${initials(g.author)}</span><b>${g.mine && user ? "You" : g.author}</b></span></div>
-            <div class="gbot"><button class=${"glike" + (g.liked ? " on" : "")} aria-pressed=${g.liked} aria-label="Like" onClick=${(e) => like(e, g)}><${Icon} name="heart" size="14" />${fmtK(g.likes)}</button>
+            <div class="gbot"><button class=${"glike" + (g.liked ? " on" : "")} aria-pressed=${g.liked} aria-label="Like" onClick=${(e) => like(e, g)}><${Icon} name="heart" size="14" /><${Roll} n=${g.likes} /></button>
               <button class="grec" data-recreate=${g.id} disabled=${recreate === g.id} onClick=${(e) => startRecreate(e, g)}><${Icon} name="refresh" size="14" />${recreate === g.id ? "Opening…" : "Recreate"}</button></div>
           </div>`} />`}
         ${all.length > shown.length && html`<div class="row" style="justify-content:center;padding:8px 0"><${Btn} kind="secondary" id="show-more" onClick=${() => setLimit((l) => l + 60)}>Show more (${all.length - shown.length} left)<//></div>`}

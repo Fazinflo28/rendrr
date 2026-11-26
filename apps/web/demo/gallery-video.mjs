@@ -1,5 +1,5 @@
 // A published video plays its real export in Explore: the tile shows its still and plays muted while the pointer is
-// on it; opening it plays the video with controls. Videos with no export yet keep the style preview. Runs on the
+// on it; opening it plays the video with its own player bar. Videos with no export yet keep the style preview. Runs on the
 // demo build (node demo/build.mjs first) in Playwright's Chromium.   node demo/gallery-video.mjs   (from apps/web)
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -50,7 +50,7 @@ await page.mouse.move(5, 5); await sleep(300);
 check(await tile.evaluate((v) => v.paused && v.currentTime === 0), "it stops when the pointer leaves");
 await tile.click(); await sleep(1200);
 const big = page.locator(".gv video.gvid.big");
-check(await big.count() === 1 && await big.evaluate((v) => v.controls), "opening it plays the video with controls");
+check(await big.count() === 1 && await page.locator(".gv .gv-bar .gv-scrub").count() === 1, "opening it plays the video with its own player bar");
 const st = await big.evaluate((v) => ({ t: v.currentTime, paused: v.paused, muted: v.muted, rs: v.readyState }));
 check(st.t > 0.1 && !st.paused, `the window's video plays (${st.t.toFixed(2)} s${st.muted ? ", muted: the browser wants a tap for sound" : ", with sound"})`);
 // Recreate it: in the editor's reference monitor (16:9) the vertical video shows whole, black at its sides.
