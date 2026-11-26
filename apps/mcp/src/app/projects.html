@@ -123,6 +123,29 @@ html.fs .stage.tall video { height: max(220px, min(60vh, calc(100vh - 620px - va
 /* The drawing sits exactly on the picture (the player keeps the picture's shape inside its box). */
 .frame { position: relative; width: 100%; display: flex; justify-content: center; }
 .ink { position: absolute; pointer-events: none; }
+/* Pins: comments on a spot of the picture. Dots with the author's initial; a dot's comment spreads out of it. */
+.frame video { cursor: crosshair; }
+.pins { position: absolute; pointer-events: none; z-index: 3; }
+.pins > * { pointer-events: auto; }
+.pdot { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; padding: 0; border: 0; border-radius: 50% 50% 50% 4px; display: grid; place-items: center; background: var(--accent); color: #0b0d06; font-weight: 700; font-size: 11px; line-height: 1; box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 6px 16px rgba(0,0,0,.45); cursor: pointer; animation: ppop .32s cubic-bezier(.2,1.4,.35,1) both; transition: transform .2s ease, opacity .25s ease; }
+.pdot:hover { transform: scale(1.12); }
+.pdot.client { background: #fff; }
+.pdot.on { box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 0 0 6px rgba(189,232,22,.48); }
+.pdot.new { pointer-events: none; animation: ppop .32s cubic-bezier(.2,1.4,.35,1) both, ppulse 1.6s ease-out .35s infinite; }
+.pbox { position: absolute; width: min(260px, 70%); padding: 10px 12px; border-radius: 12px; background: rgba(22,24,27,.94); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); color: #f7f7f8; box-shadow: 0 0 0 1px rgba(255,255,255,.1), 0 18px 48px rgba(0,0,0,.55); animation: popen .3s cubic-bezier(.16,1,.3,1) both; text-align: left; }
+.prd { margin: 16px 0 0 16px; transform-origin: 0 0; }
+.pld { margin-top: 16px; translate: calc(-100% - 16px) 0; transform-origin: 100% 0; }
+.pru { margin-left: 16px; translate: 0 calc(-100% - 16px); transform-origin: 0 100%; }
+.plu { translate: calc(-100% - 16px) calc(-100% - 16px); transform-origin: 100% 100%; }
+.phead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+.phead .pt { color: var(--accent); font-variant-numeric: tabular-nums; font-size: 12px; }
+.phead .px { margin-left: auto; border: 0; background: none; color: inherit; opacity: .7; font-size: 17px; cursor: pointer; }
+.pbody { font-size: 13px; line-height: 19px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 140px; overflow: auto; }
+@keyframes ppop { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes ppulse { 0% { box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 0 0 0 rgba(189,232,22,.5); } 100% { box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 0 0 14px rgba(189,232,22,0); } }
+@keyframes popen { from { transform: scale(.4); opacity: 0; filter: blur(6px); } 60% { opacity: 1; } to { transform: scale(1); opacity: 1; filter: blur(0); } }
+@keyframes pfade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .pdot, .pdot.new { animation: none; } .pbox { animation: pfade .15s linear both; } }
 .ink.on { pointer-events: auto; cursor: crosshair; touch-action: none; outline: 2px solid var(--accent); outline-offset: -2px; }
 /* While the preview loads (or stops to load more as it plays): a shimmer over the picture and a word, so it never
    looks stuck. A click goes through to the player. */
@@ -569,7 +592,8 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     // The Transcript tab: the words loaded (tr), the changes waiting for Apply (trPend: word ids to cut and to bring
     // back), the words picked (trSel: indexes, touch: picked by taps), Apply under way, and the last change (to undo it).
     tr: null, trPend: null, trSel: null, trApplying: false, trLast: null };
-  const freshCompose = () => ({ editingId: null, time: null, drawing: null, drawingChanged: false, images: [], removeImages: [] });
+  // pin: the spot on the picture a new comment was left on (a click on the video), shares of the frame.
+  const freshCompose = () => ({ editingId: null, time: null, drawing: null, drawingChanged: false, images: [], removeImages: [], pin: null });
   state.compose = freshCompose();
   const freshPend = () => ({ cut: new Set(), restore: new Set() });
   state.trPend = freshPend();
@@ -1069,9 +1093,9 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         for (const ev of ["timeupdate", "seeked", "pause", "ended", "loadedmetadata", "volumechange"]) vid.addEventListener(ev, emit);
         // While it plays, the timecode moves every frame (timeupdate alone is 4 times a second).
         vid.addEventListener("play", () => { const tick = () => { emit(); if (!vid.paused && !vid.ended) requestAnimationFrame(tick); }; requestAnimationFrame(tick); });
-        vid.addEventListener("click", () => togglePlay());
+        vid.addEventListener("click", (e) => pinAt(e));
         vid.addEventListener("loadedmetadata", () => placeInk());
-        vid.addEventListener("play", () => { if (state.drawMode) { state.drawMode = false; render(); } state.viewDrawing = null; });
+        vid.addEventListener("play", () => { if (state.drawMode) { state.drawMode = false; render(); } state.viewDrawing = null; if (state.pinOpen) { state.pinOpen = null; drawPins(current()); } });
         new ResizeObserver(() => placeInk()).observe(vid);
         vid.addEventListener("play", () => tellOthers());
         if (fresh) setTimeout(() => toast("Preview v" + v.preview.version + " is ready. Press play to " + (v.preview.fix ? "see what changed first." : "watch.")), 50);
@@ -1081,7 +1105,8 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
       const canvas = h("canvas", { class: "ink" + (state.drawMode ? " on" : ""), "aria-label": state.drawMode ? "Draw on the picture" : null });
       inkCanvas(canvas);
       // Nothing over the picture but the drawing: the time is in the controls, the version in the menu above.
-      const frame = h("div", { class: "frame" + loadingClass(player) }, player, canvas,
+      pinsEl = h("div", { class: "pins", "aria-live": "polite" });
+      const frame = h("div", { class: "frame" + loadingClass(player) }, player, canvas, pinsEl,
         h("div", { class: "load", role: "status" }, h("span", { class: "spin", "aria-hidden": "true" }), "Loading preview…"),
         h("div", { class: "fail" }, h("span", {}, "The preview did not load."), h("button", { class: "btn", onClick: retryPreview }, "Try again")));
       stage = h("div", { class: "stage" + (tall ? " tall" : "") }, frame);
@@ -1118,6 +1143,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         h("button", { class: "btn", disabled: state.busy, onClick: renderPreview }, state.busy ? "Starting…" : "Render preview")));
     }
     requestAnimationFrame(placeInk);
+    onTime(() => drawPins(v));
     return h("div", { class: "pv" }, top, state.share ? h("div", { class: "shade", onClick: () => { state.share = null; render(); } }) : null, state.share ? shareView(v) : null, stage, strip, state.drawMode ? drawBar() : ctrl, notes, commentsView(v),
       state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
   }
@@ -1312,7 +1338,53 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     requestAnimationFrame(drawInk);
     document.querySelectorAll(".seek .pin.on").forEach((el) => el.classList.remove("on"));
     const pin = document.querySelector('.seek .mk[data-id="' + x.id + '"]'); if (pin) pin.classList.add("on");
+    state.pinOpen = pinned(x) ? x.id : null; drawPins(current());
     if (fromPin) { const el = document.querySelector('.cm[data-id="' + x.id + '"]'); if (el) { el.scrollIntoView({ block: "nearest", behavior: "smooth" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1200); } }
+  }
+
+  // ---------------- pins: comments on a spot of the picture ----------------
+  // A click on the video pauses it and pins the new comment to that spot (the box under the player takes the words).
+  // Pinned comments show as dots with their author's initial around their moment; a dot opens its comment over the
+  // picture. The boxes spread out of the dot.
+  let pinsEl = null;
+  const pinned = (c) => !!c && c.x != null && c.y != null;
+  const current = () => state.project;
+  function pinAt(e) {
+    if (!player || state.drawMode) return;
+    if (state.pinOpen) { state.pinOpen = null; drawPins(current()); return; }
+    const r = pictureRect(), b = player.getBoundingClientRect();
+    const px = e.clientX - b.left - (r.x - player.offsetLeft), py = e.clientY - b.top - (r.y - player.offsetTop);
+    if (px < 0 || py < 0 || px > r.w || py > r.h) { togglePlay(); return; } // on the bars beside the picture
+    player.pause();
+    const c = state.compose;
+    if (c.editingId) return;
+    c.pin = { x: Math.round((px / r.w) * 10000) / 10000, y: Math.round((py / r.h) * 10000) / 10000 };
+    c.time = Math.round(player.currentTime * 1000) / 1000;
+    render();
+    requestAnimationFrame(() => { const ta = root.querySelector('[data-key="draft"]'); if (ta) ta.focus({ preventScroll: true }); });
+  }
+  function drawPins(v) {
+    if (!pinsEl || !pinsEl.isConnected || !player || !v) return;
+    const r = pictureRect(), t = player.currentTime;
+    Object.assign(pinsEl.style, { left: r.x + "px", top: r.y + "px", width: r.w + "px", height: r.h + "px" });
+    const initial = (n) => ((n || "?").trim()[0] || "?").toUpperCase();
+    const at = (x, y) => "left:" + x * 100 + "%;top:" + y * 100 + "%";
+    const kids = [];
+    for (const c of (v.comments || []).filter(pinned)) {
+      const d = Math.abs(t - c.time), on = state.pinOpen === c.id;
+      if (!on && (c.resolved || d > 1.2)) continue;
+      kids.push(h("button", { class: "pdot" + (c.mine ? "" : " client") + (on ? " on" : ""), style: at(c.x, c.y) + ";opacity:" + (on ? 1 : Math.max(0.35, 1 - d / 1.2)), title: (c.author || "You") + " · " + fmtTime(c.time),
+        "aria-label": "Open the comment at " + fmtTime(c.time), onClick: (e) => { e.stopPropagation(); look(c, true); } }, initial(c.author || "You")));
+      if (on) {
+        const sideH = c.x > 0.58 ? "l" : "r", sideV = c.y > 0.55 ? "u" : "d";
+        kids.push(h("div", { class: "pbox p" + sideH + sideV, style: at(c.x, c.y), role: "dialog", "aria-label": "Comment by " + (c.author || "You"), onClick: (e) => e.stopPropagation() },
+          h("div", { class: "phead" }, h("b", {}, c.author || "You"), h("span", { class: "pt" }, fmtTime(c.time)), h("button", { class: "px", "aria-label": "Close", onClick: () => { state.pinOpen = null; drawPins(v); } }, "×")),
+          h("div", { class: "pbody" }, c.text || "(no words)")));
+      }
+    }
+    const c = state.compose;
+    if (c.pin && !c.editingId) kids.push(h("span", { class: "pdot new", style: at(c.pin.x, c.pin.y) }, "+"));
+    pinsEl.replaceChildren(...kids);
   }
 
   function seek(t) {
@@ -1544,7 +1616,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
       try {
         const nv = c.editingId
           ? await callTool("app_edit_comment", { projectId: v.project.id, commentId: c.editingId, text, ...(c.drawingChanged ? { drawing } : {}), ...(c.removeImages.length ? { removeImages: c.removeImages } : {}), ...(fresh.length ? { images: fresh } : {}) })
-          : await callTool("app_add_comment", { projectId: v.project.id, time, text, ...(v.preview ? { renderId: v.preview.renderId } : {}), ...(drawing ? { drawing } : {}), ...(fresh.length ? { images: fresh } : {}) });
+          : await callTool("app_add_comment", { projectId: v.project.id, time, text, ...(v.preview ? { renderId: v.preview.renderId } : {}), ...(drawing ? { drawing } : {}), ...(fresh.length ? { images: fresh } : {}), ...(c.pin ? { x: c.pin.x, y: c.pin.y } : {}) });
         const what = [drawing ? "a drawing" : "", c.images.length ? c.images.length + (c.images.length === 1 ? " picture" : " pictures") : ""].filter(Boolean).join(" and ");
         tellModel("In the Rendrr app the user " + (c.editingId ? "changed their comment" : "added a comment") + " on \"" + v.project.name + "\" (" + v.project.id + ") at " + fmtTime(time) + (v.preview ? " of preview v" + v.preview.version : "") + ": " + (text || "(no words)") + (what ? " (with " + what + "; get_comments images true shows them)" : ""));
         toast(c.editingId ? "Comment saved." : "Comment added. It is in Rendrr too.");
@@ -1553,6 +1625,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
       } catch (e) { state.sending = false; toast(e.message); add.disabled = !canSend(); add.textContent = c.editingId ? "Save" : "Comment"; }
     }
     const atts = [];
+    if (c.pin && !c.editingId) atts.push(h("span", { class: "badge", title: "Pinned to the spot you clicked on the picture" }, "● Pinned on the picture ", h("button", { class: "act", "aria-label": "Take the pin off", onClick: () => { c.pin = null; if (!state.draft.trim() && !c.images.length && !(c.drawing && c.drawing.strokes.length)) c.time = null; render(); } }, "×")));
     if (c.drawing && c.drawing.strokes.length) atts.push(h("span", { class: "badge", title: "Shown on the picture at " + fmtTime(c.time || 0) }, "✎ Drawing ", h("button", { class: "act", "aria-label": "Take the drawing off", onClick: () => { c.drawing = null; c.drawingChanged = true; render(); } }, "×")));
     for (const im of c.images) atts.push(h("span", { class: "att" }, im.existing ? h("img", { src: im.url, alt: im.name || "Picture" }) : im.thumb,
       h("button", { class: "x", "aria-label": "Take this picture off", onClick: () => { c.images = c.images.filter((x) => x !== im); if (im.existing) c.removeImages.push(im.id); render(); } }, "×")));

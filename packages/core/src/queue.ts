@@ -51,7 +51,9 @@ export type MatteJob = { videoId: string; userId: string; k: number; turn: numbe
 export type MaintenanceJob = { task: "cleanup" | "ensure-assets" | "stuck" | "storage" };
 /** Frames at given times: from a render (output times) or from footage / a reference (original times). */
 /** overlays: a PNG (storage key) laid over the frame at the same index, the drawing on a comment (the app in the chat). */
-export type FramesJob = { renderId?: string; videoId?: string; times: number[]; overlays?: (string | null)[]; colorSamples?: ColorSampleJob; faces?: FaceJob; track?: TrackJob;
+export type FramesJob = { renderId?: string; videoId?: string; times: number[]; overlays?: (string | null)[];
+  /** A pinned comment's spot (shares of the frame) at each time: that frame comes back ringed, then a close-up of it. */
+  pins?: ({ x: number; y: number } | null)[]; colorSamples?: ColorSampleJob; faces?: FaceJob; track?: TrackJob;
   /** A storyboard's panel pictures (storage keys) with a comment's drawing (a clear PNG's key) laid on each. */
   stills?: { key: string; overlay: string }[] };
 /** Object tracking: a box drawn at footage second `at` on a clip's fitted frame (shares), followed over [srcIn, srcOut]. */

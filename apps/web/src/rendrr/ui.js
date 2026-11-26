@@ -393,7 +393,7 @@ function Player({ pb, duration, caption, captionDrawn = false, captionLook = "cl
       <span class="mono t-small" style="min-width:40px">${fmtTime(pb.time)}</span>
       <div class="scrub" ref=${scrubRef} onPointerDown=${onScrubDown} role="slider" aria-label="Seek" aria-valuenow=${Math.round(pb.time)} aria-valuemax=${duration}>
         <div class="track" /><div class="fill" style=${{ width: pct + "%" }} />
-        ${marks.map((m) => html`<div key=${m.id} class="mark" title=${m.text} style=${{ left: Math.min(100, (m.time / duration) * 100) + "%" }} onPointerDown=${(e) => { e.stopPropagation(); onMark?.(m); }} />`)}
+        ${marks.map((m) => html`<div key=${m.id} class=${"mark" + (m.x != null && m.y != null ? " pin" + (m.mine === false ? " client" : "") : "")} title=${(m.author ? m.author + ": " : "") + m.text} style=${{ left: Math.min(100, (m.time / duration) * 100) + "%" }} onPointerDown=${(e) => { e.stopPropagation(); onMark?.(m); }}>${m.x != null && m.y != null ? initials(m.author) : null}</div>`)}
         <div class="knob" style=${{ left: pct + "%" }} />
       </div>
       <span class="mono t-small muted" style="min-width:40px">${fmtTime(duration)}</span>

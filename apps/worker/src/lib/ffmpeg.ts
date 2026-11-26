@@ -291,6 +291,28 @@ export async function frameAt(input: string, t: number, out: string, width = 640
 }
 const STAMP_FONT = process.env.STAMP_FONT || "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
 
+/**
+ * A pinned comment's spot on a frame (x, y: shares of the frame): `ring` gets the frame with a lime square drawn round
+ * the spot (with a dark edge so it shows on any picture), `close` a close-up around it (about a third of the frame,
+ * kept inside it) with the same mark, 720 wide.
+ */
+export async function pinMarks(frame: string, pin: { x: number; y: number }, ring: string, close: string, signal?: AbortSignal) {
+  const { stdout } = await run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", frame], { signal });
+  const [w, h] = String(stdout).trim().split(",").map(Number);
+  if (!(w > 0 && h > 0)) throw new Error(`could not read the frame's size (${String(stdout).trim()})`);
+  const px = Math.round(Math.min(1, Math.max(0, pin.x)) * w), py = Math.round(Math.min(1, Math.max(0, pin.y)) * h);
+  const box = (cx: number, cy: number, s: number, t: number) => {
+    const half = Math.round(s / 2);
+    return [`drawbox=x=${cx - half - 2}:y=${cy - half - 2}:w=${s + 4}:h=${s + 4}:color=black@0.85:t=${t + 4}`, `drawbox=x=${cx - half}:y=${cy - half}:w=${s}:h=${s}:color=0xBDE816@1:t=${t}`, `drawbox=x=${cx - 2}:y=${cy - 2}:w=5:h=5:color=0xBDE816@1:t=fill`].join(",");
+  };
+  const side = Math.max(24, Math.round(Math.min(w, h) * 0.12));
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", frame, "-vf", box(px, py, side, 3), "-frames:v", "1", "-q:v", "3", ring], { signal });
+  const cw = Math.max(64, Math.round(w * 0.36)), ch = Math.max(64, Math.round(h * 0.36));
+  const cx = Math.min(Math.max(0, px - Math.round(cw / 2)), w - cw), cy = Math.min(Math.max(0, py - Math.round(ch / 2)), h - ch);
+  const k = 720 / cw;
+  await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", frame, "-vf", `crop=${cw}:${ch}:${cx}:${cy},scale=720:-2,${box(Math.round((px - cx) * k), Math.round((py - cy) * k), Math.round(side * k), 4)}`, "-frames:v", "1", "-q:v", "3", close], { signal });
+}
+
 /** A clear PNG (a drawing on a comment) laid over a frame, stretched to the frame's size (read first: scale2ref
  *  left the PNG at its own size in FFmpeg 7). */
 export async function overlayPng(frame: string, png: string, out: string, signal?: AbortSignal) {

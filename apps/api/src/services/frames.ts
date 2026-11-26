@@ -10,8 +10,9 @@ async function take(data: FramesJob): Promise<string[]> {
   return Promise.all((keys || []).map((k) => signGet(k, 900)));
 }
 
-/** Frames at exact output times from a finished render. The worker has FFmpeg; we wait up to 45 s. */
-export const framesFor = (renderId: string, times: number[], overlays?: (string | null)[]) => take({ renderId, times: times.slice(0, 5), ...(overlays ? { overlays: overlays.slice(0, 5) } : {}) });
+/** Frames at exact output times from a finished render. The worker has FFmpeg; we wait up to 45 s. A pin at a time
+ *  gives two pictures for it: the frame with the spot ringed, then a close-up around the spot. */
+export const framesFor = (renderId: string, times: number[], overlays?: (string | null)[], pins?: ({ x: number; y: number } | null)[]) => take({ renderId, times: times.slice(0, 5), ...(overlays ? { overlays: overlays.slice(0, 5) } : {}), ...(pins ? { pins: pins.slice(0, 5) } : {}) });
 
 /** Frames at exact times (original seconds) from a video's preview copy: footage or a reference. */
 export const videoFramesFor = (videoId: string, times: number[]) => take({ videoId, times: times.slice(0, 8) });

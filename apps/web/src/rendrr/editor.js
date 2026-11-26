@@ -21,6 +21,7 @@ import { StoryboardWindow } from "./storyboard";
 import { CreateLinkModal } from "./screens";
 import { ASPECT_NAMES, EMOJI, PANEL_TOOLS, PENS, RAIL, SHORTCUTS, TOOLS, TOOL_ICON, TRACKS, TRACK_H, TRACK_HINT, ZMAX, ZMIN, clamp, drawingPng, linkified, r2, railTab, readCommentImage, useHistory } from "./editor/common";
 import { LiveOverlays, MARK_COLORS, PersonLayer, SeqMedia, WaveLayer, loadPeaks, markNote, readFlag, useMattes, writeFlag } from "./editor/layers";
+import { PinLayer, openPin } from "./pins";
 import { AudioTab, ClipTab, dB } from "./editor/clipTab";
 import { AddClipModal, TranscriptLine } from "./editor/panels";
 import { TextTab } from "./editor/textTab";
@@ -124,7 +125,7 @@ function EditorInner({ project, reload, ai, keep }) {
   // The reference the user attached for their AI (when the edit was made, or by the AI): never applied to the edit.
   const reference = project.reference || null;
   // The left column: the library (bin), the reference or a bin video playing in the monitor.
-  const lib = useLibrary([project.id]); const [source, setSource] = useState(null); const { openAdd } = useApp();
+  const lib = useLibrary([project.id]); const [source, setSource] = useState(null); const { openAdd, user } = useApp();
   const usedIds = useMemo(() => Array.from(new Set([...S.tracks.v1.map((c) => c.sourceVideoId).filter(Boolean), ...S.tracks.v2.filter((b) => b.kind === "broll" && b.videoId).map((b) => b.videoId)])).filter((x) => x !== project.videoId), [S.tracks]);
   // The style the AI applied (its caption rules shape the captions).
   const sq = useAsync(() => api.listStyles(), []);
@@ -605,6 +606,9 @@ function EditorInner({ project, reload, ai, keep }) {
   const poly = (st, i) => html`<polyline key=${i} points=${st.p.reduce((a, v, k) => (k % 2 ? a + "," + v : a + (k ? " " : "") + v), "")} fill="none" stroke=${st.c} stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />`;
   const drawOverlay = (cDraw || cStrokes.length) && !pb.playing ? html`<svg class=${"cmt-ink" + (cDraw ? " drawing" : "")} id="comment-draw-layer" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Your drawing for this comment" onPointerDown=${drawDown}>${cStrokes.map(poly)}${cLive.current ? poly(cLive.current, "live") : null}</svg>` : null;
   const resolve = async (c) => { try { const u = await api.resolveComment(c.id, !c.resolved); setComments((x) => x.map((i) => (i.id === c.id ? { ...i, resolved: u.resolved } : i))); } catch (e) { toast(e.message); } };
+  // Pins: click the picture to leave a comment on that spot (pins.js); off while drawing or placing a colour shape.
+  const addPin = async ({ time, x, y, text }) => { const c = await api.addProjectComment(project.id, { time, x, y, text }); setComments((l) => [...l, c].sort((a, b) => a.time - b.time)); return c; };
+  const pinLayer = html`<${PinLayer} comments=${comments} pb=${pb} me=${user?.name || "You"} off=${cDraw || (rtab === "color" && !!colorMode)} onAdd=${addPin} onResolve=${resolve} />`;
   // "Send to Claude": the open comments go to the AI the user connected. MCP cannot push into a chat, so the AI's chat
   // opens with them ready, and Rendrr tells that AI on its next tool call too.
   const [aiConn, setAiConn] = useState(null); // { claude, chatgpt }: connected or not; null while loading
@@ -745,8 +749,8 @@ function EditorInner({ project, reload, ai, keep }) {
             : watch
             ? html`<${Player} tools key="watch" style=${{ height: "100%", maxWidth: "100%" }} pb=${wpb} duration=${watch.seconds || 1} aspect=${S.aspect} src=${watch.url} />`
             : !plan ? html`<div class="state" style="margin:auto"><div class="ico"><${Icon} name="scissors" /></div><b class="t-label">Everything is cut</b><p class="t-small">Undo, or restore some words or clips.</p></div>`
-            : fresh ? html`<${Player} tools key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${drawOverlay || inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setSide("comments"); }} />`
-            : html`<${Player} tools key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} mattes=${mattes} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} onBox=${(b) => { setColorMode(null); setBoxDraft(b); }} />` : null}${drawOverlay || inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.seek(c.time); setSide("comments"); }} />`}</div>
+            : fresh ? html`<${Player} tools key="preview" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} src=${project.previewUrl} overlay=${drawOverlay || inkOverlay} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.setPlaying(false); pb.seek(c.time); setSide("comments"); openPin(c); }}>${pinLayer}<//>`
+            : html`<${Player} tools key="edit" style=${{ height: "100%", maxWidth: "100%" }} pb=${pb} duration=${dur} aspect=${S.aspect} media=${Object.values(urls).some(Boolean) && html`<${SeqMedia} plan=${plan} clock=${clock} time=${pb.time} playing=${pb.playing} urls=${urls} sounds=${media.audio} aspect=${S.aspect} pb=${pb} broll=${media.broll} luts=${luts} mattes=${mattes} />`} caption=${frame?.caption} captionLook=${S.captionLook} zoom=${frame?.zoom || 1} zoomTransition=${false} captionDrawn=${!!plan?.styledCaptions} overlay=${html`<${LiveOverlays} frame=${frame} clips=${lay.tracks.v3} media=${media} aspect=${S.aspect} playing=${pb.playing} plan=${plan} luts=${luts} mattes=${mattes} person=${plan?.person ? html`<${PersonLayer} plan=${plan} frame=${frame} mattes=${mattes} zoom=${frame?.zoom || 1} luts=${luts} />` : null} />${rtab === "color" && shapeClip ? html`<${MaskOverlay} shapes=${colorShapes} mode=${colorMode} draft=${pathDraft} onPoint=${onColorPoint} onBox=${(b) => { setColorMode(null); setBoxDraft(b); }} />` : null}${drawOverlay || inkOverlay}`} marks=${comments.filter((c) => c.time > 0 && !c.resolved)} onMark=${(c) => { pb.setPlaying(false); pb.seek(c.time); setSide("comments"); openPin(c); }}>${pinLayer}<//>`}</div>
         </div>
         <aside class="panel ed-insp" id="inspector" aria-label="Comments, your AI and the selected clip">
           <div class="side-tabs" role="tablist" aria-label="Right panel">
@@ -777,7 +781,7 @@ function EditorInner({ project, reload, ai, keep }) {
             <div class="col cm-list" id="comment-list">
               ${comments.length === 0 ? html`<div class="cm-empty" id="comments-empty"><span class="cm-empty-ico"><${Icon} name="comment" size="22" /></span><b>No comments yet</b><p class="t-small muted">Pause where something should change and leave a note: write, draw on the picture or add a picture. Clients can comment too, from a review link.</p></div>`
               : shownComments.length === 0 ? html`<p class="t-small muted" style="padding:16px 4px">${cFilter === "open" ? "Every comment is resolved." : "No resolved comments yet."}</p>`
-              : shownComments.map((c) => html`<div key=${c.id} class=${"cmt" + (c.resolved ? " done" : "") + (Math.abs(pb.time - c.time) < 0.05 && c.time > 0 ? " now" : "")} data-comment=${c.id} onClick=${(e) => { if (!e.target.closest("button, a, input, form") && c.time > 0) { pb.setPlaying(false); pb.seek(c.time); } }}>
+              : shownComments.map((c) => html`<div key=${c.id} class=${"cmt" + (c.resolved ? " done" : "") + (Math.abs(pb.time - c.time) < 0.05 && c.time > 0 ? " now" : "")} data-comment=${c.id} onClick=${(e) => { if (!e.target.closest("button, a, input, form") && (c.time > 0 || c.x != null)) { pb.setPlaying(false); pb.seek(c.time); openPin(c); } }}>
                   <span class=${"gava" + (c.mine ? "" : " client")}>${initials(c.author)}</span>
                   <div class="grow" style="min-width:0">
                     <div class="cmt-top"><b>${c.author}${c.mine ? " (you)" : ""}</b><span class="muted">${fmtAgo(c.at)}${c.edited ? " · edited" : ""}</span><div class="grow" />

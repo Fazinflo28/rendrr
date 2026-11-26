@@ -2,7 +2,7 @@ import { headObject, signGet, uploadFile, type ColorSampleJob, type ColorSamples
 import { prisma } from "@rendrr/db";
 import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { frameAt, JobError, overlayPng, rgbFrames } from "../lib/ffmpeg";
+import { frameAt, JobError, overlayPng, pinMarks, rgbFrames } from "../lib/ffmpeg";
 import { detectFaces, faceOf } from "../lib/faces";
 import { trackObject, type TrackRow } from "../lib/track";
 import type { Ctx } from "../lib/job";
@@ -12,7 +12,7 @@ import { framesPrefix } from "./breakdown";
 // references (get_frames, original times). Render frames are kept next to the render and expire with it; footage
 // frames sit with the video's other frames and go when its preview copy goes.
 export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | FaceSamples | TrackRow[]> {
-  const { renderId, videoId, times, overlays, colorSamples: cs, faces, track, stills } = ctx.job.data as FramesJob;
+  const { renderId, videoId, times, overlays, pins, colorSamples: cs, faces, track, stills } = ctx.job.data as FramesJob;
   if (stills?.length) return stillsDrawn(ctx, stills, renderId);
   if (cs) return colorSamples(ctx, cs);
   if (faces) return faceSamples(ctx, faces);
@@ -23,6 +23,20 @@ export async function framesJob(ctx: Ctx): Promise<string[] | ColorSamples | Fac
   const url = await signGet(r.outputKey, 600);
   const out: string[] = [];
   for (const [i, t] of times.slice(0, 5).entries()) {
+    const pin = pins?.[i];
+    if (pin) {
+      // A pinned comment: the frame with its spot ringed, then a close-up of the spot (made once per spot).
+      const tag = `-at${Math.round(t * 1000)}ms-pin${Math.round(pin.x * 1000)}x${Math.round(pin.y * 1000)}`;
+      const ringKey = r.outputKey.replace(/\.mp4$/, `${tag}.jpg`), closeKey = r.outputKey.replace(/\.mp4$/, `${tag}-close.jpg`);
+      if ((await headObject(ringKey)) && (await headObject(closeKey))) { out.push(ringKey, closeKey); continue; }
+      const p = join(ctx.dir, `p${i}.jpg`), ring = join(ctx.dir, `p${i}-ring.jpg`), close = join(ctx.dir, `p${i}-close.jpg`);
+      await frameAt(url, t, p, 1280, ctx.signal).catch(() => {});
+      if (!(await stat(p).then(() => true).catch(() => false))) continue;
+      try { await pinMarks(p, pin, ring, close, ctx.signal); } catch (e) { console.warn(`[frames] the pin could not go on the frame: ${(e as Error).message}`); continue; }
+      await uploadFile(ringKey, ring, "image/jpeg"); await uploadFile(closeKey, close, "image/jpeg");
+      out.push(ringKey, closeKey);
+      continue;
+    }
     const over = overlays?.[i];
     // A comment's drawing goes on a bigger frame, so the AI sees what was drawn on what.
     const key = over ? r.outputKey.replace(/\.mp4$/, `-at${Math.round(t * 1000)}ms-${over.slice(over.lastIndexOf("/") + 1).replace(/\.png$/, "")}.jpg`) : r.outputKey.replace(/\.mp4$/, `-at${Math.round(t * 100)}.jpg`);

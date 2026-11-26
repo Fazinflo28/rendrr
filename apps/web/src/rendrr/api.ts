@@ -609,7 +609,7 @@ export const api: any = {
     try { sessionStorage.setItem("rendrr-review-" + t, r.key); } catch { /* private mode: unlock lasts this page only */ }
     return { ok: true };
   },
-  addReviewComment: (t: string, { time, text, projectId }: any) => post(`/public/reviews/${enc(t)}/comments`, { time, text, projectId }, { auth: false, headers: reviewHeaders(t) }),
+  addReviewComment: (t: string, { time, text, projectId, x, y }: any) => post(`/public/reviews/${enc(t)}/comments`, { time, text, projectId, ...(x != null && y != null ? { x, y } : {}) }, { auth: false, headers: reviewHeaders(t) }),
   resolveComment: (commentId: string, resolved = true) => patch(`/comments/${enc(commentId)}`, { resolved }),
   // "Send to Claude": the edit's open comments (or `ids`) go to the connected AI; returns its chat link with them ready.
   sendComments: (projectId: string, ai: "claude" | "chatgpt", ids?: string[]) => post(`/projects/${enc(projectId)}/comments/send`, { ai, ...(ids?.length ? { ids } : {}) }),
@@ -620,9 +620,10 @@ export const api: any = {
   deleteComment: (commentId: string) => del(`/comments/${enc(commentId)}`),
   /** drawing: strokes on the picture ({w, h, strokes}); images: [{type, data (base64), name, w, h}] (up to 4). */
   // renderId: the render it is on (a storyboard's panel).
-  addProjectComment: (projectId: string, { time, text, drawing, images, renderId }: any) => {
+  // x, y: a pin, the spot on the picture it was left on (0-1 of the frame).
+  addProjectComment: (projectId: string, { time, text, drawing, images, renderId, x, y }: any) => {
     if (!text?.trim() && !drawing?.strokes?.length && !images?.length) throw fail("Write a comment, draw on the picture or add a picture first.");
-    return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: (text || "").trim(), ...(drawing?.strokes?.length ? { drawing } : {}), ...(images?.length ? { images } : {}), ...(renderId ? { renderId } : {}) });
+    return post(`/projects/${enc(projectId)}/comments`, { time: Math.max(0, Number(time) || 0), text: (text || "").trim(), ...(drawing?.strokes?.length ? { drawing } : {}), ...(images?.length ? { images } : {}), ...(renderId ? { renderId } : {}), ...(x != null && y != null ? { x, y } : {}) });
   },
   approveReview: (t: string) => post(`/public/reviews/${enc(t)}/approve`, {}, { auth: false, headers: reviewHeaders(t) }),
   requestChanges: (t: string, note: string) => post(`/public/reviews/${enc(t)}/changes`, { note }, { auth: false, headers: reviewHeaders(t) }),

@@ -450,6 +450,9 @@ model ReviewComment {
   author      String   @default("Client")
   resolved    Boolean  @default(false)
   createdAt   DateTime @default(now())
+  // A pin: where on the picture it was left (shares of the frame, 0-1 from the top left); null for a plain comment.
+  x           Float?
+  y           Float?
 
   @@index([reviewToken])
   @@index([projectId])
@@ -562,6 +565,9 @@ model ProjectComment {
   drawing   Json?
   images    Json?
   editedAt  DateTime?
+  // A pin: where on the picture it was left (shares of the frame, 0-1 from the top left); null for a plain comment.
+  x         Float?
+  y         Float?
 
   @@index([projectId])
 }

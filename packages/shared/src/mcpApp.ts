@@ -31,8 +31,8 @@ export const APP_TOOLS: ToolDef[] = [
     input: z.object({ projectId: id("project"), renderId: id("render").optional() }) },
   { name: "app_rename_project", title: "Rename the edit", app: true, write: true, description: "The Rendrr app: rename the edit.",
     input: z.object({ projectId: id("project"), name: z.string().trim().min(1).max(120) }) },
-  { name: "app_add_comment", title: "Add a comment", app: true, write: true, description: "The Rendrr app: add the user's comment at a moment of the preview (seconds of the edited video), with a drawing on the picture and pictures if they made them.",
-    input: z.object({ projectId: id("project"), time: z.number().min(0).max(24 * 3600), text: z.string().trim().max(2000).default(""), renderId: id("render").optional(), drawing: DrawingInput.optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional() }) },
+  { name: "app_add_comment", title: "Add a comment", app: true, write: true, description: "The Rendrr app: add the user's comment at a moment of the preview (seconds of the edited video), with a drawing on the picture and pictures if they made them, and x/y (0-1 of the frame) when it was pinned to a spot.",
+    input: z.object({ projectId: id("project"), time: z.number().min(0).max(24 * 3600), text: z.string().trim().max(2000).default(""), renderId: id("render").optional(), drawing: DrawingInput.optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional(), x: z.number().finite().min(0).max(1).optional(), y: z.number().finite().min(0).max(1).optional() }) },
   { name: "app_edit_comment", title: "Edit a comment", app: true, write: true, description: "The Rendrr app: change the user's own comment: its text, its drawing (null takes it off), pictures to take off (their ids) or to add.",
     input: z.object({ projectId: id("project"), commentId: id("comment"), text: z.string().trim().max(2000).optional(), drawing: DrawingInput.nullable().optional(), removeImages: z.array(z.string().max(300)).max(COMMENT_IMAGES_MAX).optional(), images: z.array(CommentImageInput).max(COMMENT_IMAGES_MAX).optional() }) },
   { name: "app_delete_comment", title: "Delete a comment", app: true, write: true, description: "The Rendrr app: delete a comment (the user's own, or a client's on their edit) and its pictures.",
@@ -59,7 +59,7 @@ export const APP_TOOLS: ToolDef[] = [
 export type Stroke = { c: string; w: number; p: number[] };
 export type CommentDrawing = { w: number; h: number; strokes: Stroke[] };
 export type CommentImage = { id: string; url: string; w: number | null; h: number | null; name: string | null };
-export type AppComment = { id: string; time: number; text: string; author: string; mine: boolean; resolved: boolean; at: number; edited: boolean; renderId: string | null; drawing: CommentDrawing | null; images: CommentImage[] };
+export type AppComment = { id: string; time: number; text: string; author: string; mine: boolean; resolved: boolean; at: number; edited: boolean; renderId: string | null; drawing: CommentDrawing | null; images: CommentImage[]; x?: number; y?: number };
 export type AppProjectView = {
   project: { id: string; name: string; folder: string; folderId: string; aspect: string; status: string; version: number; updated: number; seconds: number | null; editorUrl: string | null };
   /** The render being watched: the latest preview, or the version picked (a preview or a final); download: its file. */

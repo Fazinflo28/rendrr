@@ -7,7 +7,7 @@ import { desktopAppName, machineWord, whereShort, type RenderWhere, type AppComm
 import { macStatus, renderWhere } from "./macExport";
 import { getOwnedProject, isWatchableKey } from "./projects";
 import { renderResult, renderStatus, startRender } from "./render";
-import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
+import { addNote, commentMedia, deleteComment, editNote, pinOut } from "./commentMedia";
 import { createReviewLink } from "../routes/reviews";
 import { samplesView } from "./samples";
 import { approveStoryboard, latestBoardId } from "./storyboard";
@@ -123,8 +123,8 @@ export async function appProject(userId: string, projectId: string, renderId?: s
   const res = shown ? await renderResult(shown) : null;
   const version = latest?.v ?? p.currentVersion;
   const comments: AppComment[] = [
-    ...(await Promise.all(notes.map(async (n) => ({ id: n.id, time: n.time, text: n.text, author: user?.name || "You", mine: true, resolved: n.resolved, at: n.createdAt.getTime(), edited: !!n.editedAt, renderId: n.renderId, ...(await commentMedia(n)) })))),
-    ...client.map((c) => ({ id: c.id, time: c.time, text: c.text, author: c.author, mine: false, resolved: c.resolved, at: c.createdAt.getTime(), edited: false, renderId: null, drawing: null, images: [] })),
+    ...(await Promise.all(notes.map(async (n) => ({ id: n.id, time: n.time, text: n.text, author: user?.name || "You", mine: true, resolved: n.resolved, at: n.createdAt.getTime(), edited: !!n.editedAt, renderId: n.renderId, ...(await commentMedia(n)), ...pinOut(n) })))),
+    ...client.map((c) => ({ id: c.id, time: c.time, text: c.text, author: c.author, mine: false, resolved: c.resolved, at: c.createdAt.getTime(), edited: false, renderId: null, drawing: null, images: [], ...pinOut(c) })),
   ].sort((a, b) => a.time - b.time || a.at - b.at);
   return {
     project: { id: p.id, name: p.name, folder: folder?.name ?? "", folderId: p.folderId, aspect: p.aspect, status: p.status, version, updated: p.updatedAt.getTime(), seconds: p.outputSeconds || null, editorUrl: WEB() ? `${WEB()}/editor/${p.id}` : null },
