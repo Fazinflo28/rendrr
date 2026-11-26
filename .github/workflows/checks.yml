@@ -98,13 +98,6 @@ jobs:
         image: redis:7
         ports: ["6379:6379"]
         options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-          MINIO_DEFAULT_BUCKETS: rendrr-test
-        ports: ["9000:9000"]
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
@@ -132,6 +125,12 @@ jobs:
         timeout-minutes: 10
       - name: Prisma client
         run: pnpm db:generate
+        timeout-minutes: 5
+      - name: File storage (MinIO)
+        run: |
+          docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
+          for i in $(seq 1 30); do curl -fs http://localhost:9000/minio/health/live && break; sleep 2; done
+          AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin aws --endpoint-url http://localhost:9000 --region us-east-1 s3 mb s3://rendrr-test
         timeout-minutes: 5
       - name: Database tables
         run: pnpm --filter @rendrr/db exec prisma migrate deploy
@@ -155,13 +154,6 @@ jobs:
         image: redis:7
         ports: ["6379:6379"]
         options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-          MINIO_DEFAULT_BUCKETS: rendrr-test
-        ports: ["9000:9000"]
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
@@ -189,6 +181,12 @@ jobs:
         timeout-minutes: 10
       - name: Prisma client
         run: pnpm db:generate
+        timeout-minutes: 5
+      - name: File storage (MinIO)
+        run: |
+          docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
+          for i in $(seq 1 30); do curl -fs http://localhost:9000/minio/health/live && break; sleep 2; done
+          AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin aws --endpoint-url http://localhost:9000 --region us-east-1 s3 mb s3://rendrr-test
         timeout-minutes: 5
       - name: Database tables
         run: pnpm --filter @rendrr/db exec prisma migrate deploy
@@ -212,13 +210,6 @@ jobs:
         image: redis:7
         ports: ["6379:6379"]
         options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-          MINIO_DEFAULT_BUCKETS: rendrr-test
-        ports: ["9000:9000"]
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
@@ -250,6 +241,12 @@ jobs:
       - name: FFmpeg
         run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
         timeout-minutes: 8
+      - name: File storage (MinIO)
+        run: |
+          docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
+          for i in $(seq 1 30); do curl -fs http://localhost:9000/minio/health/live && break; sleep 2; done
+          AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin aws --endpoint-url http://localhost:9000 --region us-east-1 s3 mb s3://rendrr-test
+        timeout-minutes: 5
       - name: Database tables
         run: pnpm --filter @rendrr/db exec prisma migrate deploy
         timeout-minutes: 5
@@ -272,13 +269,6 @@ jobs:
         image: redis:7
         ports: ["6379:6379"]
         options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-          MINIO_DEFAULT_BUCKETS: rendrr-test
-        ports: ["9000:9000"]
     env:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
@@ -310,6 +300,12 @@ jobs:
       - name: FFmpeg
         run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
         timeout-minutes: 8
+      - name: File storage (MinIO)
+        run: |
+          docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
+          for i in $(seq 1 30); do curl -fs http://localhost:9000/minio/health/live && break; sleep 2; done
+          AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin aws --endpoint-url http://localhost:9000 --region us-east-1 s3 mb s3://rendrr-test
+        timeout-minutes: 5
       - name: Database tables
         run: pnpm --filter @rendrr/db exec prisma migrate deploy
         timeout-minutes: 5
