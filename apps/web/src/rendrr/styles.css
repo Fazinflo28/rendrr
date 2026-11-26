@@ -1885,3 +1885,38 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
 @media (max-width: 700px) { .fs-card { width: 88%; } .fs-card.prev, .fs-card.next { opacity: 0; pointer-events: none; } .fs-stage { height: 56vw; } }
 /* Endless loops stop for reduced motion (the global rule would make them flicker). */
 @media (prefers-reduced-motion: reduce) { .ct-track, .skeleton::after, .fs-fill { animation: none !important; } .skeleton::after { display: none; } }
+
+/* ---------- motion round 2: grow from the card, the viewer's player bar, rolling numbers ---------- */
+@keyframes rdBgIn { from { background-color: rgba(5,6,7,0); } to { background-color: #050607; } }
+@keyframes rdPop { 0% { opacity: 0; scale: .6; } 25% { opacity: 1; scale: 1; } 100% { opacity: 0; scale: 1.3; } }
+.gv.grow { animation: rdBgIn .32s var(--ease-out); }
+.gv.grow .gv-media { animation: none; }
+.gv .gv-media { grid-template-columns: minmax(0, 1fr); }
+.gv.out { pointer-events: none; background-color: rgba(5,6,7,0); transition: background-color .34s var(--ease-in-out); }
+.gv.out .gv-bg, .gv.out .gv-side, .gv.out .gv-nav { opacity: 0; transition: opacity .26s var(--ease-in-out); }
+.gv.out .gv-bar { opacity: 0; }
+.gv-player { position: relative; width: min(100%, calc((100dvh - 24px) * var(--ar))); aspect-ratio: var(--ar); max-height: calc(100dvh - 24px); border-radius: var(--r-md); overflow: hidden; background: #000; box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+@supports (container-type: size) { .gv-stage { container-type: size; } .gv .gv-media { max-height: 100cqh; } .gv-player { width: min(100cqw, calc(100cqh * var(--ar))); max-height: 100cqh; } }
+.gv-media .gv-player .gvid.big { width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border-radius: 0; box-shadow: none; object-fit: contain; cursor: pointer; }
+.gv-player:fullscreen { width: 100%; height: 100%; max-height: none; aspect-ratio: auto; border-radius: 0; }
+.gv-bar { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; align-items: center; gap: 6px; padding: 5px 10px 5px 6px; border-radius: 999px; color: #fff; background: rgba(12,13,15,.55); backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4); box-shadow: 0 0 0 1px rgba(255,255,255,.1); opacity: 0; translate: 0 8px; transition: opacity var(--t-base) var(--ease-out), translate var(--t-base) var(--ease-out); }
+.gv-player:hover .gv-bar, .gv-player.paused .gv-bar, .gv-player:focus-within .gv-bar { opacity: 1; translate: 0 0; }
+@media (hover: none) { .gv-bar { opacity: 1; translate: 0 0; } }
+.gv-b { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; transition: background-color var(--t-fast) var(--ease-out), scale var(--t-base) var(--ease-spring); }
+.gv-b:hover { background: rgba(255,255,255,.14); } .gv-b:active { scale: .88; }
+.gv-scrub { position: relative; flex: 1; min-width: 40px; height: 20px; cursor: pointer; touch-action: none; outline: none; }
+.gv-scrub::before, .gv-scrub > i { position: absolute; left: 0; top: 50%; height: 4px; margin-top: -2px; border-radius: 4px; transition: height var(--t-fast) var(--ease-out), margin var(--t-fast) var(--ease-out); }
+.gv-scrub::before { content: ""; right: 0; background: rgba(255,255,255,.2); }
+.gv-buf { width: calc(var(--b, 0) * 100%); background: rgba(255,255,255,.32); }
+.gv-fill { width: calc(var(--p, 0) * 100%); background: var(--accent); box-shadow: 0 0 10px rgba(189,232,22,.45); }
+.gv-scrub > .gv-knob { left: calc(var(--p, 0) * 100%); width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); scale: 0; transition: scale var(--t-base) var(--ease-spring); }
+.gv-scrub:hover::before, .gv-scrub:hover > .gv-buf, .gv-scrub:hover > .gv-fill, .gv-scrub:focus-visible::before, .gv-scrub:focus-visible > .gv-fill { height: 6px; margin-top: -3px; }
+.gv-scrub:hover > .gv-knob, .gv-scrub:active > .gv-knob, .gv-scrub:focus-visible > .gv-knob { scale: 1; }
+.gv-time { flex: none; font-size: 12px; font-variant-numeric: tabular-nums; opacity: .85; white-space: nowrap; padding: 0 2px; }
+.gv-pop { position: absolute; left: 50%; top: 50%; width: 68px; height: 68px; margin: -34px 0 0 -34px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: rgba(0,0,0,.45); backdrop-filter: blur(8px); pointer-events: none; animation: rdPop .6s var(--ease-out) forwards; }
+@media (max-width: 520px) { .gv-time { display: none; } }
+.roll.roll { display: inline-flex; gap: 0; align-items: flex-start; font-variant-numeric: tabular-nums; line-height: 1.2em; }
+.roll .roll-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.roll .roll-d, .roll .roll-c { display: inline-block; height: 1.2em; line-height: 1.2em; overflow: hidden; }
+.roll .roll-s { display: block; white-space: pre; line-height: 1.2em; translate: 0 calc(var(--d, 0) * -1.2em); transition: translate .7s var(--ease-out); }
+@media (prefers-reduced-motion: reduce) { .roll .roll-s, .gv-bar, .gv-scrub > i { transition: none; } .gv-pop { display: none; } }
