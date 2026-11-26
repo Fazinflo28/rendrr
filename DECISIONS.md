@@ -347,7 +347,7 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | 5. Long graphics | Already recorded in parts and joined (lanes of 90 s chunks); the 85 s crash was the thread limit. Tested again (the long-graphic tests). |
 | 6. A failed graphic disappears | It never did: add_graphic treated a failed graphic as missing. Now it can be placed (the result says it failed and how to record it again), and retry_graphic records it again from its own code, with its failed placements. |
 | 7. No way to force a new recording | add_graphic rerecord: true drops the kept recording for those params before the edit is saved (it is recorded again); test_graphic rerecord: true draws the test from the code and drops the kept recording too. |
-| 8. open_projects too big | With a projectId only that edit and its preview are sent, not the list of edits and their picture links (the app loads the list when the user goes back). |
+| 8. open_projects too big | With a projectId only that edit and its preview are sent, not the list of edits and their picture links (the app loads the list when the user goes back). Since 26 November, the list and a project's videos are sent 10 at a time (OPEN_PAGE), not 24: the first screen shows only the projects, and "Show more" loads the rest. |
 | 9. Words twice | get_footage detail "word_times": one list, a word a line in the sound's times ("w12 Every 7.37-7.54", * after a filler). |
 | 10. Asking again and again | get_graphic and get_render wait_seconds (up to 120): answered as soon as it is done or failed. |
 | 11. Free-form data | data (any JSON, declared or not) on a placement (add_graphic data, or params.data, test_graphic data) arrives as window.params.data; it is part of the recording's key. |

@@ -553,6 +553,43 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   function onToolResult(res) {
     const d = res.structuredContent;
     if (res.isError || !d) { state.err = ((res.content || [])[0] || {}).text || null; if (!state.page) loadList(); return; }
+    // A chat opened again later shows the result it kept, with picture and preview links that may have run out (they
+    // last about 7 hours): fresh ones are asked for first.
+    if (linksEnd(d) < Date.now() + 120000) return refreshResult(d);
+    applyResult(d);
+  }
+  // When a signed link stops working (its X-Amz-Date and X-Amz-Expires); Infinity when it does not say.
+  function linkUntil(url) {
+    try {
+      const q = new URL(url).searchParams, t = q.get("X-Amz-Date") || "", e = Number(q.get("X-Amz-Expires"));
+      if (!/^\d{8}T\d{6}Z$/.test(t) || !e) return Infinity;
+      return Date.UTC(+t.slice(0, 4), +t.slice(4, 6) - 1, +t.slice(6, 8), +t.slice(9, 11), +t.slice(11, 13), +t.slice(13, 15)) + e * 1000;
+    } catch { return Infinity; }
+  }
+  // The first moment one of a result's signed links stops working.
+  function linksEnd(d) {
+    let end = Infinity;
+    try { JSON.stringify(d, (k, v) => { if (typeof v === "string" && v.indexOf("X-Amz-Expires=") > 0) end = Math.min(end, linkUntil(v)); return v; }); } catch {}
+    return end;
+  }
+  // The same view again from Rendrr, with new links; the kept result when that does not work (no worse than before).
+  let refreshing = false;
+  async function refreshResult(d) {
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      if (d.samples) { const v = await callTool("app_get_samples", { renderId: d.samples.renderId }); if (v) { state.webUrl = d.webUrl || null; return showSamples(v); } }
+      else if (d.open) { const v = await callTool("app_get_project", { projectId: d.open.project.id }); if (v) { state.webUrl = d.webUrl || null; return showProject(v); } }
+      else {
+        const f = d.folder || null;
+        const p = await callTool("app_list_projects", { offset: 0, limit: (d.projects && d.projects.length) || 10, ...(f ? { folderId: f.id } : {}) });
+        if (p) return applyResult({ ...p, folder: p.folder || f, open: null, webUrl: d.webUrl });
+      }
+    } catch (e) { cardLog("error", "refresh: " + ((e && e.message) || e)); }
+    finally { refreshing = false; }
+    applyResult(d);
+  }
+  function applyResult(d) {
     // With an edit open the list is not sent: loaded when the user goes back to it.
     state.err = null;
     state.page = d.projects ? { projects: d.projects, total: d.total || 0, offset: 0 } : null;
