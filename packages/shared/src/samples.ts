@@ -23,7 +23,9 @@ export const SampleRequestSchema = z.object(SampleRequestShape);
 export type SampleRequest = z.infer<typeof SampleRequestSchema>;
 
 /** One sample: a frame at `at`, or a clip over [at, end). Edit seconds, on the frame grid. */
-export type SampleItem = { kind: "frame" | "clip"; at: number; end?: number; note?: string };
+export type SampleItem = { kind: "frame" | "clip"; at: number; end?: number; note?: string;
+  /** A clip's picture: the edit second it is taken at (where its motion has landed). Left out: its first frame. */
+  stillAt?: number };
 /** A finished sample: its still (a frame's picture, or a clip's first frame) and a clip's file (storage keys). */
 export type SampleDone = SampleItem & { still: string; clip?: string };
 /** What a sample render keeps in its plan: the items asked for, and once done their files. A storyboard (Storyboard

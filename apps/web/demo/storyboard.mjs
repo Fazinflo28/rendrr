@@ -1,6 +1,8 @@
 // Storyboard mode in the editor: the top bar's menu opens the Storyboard; an edit with none offers to make one; the
-// board shows numbered panels with their words and the style sheet (captions as they look, fonts, colours); a panel
-// opens big, a drawing and a comment go on it together (at the panel's moment, on this board), the board counts it;
+// board shows frame cards, two to a row in the video's shape, with their words, and the style sheet one tap away
+// (captions as they look, fonts, colours); a tap on a frame opens its comment box over the board, a drawing and a
+// comment go on it together (at the frame's moment, on this board), the board counts it; picture frames only offers
+// to add the video frames;
 // approving it offers to render the whole video, which starts the preview; Claude's link (?storyboard=<id>) opens that
 // board straight away. Runs on the demo build (node demo/build.mjs first) in Playwright's Chromium.
 //   node demo/storyboard.mjs   (from apps/web)   SHOT=<file.png> also saves a picture of the board.
@@ -40,7 +42,14 @@ check(/edit straight away/.test(await page.locator("#sb-empty").innerText()), "i
 
 // Rendrr picks the panels: six, numbered, with their words; the style sheet beside them.
 await page.locator("#sb-make").click();
-check(await until(async () => (await page.locator("#sb-grid .sb-panel").count()) === 6), "the board has its panels");
+check(await until(async () => (await page.locator("#sb-grid .sb-card").count()) === 6), "the board has its frames");
+// Frame cards: two to a row, each in the video's own shape (this board is 16:9), the whole frame shown.
+const cards = await page.locator("#sb-grid .sb-card .sb-pic").evaluateAll((els) => els.map((el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; }));
+check(cards.length === 6 && Math.abs(cards[0].y - cards[1].y) < 1 && cards[2].y > cards[0].y + cards[0].h - 1 && Math.abs(cards[2].x - cards[0].x) < 1, `two frames to a row (${JSON.stringify(cards.slice(0, 3).map((c) => [Math.round(c.x), Math.round(c.y)]))})`);
+check(cards.every((c) => Math.abs(c.w / c.h - 16 / 9) < 0.03), `each frame in the video's shape (${cards.map((c) => (c.w / c.h).toFixed(3)).join(", ")})`);
+check(await page.locator("#sb-grid .sb-card .sb-pic img").first().evaluate((el) => getComputedStyle(el).objectFit) === "contain", "the whole frame shows, nothing cropped");
+check(await page.locator("#sb-style").count() === 0, "the frames come first; the style sheet is one tap away");
+await page.locator("#sb-style-toggle").click(); await sleep(150);
 check(await page.locator("#sb-title").innerText() === "Fontora launch", "the board's title");
 check(/In review/.test(await page.locator("#sb-meta").innerText()), "it is in review");
 const first = await page.locator('[data-panel="0"]').innerText();
@@ -54,9 +63,12 @@ check(/#34C759[\s\S]*brand green/.test(await page.locator("#sb-colors").innerTex
 check(/cleanup studio/.test(await page.locator("#sb-facts").innerText()), "the rest: look, music, sound, pacing");
 if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT, fullPage: false });
 
-// A panel big: draw on it and say what to change; both go on the board at the panel's moment.
+// A tap on a frame opens its comment box over the board: draw on it and say what to change; both go on the board at
+// the frame's moment.
 await page.locator('[data-panel="1"]').click();
-check(await until(async () => (await page.locator("#sb-one").count()) === 1), "a panel opens big");
+check(await until(async () => (await page.locator("#sb-one-modal #sb-one").count()) === 1), "a tap on a frame opens its comment box");
+check(await page.locator("#sb-grid").count() === 1, "over the board, which stays");
+check(await page.evaluate(() => document.activeElement && document.activeElement.id) === "sb-comment", "ready to type the comment");
 check(await page.locator("#sb-one-title").innerText() === "Meet Fontora", "with its title");
 await page.locator("#sb-draw").click(); await sleep(150);
 const box = await page.locator("#sb-draw-layer").boundingBox();
@@ -72,7 +84,8 @@ await page.locator("#sb-add").click();
 check(await until(async () => (await page.locator("#sb-changes [data-comment]").count()) === 1), "the change is listed on the panel");
 const sent = await page.evaluate(() => globalThis.__rendrrLastComment);
 check(sent && Math.abs(sent.time - 4.5) < 1e-6 && sent.drawing?.strokes?.length === 1 && sent.drawing.strokes[0].p[0] > 0.25 && sent.drawing.strokes[0].p[0] < 0.35, `it went at the panel's moment with the drawing in shares of the picture (${JSON.stringify(sent && { t: sent.time, s: sent.drawing?.strokes?.length })})`);
-await page.locator("#sb-close").click(); await sleep(250);
+await page.locator("#sb-one-close").click(); await sleep(250);
+check(await page.locator("#sb-one-modal").count() === 0, "the comment box closes");
 check(/1/.test(await page.locator('[data-panel="1"] .sb-cm').innerText().catch(() => "")), "the board shows the panel has a change");
 check(/1 change asked/.test(await page.locator("#sb-meta").innerText()) && await page.locator("#sb-send").count() === 1, "and offers to send it to Claude");
 
@@ -92,6 +105,19 @@ check(!!sb && await until(async () => (await page.locator("#storyboard").getAttr
 check(await until(async () => /Approved/.test(await page.locator("#sb-state").innerText().catch(() => ""))), "still approved");
 await page.locator("#sb-close").click(); await sleep(300);
 check(!(await page.evaluate(() => location.search)).includes("storyboard"), "closing it takes the link's ?storyboard= off");
+// Picture frames only: no video frames; the board offers to add them, which makes the clips again as video frames.
+await page.evaluate(() => globalThis.__rendrrNav.go("/editor/p5")); await page.locator("#timeline").waitFor(); await sleep(800);
+await page.locator("#editor-more").click(); await sleep(200); await page.locator("#storyboard-btn").click(); await sleep(600);
+await page.locator("#sb-again").waitFor();
+await page.evaluate(async () => { await globalThis.__rendrrDemoApi?.renderStoryboard?.("p5", { frames: "images", panels: [{ at: 1, title: "Hook" }, { at: 4, end: 7, title: "Reveal" }] }); });
+await page.locator("#sb-close").click(); await sleep(300);
+await page.locator("#editor-more").click(); await sleep(200); await page.locator("#storyboard-btn").click(); await sleep(800);
+{
+  check(await until(async () => /pictures/.test(await page.locator("#sb-meta").innerText().catch(() => ""))), "a board of picture frames says so");
+  check(await page.locator("#sb-grid .sb-card video").count() === 0, "and has no video frames");
+  await page.locator("#sb-video").click();
+  check(await until(async () => /1 video/.test(await page.locator("#sb-meta").innerText().catch(() => ""))), "Add video frames makes the clip panel a video frame again");
+}
 check(errors.length === 0, `no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
 await browser.close(); server.close();
 console.log(fails.length ? `\n${fails.length} failed` : "\nall passed");

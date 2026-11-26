@@ -1237,7 +1237,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     const pick = await pickTarget(c.userId, i.device, { tool: "create_storyboard" });
     if (pick.ask) return { text: pick.ask };
     let r;
-    try { r = await startStoryboard(c.userId, i.projectId, { title: i.title, panels: i.panels, rules: i.rules, palette: i.palette }, pick.target, c.ai ?? "claude"); } catch (e) {
+    try { r = await startStoryboard(c.userId, i.projectId, { title: i.title, panels: i.panels, rules: i.rules, palette: i.palette, frames: i.frames }, pick.target, c.ai ?? "claude"); } catch (e) {
       const err = e as AppError;
       if (err.code === "storyboard" || err.code === "expired") return { text: `${err.message} Nothing was drawn.` };
       throw e;

@@ -74,11 +74,11 @@ export async function samplesView(userId: string, renderId: string): Promise<App
       still: d.still ? await signGet(d.still, LINK_SECONDS, { contentType: "image/jpeg" }) : null,
       clip: d.clip ? await signGet(d.clip, LINK_SECONDS, { contentType: "video/mp4" }) : null,
       // A storyboard's panel words.
-      ...(sp.board ? { title: x.title ?? null, caption: x.caption ?? null, shot: x.shot ?? null, onScreen: x.onScreen ?? null } : {}),
+      ...(sp.board ? { title: x.title ?? null, caption: x.caption ?? null, shot: x.shot ?? null, onScreen: x.onScreen ?? null, ...(x.video ? { video: x.video } : {}) } : {}),
     };
   }));
   const board = sp.board ? {
-    title: sp.board.title, rules: sp.board.rules ?? [], palette: sp.board.palette ?? [], style: sp.board.style ?? null, status: sp.board.status ?? "review", approvedAt: sp.board.approvedAt ?? null,
+    title: sp.board.title, rules: sp.board.rules ?? [], palette: sp.board.palette ?? [], style: sp.board.style ?? null, status: sp.board.status ?? "review", approvedAt: sp.board.approvedAt ?? null, frames: sp.board.frames === "images" ? "images" as const : "video" as const,
     latestVersion: p.currentVersion, url: WEB() ? `${WEB()}/editor/${p.id}?storyboard=${r.id}` : null,
   } : null;
   const status = r.status === "done" || r.status === "failed" ? r.status : (st?.status === "running" ? "running" : "queued");
