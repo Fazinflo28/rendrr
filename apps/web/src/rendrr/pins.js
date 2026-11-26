@@ -7,7 +7,7 @@
 import { html, useState, useEffect, useRef, fmtTime, initials, useToast } from "./ui";
 import { useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
-import { ClipMention, withClipChips } from "./footagePicker";
+import { ClipMention, encodeClips, withClipChips } from "./footagePicker";
 import { clipRefsPlain } from "@rendrr/shared";
 
 const OPEN_EVENT = "rendrr:pin-open";
@@ -159,7 +159,7 @@ export function PinLayer({ projectId, comments = [], pb, off = false, me = "You"
     if (!draft || !text.trim() || busy) return;
     setBusy(true);
     try {
-      await onAdd?.({ time: draft.time, x: draft.x, y: draft.y, text: text.trim() });
+      await onAdd?.({ time: draft.time, x: draft.x, y: draft.y, text: encodeClips(textRef.current, text.trim()) });
       close("draft");
       toast("Comment pinned at " + fmtTime(draft.time), { icon: "comment" });
     } catch (e) { toast(e.message || "Could not add the comment."); } finally { setBusy(false); }
