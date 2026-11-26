@@ -956,9 +956,10 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         vid.addEventListener("play", () => { if (state.drawMode) { state.drawMode = false; render(); } state.viewDrawing = null; });
         new ResizeObserver(() => placeInk()).observe(vid);
         vid.addEventListener("play", () => tellOthers());
-        if (fresh) setTimeout(() => toast("Preview v" + v.preview.version + " is ready. Press play to watch."), 50);
+        if (fresh) setTimeout(() => toast("Preview v" + v.preview.version + " is ready. Press play to " + (v.preview.fix ? "see what changed first." : "watch.")), 50);
         player = vid;
       }
+      if (v.preview.fix && v.preview.fix.moments && v.preview.fix.moments.length && (!fixRun || fixRun.rid !== v.preview.renderId)) setupFix(player, v.preview);
       const canvas = h("canvas", { class: "ink" + (state.drawMode ? " on" : ""), "aria-label": state.drawMode ? "Draw on the picture" : null });
       inkCanvas(canvas);
       // Nothing over the picture but the drawing: the time is in the controls, the version in the menu above.
@@ -984,6 +985,14 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     } else if (v.failed) {
       notes.push(h("div", { class: "note err" }, "The render of v" + v.failed.version + " failed: " + v.failed.error));
     }
+    // Show only the fix (audit #23): what the first play goes through, and the way to watch it all instead.
+    if (fixRun && v.preview && fixRun.rid === v.preview.renderId && fixRun.state !== "done") {
+      const n = fixRun.ms.length;
+      notes.push(h("div", { class: "note row", id: "fix-note" }, h("span", { class: "grow" }, fixRun.state === "on"
+        ? "Playing what changed since v" + fixRun.of + ": moment " + (fixRun.i + 1) + " of " + n + ". The whole preview follows."
+        : "Press play to see just what changed since v" + fixRun.of + " (" + n + (n === 1 ? " moment" : " moments") + "), then the whole preview."),
+        h("button", { class: "btn", onClick: () => fixRun.skip() }, fixRun.state === "on" ? "Watch all" : "Skip")));
+    }
     // Measured against the latest preview (not an older version being watched).
     const lastPrev = (v.versions || []).find((x) => x.kind === "preview") || (v.preview && v.preview.kind !== "final" ? v.preview : null);
     if (!v.rendering && (!lastPrev || lastPrev.version < p.version)) {
@@ -993,6 +1002,36 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     requestAnimationFrame(placeInk);
     return h("div", { class: "pv" }, top, state.share ? h("div", { class: "shade", onClick: () => { state.share = null; render(); } }) : null, state.share ? shareView(v) : null, stage, strip, state.drawMode ? drawBar() : ctrl, notes, commentsView(v),
       state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
+  }
+
+  // Show only the fix (audit #23): after a comment fix, the first play goes through the moments this preview changed
+  // (a few seconds each), then plays the whole preview from the start. Seeking yourself, or "Watch all", ends it.
+  let fixRun = null;
+  function setupFix(vid, pv) {
+    const ms = pv.fix.moments.slice().sort((a, b) => a.from - b.from);
+    const run = { rid: pv.renderId, of: pv.fix.of, ms, i: 0, state: "ready", ours: false };
+    fixRun = run;
+    const jump = (t) => { run.ours = true; try { vid.currentTime = t; } catch (e) { run.ours = false; } };
+    run.skip = () => { const was = run.state; run.state = "done"; if (was === "on") jump(0); render(); };
+    vid.addEventListener("play", () => {
+      if (run.state === "ready") { run.state = "on"; run.i = 0; jump(ms[0].from); render(); }
+      const tick = () => { step(); if (!vid.paused && !vid.ended && run.state === "on") requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    });
+    vid.addEventListener("seeking", () => { if (run.ours) { run.ours = false; return; } if (run.state === "on") { run.state = "done"; render(); } });
+    function step() {
+      if (run.state !== "on") return;
+      const w = ms[run.i];
+      if (vid.currentTime < w.to - 0.05 && !vid.ended) return;
+      run.i++;
+      if (run.i < ms.length) { jump(ms[run.i].from); render(); return; }
+      run.state = "done"; jump(0);
+      if (vid.paused) vid.play().catch(() => {});
+      toast("That was what changed. Now the whole preview.");
+      render();
+    }
+    vid.addEventListener("timeupdate", step);
+    vid.addEventListener("ended", step);
   }
 
   // The seek bar: press anywhere on the strip and drag (the picture follows as you go), the time under the pointer

@@ -88,6 +88,17 @@ export async function appProjects(userId: string, i: { offset?: number; limit?: 
   return { projects, total, offset, ...(folders ? { folders } : {}), folder };
 }
 
+/** Show only the fix (audit #23): the moments a preview changed since the preview its comments were made on (the
+ *  worker keeps them with the render), once one of those comments is resolved. */
+function fixOf(r: { kind: string; plan: unknown }, comments: { id: string; resolved: boolean }[]): { fix?: { of: number; moments: { from: number; to: number }[] } } {
+  const f = r.kind === "preview" ? (r.plan as { fix?: { of?: number; moments?: { from: number; to: number }[]; comments?: { id: string }[] } } | null)?.fix : null;
+  if (!f || typeof f.of !== "number" || !Array.isArray(f.moments) || !f.moments.length) return {};
+  const done = new Set(comments.filter((x) => x.resolved).map((x) => x.id));
+  if (!(f.comments || []).some((x) => done.has(x.id))) return {};
+  const moments = f.moments.filter((w) => Number.isFinite(w.from) && Number.isFinite(w.to) && w.to > w.from).slice(0, 20);
+  return moments.length ? { fix: { of: f.of, moments } } : {};
+}
+
 export async function appProject(userId: string, projectId: string, renderId?: string): Promise<AppProjectView> {
   const p = await getOwnedProject(userId, projectId);
   const [folder, user, latest, done, live, failed, notes, client, all] = await Promise.all([
@@ -117,7 +128,7 @@ export async function appProject(userId: string, projectId: string, renderId?: s
   ].sort((a, b) => a.time - b.time || a.at - b.at);
   return {
     project: { id: p.id, name: p.name, folder: folder?.name ?? "", folderId: p.folderId, aspect: p.aspect, status: p.status, version, updated: p.updatedAt.getTime(), seconds: p.outputSeconds || null, editorUrl: WEB() ? `${WEB()}/editor/${p.id}` : null },
-    preview: shown?.outputKey && res ? { renderId: shown.id, version: shown.version, kind: shown.kind === "final" ? "final" : "preview", url: await signGet(shown.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), download: res.downloadUrl!, fileName: res.fileName, seconds: shown.seconds, quality: shown.quality ?? (shown.kind === "final" ? "1080p" : "540p"), at: shown.createdAt.getTime(), where: whereShort(renderWhere(shown), shown.kind), machine: machineOf(renderWhere(shown)) } : null,
+    preview: shown?.outputKey && res ? { renderId: shown.id, version: shown.version, kind: shown.kind === "final" ? "final" : "preview", url: await signGet(shown.outputKey, LINK_SECONDS, { contentType: "video/mp4" }), download: res.downloadUrl!, fileName: res.fileName, seconds: shown.seconds, quality: shown.quality ?? (shown.kind === "final" ? "1080p" : "540p"), at: shown.createdAt.getTime(), where: whereShort(renderWhere(shown), shown.kind), machine: machineOf(renderWhere(shown)), ...fixOf(shown, comments) } : null,
     versions: versions.map((r) => ({ renderId: r.id, version: r.version, kind: r.kind === "final" ? "final" as const : "preview" as const, quality: r.quality ?? (r.kind === "final" ? "1080p" : "540p"), at: r.createdAt.getTime() })),
     rendering: live && st ? { renderId: live.id, version: live.version, percent: Math.round(st.percent ?? 0), step: st.steps[st.step] ?? null, etaSec: st.etaSec, queued: st.status === "queued", kind: live.kind === "final" ? "final" : "preview", where: whereShort(st.where, live.kind), machine: machineOf(st.where) } : null,
     mac: { online: mac.online, device: mac.device, renders: !!mac.renders, platform: mac.platform ?? "mac", ...((mac.devices?.length ?? 0) > 1 ? { count: mac.devices!.length } : {}) },
