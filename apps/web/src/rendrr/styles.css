@@ -1793,9 +1793,11 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
 .sb-nav:hover:not(:disabled) { background: var(--accent); color: var(--button-ink, #111); }
 .sb-nav:disabled { opacity: .3; cursor: default; }
 .sb-strip-k { margin: 4px 0 8px; }
-.sb-grid.sb-strip { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 10px; max-width: none; margin: 0; }
-.sb-grid.sb-strip.tall { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
-.sb-grid.sb-strip.square { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+/* Exactly two small frames per row, whatever the count: the page scrolls on under the pinned big card. The width
+   is capped by shape so tall frames don't grow huge. */
+.sb-grid.sb-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; max-width: 760px; margin: 0 auto; }
+.sb-grid.sb-strip.tall { max-width: 440px; }
+.sb-grid.sb-strip.square { max-width: 560px; }
 .sb-thumb { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 5px; min-width: 0; border-radius: var(--r-sm, 8px); }
 .sb-thumb .sb-pic { border-radius: var(--r-sm, 8px); overflow: hidden; box-shadow: 0 0 0 1px var(--line); transition: box-shadow .15s var(--ease), transform .15s var(--ease); }
 .sb-thumb .sb-pic img { object-fit: contain; }
@@ -1812,9 +1814,7 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
   .sb-stage .sb-big.tall img, .sb-stage .sb-big.tall video { height: 36vh; }
   .sb-stage-side { max-height: 26vh; }
   .sb-nav { width: 34px; height: 34px; }
-  .sb-grid.sb-strip { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px 8px; }
-  .sb-grid.sb-strip.tall { grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); }
-  .sb-grid.sb-strip.square { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+  .sb-grid.sb-strip { gap: 10px 8px; }
 }
 
 /* ---------- motion: one feel everywhere (glide in, hover reveal, soft entrances) ---------- */

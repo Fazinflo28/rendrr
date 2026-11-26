@@ -404,8 +404,8 @@ html.fs .fstage.tall .fmedia { height: max(200px, 44vh); max-height: none; }
 .fside { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .fwords { font-size: 13px; line-height: 20px; color: var(--dim); display: flex; flex-direction: column; gap: 2px; }
 .fwords b { color: var(--ink); font-weight: 600; }
-.fstrip { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px 8px; }
-.fstrip.tall { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
+.fstrip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 10px; max-width: 640px; margin: 0 auto; }
+.fstrip.tall { max-width: 360px; }
 .fthumb { display: flex; flex-direction: column; gap: 4px; min-width: 0; text-align: left; }
 .fthumb .pic { position: relative; width: 100%; background: #000; border-radius: var(--r-sm); overflow: hidden; box-shadow: 0 0 0 1px var(--hair); transition: box-shadow .15s var(--ease), transform .15s var(--ease); }
 .fthumb:hover .pic { box-shadow: 0 0 0 1px var(--accent-ring); transform: translateY(-1px); }
@@ -417,7 +417,7 @@ html.fs .fstage.tall .fmedia { height: max(200px, 44vh); max-height: none; }
 .fthumb .dot { position: absolute; right: 4px; top: 4px; min-width: 16px; height: 16px; border-radius: 8px; background: var(--accent); color: var(--on-accent); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; padding: 0 4px; }
 .fthumb .cap { font-size: 12px; line-height: 16px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fthumb.on .cap { color: var(--ink); font-weight: 600; }
-@media (max-width: 520px) { .fstage.tall { grid-template-columns: 1fr; } .fstage.tall .fmedia { height: 300px; } .fstrip { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); } .fstrip.tall { grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); } }
+@media (max-width: 520px) { .fstage.tall { grid-template-columns: 1fr; } .fstage.tall .fmedia { height: 300px; } .fstrip { gap: 10px 8px; } }
 
 /* Samples (render_samples): a storyboard of a few frames and short clips, like a generations card: the one picked big,
    the strip under it, what Claude meant by it, and a box to ask for a change on it. */
