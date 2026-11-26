@@ -27,8 +27,8 @@ export function clipRefs(text: string | null | undefined): ClipRef[] {
   return out;
 }
 
-/** The comment's text with each reference as @"name" (how a person reads it). */
-export const clipRefsPlain = (text: string | null | undefined) => (text || "").replace(CLIP_REF_RE, (_m, n: string) => `@"${n.trim()}"`);
+/** The comment's text with each reference as @"short name" (how a person reads it). */
+export const clipRefsPlain = (text: string | null | undefined) => (text || "").replace(CLIP_REF_RE, (_m, n: string) => `@"${clipLabel(n)}"`);
 
 /** The comment's text split into plain parts and clip references, to draw the references as chips. */
 export function clipRefParts(text: string | null | undefined): (string | ClipRef)[] {
@@ -63,3 +63,34 @@ export const hoverKeyOf = (framesDir: string) => `${framesDir.replace(/\/?$/, "/
 export const HOVER_SECONDS = 5;
 /** Redis: a hover clip of this video is in storage. */
 export const hoverMarkKey = (videoId: string) => `hover:${videoId}`;
+
+/** A clip's short, clean name for people: no file extension, no date and time tail (2026-01-28-03-35-04-utc), dashes
+ *  and underscores as spaces, 40 characters at most (cut at a word). The full name stays in the comment's reference. */
+export function clipLabel(name: string | null | undefined): string {
+  let s = (name || "").replace(/[[\]()@\r\n]+/g, " ").trim();
+  s = s.replace(/\.[a-z0-9]{2,4}$/i, "");
+  s = s.replace(/[-_ .]*\d{4}[-_.]\d{2}[-_.]\d{2}(?:[-_ T.]\d{2}[-_.:]\d{2}(?:[-_.:]\d{2})?)?(?:[-_ ]?utc)?$/i, "");
+  s = s.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  if (s.length > 40) { const cut = s.slice(0, 40); s = /\s/.test(cut) ? cut.replace(/\s+\S*$/, "") : cut; }
+  return s || "clip";
+}
+
+/** A clip picked in a comment box: the box shows @label; the comment sent carries @[name](clip:id). */
+export type ClipPick = { label: string; id: string; name: string };
+const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The words typed, with each @label of a picked clip turned into its reference (longest labels first). */
+export function encodeClipPicks(text: string, picks: ClipPick[]): string {
+  let out = text || "";
+  for (const p of [...picks].sort((a, b) => b.label.length - a.label.length)) {
+    out = out.replace(new RegExp("@" + escRe(p.label) + "(?![\\p{L}\\p{N}_\\[])", "gu"), () => clipRef(p.name, p.id));
+  }
+  return out;
+}
+
+/** The other way, to edit a comment again: references become @label, with the picks to turn them back. */
+export function decodeClipPicks(text: string | null | undefined): { text: string; picks: ClipPick[] } {
+  const picks: ClipPick[] = [];
+  const out = (text || "").replace(CLIP_REF_RE, (_m, n: string, id: string) => { const label = clipLabel(n); picks.push({ label, id, name: n.trim() }); return "@" + label; });
+  return { text: out, picks };
+}

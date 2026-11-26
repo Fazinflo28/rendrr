@@ -499,6 +499,8 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
 .mp-tag { position: absolute; left: 6px; top: 6px; padding: 2px 6px; border-radius: 6px; background: rgba(0,0,0,.6); color: #fff; font-size: 10px; line-height: 14px; }
 .mp-tag:empty { display: none; }
 .mp-len { position: absolute; right: 6px; bottom: 6px; padding: 1px 5px; border-radius: 5px; background: rgba(0,0,0,.6); color: #fff; font-size: 10px; line-height: 14px; font-weight: 600; }
+.mp-spin { position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; border: 2.5px solid rgba(255,255,255,.25); border-top-color: #fff; animation: mpspin .8s linear infinite; z-index: 1; }
+@keyframes mpspin { to { transform: rotate(360deg); } }
 .clipchip { display: inline-block; max-width: 100%; padding: 0 6px; margin: 0 1px; border-radius: 6px; background: var(--accent-tint); color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 </style>
 </head>
@@ -1512,7 +1514,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const d = state.pinDraft;
     if (!d || !d.text.trim() || d.sending) return;
     d.sending = true; showPinBox();
-    const text = d.text.trim();
+    const text = encodeClips("pindraft", d.text.trim());
     try {
       const nv = await callTool("app_add_comment", { projectId: v.project.id, time: d.time, text, x: d.x, y: d.y, ...(v.preview ? { renderId: v.preview.renderId } : {}) });
       tellModel("In the Rendrr app the user added a comment pinned to a spot on the picture of \"" + v.project.name + "\" (" + v.project.id + ") at " + fmtTime(d.time) + (v.preview ? " of preview v" + v.preview.version : "") + ": " + text + " (get_comments says what is under the pin)");
@@ -1748,14 +1750,37 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const out = []; let last = 0;
     for (const m of (text || "").matchAll(CLIP_RE)) {
       if (m.index > last) out.push(...linkify(text.slice(last, m.index)));
-      out.push(h("span", { class: "clipchip", title: "Library clip" }, "▶ " + m[1].trim()));
+      out.push(h("span", { class: "clipchip", title: m[1].trim() }, "▶ " + clipLabel(m[1])));
       last = m.index + m[0].length;
     }
     if (last < (text || "").length) out.push(...linkify(text.slice(last)));
     return out;
   }
-  const clipsPlain = (text) => (text || "").replace(CLIP_RE, (_m, n) => '@"' + n.trim() + '"');
-  const MP = { key: null, projectId: null, start: -1, query: "", data: null, dataFor: null, open: new Set(), clips: {}, found: null, foundQ: "", active: 0, hot: null, dismissed: -1, kbd: false, el: null, hoverEl: null, tries: {}, timer: 0, searchT: 0 };
+  // A clip's short, clean name for the box and the chip: no file extension, no date and time tail, dashes as spaces,
+  // 40 characters at most. The full name stays in the reference (and shows on hover).
+  function clipLabel(name) {
+    let x = (name || "").replace(/[[\]()@\r\n]+/g, " ").trim();
+    x = x.replace(/\.[a-z0-9]{2,4}$/i, "");
+    x = x.replace(/[-_ .]*\d{4}[-_.]\d{2}[-_.]\d{2}(?:[-_ T.]\d{2}[-_.:]\d{2}(?:[-_.:]\d{2})?)?(?:[-_ ]?utc)?$/i, "");
+    x = x.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+    if (x.length > 40) { const cut = x.slice(0, 40); x = /\s/.test(cut) ? cut.replace(/\s+\S*$/, "") : cut; }
+    return x || "clip";
+  }
+  // The box shows @label; what is sent carries @[name](clip:id) for each clip picked in that box (longest labels first).
+  const escRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  function encodeClips(key, text) {
+    let out = text || "";
+    for (const p of [...(MP.picks[key] || [])].sort((a, b) => b.label.length - a.label.length)) out = out.replace(new RegExp("@" + escRe(p.label) + "(?![\\p{L}\\p{N}_\\[])", "gu"), () => clipRefOf(p.name, p.id));
+    return out;
+  }
+  // A comment edited again: its references shown as @label, remembered to turn back on save.
+  function decodeClips(key, text) {
+    const picks = [];
+    const out = (text || "").replace(CLIP_RE, (_m, n, id) => { const label = clipLabel(n); picks.push({ label, id, name: n.trim() }); return "@" + label; });
+    MP.picks[key] = picks;
+    return out;
+  }
+  const MP = { picks: {}, dismissedKey: null, key: null, projectId: null, start: -1, query: "", data: null, dataFor: null, open: new Set(), clips: {}, found: null, foundQ: "", active: 0, hot: null, dismissed: -1, kbd: false, el: null, hoverEl: null, tries: {}, timer: 0, searchT: 0 };
   const mpTa = () => (MP.key ? document.querySelector('#root [data-key="' + MP.key + '"]') : null);
   const mpLen = (c) => (c.still ? "Picture" : (c.seconds >= 60 ? Math.floor(c.seconds / 60) + "m " + String(Math.round(c.seconds % 60)).padStart(2, "0") + "s" : Math.round(c.seconds) + "s"));
   /** Hooks a comment box (its data-key) up to the picker; called each time the app draws the box. */
@@ -1829,11 +1854,13 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const ta = mpTa();
     if (!ta) { closeMention(); return; }
     const caret = ta.selectionStart == null ? ta.value.length : ta.selectionStart;
-    const ins = clipRefOf(c.name, c.id) + " ";
+    const label = clipLabel(c.name), ins = "@" + label + " ", key = MP.key, start = MP.start;
+    MP.picks[key] = [...(MP.picks[key] || []).filter((p) => p.label !== label), { label, id: c.id, name: c.name }];
     const end = Math.max(caret, MP.start + 1 + MP.query.length);
     const next = (ta.value.slice(0, MP.start) + ins + ta.value.slice(end)).slice(0, 2000);
     const pos = Math.min(2000, MP.start + ins.length);
     closeMention();
+    MP.dismissed = start; MP.dismissedKey = key; // the @ just filled stays closed
     ta.value = next;
     try { ta.focus({ preventScroll: true }); ta.setSelectionRange(pos, pos); } catch {}
     ta.dispatchEvent(new Event("input", { bubbles: true })); // the box's own handler keeps the words (and the Send button)
@@ -1953,7 +1980,9 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         vid.addEventListener("loadedmetadata", () => fix(vid.videoWidth, vid.videoHeight));
         el.append(vid);
         vid.play && vid.play().catch(() => {});
-      } else el.append(h("span", { class: "mp-tag" }, c.soon ? "Preview on its way…" : c.thumb ? "" : "No preview"));
+      } else el.append(h("span", { class: "mp-tag" }, c.soon || c.thumb ? "" : "No preview"));
+      // A small ring turning in the middle while the clip loads (no words).
+      if (c.preview || c.soon) { const spin = h("span", { class: "mp-spin", role: "status", "aria-label": "Loading the preview" }); el.append(spin); const vid = el.querySelector("video"); if (vid) vid.addEventListener("playing", () => spin.remove(), { once: true }); }
       el.append(h("span", { class: "mp-len" }, mpLen(c)));
       document.body.append(el);
       MP.hoverEl = el;
@@ -2032,7 +2061,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", multiple: true, style: "display:none", onChange: (e) => { addImages(e.target.files); e.target.value = ""; } });
     async function submit() {
       if (!canSend()) return;
-      const text = state.draft.trim(), time = Math.round(momentOf() * 1000) / 1000;
+      const text = encodeClips("draft", state.draft.trim()), time = Math.round(momentOf() * 1000) / 1000;
       const fresh = c.images.filter((im) => !im.existing).map((im) => ({ type: im.type, data: im.data, name: im.name || undefined, w: im.w, h: im.h }));
       const drawing = c.drawing && c.drawing.strokes.length ? { w: c.drawing.w, h: c.drawing.h, strokes: c.drawing.strokes, png: drawingPng(c.drawing) } : null;
       state.sending = true; add.disabled = true; add.textContent = "Saving…";
@@ -2302,7 +2331,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   function startEdit(x) {
     state.compose = { editingId: x.id, time: x.time, drawing: x.drawing ? { w: x.drawing.w, h: x.drawing.h, strokes: x.drawing.strokes.map((st) => ({ c: st.c, w: st.w, p: st.p.slice() })) } : null, drawingChanged: false,
       images: (x.images || []).map((im) => ({ existing: true, id: im.id, url: im.url, name: im.name })), removeImages: [] };
-    state.draft = x.text; state.drawMode = false; state.viewDrawing = null;
+    state.draft = decodeClips("draft", x.text); state.drawMode = false; state.viewDrawing = null;
     seek(x.time); if (player) player.pause();
     render();
     const ta = document.querySelector('[data-key="draft"]'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }

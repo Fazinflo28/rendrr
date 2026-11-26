@@ -6,12 +6,18 @@
 // ClipMention listens to the box itself (inputRef), so a comment box needs only `value` and `onChange`.
 import { React, html, useState, useEffect, useRef, useCallback, fmtLen } from "./ui";
 import { createPortal } from "react-dom";
-import { clipRef, clipRefParts, mentionAt } from "@rendrr/shared";
+import { clipLabel, clipRefParts, encodeClipPicks, mentionAt } from "@rendrr/shared";
 import { api } from "./api";
 
 const W = 340, MAX_H = 380;
 const folderCache = new Map(); // projectId -> { at, data }
 const clipCache = new Map(); // key -> { at, data }
+// The clips picked in each comment box (the box shows @label; encodeClips turns each into @[name](clip:id) to send).
+const picksFor = new WeakMap(); // the box's element -> [{ label, id, name }]
+/** The box's words as they are sent: each picked clip's @label becomes its reference (the clip's real id). */
+export const encodeClips = (el, text) => encodeClipPicks(text || "", (el && picksFor.get(el)) || []);
+/** Picks of a comment being edited again (its references shown as @label). */
+export const rememberClips = (el, picks) => { if (el && picks?.length) picksFor.set(el, [...(picksFor.get(el) || []).filter((p) => !picks.some((q) => q.label === p.label)), ...picks]); };
 const FRESH_MS = 60_000;
 const len = (c) => (c.still ? "Picture" : fmtLen(c.seconds || 0));
 
@@ -25,7 +31,7 @@ async function cached(map, key, load) {
 
 /** A comment's text with each @clip as a chip; `plain` draws the words in between (links, for example). */
 export function withClipChips(text, plain = (s) => s) {
-  return clipRefParts(text).map((p, i) => (typeof p === "string" ? plain(p) : html`<span key=${"clip" + i} class="clip-chip" title="Library clip">${FILM}${p.name}</span>`));
+  return clipRefParts(text).map((p, i) => (typeof p === "string" ? plain(p) : html`<span key=${"clip" + i} class="clip-chip" title=${p.name}>${FILM}${clipLabel(p.name)}</span>`));
 }
 const FILM = html`<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6" /><path d="M6.5 6.2v3.6L9.8 8z" fill="currentColor" /></svg>`;
 const FOLDER = html`<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.7l1.5 1.6h4.8A1.5 1.5 0 0 1 14 6.1v5.4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg>`;
@@ -57,7 +63,7 @@ function HoverPreview({ c, at }) {
   return html`<div class="fp-hover" id="footage-hover" aria-hidden="true" style=${{ left: left + "px", top: top + "px", width: w + "px", height: h + "px" }}>
     ${c.thumb ? html`<img src=${c.thumb} alt="" onLoad=${(e) => fix(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)} />` : html`<span class="fp-hover-none">${FILM}</span>`}
     ${c.preview && html`<video key=${c.id} src=${c.preview} muted autoPlay loop playsInline preload="auto" class=${playing ? "on" : ""} onPlaying=${() => setPlaying(true)} onLoadedMetadata=${(e) => fix(e.currentTarget.videoWidth, e.currentTarget.videoHeight)} />`}
-    ${!c.preview && c.soon && html`<span class="fp-hover-tag">Preview on its way…</span>`}
+    ${(c.preview ? !playing : c.soon) && html`<span class="fp-hover-spin" role="status" aria-label="Loading the preview" />`}
     ${!c.preview && !c.soon && !c.thumb && html`<span class="fp-hover-tag">No preview</span>`}
     <span class="fp-hover-len">${len(c)}</span>
   </div>`;
@@ -171,7 +177,9 @@ export function ClipMention({ projectId, inputRef, value, onChange }) {
     if (!s.m) return;
     const el = inputRef.current, v = el ? el.value : s.value;
     const end = el ? el.selectionStart ?? s.m.caret : s.m.caret;
-    const ins = clipRef(c.name, c.id) + " ";
+    const label = clipLabel(c.name), ins = "@" + label + " ";
+    if (el) rememberClips(el, [{ label, id: c.id, name: c.name }]);
+    dismissed.current = s.m.start; // the @ just filled stays closed
     const next = v.slice(0, s.m.start) + ins + v.slice(Math.max(end, s.m.start + 1 + s.m.query.length));
     s.onChange(next.slice(0, 2000));
     setM(null); setHot(null);

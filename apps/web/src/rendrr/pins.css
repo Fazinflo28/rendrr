@@ -117,3 +117,7 @@
 .clip-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 0 6px; margin: 0 1px; border-radius: 6px; vertical-align: baseline;
   background: var(--accent-tint); color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .clip-chip svg { flex: none; color: var(--accent); }
+/* The hover preview while its clip loads: a small ring turning in the middle, no words. */
+.fp-hover-spin { position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%;
+  border: 2.5px solid rgba(255,255,255,.25); border-top-color: #fff; animation: fp-spin .8s linear infinite; z-index: 1; }
+@keyframes fp-spin { to { transform: rotate(360deg); } }

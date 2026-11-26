@@ -8,7 +8,7 @@
 import { Async, Btn, Icon, Modal, MoreMenu, Player, fmtAgo, fmtTime, html, initials, useApp, useAsync, useCallback, useEffect, useMemo, useNav, usePlayback, useRef, useState, useToast } from "./ui";
 import { api } from "./api";
 import { isSortedByTime, lastWordAtOrBefore, lineOfWord, wordIndexById } from "./words";
-import { ASPECT_RATIO, StyleRulesSchema, aiName, applyOp, areaAt, asSequence, audioSettings, elementKeys, findTemplate, handoffTarget, isCaptionMarker, layoutTimeline, liveFrame, lookTags, objectBoxAt, sequenceClock, sequenceView } from "@rendrr/shared";
+import { ASPECT_RATIO, StyleRulesSchema, aiName, decodeClipPicks, encodeClipPicks, applyOp, areaAt, asSequence, audioSettings, elementKeys, findTemplate, handoffTarget, isCaptionMarker, layoutTimeline, liveFrame, lookTags, objectBoxAt, sequenceClock, sequenceView } from "@rendrr/shared";
 import { MediaBin, SourceMonitor, useLibrary } from "./media";
 import { ColorTab, MaskOverlay, pickColor, useLutData } from "./color";
 import { usePlan } from "./editor/plan";
@@ -22,7 +22,7 @@ import { CreateLinkModal } from "./screens";
 import { ASPECT_NAMES, EMOJI, PANEL_TOOLS, PENS, RAIL, SHORTCUTS, TOOLS, TOOL_ICON, TRACKS, TRACK_H, TRACK_HINT, ZMAX, ZMIN, clamp, drawingPng, linkified, r2, railTab, readCommentImage, useHistory } from "./editor/common";
 import { LiveOverlays, MARK_COLORS, PersonLayer, SeqMedia, WaveLayer, loadPeaks, markNote, readFlag, useMattes, writeFlag } from "./editor/layers";
 import { PinLayer, openPin } from "./pins";
-import { ClipMention, withClipChips } from "./footagePicker";
+import { ClipMention, encodeClips, withClipChips } from "./footagePicker";
 import { AudioTab, ClipTab, dB } from "./editor/clipTab";
 import { AddClipModal, TranscriptLine } from "./editor/panels";
 import { TextTab } from "./editor/textTab";
@@ -568,7 +568,7 @@ function EditorInner({ project, reload, ai, keep }) {
       // A drawing belongs to the frame it was drawn on (the player may have moved since); it goes with a PNG of itself
       // so the AI can see it on that frame (get_comments images), as the Claude app's drawings do.
       const d = cStrokes.length ? { w: plan?.width || 1280, h: plan?.height || 720, strokes: cStrokes } : null;
-      const c = await api.addProjectComment(project.id, { time: d && cAt.current != null ? cAt.current : pb.time, text: draft, drawing: d ? { ...d, png: drawingPng(d) || undefined } : undefined, images: cImgs.map(({ type, data, name, w, h }) => ({ type, data, name: name || undefined, w, h })) });
+      const c = await api.addProjectComment(project.id, { time: d && cAt.current != null ? cAt.current : pb.time, text: encodeClips(cText.current, draft), drawing: d ? { ...d, png: drawingPng(d) || undefined } : undefined, images: cImgs.map(({ type, data, name, w, h }) => ({ type, data, name: name || undefined, w, h })) });
       setComments((x) => [...x, c].sort((a, b) => a.time - b.time));
       setDraft(""); setCStrokes([]); setCImgs([]); setCDraw(false); setCEmoji(false);
       toast("Comment added at " + fmtTime(c.time), { icon: "comment" });
@@ -642,7 +642,7 @@ function EditorInner({ project, reload, ai, keep }) {
   const [cFilter, setCFilter] = useState(() => (comments.some((c) => !c.resolved) || !comments.length ? "open" : "all"));
   const shownComments = cFilter === "open" ? comments.filter((c) => !c.resolved) : cFilter === "done" ? comments.filter((c) => c.resolved) : comments;
   const [ink, setInk] = useState(null); // { time, strokes }: a comment's drawing, shown on the picture at its moment
-  const saveCEdit = async () => { try { const u = await api.editComment(cEdit.id, cEdit.text); setComments((x) => x.map((i) => (i.id === u.id ? { ...i, ...u } : i))); setCEdit(null); } catch (e) { toast(e.message); } };
+  const saveCEdit = async () => { try { const u = await api.editComment(cEdit.id, encodeClipPicks(cEdit.text, cEdit.picks || [])); setComments((x) => x.map((i) => (i.id === u.id ? { ...i, ...u } : i))); setCEdit(null); } catch (e) { toast(e.message); } };
   const delComment = async (c) => {
     if (cDel !== c.id) { setCDel(c.id); setTimeout(() => setCDel((v) => (v === c.id ? null : v)), 3000); return; }
     try { await api.deleteComment(c.id); setComments((x) => x.filter((i) => i.id !== c.id)); setCDel(null); toast("Comment deleted.", { icon: "trash" }); } catch (e) { toast(e.message); }
@@ -786,7 +786,7 @@ function EditorInner({ project, reload, ai, keep }) {
                   <span class=${"gava" + (c.mine ? "" : " client")}>${initials(c.author)}</span>
                   <div class="grow" style="min-width:0">
                     <div class="cmt-top"><b>${c.author}${c.mine ? " (you)" : ""}</b><span class="muted">${fmtAgo(c.at)}${c.edited ? " · edited" : ""}</span><div class="grow" />
-                      <span class="cmt-acts">${c.mine && html`<button class="cmt-act" onClick=${() => setCEdit({ id: c.id, text: c.text })}>Edit</button>`}
+                      <span class="cmt-acts">${c.mine && html`<button class="cmt-act" onClick=${() => setCEdit({ id: c.id, ...decodeClipPicks(c.text) })}>Edit</button>`}
                       <button class=${"cmt-act" + (cDel === c.id ? " warn" : "")} aria-label="Delete comment" onClick=${() => delComment(c)}>${cDel === c.id ? "Delete?" : html`<${Icon} name="trash" />`}</button></span>
                       <button class=${"cmt-check" + (c.resolved ? " on" : "")} aria-label=${c.resolved ? "Reopen" : "Resolve"} title=${c.resolved ? "Reopen" : "Mark as done"} onClick=${() => resolve(c)}><${Icon} name="check" size="12" /></button></div>
                     ${cEdit?.id === c.id ? html`<form class="row" style="gap:6px;margin-top:6px" onSubmit=${(e) => { e.preventDefault(); saveCEdit(); }}><input class="input sm grow" aria-label="Edit comment" value=${cEdit.text} onInput=${(e) => setCEdit({ ...cEdit, text: e.target.value })} onKeyDown=${(e) => e.key === "Escape" && setCEdit(null)} autoFocus /><${Btn} size="sm" type="submit">Save<//><${Btn} size="sm" kind="quiet" type="button" onClick=${() => setCEdit(null)}>Cancel<//></form>`
