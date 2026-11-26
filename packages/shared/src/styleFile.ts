@@ -179,7 +179,7 @@ export function buildStyleFile(i: StyleInput): StyleFile {
   // scenes, camera moves, animations, sound effects and music: one timeline from start to end).
   const moments: [number, string][] = [
     ...(mapPart?.timeline ?? []),
-    ...textGraphics.map((t): [number, string] => [t.start, `text ${Math.round(t.box[2] * 100)}% wide at the ${t.place}, ${t.color}${t.boxColor ? ` on a ${t.boxColor} box` : ""}${t.stroke ? ` with a ${t.stroke} outline` : ""}, ${t.weight}, ${Math.round(t.heightShare * 1000) / 10}% tall; in: ${motionText(t.in)}; out: ${motionText(t.out)}; on ${r2(t.end - t.start)}s`]),
+    ...textGraphics.filter((t) => !mapPart || t.heightShare >= 0.03).map((t): [number, string] => [t.start, `text ${Math.round(t.box[2] * 100)}% wide at the ${t.place}, ${t.color}${t.boxColor ? ` on a ${t.boxColor} box` : ""}${t.stroke ? ` with a ${t.stroke} outline` : ""}, ${t.weight}, ${Math.round(t.heightShare * 1000) / 10}% tall; in: ${motionText(t.in)}; out: ${motionText(t.out)}; on ${r2(t.end - t.start)}s`]),
     ...transitions.list.map((x): [number, string] => [x[0], `${x[1] === "flash" ? "white flash (set_transition flash)" : x[1] === "dip-black" ? "dip to black" : "whip"} at the cut (${x[2]} ms)`]),
     ...(zooms?.list ?? []).map((x): [number, string] => [x[0], `punch ${x[1] > 1 ? "in" : "out"} at the cut (face ${x[1]}x)`]),
     ...(zooms?.slow ?? []).map((x): [number, string] => [x.start, `slow zoom ${x.change > 0 ? "in" : "out"} ${Math.round(Math.abs(x.change) * 100)}% to ${x.end}s`]),
@@ -254,8 +254,12 @@ export function plainWords(f: StyleFile): string[] {
   if (f.zooms?.punchIns) out.push(`Punch-ins: it zooms in on the face ${f.zooms.punchIns} times at cuts (about ${f.zooms.typicalScale ?? 1.2}x).`);
   if (m.animations.count) out.push(`Animations: things on screen ${topCounts(m.animations.kinds, 3).map(([k]) => k.replace(/ \(.*\)/, "")).join(", ")}, about ${Math.round(m.animations.perMin)} times a minute, each in about ${Math.round((m.animations.medianMs ?? 0) / 100) / 10} s.`);
   const c = f.captions;
-  out.push(c ? `Captions: ${c.wordsAtOnce} word${c.wordsAtOnce === 1 ? "" : "s"} at a time, ${c.color}${c.highlight ? ` with the spoken word in ${c.highlight}` : ""}${c.box ? ` on a ${c.box} box` : ""}, ${c.y < 0.4 ? "high up" : c.y > 0.7 ? "low down" : "in the middle"}.` : "Captions: no word-by-word captions found.");
-  if (f.textHabits.count) out.push(`Text pop-ups: ${f.textHabits.count} (${Math.round(f.textHabits.perMin)} a minute), mostly ${topCounts(f.textHabits.places, 1)[0]?.[0] ?? "middle"}.`);
+  const capFont = (f.notes?.fonts ?? []).find((x) => /caption/i.test(x.use));
+  out.push(capFont ? `Captions: ${capFont.family}${capFont.weight ? ` ${capFont.weight}` : ""}, ${capFont.use.replace(/^captions?:?\s*/i, "")}.` : c ? `Captions: ${c.wordsAtOnce} word${c.wordsAtOnce === 1 ? "" : "s"} at a time, ${c.color}${c.highlight ? ` with the spoken word in ${c.highlight}` : ""}${c.box ? ` on a ${c.box} box` : ""}, ${c.y < 0.4 ? "high up" : c.y > 0.7 ? "low down" : "in the middle"}.` : "Captions: none found by measuring (check the frames: small captions can be missed).");
+  // Text on screen, leaving out what sits inside screens and graphics (an app's own words are not text pop-ups).
+  const inScreen = (t: number) => m.scenes.some((s) => s.kind === "graphic / screen" && t >= s.start && t < s.end);
+  const pops = m.kind === "motion graphics" ? f.textGraphics.filter((t) => t.heightShare >= 0.04) : f.textGraphics.filter((t) => !inScreen(t.start) && t.heightShare >= 0.03);
+  if (pops.length) out.push(`Text pop-ups: about ${pops.length} (${Math.round(pops.length / (S / 60))} a minute), mostly ${topCounts(pops.reduce((a, t) => ({ ...a, [t.place]: (a[t.place] ?? 0) + 1 }), {} as Record<string, number>), 1)[0]?.[0] ?? "middle"}.`);
   if (m.broll) out.push(m.broll.count ? `B-roll: ${m.broll.count} times (${Math.round(m.broll.perMin)} a minute), ${Math.round(m.broll.share * 100)}% of the video, about ${m.broll.medianSec} s each: ${topCounts(m.broll.types, 4).map(([k, v]) => `${v} ${k}${v > 1 ? "s" : ""}`).join(", ")}.` : "B-roll: none, the speaker stays on screen.");
   if (m.palette.length) out.push(`Colours: ${m.palette.slice(0, 4).map((p) => p[0]).join(", ")}.`);
   out.push(m.music ? `Music: ${m.music.words.slice(0, 2).join(", ")}${m.music.bpm ? `, about ${Math.round(m.music.bpm)} beats a minute` : ""}${m.music.share < 0.9 ? `, on for ${Math.round(m.music.share * 100)}% of the video` : ", the whole way through"}${m.music.changes.length ? `; it ${m.music.changes.slice(0, 2).map((x) => `${x[1].replace("drops quieter", "gets quieter")} at ${Math.round(x[0])} s`).join(" and ")}` : ""}.` : "Music: none found.");
