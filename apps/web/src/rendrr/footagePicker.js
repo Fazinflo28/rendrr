@@ -138,15 +138,18 @@ export function ClipMention({ projectId, inputRef, value, onChange }) {
     const place = () => {
       const el = inputRef.current;
       if (!el) return;
-      const r = el.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+      // What shows of the window: on a phone the keyboard covers the bottom (visualViewport says how much).
+      const r = el.getBoundingClientRect(), vv = window.visualViewport, vw = window.innerWidth, vh = window.innerHeight;
+      const viewTop = vv ? vv.offsetTop : 0, viewBottom = vv ? vv.offsetTop + vv.height : vh;
       const w = Math.min(W, vw - 16), left = Math.max(8, Math.min(r.left, vw - w - 8));
-      const below = vh - r.bottom - 12, above = r.top - 12;
-      const up = below < 240 && above > below;
-      setPos({ left, width: w, maxH: Math.max(160, Math.min(MAX_H, up ? above : below)), ...(up ? { bottom: vh - r.top + 6 } : { top: r.bottom + 6 }) });
+      const below = viewBottom - r.bottom - 12, above = r.top - viewTop - 12;
+      const up = below < 320 && above > below;
+      setPos({ left, width: w, maxH: Math.max(140, Math.min(MAX_H, up ? above : below)), ...(up ? { bottom: vh - r.top + 6 } : { top: r.bottom + 6 }) });
     };
     place();
     window.addEventListener("resize", place); window.addEventListener("scroll", place, true);
-    return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); };
+    window.visualViewport?.addEventListener("resize", place); window.visualViewport?.addEventListener("scroll", place);
+    return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); window.visualViewport?.removeEventListener("resize", place); window.visualViewport?.removeEventListener("scroll", place); };
   }, [isOpen, value]);
 
   const loadClips = useCallback((key, o) => {

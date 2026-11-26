@@ -1922,9 +1922,10 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
   function placeMention() {
     const ta = mpTa();
     if (!MP.el || !ta) { if (MP.el && !ta) closeMention(); return; }
-    const r = ta.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    const r = ta.getBoundingClientRect(), vv = window.visualViewport, vw = window.innerWidth, vh = window.innerHeight;
+    const viewTop = vv ? vv.offsetTop : 0, viewBottom = vv ? vv.offsetTop + vv.height : vh; // a phone's keyboard covers the bottom
     const w = Math.min(320, vw - 16), left = Math.max(8, Math.min(r.left, vw - w - 8));
-    const below = vh - r.bottom - 10, above = r.top - 10, up = below < 220 && above > below;
+    const below = viewBottom - r.bottom - 10, above = r.top - viewTop - 10, up = below < 300 && above > below;
     Object.assign(MP.el.style, { left: left + "px", width: w + "px", maxHeight: Math.max(140, Math.min(360, up ? above : below)) + "px", top: up ? "" : r.bottom + 6 + "px", bottom: up ? vh - r.top + 6 + "px" : "" });
   }
   // The preview over the cursor: the whole clip in its own shape, its picture at once, then the tiny clip playing.
@@ -1984,6 +1985,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     if (r.kind === "folder" && (e.key === "ArrowRight" || e.key === "ArrowLeft") && (e.key === "ArrowRight") !== MP.open.has(r.rowKey)) { stop(); toggleFolder(r.rowKey, r.f.id); }
   }, true);
   window.addEventListener("resize", () => { placeMention(); sizeHover(); });
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", () => placeMention());
   document.addEventListener("scroll", () => placeMention(), true);
 
   // ---------------- links ----------------
