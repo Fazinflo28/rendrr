@@ -383,33 +383,41 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 }
 @media (pointer: coarse) { .keyhint { display: none; } }
 
-/* Storyboard (create_storyboard): frame cards in the video's own shape, two to a row, scrolling; the whole frame shows.
-   A tap opens the frame's comment box under its row. */
-.fgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.fcard { display: flex; flex-direction: column; min-width: 0; text-align: left; border-radius: var(--r-md); overflow: hidden; background: var(--surface); box-shadow: 0 0 0 1px var(--hair); transition: box-shadow .15s var(--ease), transform .15s var(--ease); }
-.fcard:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px var(--accent-ring); }
-.fcard.on { box-shadow: 0 0 0 2px var(--accent); }
-.fcard .pic { position: relative; width: 100%; background: #000; }
-.fcard .pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
-.fcard .pic .wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; background: linear-gradient(90deg, var(--raised), var(--raised-strong), var(--raised)); background-size: 200% 100%; animation: sk 1.2s linear infinite; }
-.fcard .n { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; line-height: 16px; min-width: 18px; text-align: center; padding: 1px 5px; border-radius: 6px; font-weight: 600; }
-.fcard .len { position: absolute; right: 6px; bottom: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px; line-height: 16px; padding: 1px 6px; border-radius: 6px; font-variant-numeric: tabular-nums; }
-.fcard .dot { position: absolute; right: 6px; top: 6px; min-width: 18px; height: 18px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; padding: 0 5px; }
-.fcard .cap { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; padding: 7px 10px 8px; font-size: 13px; line-height: 18px; min-width: 0; }
-.fcard .cap b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.fcard .cap .small { flex: none; font-variant-numeric: tabular-nums; }
-.fbox { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: var(--r-md); background: var(--panel); box-shadow: 0 0 0 1px var(--accent-ring); }
-.fhead { gap: 6px; font-size: 13px; line-height: 20px; }
-.fhead b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.nav-s { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: var(--ink); background: var(--raised); font-size: 18px; line-height: 1; flex: none; }
-.nav-s svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.fbody { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
-.fbody.tall { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr); align-items: start; }
-.fmedia { position: relative; width: 100%; background: #000; border-radius: var(--r-sm); overflow: hidden; }
+/* Storyboard (create_storyboard): one big preview card pinned at the top (the frame picked, previous and next, its
+   comment box), every frame as a small picture under it. Frames keep the video's own shape and show whole. */
+.fstage { position: sticky; top: 0; z-index: 4; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 10px; margin: 0 -6px; border-radius: var(--r-md); background: var(--panel); box-shadow: 0 0 0 1px var(--hair), 0 12px 24px -14px rgba(0,0,0,.7); }
+.fstage.tall { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr); align-items: start; }
+.fmedia { position: relative; width: 100%; max-height: 420px; margin: 0 auto; background: #000; border-radius: var(--r-sm); overflow: hidden; }
+.fstage:not(.tall) .fmedia { max-width: calc(420px * 16 / 9); }
+.fstage.tall .fmedia { width: auto; height: 420px; max-width: 100%; max-height: none; }
 .fmedia img, .fmedia video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.fmedia .wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 13px; }
+.fmedia .tag { position: absolute; left: 8px; top: 8px; z-index: 2; background: rgba(0,0,0,.6); color: #fff; font-size: 12px; line-height: 18px; padding: 2px 8px; border-radius: var(--r-xs); backdrop-filter: blur(4px); font-variant-numeric: tabular-nums; }
+.fmedia .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; display: grid; place-items: center; backdrop-filter: blur(4px); z-index: 2; }
+.fmedia .nav:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+.fmedia .nav:disabled { opacity: .3; }
+.fmedia .nav.prev { left: 8px; } .fmedia .nav.next { right: 8px; }
+.fmedia .nav svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+html.fs .fmedia { max-height: max(200px, 44vh); }
+html.fs .fstage:not(.tall) .fmedia { max-width: calc(max(200px, 44vh) * 16 / 9); }
+html.fs .fstage.tall .fmedia { height: max(200px, 44vh); max-height: none; }
 .fside { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .fwords { font-size: 13px; line-height: 20px; color: var(--dim); display: flex; flex-direction: column; gap: 2px; }
-@media (max-width: 520px) { .fbody.tall { grid-template-columns: 1fr; } .fbody.tall .fmedia { max-width: 260px; margin: 0 auto; } }
+.fwords b { color: var(--ink); font-weight: 600; }
+.fstrip { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px 8px; }
+.fstrip.tall { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
+.fthumb { display: flex; flex-direction: column; gap: 4px; min-width: 0; text-align: left; }
+.fthumb .pic { position: relative; width: 100%; background: #000; border-radius: var(--r-sm); overflow: hidden; box-shadow: 0 0 0 1px var(--hair); transition: box-shadow .15s var(--ease), transform .15s var(--ease); }
+.fthumb:hover .pic { box-shadow: 0 0 0 1px var(--accent-ring); transform: translateY(-1px); }
+.fthumb.on .pic { box-shadow: 0 0 0 2px var(--accent); }
+.fthumb .pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.fthumb .pic .wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; background: linear-gradient(90deg, var(--raised), var(--raised-strong), var(--raised)); background-size: 200% 100%; animation: sk 1.2s linear infinite; }
+.fthumb .n { position: absolute; left: 4px; top: 4px; background: rgba(0,0,0,.65); color: #fff; font-size: 10px; line-height: 14px; min-width: 16px; text-align: center; padding: 1px 4px; border-radius: 5px; font-weight: 600; }
+.fthumb .len { position: absolute; right: 4px; bottom: 4px; background: rgba(0,0,0,.65); color: #fff; font-size: 10px; line-height: 14px; padding: 1px 5px; border-radius: 5px; font-variant-numeric: tabular-nums; }
+.fthumb .dot { position: absolute; right: 4px; top: 4px; min-width: 16px; height: 16px; border-radius: 8px; background: var(--accent); color: var(--on-accent); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; padding: 0 4px; }
+.fthumb .cap { font-size: 12px; line-height: 16px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fthumb.on .cap { color: var(--ink); font-weight: 600; }
+@media (max-width: 520px) { .fstage.tall { grid-template-columns: 1fr; } .fstage.tall .fmedia { height: 300px; } .fstrip { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); } .fstrip.tall { grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); } }
 
 /* Samples (render_samples): a storyboard of a few frames and short clips, like a generations card: the one picked big,
    the strip under it, what Claude meant by it, and a box to ask for a change on it. */
@@ -842,15 +850,16 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     return h("div", { class: "sv" }, top, viewer, strip, notes, words, said, list, askBox, v.status === "done" ? h("div", { class: "sendbar" }, send, good) : null,
       state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
   }
-  // ---------------- storyboard (create_storyboard): frame cards ----------------
-  // The video as frame cards in its own shape (a horizontal video gives horizontal frames), two to a row, scrolling
-  // down. A tap opens that frame's comment box right under its row: the frame big (a video frame plays there), its
-  // words, the changes asked on it and a box to add one. "Send to Claude" sends them all; "Approve" renders the video.
-  // A board of picture frames only offers to make the video frames.
+  // ---------------- storyboard (create_storyboard): big card on top, every frame under it ----------------
+  // One big preview card pinned at the top shows the frame picked (a video frame plays there), with previous and next
+  // to step through the frames one by one, and under it that frame's words, the changes asked on it and a box to add
+  // one. Under the card, every frame as a small picture in the video's own shape; a tap opens it in the big card.
+  // "Send to Claude" sends the changes; "Approve" renders the video. A board of picture frames only offers the video
+  // frames.
   function boardView() {
     const v = state.samples, p = v.project, b = v.board, n = v.items.length;
-    const k = state.sampleOpen == null ? -1 : Math.min(state.sampleOpen, n - 1), x = k >= 0 ? v.items[k] : null;
-    const back = iconBtn("back", "Open the edit", () => { clearTimeout(samplePoll); state.samples = null; state.sampleOpen = null; sampleMedia = null; openProject(p.id); }, "ghost");
+    const k = n ? Math.min(Math.max(0, state.sampleSel || 0), n - 1) : -1, x = k >= 0 ? v.items[k] : null;
+    const back = iconBtn("back", "Open the edit", () => { clearTimeout(samplePoll); state.samples = null; sampleMedia = null; openProject(p.id); }, "ghost");
     const clips = v.items.filter((i) => i.kind === "clip").length;
     const top = h("div", { class: "row top" }, back,
       h("div", { class: "grow" }, h("h1", { title: b.title }, "Storyboard · " + b.title),
@@ -863,19 +872,14 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     const notes = [];
     if (v.status === "queued" || v.status === "running") notes.push(h("div", { class: "note" }, h("div", { class: "row" }, h("span", { class: "grow" }, v.status === "queued" ? "Waiting to draw the storyboard" : "Drawing the storyboard · " + v.percent + "%" + (v.step ? " · " + v.step : "")), h("span", { class: "muted small" }, left(v.etaSec))), h("div", { class: "prog" }, h("div", { style: "width:" + Math.max(3, v.percent) + "%" }))));
     else if (v.status === "failed") notes.push(h("div", { class: "note err" }, "The storyboard did not draw: " + (v.error || "unknown error")));
-    const open = (j) => { state.sampleOpen = state.sampleOpen === j ? null : j; state.sampleDraft = ""; sampleMedia = null; render(); };
-    const cards = v.items.map((it, j) => {
-      const asked = changesOn(v, it).filter((c) => !c.resolved).length;
-      return h("button", { class: "fcard" + (j === k ? " on" : ""), "data-frame": String(j), "aria-expanded": j === k ? "true" : "false", "aria-label": "Frame " + (j + 1) + (it.title ? ", " + it.title : "") + ": comment on it", onClick: () => open(j) },
-        h("div", { class: "pic", style: "aspect-ratio:" + ratio },
-          it.still ? h("img", { src: it.still, alt: "", loading: "lazy", decoding: "async" }) : h("span", { class: "wait" }, v.status === "failed" ? "Not drawn" : "Drawing…"),
-          h("span", { class: "n" }, String(j + 1)),
-          it.kind === "clip" ? h("span", { class: "len" }, "▶ " + (Math.round((it.end - it.at) * 10) / 10) + "s") : null,
-          asked ? h("span", { class: "dot", title: asked + (asked === 1 ? " change asked" : " changes asked") }, String(asked)) : null),
-        h("div", { class: "cap" }, h("b", {}, it.title || "Frame " + (j + 1)), h("span", { class: "muted small" }, sampleTime(it.at))));
-    });
-    if (x) cards.splice(Math.min(n, k - (k % 2) + 2), 0, frameBox());
-    function frameBox() {
+    // Opens frame j in the big card and brings the card into view (it is pinned at the top while the page scrolls).
+    const go = (j, show) => {
+      state.sampleSel = Math.min(Math.max(0, j), n - 1); state.sampleDraft = ""; sampleMedia = null; render();
+      if (show) { const el = document.querySelector(".fstage"); if (el && el.getBoundingClientRect().top < 0) try { el.scrollIntoView({ block: "start", behavior: "smooth" }); } catch {} }
+    };
+    // The big card.
+    let stage = null;
+    if (x) {
       let media;
       if (x.kind === "clip" && x.clip) {
         if (!sampleMedia || sampleMedia.dataset.src !== x.clip) {
@@ -884,8 +888,12 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         }
         media = sampleMedia;
       } else if (x.still) media = h("img", { src: x.still, alt: "Frame " + (k + 1), onClick: () => { state.lightbox = x.still; render(); }, style: "cursor:zoom-in" });
-      else media = h("div", { class: "wait" }, "Drawing…");
-      const words = h("div", { class: "fwords" }, x.caption ? h("div", {}, "Says: " + x.caption) : null, x.onScreen ? h("div", { class: "muted small" }, "On screen: " + x.onScreen) : null,
+      else media = h("div", { class: "wait" }, v.status === "failed" ? "Not drawn" : "Drawing…");
+      const viewer = h("div", { class: "fmedia" + (tall ? " tall" : ""), style: "aspect-ratio:" + ratio }, media,
+        h("span", { class: "tag" }, (k + 1) + "/" + n + " · " + sampleName(x)),
+        n > 1 ? h("button", { class: "nav prev", "aria-label": "Previous frame", disabled: k === 0, onClick: () => go(k - 1) }, icon("prev")) : null,
+        n > 1 ? h("button", { class: "nav next", "aria-label": "Next frame", disabled: k >= n - 1, onClick: () => go(k + 1) }, icon("next")) : null);
+      const words = h("div", { class: "fwords" }, h("b", {}, (k + 1) + ". " + (x.title || "Frame " + (k + 1))), x.caption ? h("div", {}, "Says: " + x.caption) : null, x.onScreen ? h("div", { class: "muted small" }, "On screen: " + x.onScreen) : null,
         x.shot ? h("div", { class: "muted small" }, "Shows: " + x.shot) : null, x.note ? h("div", { class: "muted small" }, aiName() + ": " + x.note) : null);
       const mine = changesOn(v, x);
       const list = mine.length ? h("div", { class: "chgs" }, mine.map((c) => h("div", { class: "chg" + (c.resolved ? " done" : "") },
@@ -911,19 +919,24 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         } catch (e) { state.sending = false; toast(e.message); render(); }
       }
       const askBox = v.status === "done" ? h("div", { class: "ask" }, ta, h("div", { class: "row" }, add)) : null;
-      return h("div", { class: "fbox", role: "region", "aria-label": "Comment on frame " + (k + 1), "data-key": "fbox" },
-        h("div", { class: "row fhead" }, h("b", { class: "grow" }, (k + 1) + ". " + (x.title || "Frame " + (k + 1)) + " · " + sampleName(x)),
-          h("button", { class: "nav-s", "aria-label": "Previous frame", disabled: k === 0, onClick: () => open(k - 1) }, icon("prev")),
-          h("button", { class: "nav-s", "aria-label": "Next frame", disabled: k >= n - 1, onClick: () => open(k + 1) }, icon("next")),
-          h("button", { class: "nav-s", "aria-label": "Close the comment box", onClick: () => open(k) }, "×")),
-        h("div", { class: "fbody" + (tall ? " tall" : "") }, h("div", { class: "fmedia", style: "aspect-ratio:" + ratio }, media), h("div", { class: "fside" }, askBox, list, words)));
+      stage = h("div", { class: "fstage" + (tall ? " tall" : ""), role: "region", "aria-label": "Frame " + (k + 1) + " of " + n },
+        viewer, h("div", { class: "fside" }, words, askBox, list));
     }
-    const grid = h("div", { class: "fgrid" + (tall ? " tall" : "") }, cards);
+    const thumbs = h("div", { class: "fstrip" + (tall ? " tall" : ""), "data-key": "fstrip" }, v.items.map((it, j) => {
+      const asked = changesOn(v, it).filter((c) => !c.resolved).length;
+      return h("button", { class: "fthumb" + (j === k ? " on" : ""), "data-frame": String(j), "aria-current": j === k ? "true" : null, "aria-label": "Frame " + (j + 1) + (it.title ? ", " + it.title : ""), title: (it.title ? it.title + " · " : "") + sampleName(it), onClick: () => go(j, true) },
+        h("div", { class: "pic", style: "aspect-ratio:" + ratio },
+          it.still ? h("img", { src: it.still, alt: "", loading: "lazy", decoding: "async" }) : h("span", { class: "wait" }, "…"),
+          h("span", { class: "n" }, String(j + 1)),
+          it.kind === "clip" ? h("span", { class: "len" }, "▶ " + (Math.round((it.end - it.at) * 10) / 10) + "s") : null,
+          asked ? h("span", { class: "dot", title: asked + (asked === 1 ? " change asked" : " changes asked") }, String(asked)) : null),
+        h("div", { class: "cap" }, it.title || sampleTime(it.at)));
+    }));
     const opened = v.comments.filter((c) => !c.resolved);
     const send = h("button", { class: "btn primary", disabled: !opened.length || state.sending, onClick: () => sendChanges(v) }, "Send " + (opened.length ? opened.length + " " : "") + (opened.length === 1 ? "change" : "changes") + " to " + aiName());
     const good = h("button", { class: "btn ghost", disabled: v.status !== "done" || state.sending, onClick: () => looksGood(v) }, b.status === "approved" ? "Approved: render the video" : "Approve: render the video");
     const vid = b.frames === "images" && v.status === "done" ? h("button", { class: "btn ghost", disabled: state.sending, onClick: () => askVideoFrames(v) }, "Add video frames") : null;
-    return h("div", { class: "sv" }, top, notes, n ? h("div", { class: "muted small" }, "Tap a frame to comment on it.") : null, grid, v.status === "done" ? h("div", { class: "sendbar" }, send, good, vid) : null,
+    return h("div", { class: "sv" }, top, notes, stage, n > 1 ? h("div", { class: "muted small" }, "All frames · tap one to open it above") : null, thumbs, v.status === "done" ? h("div", { class: "sendbar" }, send, good, vid) : null,
       state.lightbox ? h("div", { class: "lightbox", role: "dialog", "aria-label": "Picture", onClick: () => { state.lightbox = null; render(); } }, h("img", { src: state.lightbox, alt: "" })) : null);
   }
   async function askVideoFrames(v) {
