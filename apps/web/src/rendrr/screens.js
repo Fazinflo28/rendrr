@@ -843,12 +843,47 @@ function GalleryVideo({ g, big }) {
   const stop = () => { const v = ref.current; if (v) { v.pause(); v.currentTime = 0; } };
   return html`<video ref=${ref} class="gvid" src=${src} poster=${g.poster || undefined} muted loop playsinline preload=${g.poster ? "none" : "metadata"} style=${{ aspectRatio: ar }} onMouseEnter=${play} onMouseLeave=${stop} />`;
 }
+// Full-screen viewer for a gallery video: the video big over a blurred copy of itself, details on a glass panel,
+// the arrow keys for the next or last one, Esc or Back to close. The address carries ?v=<id>, so a link opens it.
+function GalleryViewer({ g, list, onPick, onClose, like, recreate, unpublish, recreating }) {
+  const i = list.findIndex((x) => x.id === g.id);
+  const step = (d) => { if (i < 0 || list.length < 2) return; onPick(list[(i + d + list.length) % list.length]); };
+  useEffect(() => {
+    const k = (e) => { if (e.target?.closest?.("input, textarea, select, [contenteditable]")) return; if (e.key === "Escape") onClose(); else if (e.key === "ArrowRight") step(1); else if (e.key === "ArrowLeft") step(-1); };
+    window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k);
+  });
+  useEffect(() => { const o = document.body.style.overflow; document.body.style.overflow = "hidden"; return () => { document.body.style.overflow = o; }; }, []);
+  return html`<div class="gv" role="dialog" aria-modal="true" aria-label=${g.title}>
+    <div class="gv-bg" aria-hidden="true">${g.poster ? html`<img key=${g.id} src=${g.poster} alt="" />` : g.video ? html`<video key=${g.id} src=${g.video} muted loop autoplay playsinline />` : null}</div>
+    <div class="gv-stage" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+      <div class="gv-media" key=${g.id}><${GalleryVideo} g=${g} big /></div>
+      ${list.length > 1 && html`<button class="gv-nav prev" aria-label="Previous video" onClick=${() => step(-1)}><${Icon} name="chev" size="20" /></button><button class="gv-nav next" aria-label="Next video" onClick=${() => step(1)}><${Icon} name="chev" size="20" /></button>`}
+    </div>
+    <aside class="gv-side" key=${"s" + g.id}>
+      <div class="gv-head"><span class="gava">${initials(g.author)}</span><div class="gv-who"><b>${g.author}</b><span>${fmtAgo(g.at)}</span></div><button class="gv-x" aria-label="Close" onClick=${onClose}><${Icon} name="x" size="18" /></button></div>
+      <h2 class="gv-title">${g.title}</h2>
+      <div class="gv-stats"><span><${Icon} name="heart" size="14" />${fmtK(g.likes)} likes</span><span><${Icon} name="refresh" size="14" />${fmtK(g.recreates || 0)} recreates</span></div>
+      ${!g.allowRecreate && html`<p class="t-small muted">The creator turned off recreate for this video.</p>`}
+      <div class="gv-actions">
+        <${Btn} id="recreate-open" icon="refresh" disabled=${!g.allowRecreate || recreating} onClick=${(e) => recreate(e, g)}>${recreating ? "Opening…" : "Recreate this"}<//>
+        <div class="row" style="gap:8px"><${Btn} kind="secondary" icon="heart" className="grow" aria-pressed=${!!g.liked} onClick=${(e) => like(e, g)}>${g.liked ? "Liked" : "Like"} · ${fmtK(g.likes)}<//>${g.mine && html`<${Btn} kind="ghost" onClick=${() => unpublish(g)}>Remove from gallery<//>`}</div>
+      </div>
+      ${list.length > 1 && html`<p class="gv-hint">Use ← and → to browse</p>`}
+    </aside>
+  </div>`;
+}
 function HomePage() { return html`<${ExploreFeed} />`; }
 function ExploreFeed({ types, embedded, title = "Explore", sub }) {
   const { go } = useNav(); const toast = useToast(); const { requireUser, user } = useApp();
   const q = useAsync(() => api.listGallery(), []); const fq = useAsync(() => api.getStyleFilters(), []);
   const [ori, setOri] = useState("All"); const [plat, setPlat] = useState("all"); const [sort, setSort] = useState("trending"); const [mine, setMine] = useState(false);
   const [open, setOpen] = useState(null); const [publish, setPublish] = useState(false); const [recreate, setRecreate] = useState(null); const [limit, setLimit] = useState(60);
+  // The open video lives in the address (?v=<id>): Back closes it and a shared link opens it. shownRef = the videos on screen, for the arrow keys.
+  const shownRef = useRef([]); const pushed = useRef(false);
+  useEffect(() => { const u = new URL(window.location.href); const cur = u.searchParams.get("v"); const want = open?.id || null; if (cur === want) return; if (want) u.searchParams.set("v", want); else u.searchParams.delete("v"); if (want && !cur) { window.history.pushState(null, "", u); pushed.current = true; } else window.history.replaceState(null, "", u); }, [open?.id]);
+  useEffect(() => { const onPop = () => { const id = new URL(window.location.href).searchParams.get("v"); pushed.current = false; setOpen(id ? (shownRef.current.find((x) => x.id === id) || null) : null); }; window.addEventListener("popstate", onPop); return () => window.removeEventListener("popstate", onPop); }, []);
+  useEffect(() => { const id = new URL(window.location.href).searchParams.get("v"); if (id && q.data && !open) { const g = q.data.find((x) => x.id === id); if (g) setOpen(g); } }, [q.data]);
+  const closeOpen = () => { if (pushed.current) { pushed.current = false; window.history.back(); } else setOpen(null); };
   useEffect(() => { setLimit(60); }, [sort, mine, types]);
   const plats = fq.data?.platforms || []; const pl = (k) => (plats.find(([x]) => x === k) || [])[1] || k;
   const like = (e, g) => { e.stopPropagation(); requireUser(async () => { try { const u = await api.likeGalleryItem(g.id); q.setData((d) => d.map((i) => (i.id === g.id ? { ...i, ...u } : i))); if (open?.id === g.id) setOpen((o) => ({ ...o, ...u })); } catch (er) { toast(er.message); } }); };
@@ -870,7 +905,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
     <${Async} q=${q} skeleton=${html`<${MasonrySkeleton} />`} whenEmpty=${html`<${EmptyState} icon="globe" title="The gallery is empty" text="Be the first. Publish a finished project and others can recreate it." action=${html`<${Btn} onClick=${() => setPublish(true)}>Publish a video<//>`} />`}>${(list) => {
       let shown = list.filter((g) => (!types || types.includes(g.style?.type)) && (ori === "All" || g.ori === ori) && (plat === "all" || g.platforms.includes(plat)) && (!mine || g.mine));
       shown = [...shown].sort((a, b) => sort === "newest" ? b.at - a.at : sort === "recreated" ? b.recreates - a.recreates : (b.likes * 3 + b.views / 100) - (a.likes * 3 + a.views / 100));
-      const all = shown; shown = shown.slice(0, limit);
+      const all = shown; shown = shown.slice(0, limit); shownRef.current = all;
       return html`<div class="col" style="gap:12px">
         ${shown.length === 0 ? html`<${EmptyState} icon="search" title="Nothing here yet" text=${mine ? "You have not published a video yet." : "Try another shape or platform."} action=${mine ? html`<${Btn} size="sm" onClick=${() => setPublish(true)}>Publish a video<//>` : null} />` : html`<${Masonry} items=${shown} oriOf=${(g) => g.ori} render=${(g) => html`<div key=${g.id} class="gcard" role="button" tabindex="0" data-g=${g.id} data-ori=${g.ori} onClick=${() => setOpen(g)} onKeyDown=${(e) => e.key === "Enter" && setOpen(g)}>
             <${GalleryVideo} g=${g} />
@@ -880,10 +915,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
           </div>`} />`}
         ${all.length > shown.length && html`<div class="row" style="justify-content:center;padding:8px 0"><${Btn} kind="secondary" id="show-more" onClick=${() => setLimit((l) => l + 60)}>Show more (${all.length - shown.length} left)<//></div>`}
       </div>`; }}<//>
-    ${open && html`<${Modal} title=${open.title} sub=${open.author + " · " + fmtAgo(open.at)} onClose=${() => setOpen(null)} wide footer=${html`${open.mine && html`<${Btn} kind="ghost" onClick=${() => unpublish(open)}>Remove from gallery<//>`}<${Btn} kind="secondary" icon="heart" onClick=${(e) => like(e, open)}>${open.liked ? "Liked" : "Like"} · ${fmtK(open.likes)}<//><${Btn} id="recreate-open" icon="refresh" disabled=${!open.allowRecreate} onClick=${(e) => startRecreate(e, open)}>Recreate this<//>`}>
-      <${GalleryVideo} g=${open} big />
-      ${!open.allowRecreate && html`<p class="t-small muted">The creator turned off recreate for this video.</p>`}
-    <//>`}
+    ${open && html`<${GalleryViewer} g=${open} list=${shownRef.current} onPick=${setOpen} onClose=${closeOpen} like=${like} recreate=${startRecreate} unpublish=${unpublish} recreating=${recreate === open.id} />`}
 
     ${publish && html`<${PublishModal} plats=${plats} onClose=${() => setPublish(false)} onPublished=${(g) => { q.setData((d) => [g, ...(d || [])]); setPublish(false); setMine(true); }} />`}
   </div>`;
