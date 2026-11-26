@@ -12,6 +12,10 @@ export const openPin = (c) => { if (c && c.x != null && c.y != null) window.disp
 export const isPinned = (c) => !!c && c.x != null && c.y != null;
 const NEAR = 1.2; // seconds either side of its moment a dot shows
 const CLOSE_MS = 170;
+const TEXT_MAX = 160; // px the box's text grows to before it scrolls
+/** Grows a text box with its words, up to TEXT_MAX, then it scrolls. */
+const fit = (el) => { if (!el) return; el.style.height = "auto"; const h = Math.min(TEXT_MAX, el.scrollHeight); el.style.height = h + "px"; el.style.overflowY = el.scrollHeight > TEXT_MAX ? "auto" : "hidden"; };
+const SEND = html`<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
 const r4 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 10000) / 10000;
 
 // Which way a box opens from its dot: away from the nearest edges, so it stays on the picture.
@@ -31,6 +35,8 @@ export function PinLayer({ comments = [], pb, off = false, me = "You", onAdd, on
   const [openId, setOpenId] = useState(null);
   const [closing, setClosing] = useState(null); // "draft" | "open"
   const st = useRef({}); st.current = { draft, text, openId, off, pb };
+  const textRef = useRef(null);
+  useEffect(() => { fit(textRef.current); }, [draft, text]);
   const pins = comments.filter(isPinned);
 
   const close = (which, after) => {
@@ -92,10 +98,9 @@ export function PinLayer({ comments = [], pb, off = false, me = "You", onAdd, on
     })}
     ${draft && html`<span class="pin-dot new" style=${{ left: draft.x * 100 + "%", top: draft.y * 100 + "%" }}>${initials(me)}</span>`}
     ${draft && html`<${Bubble} id="pin-compose" x=${draft.x} y=${draft.y} closing=${closing === "draft"} label=${label}>
-      <form onSubmit=${(e) => { e.preventDefault(); post(); }}>
-        <div class="pin-head"><span class="pin-av">${initials(me)}</span><span class="pin-when">Comment at ${fmtTime(draft.time, true)}</span></div>
-        <textarea id="pin-text" class="pin-text" rows="2" placeholder="What should change here?" value=${text} autoFocus onInput=${(e) => setText(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); post(); } }} />
-        <div class="pin-acts"><button type="button" class="pin-btn quiet" id="pin-cancel" onClick=${() => close("draft")}>Cancel</button><button type="submit" class="pin-btn go" id="pin-post" disabled=${!text.trim() || busy}>${busy ? "Posting" : "Comment"}</button></div>
+      <form class="pin-compose" onSubmit=${(e) => { e.preventDefault(); post(); }}>
+        <textarea id="pin-text" ref=${textRef} class="pin-text" rows="1" placeholder="Leave a comment…" value=${text} autoFocus onInput=${(e) => { setText(e.target.value); fit(e.target); }} onKeyDown=${(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); post(); } }} />
+        <div class="pin-foot"><span class="pin-when">${fmtTime(draft.time)}</span><button type="button" class="pin-btn quiet" id="pin-cancel" onClick=${() => close("draft")}>Cancel</button><button type="submit" class="pin-send" id="pin-post" aria-label="Post comment" title="Post (Enter)" disabled=${!text.trim() || busy}>${busy ? html`<span class="pin-spin" />` : SEND}</button></div>
       </form>
     <//>`}
     ${opened && html`<${Bubble} id="pin-view" x=${opened.x} y=${opened.y} closing=${closing === "open"} label=${"Comment by " + (opened.author || "someone")}>
