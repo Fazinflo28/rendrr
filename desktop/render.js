@@ -123,6 +123,8 @@ async function report(t, what, body) {
 
 /** Big files come in several ranged requests at once (one connection to a far-away server is slow; a few fill the line). */
 const PAR = { min: 64 << 20, chunk: 16 << 20, streams: 6 };
+/** How many of a render's files are fetched at once. */
+const FETCH_AT_ONCE = 4;
 const refused = (status) => status === 401 || status === 403;
 
 /**
@@ -370,7 +372,8 @@ async function runTask(t, o) {
     let got = 0;
     const onBytes = (n) => { got += n; state = { ...state, phase: "download", frac: total ? Math.min(1, got / total) : 0 }; say(); };
     const direct = {}; // an original on another drive of a Windows PC: FFmpeg reads it by its path (the app knows it)
-    for (const i of t.inputs || []) {
+    const inflight = new Map(); // one fetch per cached file, though two inputs name it
+    const fetchOne = async (i) => {
       const dest = path.join(job, i.name);
       await fsp.mkdir(path.dirname(dest), { recursive: true });
       if (i.data != null) await fsp.writeFile(dest, Buffer.from(i.data, "base64"));
@@ -384,10 +387,25 @@ async function runTask(t, o) {
       else {
         // A link that stops working mid-way (a Google Drive sign-in lasts an hour): Rendrr gives a fresh one.
         const relink = async () => { const r = await report(t, "link", { name: i.name }); return r && linkOk(r.url, !!o.allowHttp) ? { url: r.url, headers: r.headers && r.headers.authorization ? { authorization: String(r.headers.authorization) } : {} } : null; };
-        if (i.cache || (i.keep && i.size)) await linkInto(await cached(o.cacheDir, { ...i, relink }, onBytes, ac.signal), dest);
+        if (i.cache || (i.keep && i.size)) {
+          const k = String(i.cache || i.keep);
+          if (!inflight.has(k)) inflight.set(k, cached(o.cacheDir, { ...i, relink }, onBytes, ac.signal));
+          await linkInto(await inflight.get(k), dest);
+        }
         else await download(i.url, dest, { headers: i.headers, size: i.size, onBytes, signal: ac.signal, relink });
       }
-    }
+    };
+    // A few files at a time: one at a time, an edit with many clips spent most of its render waiting on each link
+    // (from far away, every file costs a round trip or two before its first byte). The first failure stops the rest.
+    const list = t.inputs || [];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(FETCH_AT_ONCE, list.length) }, async () => {
+      while (next < list.length) {
+        if (ac.signal.aborted) throw Object.assign(new Error("stopped"), { stopped: true });
+        const i = list[next++];
+        try { await fetchOne(i); } catch (e) { ac.abort(); throw e; }
+      }
+    }));
     if ((t.fonts || []).length) {
       const fonts = path.join(o.cacheDir, "fonts");
       await fsp.mkdir(fonts, { recursive: true });
