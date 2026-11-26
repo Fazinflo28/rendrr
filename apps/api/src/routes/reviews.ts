@@ -153,6 +153,9 @@ async function publicReview(tok: string) {
   return r;
 }
 
+/** The name a viewer of a review link typed in (one link can go to several people); "Client" when none came. */
+const authorOf = (name?: string | null) => (name || "").replace(/\s+/g, " ").trim().slice(0, 80) || "Client";
+
 export default async function reviews(app: FastifyInstance) {
   // ---------------- public: the client's review page (no login) ----------------
   app.register(async (pub) => {
@@ -190,7 +193,7 @@ export default async function reviews(app: FastifyInstance) {
       const raw = (req.body as { projectId?: unknown }).projectId;
       const projectId = typeof raw === "string" && raw.length <= 64 ? raw : undefined; // anything else: the review's own edit
       const valid = projectId && (r.projectId === projectId || (r.folderId && (await prisma.project.count({ where: { id: projectId, folderId: r.folderId } }))));
-      const c = await prisma.reviewComment.create({ data: { reviewToken: r.token, projectId: valid ? projectId! : r.projectId, time: Math.round(b.time * 100) / 100, text: b.text, author: "Client", ...(pinOf(b) ?? {}) } });
+      const c = await prisma.reviewComment.create({ data: { reviewToken: r.token, projectId: valid ? projectId! : r.projectId, time: Math.round(b.time * 100) / 100, text: b.text, author: authorOf(b.name), ...(pinOf(b) ?? {}) } });
       return commentOut(c);
     });
     pub.post("/public/reviews/:token/approve", async (req) => {
@@ -203,8 +206,8 @@ export default async function reviews(app: FastifyInstance) {
     pub.post("/public/reviews/:token/changes", async (req) => {
       const r = await publicReview((req.params as { token: string }).token);
       if (!unlocked(req, r)) throw new AppError("This review is locked.", 401, "locked");
-      const { note } = RequestChangesInput.parse(req.body);
-      if (note?.trim()) await prisma.reviewComment.create({ data: { reviewToken: r.token, projectId: r.projectId, time: 0, text: note.trim().slice(0, 4000), author: "Client" } });
+      const { note, name } = RequestChangesInput.parse(req.body);
+      if (note?.trim()) await prisma.reviewComment.create({ data: { reviewToken: r.token, projectId: r.projectId, time: 0, text: note.trim().slice(0, 4000), author: authorOf(name) } });
       const u = await prisma.review.update({ where: { token: r.token }, data: { approved: false }, include: { comments: true } });
       await setStatus(r, "Changes requested");
       return fullReview(u);
