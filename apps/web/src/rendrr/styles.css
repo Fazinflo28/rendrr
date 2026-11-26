@@ -24,7 +24,7 @@
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s6: 24px; --s8: 32px;
   --font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display: "Space Grotesk", "Inter", system-ui, sans-serif;
-  --ease: cubic-bezier(0,0,.2,1);
+  --ease: cubic-bezier(.22,1,.36,1);
   color-scheme: dark;
 }
 :root[data-theme="dark"] {
@@ -1640,7 +1640,7 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
 .as-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .as-drop { display: flex; align-items: center; justify-content: center; gap: 10px; height: 90px; border-radius: 16px; background: var(--accent-soft); color: var(--accent-ink); }
 .as-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-.as-card { position: relative; display: flex; flex-direction: column; border-radius: 16px; overflow: hidden; background: var(--surface); box-shadow: 0 0 0 1px var(--hair); cursor: pointer; outline: none; transition: box-shadow .15s ease, transform .15s ease; }
+.as-card { position: relative; display: flex; flex-direction: column; border-radius: 16px; overflow: hidden; background: var(--surface); box-shadow: 0 0 0 1px var(--hair); cursor: pointer; outline: none; transition: box-shadow .15s var(--ease), transform .15s var(--ease); }
 .as-card:hover, .as-card:focus-visible { box-shadow: 0 0 0 1px var(--hair-strong), 0 8px 24px rgba(0,0,0,.25); }
 .as-thumb { position: relative; aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #0b0c0e; color: var(--ink-faint); }
 .as-thumb > .thumb, .as-thumb > div:not(.as-len) { position: absolute; inset: 0; }
@@ -1649,8 +1649,8 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
 .checker { background-color: #2a2c30; background-image: conic-gradient(#3a3d42 25%, transparent 0 50%, #3a3d42 0 75%, transparent 0); background-size: 18px 18px; }
 .as-thumb.audio { background: linear-gradient(135deg, rgba(189,232,22,.14), rgba(189,232,22,.02)); color: var(--accent-ink); }
 .as-len { position: absolute; right: 8px; bottom: 8px; padding: 2px 7px; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.as-type { position: absolute; left: 8px; top: 8px; display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; font-size: 11px; font-weight: 600; opacity: 0; transition: opacity .15s ease; }
-.as-acts { position: absolute; right: 8px; top: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s ease; }
+.as-type { position: absolute; left: 8px; top: 8px; display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; font-size: 11px; font-weight: 600; opacity: 0; transition: opacity .15s var(--ease); }
+.as-acts { position: absolute; right: 8px; top: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s var(--ease); }
 .as-card:hover .as-acts, .as-card:focus-within .as-acts, .as-card:hover .as-type, .as-card:focus-within .as-type { opacity: 1; }
 .as-act { width: 28px; height: 28px; border: 0; border-radius: 9px; background: rgba(0,0,0,.55); color: #fff; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex: none; }
 .as-act:hover { background: rgba(0,0,0,.75); }
@@ -1690,7 +1690,7 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
   .as-head .search { width: 100% !important; flex: 1 1 100%; }
   .as-acts, .as-type { opacity: 1; }
 }
-.vcard .vfav { position: absolute; right: 8px; top: 8px; z-index: 2; opacity: 0; transition: opacity .15s ease; }
+.vcard .vfav { position: absolute; right: 8px; top: 8px; z-index: 2; opacity: 0; transition: opacity .15s var(--ease); }
 .vcard:hover .vfav, .vcard:focus-within .vfav, .vcard .vfav.on { opacity: 1; }
 @media (max-width: 860px) { .vcard .vfav { opacity: 1; } }
 /* Elements in the editor's Media panel (Assets > Elements): one click puts one on the edit. */
@@ -1776,4 +1776,54 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
   .sb-body { padding: 16px; }
   .sb-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
   .sb-grid.tall { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+}
+
+/* ---------- motion: one feel everywhere (glide in, hover reveal, soft entrances) ---------- */
+/* Only transform, translate, scale and opacity move, so it stays smooth. Reduced motion is handled by the global rule above. */
+:root { --ease-out: cubic-bezier(.22,1,.36,1); --ease-in-out: cubic-bezier(.65,0,.35,1); --ease-spring: cubic-bezier(.34,1.56,.64,1); --t-fast: 120ms; --t-base: 200ms; --t-slow: 320ms; --t-hero: 500ms; }
+
+/* Gallery cards: calm at rest. On hover a thin light ring shows and the glass pills fade in. Cards rise in one after another. */
+@keyframes rdCardIn { from { opacity: 0; translate: 0 10px; scale: .985; } to { opacity: 1; translate: 0 0; scale: 1; } }
+.gcard { transition: transform var(--t-base) var(--ease-out); animation: rdCardIn .42s var(--ease-out) both; animation-delay: calc(var(--rd-r, 0) * 55ms + var(--rd-c, 0) * 25ms); }
+.jm-col > :nth-child(2) { --rd-r: 1; } .jm-col > :nth-child(3) { --rd-r: 2; } .jm-col > :nth-child(4) { --rd-r: 3; } .jm-col > :nth-child(5) { --rd-r: 4; } .jm-col > :nth-child(6) { --rd-r: 5; } .jm-col > :nth-child(n+7) { --rd-r: 6; }
+.jm-col:nth-child(2) { --rd-c: 1; } .jm-col:nth-child(3) { --rd-c: 2; } .jm-col:nth-child(4) { --rd-c: 3; } .jm-col:nth-child(5) { --rd-c: 4; } .jm-col:nth-child(6) { --rd-c: 5; } .jm-col:nth-child(n+7) { --rd-c: 6; }
+.gcard::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.55); opacity: 0; transition: opacity var(--t-base) var(--ease-out); pointer-events: none; z-index: 3; }
+.gcard:hover::after, .gcard:focus-visible::after { opacity: 1; }
+@media (hover: hover) and (pointer: fine) {
+  .gcard .gtop, .gcard .gbot { opacity: 0; transition: opacity var(--t-base) var(--ease-out), translate var(--t-base) var(--ease-out); }
+  .gcard .gtop { translate: 0 -4px; } .gcard .gbot { translate: 0 4px; }
+  .gcard:hover .gtop, .gcard:hover .gbot, .gcard:focus-within .gtop, .gcard:focus-within .gbot { opacity: 1; translate: 0 0; }
+}
+
+/* Loading blocks: a soft light sweeps across instead of blinking. */
+@keyframes rdShimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.skeleton { animation: none; }
+.skeleton::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent); transform: translateX(-100%); animation: rdShimmer 1.4s linear infinite; }
+
+/* Buttons: a quick press, a tiny bounce back. The main button's lip sinks when pressed, like a key. */
+.btn { transition: transform var(--t-base) var(--ease-spring), background-color var(--t-base) var(--ease-out), color var(--t-base) var(--ease-out), opacity var(--t-base) var(--ease-out), box-shadow var(--t-fast) var(--ease-out); }
+.btn:active { transform: scale(.96); transition-duration: 80ms; }
+.btn.primary:active { transform: translateY(1px) scale(.97); box-shadow: inset 0 -1px 0 0 var(--accent-edge), 0 2px 2px rgba(0,0,0,.2); }
+.btn.white:active { transform: translateY(1px) scale(.97); box-shadow: inset 0 -1px 0 0 var(--white-edge), 0 2px 2px rgba(0,0,0,.2); }
+.glike, .grec { transition: background-color var(--t-fast) var(--ease-out), transform var(--t-base) var(--ease-spring); }
+.glike:active, .grec:active { transition-duration: 80ms; }
+
+/* Menus and dropdowns grow out of their button. */
+@keyframes rdMenuIn { from { opacity: 0; translate: 0 -4px; scale: .98; } to { opacity: 1; translate: 0 0; scale: 1; } }
+.menu { animation: rdMenuIn var(--t-base) var(--ease-out); transform-origin: top right; }
+.dd-menu.left { transform-origin: top left; }
+
+/* Dialogs and toasts: a softer, slightly longer entrance. */
+@keyframes rdModalIn { from { opacity: 0; translate: 0 8px; scale: .97; } to { opacity: 1; translate: 0 0; scale: 1; } }
+@keyframes rdToastIn { from { opacity: 0; translate: 0 12px; scale: .96; } to { opacity: 1; translate: 0 0; scale: 1; } }
+.scrim { animation-duration: .24s; }
+.modal { animation: rdModalIn var(--t-slow) var(--ease-out); }
+.toast { animation: rdToastIn var(--t-slow) var(--ease-spring); }
+
+/* Tabs and segment switches: one highlight pill slides to the picked tab (browsers with anchor positioning; others keep the plain highlight). */
+@supports (anchor-scope: all) {
+  .seg, .tabs { position: relative; anchor-scope: --rd-on; isolation: isolate; }
+  .seg > button, .tabs > button { position: relative; z-index: 1; }
+  .seg > button.on, .tabs > button.on { anchor-name: --rd-on; background: transparent; box-shadow: none; }
+  .seg:has(> button.on)::before, .tabs:has(> button.on)::before { content: ""; position: absolute; z-index: 0; position-anchor: --rd-on; top: anchor(top); bottom: anchor(bottom); left: anchor(left); right: anchor(right); border-radius: var(--r-sm); background: var(--raised-strong); box-shadow: var(--shadow-indicator); transition: left .26s var(--ease-out), right .26s var(--ease-out); }
 }
