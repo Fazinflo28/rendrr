@@ -1778,35 +1778,43 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
   .sb-grid.tall { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 }
 
-/* Storyboard frames: frame cards in the video's own shape (a horizontal video gives horizontal frames), two to a row,
-   scrolling down; the whole frame shows, nothing cropped. A tap opens the frame's comment box over the board. */
-.sb-grid, .sb-grid.tall, .sb-grid.square { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin: 0 auto; max-width: 1180px; }
-.sb-grid.tall { max-width: 760px; }
-.sb-grid.square { max-width: 920px; }
-.sb-card { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; transition: transform .15s var(--ease), border-color .15s; }
-.sb-card:hover, .sb-card:focus-visible { border-color: var(--accent-ring); transform: translateY(-2px); }
-.sb-card .sb-pic img, .sb-card .sb-pic video { object-fit: contain; }
-.sb-card .sb-words b { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
-.sb-card .sb-words b .t-small { font-weight: 400; font-variant-numeric: tabular-nums; }
-.sb-tap { position: absolute; right: 8px; top: 8px; display: inline-flex; gap: 4px; align-items: center; background: var(--accent); color: var(--button-ink, #111); font-size: 11px; line-height: 16px; font-weight: 600; padding: 3px 8px; border-radius: 10px; opacity: 0; transition: opacity .15s var(--ease); }
-.sb-card:hover .sb-tap, .sb-card:focus-visible .sb-tap { opacity: 1; }
-@media (hover: none) { .sb-tap { display: none; } }
-.sb-modal { position: fixed; inset: 0; z-index: 61; background: rgba(0,0,0,.62); display: grid; place-items: center; padding: 24px; animation: pop .15s var(--ease); }
-.sb-sheet { position: relative; width: min(1120px, 100%); max-height: calc(100vh - 48px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg, 16px); padding: 20px; box-shadow: 0 24px 80px rgba(0,0,0,.5); }
-.sb-sheet .sb-one { grid-template-columns: minmax(0, 1fr) 320px; }
-.sb-sheet-x { position: absolute; right: 12px; top: 12px; z-index: 2; }
-.sb-sheet .sb-side { padding-top: 28px; }
-.sb-sheet .sb-big img, .sb-sheet .sb-big video { max-height: min(70vh, 720px); }
-.sb-sheet .sb-big.tall img, .sb-sheet .sb-big.tall video { height: min(70vh, 720px); }
+/* Storyboard: one big preview card pinned at the top (the frame picked, previous and next, its comment box) and every
+   frame as a small picture under it; a tap on one opens it in the big card. Frames keep the video's own shape (a
+   horizontal video gives horizontal frames) and show whole, nothing cropped. */
+.sb-stage { position: sticky; top: -20px; z-index: 5; display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; margin: 0 -20px 16px; padding: 16px 20px; background: var(--bg); border-bottom: 1px solid var(--line); box-shadow: 0 14px 24px -18px rgba(0,0,0,.7); }
+.sb-stage-main { position: relative; min-width: 0; }
+.sb-stage .sb-big img, .sb-stage .sb-big video { max-height: min(52vh, 560px); }
+.sb-stage .sb-big:not(.tall) .sb-frame { display: inline-block; width: auto; }
+.sb-stage .sb-big:not(.tall) img, .sb-stage .sb-big:not(.tall) video { width: auto; max-width: 100%; }
+.sb-stage .sb-big.tall img, .sb-stage .sb-big.tall video { height: min(52vh, 560px); }
+.sb-stage-side { max-height: min(52vh, 560px); overflow: auto; padding-right: 2px; }
+.sb-nav { position: absolute; top: 50%; translate: 0 -50%; z-index: 2; width: 40px; height: 40px; border: 0; padding: 0; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.55); color: #fff; cursor: pointer; backdrop-filter: blur(6px); transition: background .15s, color .15s, opacity .15s; }
+.sb-nav.prev { left: 10px; } .sb-nav.next { right: 10px; }
+.sb-nav:hover:not(:disabled) { background: var(--accent); color: var(--button-ink, #111); }
+.sb-nav:disabled { opacity: .3; cursor: default; }
+.sb-strip-k { margin: 4px 0 8px; }
+.sb-grid.sb-strip { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 10px; max-width: none; margin: 0; }
+.sb-grid.sb-strip.tall { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
+.sb-grid.sb-strip.square { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+.sb-thumb { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 5px; min-width: 0; border-radius: var(--r-sm, 8px); }
+.sb-thumb .sb-pic { border-radius: var(--r-sm, 8px); overflow: hidden; box-shadow: 0 0 0 1px var(--line); transition: box-shadow .15s var(--ease), transform .15s var(--ease); }
+.sb-thumb .sb-pic img { object-fit: contain; }
+.sb-thumb:hover .sb-pic, .sb-thumb:focus-visible .sb-pic { box-shadow: 0 0 0 1px var(--accent-ring); transform: translateY(-1px); }
+.sb-thumb.on .sb-pic { box-shadow: 0 0 0 2px var(--accent); }
+.sb-thumb .sb-n { left: 5px; top: 5px; min-width: 18px; height: 18px; padding: 0 5px; font-size: 10px; }
+.sb-thumb .sb-len, .sb-thumb .sb-cm { bottom: 5px; font-size: 10px; line-height: 14px; padding: 1px 5px; }
+.sb-thumb .sb-len { right: 5px; } .sb-thumb .sb-cm { left: 5px; }
+.sb-tl { font-size: 12px; line-height: 16px; color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-thumb.on .sb-tl { color: var(--ink); font-weight: 600; }
 @media (max-width: 860px) {
-  .sb-grid, .sb-grid.tall, .sb-grid.square { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .sb-card .sb-words { padding: 8px 10px 10px; font-size: 12px; line-height: 16px; }
-  .sb-modal { padding: 0; place-items: end stretch; }
-  .sb-sheet { width: 100%; max-height: 92vh; border-radius: 16px 16px 0 0; padding: 14px; padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
-  .sb-sheet .sb-one { grid-template-columns: 1fr; }
-  .sb-sheet .sb-side { padding-top: 0; }
-  .sb-sheet .sb-big img, .sb-sheet .sb-big video { max-height: 48vh; }
-  .sb-sheet .sb-big.tall img, .sb-sheet .sb-big.tall video { height: 48vh; }
+  .sb-stage { grid-template-columns: 1fr; gap: 10px; top: -16px; margin: 0 -16px 12px; padding: 12px 16px; }
+  .sb-stage .sb-big img, .sb-stage .sb-big video { max-height: 36vh; }
+  .sb-stage .sb-big.tall img, .sb-stage .sb-big.tall video { height: 36vh; }
+  .sb-stage-side { max-height: 26vh; }
+  .sb-nav { width: 34px; height: 34px; }
+  .sb-grid.sb-strip { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px 8px; }
+  .sb-grid.sb-strip.tall { grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); }
+  .sb-grid.sb-strip.square { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
 }
 
 /* ---------- motion: one feel everywhere (glide in, hover reveal, soft entrances) ---------- */

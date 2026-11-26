@@ -1,10 +1,11 @@
-// Storyboard mode in the editor (optional): the video as frame cards, each a frame or a short video frame of the edit
-// drawn exactly as the export draws it, in the video's own shape (a horizontal video gives horizontal frames), two to a
-// row, scrolling down. Tap a frame and its comment box opens over the board: write what should change, draw on it to
-// show where (the comment goes with the drawing, so Claude sees what was marked), send the changes to Claude, make the
-// board again from the edit, and approve it; then render the whole video. The style sheet (captions, fonts, colours,
-// rules, look, music, pacing) is one tap away. A board can be picture frames only ("images"): video frames are added on
-// request. Made by Claude (create_storyboard) or here ("Make storyboard": Rendrr picks the scenes, titles and graphics).
+// Storyboard mode in the editor (optional): one big preview card pinned at the top shows the frame picked (a frame or
+// a short video frame of the edit, drawn exactly as the export draws it, in the video's own shape), with buttons (and the
+// arrow keys) to step through the frames one by one; under it every frame as a small picture, and a tap on one opens it
+// in the big card. The big card carries the comment box: write what should change, draw on the frame to show where (the
+// comment goes with the drawing, so Claude sees what was marked), send the changes to Claude, make the board again from
+// the edit, and approve it; then render the whole video. The style sheet (captions, fonts, colours, rules, look, music,
+// pacing) is one tap away. A board can be picture frames only ("images"): video frames are added on request. Made by
+// Claude (create_storyboard) or here ("Make storyboard": Rendrr picks the scenes, titles and graphics).
 import { html, Btn, Icon, useState, useEffect, useRef } from "./ui";
 import { api } from "./api";
 import { panelOf, sampleClock } from "@rendrr/shared";
@@ -64,23 +65,17 @@ function StyleSheet({ b }) {
   </section>`;
 }
 
-/** One frame card: the whole frame in the video's shape (a video frame plays while the pointer is on it), its number,
- *  its words and how many changes are asked on it. A tap opens its comment box. */
-function Panel({ x, k, ratio, changes, onOpen }) {
-  const v = useRef(null);
-  return html`<button class="sb-card" data-panel=${k} aria-label=${`Frame ${k + 1}${x.title ? ", " + x.title : ""}: comment on it`} onClick=${onOpen} onPointerEnter=${() => v.current?.play?.().catch(() => {})} onPointerLeave=${() => { if (v.current) { v.current.pause(); v.current.currentTime = 0; } }}>
+/** One frame in the strip under the big card: a small picture in the video's shape, its number, a video frame's length
+ *  and how many changes are asked on it. A tap opens it in the big card. */
+function Thumb({ x, k, ratio, on, changes, onOpen }) {
+  return html`<button class=${"sb-thumb" + (on ? " on" : "")} data-panel=${k} aria-label=${`Frame ${k + 1}${x.title ? ", " + x.title : ""}`} aria-current=${on ? "true" : undefined} title=${(x.title ? x.title + " · " : "") + timeOf(x)} onClick=${onOpen}>
     <div class="sb-pic" style=${{ aspectRatio: ratio }}>
-      ${x.clip ? html`<video ref=${v} src=${x.clip} poster=${x.still || undefined} muted loop playsinline preload="none" />` : x.still ? html`<img src=${x.still} alt="" loading="lazy" />` : html`<span class="sb-wait">Drawing…</span>`}
+      ${x.still ? html`<img src=${x.still} alt="" loading="lazy" />` : html`<span class="sb-wait">…</span>`}
       <span class="sb-n">${k + 1}</span>
       ${x.kind === "clip" && html`<span class="sb-len">▶ ${Math.round((x.end - x.at) * 10) / 10}s</span>`}
-      ${changes > 0 && html`<span class="sb-cm" title=${changes + (changes === 1 ? " change asked" : " changes asked")}><${Icon} name="comment" size="11" /> ${changes}</span>`}
-      <span class="sb-tap" aria-hidden="true"><${Icon} name="comment" size="12" /> Comment</span>
+      ${changes > 0 && html`<span class="sb-cm" title=${changes + (changes === 1 ? " change asked" : " changes asked")}><${Icon} name="comment" size="10" /> ${changes}</span>`}
     </div>
-    <div class="sb-words">
-      <b>${x.title || "Frame " + (k + 1)} <span class="t-small muted">${timeOf(x)}</span></b>
-      ${x.caption ? html`<span class="sb-say">“${x.caption}”</span>` : x.onScreen ? html`<span class="sb-say">${x.onScreen}</span>` : null}
-      ${x.shot && html`<span class="t-small muted">${x.shot}</span>`}
-    </div>
+    <div class="sb-tl">${x.title || timeOf(x)}</div>
   </button>`;
 }
 
@@ -89,7 +84,7 @@ export function StoryboardWindow({ projectId, initialId, onClose, onSeek, onRend
   const [cur, setCur] = useState(null);
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
-  const [sel, setSel] = useState(null); // the frame whose comment box is open
+  const [sel, setSel] = useState(0); // the frame in the big card
   const [draft, setDraft] = useState("");
   const [drawing, setDrawing] = useState(false), [strokes, setStrokes] = useState([]), [pen, setPen] = useState(PENS[0]);
   const [ink, setInk] = useState(null); // a comment's drawing shown on the frame
@@ -113,11 +108,18 @@ export function StoryboardWindow({ projectId, initialId, onClose, onSeek, onRend
     const t = setTimeout(async () => { try { const nv = await api.getStoryboard(cur.renderId); setCur((c) => (c && c.renderId === nv.renderId ? nv : c)); } catch {} }, 2500);
     return () => clearTimeout(t);
   }, [cur]);
-  const closeSel = () => { setSel(null); setDrawing(false); setStrokes([]); setInk(null); };
+  // Opens frame k in the big card (a draft or drawing in progress stays with the frame it was for: it is cleared).
   const openSel = (k) => { setSel(k); setDraft(""); setStrokes([]); setDrawing(false); setInk(null); };
-  useEffect(() => { const k = (e) => { if (e.key === "Escape" && !busy) { if (sel != null) closeSel(); else onClose(); } }; window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [sel, busy]);
-  // The comment box takes the keys as it opens, so a tap and typing is all it takes.
-  useEffect(() => { if (sel != null) setTimeout(() => box.current?.focus?.(), 60); }, [sel]);
+  // Escape closes the board (or stops drawing); the arrow keys step through the frames, unless the comment is being typed.
+  useEffect(() => {
+    const k = (e) => {
+      if (busy) return;
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || "") || e.target?.isContentEditable;
+      if (e.key === "Escape") { if (drawing) { setDrawing(false); setStrokes([]); } else onClose(); }
+      else if (!typing && (e.key === "ArrowRight" || e.key === "ArrowLeft")) { const n = cur?.items?.length || 0; if (n) { e.preventDefault(); openSel(Math.min(n - 1, Math.max(0, (sel || 0) + (e.key === "ArrowRight" ? 1 : -1)))); } }
+    };
+    window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k);
+  }, [sel, busy, drawing, cur]);
 
   const refresh = async () => { if (!cur) return; try { const nv = await api.getStoryboard(cur.renderId); setCur(nv); setBoards((bs) => (bs || []).map((b) => (b.renderId === nv.renderId ? nv : b))); } catch (e) { toast?.(e.message); } };
   // Made from the edit as it is now: Claude's panels and words again when the board was Claude's, else Rendrr's own.
@@ -133,7 +135,7 @@ export function StoryboardWindow({ projectId, initialId, onClose, onSeek, onRend
     try {
       const nv = await api.renderStoryboard(projectId, req, (p) => setBusy({ percent: p.percent ?? 0, step: (p.steps || [])[p.step] || null }));
       setBusy(null);
-      if (nv) { setCur(nv); setBoards((bs) => [nv, ...(bs || []).filter((x) => x.renderId !== nv.renderId)].slice(0, 4)); setSel(null); }
+      if (nv) { setCur(nv); setBoards((bs) => [nv, ...(bs || []).filter((x) => x.renderId !== nv.renderId)].slice(0, 4)); openSel(0); }
     } catch (e) { setBusy(null); setError(e.message); }
   };
   // Video frames for a board of pictures: each panel asked as a clip becomes its video frame (Rendrr picks them when
@@ -149,7 +151,7 @@ export function StoryboardWindow({ projectId, initialId, onClose, onSeek, onRend
   const shape = shapeOf(cur);
   const openComments = (cur?.comments || []).filter((c) => !c.resolved);
   const changesOn = (k) => (cur?.comments || []).filter((c) => !c.resolved && panelOf(items, c.time) === k);
-  const x = sel != null ? items[sel] : null;
+  const si = items.length ? Math.min(Math.max(0, sel || 0), items.length - 1) : -1, x = si >= 0 ? items[si] : null;
   const pics = b?.frames === "images";
 
   // Drawing on the open frame: strokes in shares of its picture.
@@ -178,7 +180,7 @@ export function StoryboardWindow({ projectId, initialId, onClose, onSeek, onRend
       const d = strokes.length ? { w: cur.width || 1280, h: cur.height || 720, strokes } : null;
       await api.addProjectComment(projectId, { time: Math.round(t * 1000) / 1000, text: draft, renderId: cur.renderId, drawing: d ? { ...d, png: drawingPng(d) || undefined } : undefined });
       setDraft(""); setStrokes([]); setDrawing(false);
-      toast?.(`Comment added to frame ${sel + 1}`, { icon: "comment" });
+      toast?.(`Comment added to frame ${si + 1}`, { icon: "comment" });
       await refresh();
     } catch (e) { toast?.(e.message); } finally { setPosting(false); }
   };
@@ -201,7 +203,7 @@ export function StoryboardWindow({ projectId, initialId, onClose, onSeek, onRend
       ${cur && html`<div class="t-small muted" id="sb-meta">v${cur.version} · ${items.length} ${items.length === 1 ? "frame" : "frames"}${nClips ? ` (${nClips} video)` : pics ? " (pictures)" : ""} · <span class=${"sb-state" + (b?.status === "approved" ? " ok" : "")} id="sb-state">${b?.status === "approved" ? "Approved" : "In review"}</span>${openComments.length ? ` · ${openComments.length} ${openComments.length === 1 ? "change" : "changes"} asked` : ""}</div>`}
     </div>
     <div class="row sb-acts">
-      ${boards?.length > 1 && html`<select class="input sm" id="sb-pick" aria-label="Earlier boards" value=${cur?.renderId} onChange=${(e) => { setSel(null); setCur(boards.find((x) => x.renderId === e.target.value)); }}>${boards.map((x, i) => html`<option key=${x.renderId} value=${x.renderId}>${i === 0 ? "Latest" : "Earlier"} · v${x.version} · ${x.board?.title || ""}</option>`)}</select>`}
+      ${boards?.length > 1 && html`<select class="input sm" id="sb-pick" aria-label="Earlier boards" value=${cur?.renderId} onChange=${(e) => { openSel(0); setCur(boards.find((x) => x.renderId === e.target.value)); }}>${boards.map((x, i) => html`<option key=${x.renderId} value=${x.renderId}>${i === 0 ? "Latest" : "Earlier"} · v${x.version} · ${x.board?.title || ""}</option>`)}</select>`}
       ${b && html`<${Btn} kind="ghost" size="sm" id="sb-style-toggle" aria-expanded=${showStyle ? "true" : "false"} onClick=${() => setShowStyle((s) => !s)}>${showStyle ? "Hide style sheet" : "Style sheet"}<//>`}
       ${openComments.length > 0 && html`<${Btn} kind="secondary" size="sm" id="sb-send" icon="send" onClick=${sendToClaude}>Send ${openComments.length} to Claude<//>`}
       ${cur && pics && html`<${Btn} kind="secondary" size="sm" id="sb-video" icon="film" disabled=${!!busy} onClick=${addVideo}>Add video frames<//>`}
@@ -212,50 +214,49 @@ export function StoryboardWindow({ projectId, initialId, onClose, onSeek, onRend
     </div>
   </header>`;
 
-  // The comment box of the frame tapped: the frame big (draw on it to show where), its words, the changes asked on it.
-  const sheet = x && html`<div class="sb-modal" id="sb-one-modal" role="dialog" aria-modal="true" aria-label=${"Comment on frame " + (sel + 1)} onClick=${(e) => { if (e.target === e.currentTarget) closeSel(); }}>
-    <div class="sb-sheet">
-      <button class="btn icon quiet sb-sheet-x" id="sb-one-close" aria-label="Close the comment box" onClick=${closeSel}><${Icon} name="x" size="16" /></button>
-      <div class="sb-one" id="sb-one">
-        <div class=${"sb-big" + (shape.tall || shape.square ? " tall" : "")}><div class="sb-frame">
-          ${x.clip ? html`<video ref=${media} key=${x.clip} src=${x.clip} poster=${x.still || undefined} controls=${!drawing} playsinline loop preload="metadata" />` : x.still ? html`<img src=${x.still} alt=${panelName(x, sel)} />` : html`<div class="sb-wait" style=${{ position: "static", aspectRatio: shape.ratio, width: "100%" }}>Drawing…</div>`}
-          ${(drawing || strokes.length || ink) && html`<svg class=${"sb-ink" + (drawing ? " drawing" : "")} id="sb-draw-layer" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Your drawing on this frame" onPointerDown=${drawDown}>${(ink || []).map(poly)}${strokes.map(poly)}${live.current ? poly(live.current, "live") : null}</svg>`}
-          <span class="sb-n big">${sel + 1}</span>
-        </div></div>
-        <div class="sb-side">
-          <div><div class="sb-k">${timeOf(x)}${x.kind === "clip" ? " · video frame" : ""}</div><div class="sb-h3" id="sb-one-title">${x.title || "Frame " + (sel + 1)}</div></div>
-          <div class="sb-ask">
-            <textarea ref=${box} class="input" id="sb-comment" rows="3" maxlength="2000" placeholder=${`Your comment on frame ${sel + 1}: what should change?`} value=${draft} onInput=${(e) => setDraft(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); post(); } }} />
-            <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
-              <${Btn} id="sb-add" icon="comment" disabled=${!canPost || posting || cur.status !== "done"} onClick=${post}>${posting ? "Saving…" : strokes.length ? "Add comment with drawing" : "Add comment"}<//>
-              <${Btn} kind=${drawing ? "primary" : "ghost"} size="xs" id="sb-draw" onClick=${() => { media.current?.pause?.(); setInk(null); setDrawing((d) => !d); }}>${drawing ? "Drawing: on" : "✎ Draw on it"}<//>
-              ${drawing && PENS.map((p) => html`<button key=${p} class=${"sb-pen" + (pen === p ? " on" : "")} style=${{ background: p }} aria-label=${"Pen " + p} onClick=${() => setPen(p)} />`)}
-              ${strokes.length > 0 && html`<button class="btn sm quiet" id="sb-undo" onClick=${() => setStrokes((s) => s.slice(0, -1))}>Undo</button><button class="btn sm quiet" onClick=${() => setStrokes([])}>Clear</button>`}
-            </div>
-          </div>
-          <div class="sb-chgs" id="sb-changes">${(cur.comments || []).filter((c) => panelOf(items, c.time) === sel).map((c) => html`<div key=${c.id} class=${"sb-chg" + (c.resolved ? " done" : "")} data-comment=${c.id}>
-            <span class="grow">${c.text || "(a drawing)"}</span>
-            ${c.drawing && html`<button class="cmt-badge" onClick=${() => setInk(ink === c.drawing.strokes ? null : c.drawing.strokes)}>✎ ${ink === c.drawing.strokes ? "Hide" : "Show"}</button>`}
-            <button class="btn icon sm quiet" aria-label=${c.resolved ? "Open again" : "Resolve"} title=${c.resolved ? "Open again" : "Resolve"} onClick=${() => resolve(c)}><${Icon} name="check" size="12" /></button></div>`)}</div>
-          ${x.caption && html`<div><div class="sb-k">Says</div><div id="sb-one-caption">“${x.caption}”</div></div>`}
-          ${x.onScreen && html`<div><div class="sb-k">On screen</div><div class="t-small">${x.onScreen}</div></div>`}
-          ${x.shot && html`<div><div class="sb-k">Shows</div><div class="t-small">${x.shot}</div></div>`}
-          ${x.note && html`<div><div class="sb-k">Claude's note</div><div class="t-small">${x.note}</div></div>`}
-          <div class="row" style="gap:6px;flex-wrap:wrap">
-            <${Btn} kind="ghost" size="xs" disabled=${sel === 0} onClick=${() => openSel(sel - 1)}>← Previous<//>
-            <${Btn} kind="ghost" size="xs" disabled=${sel >= items.length - 1} onClick=${() => openSel(sel + 1)}>Next →<//>
-            <${Btn} kind="ghost" size="xs" id="sb-go" icon="play" onClick=${() => { onSeek?.(x.at); onClose(); }}>Go to ${sampleClock(x.at)}<//>
-          </div>
+  // The big card, pinned at the top: the frame picked, big (a video frame plays; draw on it to show where), buttons to
+  // step to the previous and next frame, and beside it (under it on a phone) its comment box, the changes asked on it
+  // and its words.
+  const stage = x && html`<section class="sb-stage" id="sb-stage" aria-label=${"Frame " + (si + 1) + " of " + items.length}>
+    <div class="sb-stage-main">
+      <div class=${"sb-big" + (shape.tall || shape.square ? " tall" : "")} id="sb-one"><div class="sb-frame">
+        ${x.clip ? html`<video ref=${media} key=${x.clip} src=${x.clip} poster=${x.still || undefined} controls=${!drawing} playsinline loop preload="metadata" />` : x.still ? html`<img key=${x.still} src=${x.still} alt=${panelName(x, si)} />` : html`<div class="sb-wait" style=${{ position: "static", aspectRatio: shape.ratio, width: "100%" }}>Drawing…</div>`}
+        ${(drawing || strokes.length || ink) && html`<svg class=${"sb-ink" + (drawing ? " drawing" : "")} id="sb-draw-layer" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Your drawing on this frame" onPointerDown=${drawDown}>${(ink || []).map(poly)}${strokes.map(poly)}${live.current ? poly(live.current, "live") : null}</svg>`}
+        <span class="sb-n big">${si + 1}</span>
+      </div>
+      ${items.length > 1 && html`<button class="sb-nav prev" id="sb-prev" aria-label="Previous frame" disabled=${si === 0} onClick=${() => openSel(si - 1)}><${Icon} name="back" size="16" /></button>
+        <button class="sb-nav next" id="sb-next" aria-label="Next frame" disabled=${si >= items.length - 1} onClick=${() => openSel(si + 1)}><${Icon} name="chev" size="16" /></button>`}</div>
+    </div>
+    <div class="sb-side sb-stage-side">
+      <div class="row" style="gap:8px;align-items:baseline;justify-content:space-between">
+        <div style="min-width:0"><div class="sb-k" id="sb-count">${si + 1} / ${items.length} · ${timeOf(x)}${x.kind === "clip" ? " · video frame" : ""}</div><div class="sb-h3" id="sb-one-title">${x.title || "Frame " + (si + 1)}</div></div>
+        <${Btn} kind="ghost" size="xs" id="sb-go" icon="play" onClick=${() => { onSeek?.(x.at); onClose(); }}>Go to ${sampleClock(x.at)}<//>
+      </div>
+      <div class="sb-ask">
+        <textarea ref=${box} class="input" id="sb-comment" rows="2" maxlength="2000" placeholder=${`Your comment on frame ${si + 1}: what should change?`} value=${draft} onInput=${(e) => setDraft(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); post(); } }} />
+        <div class="row" style="gap:6px;align-items:center;flex-wrap:wrap">
+          <${Btn} id="sb-add" icon="comment" disabled=${!canPost || posting || cur.status !== "done"} onClick=${post}>${posting ? "Saving…" : strokes.length ? "Add comment with drawing" : "Add comment"}<//>
+          <${Btn} kind=${drawing ? "primary" : "ghost"} size="xs" id="sb-draw" onClick=${() => { media.current?.pause?.(); setInk(null); setDrawing((d) => !d); }}>${drawing ? "Drawing: on" : "✎ Draw on it"}<//>
+          ${drawing && PENS.map((p) => html`<button key=${p} class=${"sb-pen" + (pen === p ? " on" : "")} style=${{ background: p }} aria-label=${"Pen " + p} onClick=${() => setPen(p)} />`)}
+          ${strokes.length > 0 && html`<button class="btn sm quiet" id="sb-undo" onClick=${() => setStrokes((s) => s.slice(0, -1))}>Undo</button><button class="btn sm quiet" onClick=${() => setStrokes([])}>Clear</button>`}
         </div>
       </div>
+      <div class="sb-chgs" id="sb-changes">${(cur.comments || []).filter((c) => panelOf(items, c.time) === si).map((c) => html`<div key=${c.id} class=${"sb-chg" + (c.resolved ? " done" : "")} data-comment=${c.id}>
+        <span class="grow">${c.text || "(a drawing)"}</span>
+        ${c.drawing && html`<button class="cmt-badge" onClick=${() => setInk(ink === c.drawing.strokes ? null : c.drawing.strokes)}>✎ ${ink === c.drawing.strokes ? "Hide" : "Show"}</button>`}
+        <button class="btn icon sm quiet" aria-label=${c.resolved ? "Open again" : "Resolve"} title=${c.resolved ? "Open again" : "Resolve"} onClick=${() => resolve(c)}><${Icon} name="check" size="12" /></button></div>`)}</div>
+      ${x.caption && html`<div><div class="sb-k">Says</div><div id="sb-one-caption">“${x.caption}”</div></div>`}
+      ${x.onScreen && html`<div><div class="sb-k">On screen</div><div class="t-small">${x.onScreen}</div></div>`}
+      ${x.shot && html`<div><div class="sb-k">Shows</div><div class="t-small">${x.shot}</div></div>`}
+      ${x.note && html`<div><div class="sb-k">Claude's note</div><div class="t-small">${x.note}</div></div>`}
     </div>
-  </div>`;
+  </section>`;
 
   let body;
   if (boards === null) body = html`<div class="skeleton" style="height:240px" />`;
   else if (!cur) body = html`<div class="sb-empty" id="sb-empty">
       <div class="sb-h3">Storyboard the video first</div>
-      <p class="muted">The video as frame cards, drawn exactly as the export draws them. Scroll through, tap any frame to comment on it, approve it, then render the whole video. Or skip it and edit straight away.</p>
+      <p class="muted">The video's key frames, drawn exactly as the export draws them: step through them in a big preview, comment on any frame, approve it, then render the whole video. Or skip it and edit straight away.</p>
       <p class="t-small muted">Ask Claude to storyboard it (its own beats, script lines and rules), or let Rendrr pick the scenes, titles and graphics:</p>
       <div class="row" style="gap:8px;justify-content:center;flex-wrap:wrap">
         <${Btn} id="sb-make" icon="film" disabled=${!!busy} onClick=${() => make(false)}>Make storyboard<//>
@@ -266,7 +267,9 @@ export function StoryboardWindow({ projectId, initialId, onClose, onSeek, onRend
       ${cur.status === "failed" && html`<div class="sb-note err" role="alert">The storyboard did not draw: ${cur.error}</div>`}
       ${(cur.status === "queued" || cur.status === "running") && html`<div class="sb-note" role="status">${cur.status === "queued" ? "Waiting to draw the storyboard" : `Drawing the storyboard · ${cur.percent}%${cur.step ? " · " + cur.step : ""}`}</div>`}
       ${b && showStyle && html`<${StyleSheet} b=${b} />`}
-      <div class=${"sb-grid" + (shape.tall ? " tall" : shape.square ? " square" : "")} id="sb-grid">${items.map((it, k) => html`<${Panel} key=${k} x=${it} k=${k} ratio=${shape.ratio} changes=${changesOn(k).length} onOpen=${() => openSel(k)} />`)}</div>
+      ${stage}
+      <div class="sb-k sb-strip-k">All frames · tap one to open it above</div>
+      <div class=${"sb-grid sb-strip" + (shape.tall ? " tall" : shape.square ? " square" : "")} id="sb-grid">${items.map((it, k) => html`<${Thumb} key=${k} x=${it} k=${k} ratio=${shape.ratio} on=${k === si} changes=${changesOn(k).length} onOpen=${() => openSel(k)} />`)}</div>
     </div>`;
 
   return html`<div class="sb" role="dialog" aria-label="Storyboard" id="storyboard" data-render=${cur?.renderId || ""}>
@@ -274,6 +277,5 @@ export function StoryboardWindow({ projectId, initialId, onClose, onSeek, onRend
     ${busy && html`<div class="sb-busy" role="status" id="sb-busy"><div class="t-small">${busy.step || "Drawing"} · ${busy.percent}%</div><div class="bar"><i style=${{ width: Math.max(3, busy.percent) + "%" }} /></div></div>`}
     ${error && html`<div class="sb-note err" role="alert" id="sb-error">${error}</div>`}
     <div class="sb-body">${body}</div>
-    ${sheet}
   </div>`;
 }
