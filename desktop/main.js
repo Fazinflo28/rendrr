@@ -7,7 +7,7 @@
 const { app, BrowserWindow, Menu, Notification, ipcMain, powerMonitor, powerSaveBlocker, screen, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName } = require("./links");
+const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName, shouldKeepAwake, awakeKeeper } = require("./links");
 const os = require("node:os");
 const { execFileSync } = require("node:child_process");
 const render = require("./render");
@@ -86,8 +86,11 @@ const renderFile = () => path.join(app.getPath("userData"), "render.json");
 const renders = { ready: false, busy: false, version: null, have: [], why: `Checking this ${MACHINE}'s FFmpeg`, enabled: true, current: null };
 try { renders.enabled = JSON.parse(fs.readFileSync(renderFile(), "utf8")).enabled !== false; } catch { /* first run: on */ }
 const renderInfo = () => ({ protocol: render.PROTOCOL, ready: renders.ready, enabled: renders.enabled, busy: renders.busy, cpus: os.availableParallelism ? os.availableParallelism() : os.cpus().length, have: renders.have, ffmpeg: renders.version, why: renders.why, label: renders.current });
+// A Mac stays awake while the app is open and can render here (links.js awakeKeeper): checked whenever that changes.
+const keepAwake = awakeKeeper(powerSaveBlocker);
+const syncAwake = () => { if (!IS_WIN) keepAwake.sync(shouldKeepAwake(renders)); };
 // Every Rendrr window hears when this Mac starts or finishes a render (it tells Rendrr straight away).
-const tellWindows = () => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("rendrr:render-state", renderInfo()); };
+const tellWindows = () => { syncAwake(); for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("rendrr:render-state", renderInfo()); };
 async function checkFfmpeg() {
   const p = await render.probeFfmpeg(ffmpegPath());
   Object.assign(renders, { ready: p.ok && p.have.includes("libx264"), version: p.version, have: p.have, why: p.ok ? (p.have.includes("libx264") ? null : `this ${MACHINE}'s FFmpeg cannot make H.264`) : p.why });

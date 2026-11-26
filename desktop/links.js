@@ -87,4 +87,23 @@ function macName(computerName, hostname) {
   return pick.replace(/[\u0000-\u001f]/g, "").slice(0, 40);
 }
 
-module.exports = { START_URL, APP_HOSTS, AUTH_HOSTS, isDownload, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName };
+// Kept awake while the app is open (Mac): a Mac that dozed off while the app sat open stopped hearing from Rendrr, so
+// every render asked for then went to Rendrr's cloud. While rendering here is on and this Mac's FFmpeg can make
+// renders, the app holds one "prevent-app-suspension" blocker (the screen can still turn off; closing the lid still
+// sleeps the Mac); it lets go when rendering is turned off or the app quits.
+const shouldKeepAwake = (r) => !!(r && r.enabled && r.ready);
+/** One blocker at most, started and stopped as sync(want) says. blocker: Electron's powerSaveBlocker. */
+function awakeKeeper(blocker) {
+  let id = null;
+  const held = () => id != null && blocker.isStarted(id);
+  return {
+    held,
+    sync(want) {
+      if (want && !held()) { try { id = blocker.start("prevent-app-suspension"); } catch { id = null; /* not on this system */ } }
+      else if (!want && id != null) { try { if (blocker.isStarted(id)) blocker.stop(id); } catch { /* already gone */ } id = null; }
+      return held();
+    },
+  };
+}
+
+module.exports = { START_URL, APP_HOSTS, AUTH_HOSTS, isDownload, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, browserMayOpen, macName, shouldKeepAwake, awakeKeeper };
