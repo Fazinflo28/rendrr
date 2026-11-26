@@ -8,6 +8,7 @@ import {
 import { api } from "./api";
 import { DropboxPanel, GooglePhotosPanel } from "./cloudSources";
 import { AppIcon } from "./logo";
+import { Breakdown } from "./breakdown";
 const IS_PROD = process.env.NODE_ENV === "production";
 
 /* ---------- login: a centred modal over Explore (Higgsfield layout: showcase left, form right) ---------- */
@@ -958,6 +959,7 @@ function GalleryViewer({ g, list, onPick, onClose, like, recreate, unpublish, re
         <${Btn} id="recreate-open" icon="refresh" disabled=${!g.allowRecreate || recreating} onClick=${(e) => recreate(e, g)}>${recreating ? "Opening…" : "Recreate this"}<//>
         <div class="row" style="gap:8px"><${Btn} kind="secondary" icon="heart" className="grow" aria-pressed=${!!g.liked} onClick=${(e) => like(e, g)}>${g.liked ? "Liked" : "Like"} · <${Roll} n=${g.likes} /><//>${g.mine && html`<${Btn} kind="ghost" onClick=${() => unpublish(g)}>Remove from gallery<//>`}</div>
       </div>
+      <${Breakdown} key=${"b" + g.id} g=${g} />
       ${list.length > 1 && html`<p class="gv-hint">Use ← and → to browse${g.video ? ", Space to pause" : ""}</p>`}
     </aside>
   </div>`;

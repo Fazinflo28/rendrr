@@ -1,0 +1,42 @@
+/* Explore's style breakdown in the viewer's side panel (breakdown.js). Same dark look, lime as the one colour. */
+.bd { display: flex; flex-direction: column; gap: 10px; padding-top: 14px; border-top: 1px solid var(--hair-strong); }
+.bd-head { display: flex; flex-direction: column; gap: 2px; }
+.bd-head b { font-family: var(--font-display); font-size: 15px; letter-spacing: .02em; text-transform: uppercase; color: var(--accent); }
+.bd-head span { font-size: 12px; color: var(--muted); }
+.bd-sum { margin: 0; font-size: 14px; line-height: 21px; color: var(--ink); }
+.bd-facts { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.bd-facts div { padding: 8px 10px; border-radius: var(--r-sm); background: var(--raised); box-shadow: 0 0 0 1px var(--hair); }
+.bd-facts dt { font-size: 11px; line-height: 14px; color: var(--muted); }
+.bd-facts dd { margin: 2px 0 0; font-size: 13px; line-height: 18px; font-weight: 500; color: var(--ink); }
+.bd-sec { border-radius: var(--r-md); background: var(--raised); box-shadow: 0 0 0 1px var(--hair); }
+.bd-sec > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; font-size: 13px; font-weight: 500; }
+.bd-sec > summary::-webkit-details-marker { display: none; }
+.bd-sec > summary::after { content: ""; width: 7px; height: 7px; margin-left: 6px; border-right: 1.5px solid var(--ink-faint); border-bottom: 1.5px solid var(--ink-faint); transform: rotate(45deg) translateY(-2px); transition: transform .2s var(--ease); }
+.bd-sec[open] > summary::after { transform: rotate(-135deg) translateY(-1px); }
+.bd-sec > summary span { flex: 1; }
+.bd-sec > summary em { font-style: normal; font-size: 11px; padding: 1px 7px; border-radius: var(--pill); background: var(--accent-soft); color: var(--accent); }
+.bd-sec > summary:hover { color: var(--accent); }
+.bd-body { padding: 0 12px 12px; }
+.bd-list { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 19px; color: var(--ink-dim); }
+.bd-list b { color: var(--ink); font-weight: 600; }
+.bd-list li::marker { color: var(--accent); }
+.bd-shots { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.bd-shots li { padding: 8px 10px; border-radius: var(--r-sm); background: rgba(0,0,0,.18); box-shadow: inset 2px 0 0 var(--accent-tint); }
+.bd-shot-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bd-time { font-size: 12px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.bd-tag { font-size: 11px; color: var(--muted); text-align: right; }
+.bd-shots p { margin: 4px 0 0; font-size: 13px; line-height: 19px; color: var(--ink); }
+.bd-shots q { display: block; margin-top: 4px; font-size: 12px; line-height: 17px; font-style: italic; color: var(--ink-faint); }
+.bd-font { display: flex; flex-direction: column; padding: 6px 0; border-bottom: 1px solid var(--hair); }
+.bd-font:last-of-type { border-bottom: 0; }
+.bd-font b { font-size: 13px; color: var(--ink); }
+.bd-font span { font-size: 12px; line-height: 17px; color: var(--ink-dim); }
+.bd-pal { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.bd-pal span { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px 3px 4px; border-radius: var(--pill); background: rgba(0,0,0,.2); font-size: 11px; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+.bd-pal i { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255,255,255,.15); }
+.bd-wait { display: flex; flex-direction: column; gap: 10px; }
+.bd-wait p { margin: 0; }
+.bd-bar { width: 100%; }
+.bd-note { margin: 0; font-size: 11px; line-height: 16px; color: var(--ink-ghost); }
+/* With a breakdown the side panel gets a little wider so the detail reads comfortably. */
+@media (min-width: 901px) { .gv:has(.bd) { grid-template-columns: minmax(0, 1fr) 400px; } }

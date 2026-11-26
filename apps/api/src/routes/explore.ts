@@ -6,6 +6,7 @@ import { authenticate } from "../auth";
 import { galleryOut, styleOut } from "../serialize";
 import { stylesById } from "../services/projects";
 import { attachWaiting, galleryMedia } from "../services/galleryMedia";
+import { galleryBreakdown, makeGalleryBreakdown } from "../services/styleFiles";
 
 /** Explore, Create and Styles are open to everyone. A valid login adds the user's own styles and likes. */
 async function optionalAuth(req: FastifyRequest, reply: FastifyReply) {
@@ -45,5 +46,12 @@ export default async function explore(app: FastifyInstance) {
     // Each video plays its real export; one whose export was still being made when published takes it now.
     const shown = await attachWaiting(items.filter((g) => styles.has(g.styleId)));
     return Promise.all(shown.map(async (g) => galleryOut(g, me, likes.has(g.id), styles.get(g.styleId), await galleryMedia(g))));
+  });
+  // The style breakdown beside a published video: open to everyone (nothing private in it). Its publisher can make
+  // it when there is none yet; publishing starts one on its own.
+  app.get("/gallery/:id/breakdown", async (req) => galleryBreakdown((req.params as { id: string }).id, req.user?.id));
+  app.post("/gallery/:id/breakdown", async (req) => {
+    if (!req.user) throw unauthorized("Please log in to continue.");
+    return makeGalleryBreakdown((req.params as { id: string }).id, req.user.id);
   });
 }

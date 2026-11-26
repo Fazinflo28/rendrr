@@ -653,3 +653,10 @@ Choices made while building, so nobody has to guess later. Newest at the bottom 
 | B-roll | In a video with a talking head (faces measured at upload), every scene without the face, with its type and the words over it. |
 | Names | Rendrr still does not read letters or name things. The style file lists the frames worth a look; the AI reads the fonts, logo and what each scene shows and saves them as notes (`analyze_reference {videoId, notes}`; no new tool, the tool list stays at 54). |
 | For the user | The style file opens with the breakdown in plain words and what a new video in this style needs, so the AI asks for missing b-roll, images, logo, music and effects before editing. The editing skill has the steps. Version 2: older files are measured again on the next analyze_reference. |
+
+## Style breakdown in Explore (26 November)
+
+- A video published to Explore shows its style breakdown beside it, in the viewer's side panel: plain words, shot by shot, fonts and colours, b-roll, camera, animations, transitions, music, sound effects and what a new video in this style needs. Anyone can read it.
+- It is the publisher's newest ready style file of the edit's footage (project.videoId), turned into a public shape by `publicBreakdown` (packages/shared): no ids, file names, owner, links or emails.
+- GET /gallery/:id/breakdown is open to everyone; POST makes it (publisher only). Publishing starts measuring on its own when the footage has no current style file, so the panel is rarely empty. A style file stuck "measuring" for 30 minutes counts as lost and can be made again.
+- Style files were AI-only before. The AI still reads the full file with get_style; Explore shows only the public breakdown.
