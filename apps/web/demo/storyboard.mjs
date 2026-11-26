@@ -49,7 +49,10 @@ check(!!stageBox && !!gridBox && stageBox.y < gridBox.y, "the big card is above 
 const bigImg = await page.locator("#sb-one img").boundingBox();
 check(!!bigImg && Math.abs(bigImg.width / bigImg.height - 16 / 9) < 0.03, `the big card shows the frame in the video's shape (${bigImg && (bigImg.width / bigImg.height).toFixed(3)})`);
 const thumbs = await page.locator("#sb-grid .sb-thumb .sb-pic").evaluateAll((els) => els.map((el) => { const r = el.getBoundingClientRect(); return { w: r.width, h: r.height }; }));
-check(thumbs.every((c) => Math.abs(c.w / c.h - 16 / 9) < 0.03) && thumbs[0].w < (bigImg?.width || 0) / 2, `small frames in the video's shape (${thumbs.map((c) => (c.w / c.h).toFixed(3)).join(", ")})`);
+check(thumbs.every((c) => Math.abs(c.w / c.h - 16 / 9) < 0.03) && thumbs[0].w < (bigImg?.width || 0), `small frames in the video's shape (${thumbs.map((c) => (c.w / c.h).toFixed(3)).join(", ")})`);
+const tops = await page.locator("#sb-grid .sb-thumb").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().top)));
+const rows = tops.reduce((m, t) => ((m[t] = (m[t] || 0) + 1), m), {});
+check(Object.values(rows).every((n) => n === 2) && Object.keys(rows).length === 3, `small frames two to a row (${Object.values(rows).join(", ")})`);
 check(await page.locator("#sb-grid .sb-thumb .sb-pic img").first().evaluate((el) => getComputedStyle(el).objectFit) === "contain", "the whole frame shows, nothing cropped");
 check(await page.locator("#sb-stage").evaluate((el) => getComputedStyle(el).position) === "sticky", "the big card stays pinned at the top");
 check(await page.locator("#sb-style").count() === 0, "the frames come first; the style sheet is one tap away");
