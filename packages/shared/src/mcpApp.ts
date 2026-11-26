@@ -21,6 +21,8 @@ export const DrawingInput = z.object({
 /** A picture added to a comment: JPEG, PNG or WebP as base64 (the app makes it 1600 px or smaller). */
 export const CommentImageInput = z.object({ name: z.string().max(200).optional(), type: z.enum(["image/jpeg", "image/png", "image/webp"]), data: z.string().min(16).max(1_500_000), w: z.number().int().min(1).max(8192).optional(), h: z.number().int().min(1).max(8192).optional() });
 export const COMMENT_IMAGES_MAX = 4;
+/** Words one Apply in the app's transcript may cut or bring back (each list). */
+export const TRANSCRIPT_EDIT_MAX = 20_000;
 
 export const APP_TOOLS: ToolDef[] = [
   { name: "app_list_projects", title: "Projects for the app", app: true, description: "The Rendrr app: the user's projects (folders), and a page of edits, newest first: those of one project (folderId), or all.",
@@ -47,6 +49,10 @@ export const APP_TOOLS: ToolDef[] = [
     input: z.object({ renderId: id("render") }) },
   { name: "app_approve_storyboard", title: "Approve the storyboard", app: true, write: true, description: "The Rendrr app: the user approves a storyboard (approved false takes it back).",
     input: z.object({ renderId: id("render"), approved: z.boolean().optional() }) },
+  { name: "app_get_transcript", title: "Transcript for the app", app: true, description: "The Rendrr app: the edit's footage, word by word: each word in the edit, cut, or out of it, and where it plays in the render watched (renderId) to jump there.",
+    input: z.object({ projectId: id("project"), renderId: id("render").optional() }) },
+  { name: "app_cut_words", title: "Cut words from the transcript", app: true, write: true, description: "The Rendrr app: the user cut words from the transcript (cut: word ids) and brought cut ones back (restore), as one new version of the edit.",
+    input: z.object({ projectId: id("project"), cut: z.array(z.string().min(1).max(40)).max(TRANSCRIPT_EDIT_MAX).optional(), restore: z.array(z.string().min(1).max(40)).max(TRANSCRIPT_EDIT_MAX).optional(), renderId: id("render").optional() }) },
 ];
 
 /** What the app shows for one edit (app_get_project, open_projects with a projectId). */
@@ -98,3 +104,24 @@ export type AppSamples = {
 /** open_projects' structured result: the page of projects, and the edit to open when it was asked for. */
 /** With an edit open, the list is left out (the app loads it with app_list_projects when the user goes back to it). */
 export type AppOpen = Partial<AppProjectsPage> & { open: AppProjectView | null; webUrl: string | null; samples?: AppSamples | null };
+
+/** The app's Transcript tab (app_get_transcript): the main footage's words, a line at a time. A word is
+ *  [id, text, footage start, footage end, state, at, filler]: state "in" (plays in the edit), "cut" (cut from the
+ *  transcript, restore brings it back), "out" (its footage is not in the edit: a range cut or a trimmed clip); at: where
+ *  it starts in the render watched (edit seconds of that render's version), null where it does not play there. */
+export type AppWord = [id: string, text: string, t: number, end: number, state: "in" | "cut" | "out", at: number | null, filler: 0 | 1];
+export type AppTranscriptLine = { id: string; start: number; gap: number; words: AppWord[] };
+export type AppTranscript = {
+  projectId: string; name: string;
+  /** The edit's version now: the states are of it. */
+  version: number;
+  /** The version whose times "at" are (the render watched, else the edit now), and that render. */
+  timesOf: { version: number; renderId: string | null };
+  lines: AppTranscriptLine[];
+  counts: { words: number; cut: number; out: number };
+  /** Set when there is nothing to show yet (the footage still being transcribed), or the words were cut short. */
+  note: string | null;
+};
+/** app_cut_words' result: the transcript after the change, the edit as the app shows it, and what changed. */
+export type AppTranscriptChange = { transcript: AppTranscript; view: AppProjectView; summary: string; version: number; changed: boolean; cut: number; restored: number };
+

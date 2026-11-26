@@ -21,6 +21,24 @@ Checked on the live servers on 23 October: smoke test 23/23 (including the video
 - **Domains**: done on your side. app.rendrr.live works. api.rendrr.live is verified and gets its certificate once Let's Encrypt's hourly limit clears; until then the web app talks to the API's Railway address.
 - **Keys after Railway's 21 October security incident**: new Clerk secret and AssemblyAI key from you. Already done: the file bucket keys (reissued by Railway; the services now reference them) and `INTERNAL_API_SECRET` (new; `mcp` references the one on `api`). Still to do: the Postgres and Redis passwords.
 
+## Cut words from the transcript in Claude's card (26 November)
+
+The Rendrr card in Claude (open_projects) has a **Transcript** tab next to the comments: the edit's footage word by
+word, a line at a time, each line's moment in the preview (tap it to go there). Cut words are struck through; words a
+range cut or a trim took out are struck through and dimmer; fillers are dotted.
+- **Pick words**: drag over them (shift-click picks up to a word); on a phone tap one, then another to pick up to it. A
+  click on a word also takes the preview there; the word playing is lit while it plays.
+- **Cut** (or Delete) marks the words picked in red; a tap on a cut word marks it lime to come back; a tap on a red
+  one keeps it. Nothing changes until:
+  - **Apply**: one new version of the edit, made by you, with the same ops as the editor and Claude (cut_words,
+    restore_words; words a range cut took out come back with their footage). Claude is told what changed (the words
+    and their footage times), the card shows the new version with Render preview, and Undo takes it back.
+  - **Send to Claude**: the changes as a chat message with the word ids, for Claude to make in one edit and one preview.
+- New app tools (hidden from the AI): `app_get_transcript` (the words, each in/cut/out and timed to the preview
+  watched: an older preview plays its own version's times) and `app_cut_words`.
+- Tests: `apps/api/test/app-transcript.test.ts` (7), `apps/mcp/test/app-transcript.mjs` (real Chromium, desktop and
+  phone, 35 checks); the card's other browser tests still pass.
+
 ## Exports failing on the Mac, then on the cloud too (23 November)
 
 "PT Clinic Owners V2" (51 clips from one 4K DJI original, framed 1.22 and moved up, graded, keyframes on the first

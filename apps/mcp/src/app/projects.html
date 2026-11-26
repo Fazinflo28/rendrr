@@ -247,6 +247,36 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 .at { height: 32px; padding: 0 10px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; flex: none; }
 .at:hover { background: var(--accent); color: var(--on-accent); }
 .compose .btn { height: 32px; }
+/* The Transcript tab, as the editor's: the footage word by word. Drag over words (or tap one, then another) and Cut;
+   tap a cut word to bring it back. Changes wait (red: to cut, lime: to bring back) until Apply makes them one new
+   version, or Send to Claude asks the AI to make them. */
+.list.words { display: block; padding: 10px 12px; border-radius: var(--r-sm); background: var(--raised); line-height: 28px; font-size: 14.5px; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; position: relative; }
+.words p { margin: 0 0 10px; }
+.words p:last-of-type { margin-bottom: 0; }
+.words .ts { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; margin-right: 6px; border-radius: var(--r-xs); background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .02em; vertical-align: 1px; font-variant-numeric: tabular-nums; }
+.words .ts:hover { background: var(--accent); color: var(--on-accent); }
+.words .ts.off { background: var(--raised); color: var(--muted); cursor: default; }
+.words .gap { display: inline-block; padding: 0 8px; margin: 0 4px 0 0; height: 20px; line-height: 20px; border-radius: var(--pill); background: var(--raised); color: var(--muted); font-size: 11px; vertical-align: 1px; }
+.w { display: inline; padding: 2px 1px; border-radius: 5px; cursor: pointer; transition: background-color .1s; }
+.w:hover { background: var(--raised-strong); }
+.w.fl { text-decoration: underline dotted var(--muted); text-underline-offset: 4px; }
+.w.cut, .w.out { text-decoration: line-through; color: var(--muted); opacity: .6; }
+.w.out { opacity: .4; }
+.w.pc { text-decoration: line-through; text-decoration-color: #ff6b5e; text-decoration-thickness: 2px; color: #ff9b91; background: rgba(255,90,70,.14); opacity: 1; }
+.w.pr { text-decoration: none; color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 -2px 0 var(--accent); opacity: 1; }
+.w.sel { background: var(--accent-tint); box-shadow: 0 0 0 1px var(--accent-ring); color: var(--ink); opacity: 1; }
+.w.now { background: var(--ink); color: var(--bg); opacity: 1; }
+.selpop { position: sticky; bottom: 4px; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-radius: var(--r-md); background: var(--ink); color: var(--bg); box-shadow: var(--shadow-pop); width: max-content; max-width: 100%; margin: 10px auto 0; line-height: 18px; font-size: 13px; }
+.selpop .btn { height: 30px; padding: 0 10px; font-size: 13px; background: rgba(0,0,0,.08); color: var(--bg); box-shadow: none; }
+.selpop .btn:hover:not(:disabled) { background: rgba(0,0,0,.16); }
+.selpop .btn.cutb { background: var(--bg); color: var(--ink); }
+.selpop .btn.cutb:hover:not(:disabled) { background: #2a2c30; }
+.selpop .hint { flex-basis: 100%; font-size: 11.5px; color: rgba(0,0,0,.6); }
+.trbar { background: var(--raised); border-radius: var(--r-md); box-shadow: 0 0 0 1px var(--hair-strong); padding: 8px 8px 8px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.trbar .say { flex: 1 1 200px; min-width: 0; font-size: 12.5px; line-height: 18px; color: var(--dim); }
+.trbar .say b { color: var(--ink); font-weight: 600; }
+.trbar .say .red { color: #ff9b91; } .trbar .say .lime { color: var(--accent); }
+.trbar .btn { height: 32px; }
 .toast { position: fixed; left: 50%; bottom: calc(16px + var(--ib, 0px)); transform: translateX(-50%); background: var(--surface); color: var(--ink); box-shadow: var(--shadow-pop); padding: 8px 14px; border-radius: var(--r-md); font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; }
 .toast.on { opacity: 1; }
 .skel { height: 180px; border-radius: var(--r-lg); background: linear-gradient(90deg, var(--raised), var(--raised-strong), var(--raised)); background-size: 200% 100%; animation: sk 1.2s linear infinite; }
@@ -256,7 +286,7 @@ html.fs .shade { display: block; position: fixed; inset: 0; z-index: 5; backgrou
 @media (max-width: 560px) {
   body, html.fs body { padding: calc(12px + var(--it, 0px)) calc(12px + var(--ir, 0px)) calc(12px + var(--ib, 0px)) calc(12px + var(--il, 0px)); }
   /* The box to write a comment goes right under the player (a phone's bottom is the host's chat box). */
-  .pv .side > .compose { order: -1; }
+  .pv .side > .compose, .pv .side > .trbar { order: -1; }
   /* Full screen the app scrolls in its own box, as tall as the screen (--fsh): scrolling the page itself did not move
      in Claude's phone app. Its padding keeps the top clear of Claude's header and the last comment clear of its chat
      box; the rest scrolls under them. */
@@ -507,9 +537,14 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     // The comment being written or edited: its moment (null: the player's), drawing, pictures; drawing on the player.
     compose: null, drawMode: false, pen: "#ff3b30", viewDrawing: null, confirmDelete: null, lightbox: null, sending: false, share: null,
     // Samples (render_samples): the set shown, the one picked, the change being written.
-    samples: null, sampleSel: 0, sampleDraft: "" };
+    samples: null, sampleSel: 0, sampleDraft: "",
+    // The Transcript tab: the words loaded (tr), the changes waiting for Apply (trPend: word ids to cut and to bring
+    // back), the words picked (trSel: indexes, touch: picked by taps), Apply under way, and the last change (to undo it).
+    tr: null, trPend: null, trSel: null, trApplying: false, trLast: null };
   const freshCompose = () => ({ editingId: null, time: null, drawing: null, drawingChanged: false, images: [], removeImages: [] });
   state.compose = freshCompose();
+  const freshPend = () => ({ cut: new Set(), restore: new Set() });
+  state.trPend = freshPend();
   // The player lives across redraws (a poll every few seconds must not reload it); views hook into its time.
   let player = null, polling = null, wantedId = null, timeHooks = [];
   const autoRendered = new Set();
@@ -566,7 +601,8 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     // Watching an older version: a new render shows up in the version menu, said once.
     if (sameProject && state.pick && view.versions && view.versions[0] && view.versions[0].renderId !== prevNewest) setTimeout(() => toast((view.versions[0].kind === "final" ? "Final" : "Preview") + " v" + view.versions[0].version + " is ready: pick it in the version menu."), 50);
     state.project = view; state.view = "project";
-    if (!sameProject) { state.filter = view.comments.some((c) => !c.resolved) || !view.comments.length ? "open" : "all"; state.draft = ""; state.compose = freshCompose(); state.drawMode = false; state.viewDrawing = null; state.share = null; }
+    if (!sameProject) { state.filter = view.comments.some((c) => !c.resolved) || !view.comments.length ? "open" : "all"; state.draft = ""; state.compose = freshCompose(); state.drawMode = false; state.viewDrawing = null; state.share = null;
+      state.tr = null; state.trPend = freshPend(); state.trSel = null; state.trLast = null; }
     const fresh = !picked && !state.pick && sameProject && view.preview && view.preview.renderId !== prevRender;
     render(fresh);
     schedulePoll();
@@ -1279,7 +1315,17 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     return out;
   }
 
+  // The tabs over the side: the open comments, all of them, the transcript.
+  function sideTabs(v, right) {
+    const open = v.comments.filter((c) => !c.resolved);
+    const tab = (f, label, title) => h("button", { class: "tab" + (state.filter === f ? " on" : ""), "data-tab": f, title: title || null, onClick: () => { if (state.filter === f) return; state.filter = f; state.trSel = null; render(); } }, label);
+    return h("div", { class: "row" },
+      h("div", { class: "tabs grow" }, tab("open", "Open " + open.length), tab("all", "All " + v.comments.length), tab("words", "Transcript", "The footage word by word: cut words, or bring cut ones back")),
+      right);
+  }
+
   function commentsView(v) {
+    if (state.filter === "words") return transcriptView(v);
     const open = v.comments.filter((c) => !c.resolved);
     const shown = state.filter === "open" ? open : v.comments;
     // The new comment goes at the player's moment (or the moment it was drawn on); typing pauses the player so it holds.
@@ -1326,11 +1372,7 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         h("button", { class: "btn ghost step", title: "Add a picture (or paste or drop one)", disabled: c.images.length >= 4, onClick: () => file.click() }, "🖼 Picture"), file,
         h("span", { class: "grow muted small keyhint" }, navigator.platform.includes("Mac") ? "⌘ Enter" : "Ctrl Enter"), h("span", { class: "grow" }), add));
 
-    const tabs = h("div", { class: "row" },
-      h("div", { class: "tabs grow" },
-        h("button", { class: "tab" + (state.filter === "open" ? " on" : ""), onClick: () => { state.filter = "open"; render(); } }, "Open " + open.length),
-        h("button", { class: "tab" + (state.filter === "all" ? " on" : ""), onClick: () => { state.filter = "all"; render(); } }, "All " + v.comments.length)),
-      h("button", { class: "btn primary", disabled: !open.length, title: open.length ? "Ask your AI to work through the open comments" : "No open comments", onClick: () => sendToAi(v, open) }, "Send to " + aiName()));
+    const tabs = sideTabs(v, h("button", { class: "btn primary", disabled: !open.length, title: open.length ? "Ask your AI to work through the open comments" : "No open comments", onClick: () => sendToAi(v, open) }, "Send to " + aiName()));
 
     const initial = (n) => ((n || "?").trim()[0] || "?").toUpperCase();
     const items = shown.map((x) => h("div", { class: "cm" + (x.resolved ? " done" : "") + (c.editingId === x.id ? " editing" : ""), "data-id": x.id },
@@ -1346,6 +1388,225 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
         (x.images || []).map((im) => h("img", { class: "thumbimg", src: im.url, alt: im.name || "Picture", title: im.name || "Picture", onClick: () => { state.lightbox = im.url; render(); } }))) : null));
     const list = items.length ? h("div", { class: "list", "data-key": "comments" }, items) : h("div", { class: "empty", style: "padding:18px" }, state.filter === "open" && v.comments.length ? "Every comment is resolved." : "No comments yet. Play the preview, pause where something should change, and write it here.");
     return h("div", { class: "side" }, tabs, list, compose);
+  }
+
+  // ---------------- transcript ----------------
+  // The footage word by word, as the editor's Transcript tab: a word is [id, text, start, end, state, at, filler]
+  // (state in, cut, or out of the edit; at: where it starts in the preview watched). Cuts and words brought back wait
+  // until Apply (one new version of the edit, made by the user) or Send to Claude (the AI makes them).
+  const coarse = () => matchMedia("(pointer: coarse)").matches;
+  function loadTranscript(v, force) {
+    const pid = v.project.id, rid = v.preview ? v.preview.renderId : null, ver = v.project.version, t = state.tr;
+    if (!force && t && t.projectId === pid && t.renderId === rid && t.version === ver && (t.data || t.loading || t.err)) return;
+    const keep = t && t.projectId === pid ? t.data : null;
+    state.tr = { projectId: pid, renderId: rid, version: ver, data: keep, loading: true, err: null };
+    const mine = state.tr;
+    callTool("app_get_transcript", { projectId: pid, ...(rid ? { renderId: rid } : {}) })
+      .then((d) => { if (state.tr !== mine) return; mine.loading = false; mine.data = d; if (state.view === "project" && state.filter === "words") render(); })
+      .catch((e) => { if (state.tr !== mine) return; mine.loading = false; mine.err = e.message || "The transcript did not load."; if (state.view === "project" && state.filter === "words") render(); });
+  }
+  const trWords = () => (state.tr && state.tr.data ? state.tr.data.lines.flatMap((l) => l.words) : []);
+  const isGone = (w) => w[4] !== "in";
+  // What a word shows: waiting to be cut (pc), waiting to come back (pr), or as it is.
+  const pendOf = (w) => (!isGone(w) && state.trPend.cut.has(w[0]) ? "pc" : isGone(w) && state.trPend.restore.has(w[0]) ? "pr" : "");
+  const selRange = () => { const s = state.trSel; return s ? [Math.min(s.a, s.b), Math.max(s.a, s.b)] : null; };
+  const quote = (ws) => { const t = ws.map((w) => w[1]).join(" "); return "“" + (t.length > 60 ? t.slice(0, 57).trimEnd() + "…" : t) + "”"; };
+  // Runs of words next to each other, for the words said back: "so basically" (footage 12.30-13.10 s).
+  function runsOf(ids) {
+    const W = trWords(), want = new Set(ids), runs = [];
+    let cur = null;
+    W.forEach((w, i) => { if (!want.has(w[0])) { cur = null; return; } if (cur && cur.last === i - 1) { cur.ws.push(w); cur.last = i; } else { cur = { ws: [w], last: i }; runs.push(cur); } });
+    return runs.map((r) => r.ws);
+  }
+  const runText = (ws) => quote(ws) + " (footage " + ws[0][2].toFixed(2) + "-" + ws[ws.length - 1][3].toFixed(2) + " s)";
+  const listRuns = (ids, max) => { const rs = runsOf(ids); return rs.slice(0, max).map(runText).join(", ") + (rs.length > max ? " and " + (rs.length - max) + " more" : ""); };
+
+  function cutPicked() {
+    const r = selRange(); if (!r) return;
+    const W = trWords();
+    for (let i = r[0]; i <= r[1]; i++) { const w = W[i]; if (!w) continue; if (isGone(w)) state.trPend.restore.delete(w[0]); else state.trPend.cut.add(w[0]); }
+    state.trSel = null; render();
+  }
+  function restorePicked() {
+    const r = selRange(); if (!r) return;
+    const W = trWords();
+    for (let i = r[0]; i <= r[1]; i++) { const w = W[i]; if (!w) continue; if (isGone(w)) state.trPend.restore.add(w[0]); else state.trPend.cut.delete(w[0]); }
+    state.trSel = null; render();
+  }
+  // A tap on a word: a cut one comes back (or stops coming back), one waiting to be cut stays; any other is picked
+  // (on a touch screen a second tap picks up to it) and the preview goes there.
+  function tapWord(i, touch) {
+    const W = trWords(), w = W[i]; if (!w) return;
+    if (isGone(w)) { if (state.trPend.restore.has(w[0])) state.trPend.restore.delete(w[0]); else state.trPend.restore.add(w[0]); state.trSel = null; render(); return; }
+    if (state.trPend.cut.has(w[0])) { state.trPend.cut.delete(w[0]); state.trSel = null; render(); return; }
+    const s = state.trSel;
+    if (touch && s && s.touch) {
+      if (s.a === s.b && s.a === i) { state.trSel = null; render(); return; }
+      s.b = i; render(); return;
+    }
+    state.trSel = { a: i, b: i, touch: !!touch };
+    if (w[5] != null && trTimesShown()) { seek(w[5]); if (player) player.pause(); }
+    render();
+  }
+  // The words' times are the preview's on screen (else jumping would land somewhere else).
+  const trTimesShown = () => { const v = state.project, d = state.tr && state.tr.data; return !!(v && v.preview && d && d.timesOf && d.timesOf.renderId === v.preview.renderId); };
+  function playPicked() {
+    const r = selRange(), W = trWords(); if (!r || !player) return;
+    for (let i = r[0]; i <= r[1]; i++) if (W[i] && W[i][5] != null) { seek(W[i][5]); player.play().catch(() => {}); return; }
+    toast("These words do not play in this preview.");
+  }
+
+  function transcriptView(v) {
+    loadTranscript(v);
+    const t = state.tr, d = t && t.data, P = state.trPend;
+    const tabs = sideTabs(v, null);
+    if (!d) return h("div", { class: "side" }, tabs, t && t.err ? h("div", { class: "note err" }, t.err, " ", h("button", { class: "act", onClick: () => { loadTranscript(v, true); render(); } }, "Try again")) : h("div", { class: "skel", style: "height:160px" }));
+    const W = d.lines.flatMap((l) => l.words);
+    if (!W.length) return h("div", { class: "side" }, tabs, h("div", { class: "empty", style: "padding:18px" }, d.note || "This edit's footage has no words."));
+    const touch = coarse(), timed = trTimesShown(), r = selRange();
+    // The words, a line at a time; the line's moment in the preview (a tap goes there).
+    const spans = [];
+    let k = 0;
+    const paras = d.lines.map((l) => {
+      const first = l.words.find((w) => w[5] != null);
+      const at = first && timed ? first[5] : null;
+      const ts = at != null ? h("button", { class: "ts", title: "Go to " + fmtTime(at), onClick: () => { seek(at); if (player) player.pause(); } }, fmtTime(at, false))
+        : h("span", { class: "ts off", title: first ? "Where this line plays in v" + d.timesOf.version : "Not in the edit" }, first ? fmtTime(first[5], false) : "cut");
+      return h("p", {}, l.gap >= 0.5 ? h("span", { class: "gap" }, l.gap.toFixed(1) + "s silence") : null, ts, l.words.flatMap((w) => {
+        const i = k++;
+        const el = h("span", { class: "w" + (w[4] !== "in" ? " " + w[4] : "") + (w[6] ? " fl" : "") + (pendOf(w) ? " " + pendOf(w) : "") + (r && i >= r[0] && i <= r[1] ? " sel" : ""), "data-i": i,
+          title: (w[4] === "cut" ? "Cut: tap to bring it back" : w[4] === "out" ? "Not in the edit: tap to bring it back" : pendOf(w) === "pc" ? "To be cut: tap to keep it" : "") || null }, w[1]);
+        spans.push(el);
+        return [el, " "];
+      }));
+    });
+    // The words picked: Cut, Bring back, Play.
+    let pop = null;
+    if (r) {
+      const sel = W.slice(r[0], r[1] + 1);
+      const canCut = sel.filter((w) => !isGone(w) && !P.cut.has(w[0])).length, canBack = sel.filter((w) => isGone(w) && !P.restore.has(w[0])).length;
+      pop = h("div", { class: "selpop", id: "word-pop" },
+        h("span", {}, sel.length + (sel.length === 1 ? " word" : " words")),
+        canCut ? h("button", { class: "btn cutb", id: "cut-words", onClick: cutPicked }, "✂ Cut") : null,
+        canBack ? h("button", { class: "btn", id: "back-words", onClick: restorePicked }, "Bring back") : null,
+        player && timed ? h("button", { class: "btn", "aria-label": "Play from here", title: "Play from here", onClick: playPicked }, "▶") : null,
+        h("button", { class: "btn", "aria-label": "Clear the words picked", title: "Clear (Esc)", onClick: () => { state.trSel = null; render(); } }, "×"),
+        touch && state.trSel.touch && r[0] === r[1] ? h("span", { class: "hint" }, "Tap another word to pick up to it.") : null);
+    }
+    const list = h("div", { class: "list words", "data-key": "words", role: "list", "aria-label": "Transcript" }, paras, pop);
+    wireWords(list, spans);
+    // Where the preview is: its word lit while it plays.
+    if (timed) {
+      const order = W.map((w, i) => [w[5], w[3] - w[2], i]).filter((x) => x[0] != null).sort((a, b) => a[0] - b[0]);
+      let lit = -1;
+      onTime((now) => {
+        let lo = 0, hi = order.length - 1, hit = -1;
+        while (lo <= hi) { const m = (lo + hi) >> 1; if (order[m][0] <= now + 1e-3) { hit = m; lo = m + 1; } else hi = m - 1; }
+        const idx = hit >= 0 && now < order[hit][0] + order[hit][1] + 0.15 ? order[hit][2] : -1;
+        if (idx === lit) return;
+        if (lit >= 0 && spans[lit]) spans[lit].classList.remove("now");
+        lit = idx;
+        if (idx < 0 || !spans[idx]) return;
+        spans[idx].classList.add("now");
+        // Followed while it plays (not while the user picks words).
+        if (player && !player.paused && !wordDrag && list.isConnected) {
+          const lr = list.getBoundingClientRect(), wr = spans[idx].getBoundingClientRect();
+          if (wr.top < lr.top + 8 || wr.bottom > lr.bottom - 48) list.scrollTop += wr.top - lr.top - lr.height / 3;
+        }
+      });
+    }
+    // The changes waiting, and Apply.
+    const nCut = W.filter((w) => !isGone(w) && P.cut.has(w[0])).length, nBack = W.filter((w) => isGone(w) && P.restore.has(w[0])).length;
+    const last = state.trLast && state.trLast.projectId === v.project.id ? state.trLast : null;
+    let bar;
+    if (nCut || nBack) {
+      bar = h("div", { class: "trbar", id: "words-bar" },
+        h("span", { class: "say" }, nCut ? h("b", { class: "red" }, nCut + (nCut === 1 ? " word" : " words") + " to cut") : null, nCut && nBack ? " · " : null, nBack ? h("b", { class: "lime" }, nBack + " to bring back") : null,
+          h("br"), "Apply makes v" + (v.project.version + 1) + "; " + aiName() + " is told."),
+        h("button", { class: "btn ghost", disabled: state.trApplying, onClick: () => { state.trPend = freshPend(); state.trSel = null; render(); } }, "Clear"),
+        h("button", { class: "btn", id: "words-ask", disabled: state.trApplying, title: "Send these changes to " + aiName() + " as a message: it makes them and renders a preview", onClick: () => askAiWords(v) }, "Send to " + aiName()),
+        h("button", { class: "btn primary", id: "words-apply", disabled: state.trApplying, title: "Make these changes now: a new version of the edit (" + (navigator.platform.includes("Mac") ? "⌘" : "Ctrl") + " Enter)", onClick: () => applyPending(v) }, state.trApplying ? "Applying…" : "Apply"));
+    } else if (last) {
+      bar = h("div", { class: "trbar", id: "words-bar" }, h("span", { class: "say" }, h("b", {}, "v" + last.version + ": "), last.summary + "."),
+        h("button", { class: "btn ghost", disabled: state.trApplying, onClick: () => applyWords(v, last.restore, last.cut, true) }, "Undo"));
+    } else {
+      const c = d.counts;
+      bar = h("div", { class: "trbar", id: "words-bar" }, h("span", { class: "say" },
+        touch ? "Tap a word, tap another to pick up to it, then Cut. Tap a cut word to bring it back." : "Drag over words, then Cut (or Delete). Click a cut word to bring it back.",
+        h("br"), c.words + " words" + (c.cut ? " · " + c.cut + " cut" : "") + (c.out ? " · " + c.out + " out of the edit" : "") + (timed ? "" : v.preview ? " · times are of v" + d.timesOf.version : "")));
+    }
+    return h("div", { class: "side" }, tabs, d.note ? h("div", { class: "note" }, d.note) : null, list, bar);
+  }
+
+  // Picking words: drag over them with a mouse or a pen (shift-click picks up to a word); taps on a touch screen
+  // (the list scrolls under a finger).
+  let wordDrag = null;
+  function wireWords(list, spans) {
+    const at = (el) => { const s = el && el.closest ? el.closest(".w") : null; return s && list.contains(s) ? Number(s.dataset.i) : -1; };
+    const paint = () => { const r = selRange(); spans.forEach((el, i) => el.classList.toggle("sel", !!r && i >= r[0] && i <= r[1])); };
+    let lastType = "mouse";
+    list.addEventListener("pointerdown", (e) => {
+      lastType = e.pointerType || "mouse";
+      if (lastType === "touch" || e.button > 0) return;
+      const i = at(e.target); if (i < 0) return;
+      e.preventDefault();
+      if (e.shiftKey && state.trSel) { state.trSel.b = i; state.trSel.touch = false; render(); return; }
+      wordDrag = { a: i, moved: false };
+      const move = (ev) => {
+        const j = at(document.elementFromPoint(ev.clientX, ev.clientY));
+        if (j < 0) return;
+        if (j !== wordDrag.a) wordDrag.moved = true;
+        if (wordDrag.moved) { state.trSel = { a: wordDrag.a, b: j, touch: false }; paint(); }
+        const lr = list.getBoundingClientRect();
+        if (ev.clientY > lr.bottom - 20) list.scrollTop += 12; else if (ev.clientY < lr.top + 20) list.scrollTop -= 12;
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); window.removeEventListener("pointercancel", up);
+        const dd = wordDrag; wordDrag = null;
+        if (!dd) return;
+        if (dd.moved) render(); else tapWord(dd.a, false);
+      };
+      window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", up);
+    });
+    list.addEventListener("click", (e) => { if (lastType !== "touch") return; const i = at(e.target); if (i >= 0) tapWord(i, true); });
+  }
+
+  async function applyPending(v) {
+    const W = trWords(), P = state.trPend;
+    const cut = W.filter((w) => !isGone(w) && P.cut.has(w[0])).map((w) => w[0]), restore = W.filter((w) => isGone(w) && P.restore.has(w[0])).map((w) => w[0]);
+    if (!cut.length && !restore.length) return;
+    await applyWords(v, cut, restore, false);
+  }
+  async function applyWords(v, cut, restore, undo) {
+    if (state.trApplying) return;
+    state.trApplying = true; render();
+    const said = [cut.length ? "cut " + listRuns(cut, 8) : "", restore.length ? "brought back " + listRuns(restore, 8) : ""].filter(Boolean).join("; ");
+    try {
+      const r = await callTool("app_cut_words", { projectId: v.project.id, ...(cut.length ? { cut } : {}), ...(restore.length ? { restore } : {}), ...(v.preview ? { renderId: v.preview.renderId } : {}) });
+      state.trApplying = false;
+      if (!r) throw new Error("Rendrr did not answer. Try again.");
+      state.trPend = freshPend(); state.trSel = null;
+      state.tr = { projectId: v.project.id, renderId: v.preview ? v.preview.renderId : null, version: r.transcript.version, data: r.transcript, loading: false, err: null };
+      state.trLast = r.changed && !undo ? { projectId: v.project.id, cut, restore, version: r.version, summary: r.summary } : null;
+      if (r.changed) {
+        tellModel("In the Rendrr app the user " + (undo ? "undid their last transcript change" : "changed the transcript") + " of \"" + v.project.name + "\" (" + v.project.id + "): " + said + ". The edit is now v" + r.version + " (" + r.summary + "), made by the user, not rendered yet (render_preview shows it).");
+        toast("v" + r.version + ": " + r.summary + ". Render a preview to watch it.");
+      } else toast("Nothing changed: " + (r.summary || "those words were already that way") + ".");
+      showProject(r.view);
+    } catch (e) { state.trApplying = false; render(); toast(e.message || "Could not apply it."); }
+  }
+  // Send to Claude: the changes as a message, with the word ids, for the AI to make (one edit, one preview).
+  async function askAiWords(v) {
+    const W = trWords(), P = state.trPend;
+    const cut = W.filter((w) => !isGone(w) && P.cut.has(w[0])).map((w) => w[0]), restore = W.filter((w) => isGone(w) && P.restore.has(w[0])).map((w) => w[0]);
+    if (!cut.length && !restore.length) return;
+    const lines = [];
+    if (cut.length) lines.push("Cut: " + listRuns(cut, 20) + ". Word ids: " + cut.slice(0, 400).join(", ") + (cut.length > 400 ? " (and " + (cut.length - 400) + " more)" : ""));
+    if (restore.length) lines.push("Bring back: " + listRuns(restore, 20) + ". Word ids: " + restore.slice(0, 400).join(", ") + (restore.length > 400 ? " (and " + (restore.length - 400) + " more)" : ""));
+    const text = "On my Rendrr edit \"" + v.project.name + "\" (project " + v.project.id + ", v" + v.project.version + "), I picked these words in the transcript:\n" + lines.join("\n") +
+      "\n\nMake them in one apply_edits (cut_words and restore_words with these word ids; check each cut's edges on the sound so no word is clipped), check it with check_edit, then render one preview.";
+    try { const r = await sendMessage(text); if (r && r.isError) throw new Error(); state.trPend = freshPend(); state.trSel = null; render(); toast("Sent to " + aiName() + "."); }
+    catch { toast("Could not send it. Apply makes the changes here instead."); }
   }
 
   function startEdit(x) {
@@ -1396,6 +1657,12 @@ html.fs .viewer.tall img, html.fs .viewer.tall video { height: max(220px, min(58
     if (e.target && /^(TEXTAREA|INPUT)$/.test(e.target.tagName)) return;
     if (e.key === "Escape" && state.lightbox) { state.lightbox = null; render(); return; }
     if (e.key === "Escape" && state.drawMode) { endDraw(); return; }
+    // The Transcript tab: Delete cuts the words picked, Esc lets them go, Cmd/Ctrl Enter applies the changes.
+    if (state.view === "project" && state.filter === "words" && state.project) {
+      if ((e.key === "Delete" || e.key === "Backspace") && state.trSel) { e.preventDefault(); cutPicked(); return; }
+      if (e.key === "Escape" && state.trSel) { state.trSel = null; render(); return; }
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); applyPending(state.project); return; }
+    }
     if (e.key === " " && e.target && e.target.tagName === "BUTTON") return; // the button's own click does it
     if (e.key === " " && player) { e.preventDefault(); togglePlay(); }
     else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && player) { e.preventDefault(); step((e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 1 : 0.1)); }

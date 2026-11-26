@@ -11,6 +11,7 @@ import { addNote, commentMedia, deleteComment, editNote } from "./commentMedia";
 import { createReviewLink } from "../routes/reviews";
 import { samplesView } from "./samples";
 import { approveStoryboard, latestBoardId } from "./storyboard";
+import { appTranscript, cutFromTranscript } from "./appTranscript";
 import type { ToolCtx, ToolOut } from "../tools";
 
 /** "Mac" or "PC" when a render was made on the user's computer (the card's chip says "PC render"), else nothing. */
@@ -251,6 +252,14 @@ export const APP_HANDLERS: Record<string, (c: ToolCtx, input: any) => Promise<To
     const r = had ?? (await prisma.review.findUniqueOrThrow({ where: { token: (await createReviewLink(c.userId, { projectId: p.id, ...(i.version ? { version: i.version } : {}) })).token } }));
     const url = `${WEB() ?? ""}/review/${r.token}`;
     return { text: `Review link: ${url}`, data: { url, version: r.version, created: !had, expires: r.expiresAt ? r.expiresAt.getTime() : null, allowDownload: r.allowDownload } };
+  },
+  async app_get_transcript(c, i) {
+    const t = await appTranscript(c.userId, i.projectId, i.renderId);
+    return { text: `Transcript of "${t.name}" v${t.version}: ${t.counts.words} words, ${t.counts.cut} cut, ${t.counts.out} out of the edit.`, data: t };
+  },
+  async app_cut_words(c, i) {
+    const r = await cutFromTranscript(c.userId, i);
+    return { text: r.changed ? `v${r.version}: ${r.summary}.` : `Nothing changed: ${r.summary || "those words were already that way"}.`, data: r };
   },
   async app_render_preview(c, i) {
     await startRender(c.userId, i.projectId, "preview");
