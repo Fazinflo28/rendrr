@@ -66,7 +66,10 @@ export async function pickTarget(userId: string, asked: string | null | undefine
   const say = (d: DeviceStatus) => (several ? `Rendering on ${deviceLabel(d)} (the user's pick: pass device to switch, or "cloud").` : null);
   if (asked && asked.trim()) {
     const a = asked.trim().replace(/^"|"$/g, "");
-    if (CLOUD_WORDS.test(a)) { await setRenderChoice(userId, "cloud"); return { target: "cloud", device: null, ask: null, note: several ? `Rendering on ${CLOUD} (the user's pick).` : null }; }
+    // "cloud" is kept for the next renders only while several computers can render (the same pick the app offers then).
+    // With one computer it is for this render alone: a preview sent to the cloud while the Mac was off must not keep
+    // the Mac out of every render after it for hours.
+    if (CLOUD_WORDS.test(a)) { if (several) await setRenderChoice(userId, "cloud"); return { target: "cloud", device: null, ask: null, note: several ? `Rendering on ${CLOUD} (the user's pick).` : null }; }
     const low = a.toLowerCase();
     const d = all.find((x) => x.id === a) ?? all.find((x) => (x.name || "").toLowerCase() === low) ?? all.find((x) => (x.name || "").toLowerCase().includes(low));
     if (!d) return { target: null, device: null, ask: `"${a}" is not one of the user's computers connected to Rendrr now (the Rendrr app open and online). ${choices()} Nothing was rendered: ask the user, then call ${o.tool} again with device.`, note: null };
@@ -79,7 +82,8 @@ export async function pickTarget(userId: string, asked: string | null | undefine
   if (!able.length) return { target: null, device: null, ask: null, note: !all.length && st.lastSeen ? `Rendering on ${CLOUD}: no Rendrr app is open now. ${lastSeenText(st.lastSeen)}` : null };
   const must = o.prefer ? able.find((d) => d.id === o.prefer) : undefined;
   if (must) return { target: must.id, device: must, ask: null, note: several ? `Rendering on ${deviceLabel(must)}: it keeps this footage's original.` : null };
-  if (st.choice === "cloud") return { target: "cloud", device: null, ask: null, note: several ? `Rendering on ${CLOUD} (the user's pick: pass device to switch).` : null };
+  // A cloud pick counts only while several computers can render (see above): the one computer open renders.
+  if (st.choice === "cloud" && several) return { target: "cloud", device: null, ask: null, note: `Rendering on ${CLOUD} (the user's pick: pass device to switch).` };
   const picked = able.find((d) => d.id === st.choice);
   if (picked) return { target: picked.id, device: picked, ask: null, note: say(picked) };
   if (!several) return { target: able[0].id, device: able[0], ask: null, note: null };
