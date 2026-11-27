@@ -7,8 +7,9 @@
 import { z } from "zod";
 import { MOTION_RUNTIME } from "./motionTemplate/runtimeCode";
 import { LAUNCH_STORY } from "./motionTemplate/launchStory";
+import { TALKING_HEAD_AD } from "./motionTemplate/talkingHeadAd";
 
-export const MOTION_LAYER_KINDS = ["text", "wordpill", "media", "backdrop", "frametitle", "card", "node", "grid", "box", "toasts", "cta", "burst", "cursor", "halftone", "chip"] as const;
+export const MOTION_LAYER_KINDS = ["text", "wordpill", "media", "backdrop", "frametitle", "card", "node", "grid", "box", "toasts", "cta", "burst", "cursor", "halftone", "chip", "captions", "titlebox", "disc", "bug", "endcard", "flash"] as const;
 export const MOTION_VIEW_KINDS = ["blank", "image", "dialog", "prompt", "mosaic", "scene", "post"] as const;
 export const MOTION_SLOT_TYPES = ["text", "image", "color"] as const;
 export const MOTION_SFX = ["sfx_whoosh", "sfx_pop", "sfx_hit"] as const;
@@ -25,7 +26,7 @@ export const MotionSlotSchema = z.object({
   type: z.enum(MOTION_SLOT_TYPES),
   label: z.string().min(1).max(80),
   default: z.string().max(MOTION_HTML_MAX).optional(),
-  maxChars: z.number().int().min(1).max(400).optional(),
+  maxChars: z.number().int().min(1).max(1000).optional(),
   video: z.boolean().optional(),
 });
 const ViewSchema = z.object({ at: time, kind: z.enum(MOTION_VIEW_KINDS) }).passthrough();
@@ -36,6 +37,28 @@ export const MotionLayerSchema = z.object({
   keys: z.array(Key).max(300).optional(),
   views: z.array(ViewSchema).max(12).optional(),
 }).passthrough();
+/**
+ * Where a template's code came from. Only these get code: Rendrr's own templates, a reference video broken down into
+ * code, and a video a user published as a template (Claude wrote its code while editing). Raw uploads never get code:
+ * they stay frames only.
+ */
+export const MOTION_SOURCES = ["rendrr", "reference", "published"] as const;
+/**
+ * The footage edit around the graphic (talking-head and b-roll templates): each shot is a video slot played at
+ * [t0, t1] (from: the second of that video it starts at; a talking head defaults to t0 so the speech runs on across
+ * cuts), with its entrance (a whip: the shot pushes the last one out, motion blurred), keys (scale and x/y as shares
+ * of the frame, seconds from the shot's start) and a blur. Recreate builds these as b-roll clips with keyframes.
+ */
+const ShotSchema = z.object({
+  id: z.string().max(40),
+  slot: SlotId,
+  t0: time, t1: time,
+  from: z.number().min(0).max(36000).optional(),
+  in: z.object({ type: z.enum(["cut", "whip"]), dur: z.number().min(0.04).max(1).optional(), dir: z.enum(["left", "right", "up", "down"]).optional() }).optional(),
+  keys: z.array(z.object({ t: z.number().min(0).max(600), scale: z.number().min(0.05).max(4).optional(), x: z.number().min(-3).max(3).optional(), y: z.number().min(-3).max(3).optional(), ease: z.enum(["linear", "in", "out", "in-out"]).optional() })).max(20).optional(),
+  blur: z.number().min(1).max(100).optional(),
+  what: z.string().max(300).optional(),
+});
 export const MotionTemplateSchema = z.object({
   v: z.literal(1),
   name: z.string().min(1).max(80),
@@ -52,12 +75,16 @@ export const MotionTemplateSchema = z.object({
   }).passthrough().optional(),
   scenes: z.array(z.object({ id: z.string().max(60), start: time, end: time, what: z.string().max(500) })).max(60).optional(),
   /** The reference's elements, one line each (what it is and how the template carries it). */
-  elements: z.array(z.string().max(300)).max(200).optional(),
+  elements: z.array(z.string().max(500)).max(200).optional(),
   slots: z.array(MotionSlotSchema).max(90).default([]),
-  audio: z.object({ music: z.string().max(80).optional(), musicDb: z.number().min(-40).max(6).optional(), sfx: z.array(z.object({ t: time, id: z.enum(MOTION_SFX) })).max(120).optional() }).optional(),
+  audio: z.object({ music: z.string().max(80).optional(), musicDb: z.number().min(-40).max(6).optional(), musicStart: time.optional(), sfx: z.array(z.object({ t: time, id: z.enum(MOTION_SFX) })).max(120).optional() }).optional(),
   camera: z.array(Key).max(300).optional(),
   layers: z.array(MotionLayerSchema).min(1).max(240),
   transparentBg: z.boolean().optional(),
+  source: z.enum(MOTION_SOURCES).optional(),
+  /** The reference video this template was broken down from (its Rendrr id), when source is reference. */
+  fromVideo: z.string().max(80).optional(),
+  edit: z.object({ shots: z.array(ShotSchema).max(80) }).optional(),
 });
 export type MotionTemplate = z.infer<typeof MotionTemplateSchema>;
 export type MotionSlot = z.infer<typeof MotionSlotSchema>;
@@ -83,6 +110,11 @@ export function checkMotionTemplate(input: unknown): { ok: true; spec: MotionTem
   for (const sl of s.slots) { if (ids.has(sl.id)) return { ok: false, error: `Slot "${sl.id}" is declared twice.` }; ids.add(sl.id); }
   const missing = [...motionSlotRefs(s)].filter((k) => !ids.has(k));
   if (missing.length) return { ok: false, error: `The template uses ${missing.map((k) => `{{${k}}}`).join(", ")} but declares no slot for ${missing.length === 1 ? "it" : "them"}.` };
+  for (const sh of s.edit?.shots ?? []) {
+    const sl = s.slots.find((x) => x.id === sh.slot);
+    if (!sl || sl.type !== "image" || !sl.video) return { ok: false, error: `Shot ${sh.id} plays slot "${sh.slot}", which must be a declared picture slot that takes video (video: true).` };
+    if (!(sh.t1 > sh.t0) || sh.t0 > s.duration) return { ok: false, error: `Shot ${sh.id} must end after it starts, inside the template (${s.duration}s).` };
+  }
   const late = s.layers.find((l) => (l.t0 ?? 0) > s.duration);
   if (late) return { ok: false, error: `Layer ${late.id || late.kind} starts at ${late.t0}s, after the template ends (${s.duration}s).` };
   return { ok: true, spec: s };
@@ -161,6 +193,9 @@ export function motionTemplateText(spec: MotionTemplate): string {
   const moves = cam.filter((k, i) => i > 0 && k.z != null && cam.slice(0, i).reverse().find((p) => p.z != null)?.z !== k.z);
   if (moves.length) lines.push(`CAMERA: ${moves.map((k) => { const prev = cam.slice(0, cam.indexOf(k)).reverse().find((p) => p.z != null)!; return `${f2(prev.t)}-${f2(k.t)}s zoom ${f2(prev.z!)}x to ${f2(k.z!)}x (${easeWords(k)})`; }).join("; ")}${cam.some((k) => k.track) ? "; follows the typing caret while zoomed in" : ""}.`);
   for (const s of spec.scenes ?? []) lines.push(`SCENE ${f2(s.start)}-${f2(s.end)}s ${s.id}: ${s.what}`);
+  const shots = spec.edit?.shots ?? [];
+  if (shots.length) lines.push(`SHOTS: ${shots.map((x) => `${f2(x.t0)}-${f2(x.t1)}s ${x.slot}${x.in?.type === "whip" ? ` (whip ${x.in.dir ?? "left"} in)` : ""}${x.keys?.some((k) => k.scale != null && k.scale !== 1) ? " (zoom)" : ""}${x.blur ? ` (blur ${x.blur})` : ""}`).join("; ")}.`);
+  for (const e of spec.elements ?? []) lines.push(`ELEMENT: ${e}`);
   lines.push(`SLOTS: ${spec.slots.map((s) => `${s.id} (${s.type}${s.video ? ", or a video" : ""}${s.maxChars ? `, ${s.maxChars} chars` : ""}: ${s.label}${s.type !== "image" && s.default ? ` = ${JSON.stringify(s.default)}` : ""})`).join("; ")}.`);
   if (spec.audio?.music || spec.audio?.sfx?.length) lines.push(`SOUND: ${spec.audio.music ? `music ${spec.audio.music} at ${spec.audio.musicDb ?? -8} dB` : "no music"}${spec.audio.sfx?.length ? `, ${spec.audio.sfx.length} sound effects on transitions and pops` : ""}.`);
   return lines.join("\n");
@@ -169,5 +204,6 @@ export function motionTemplateText(spec: MotionTemplate): string {
 /** Rendrr's own templates: anyone can use them (Explore, Rendrr presets). */
 export const MOTION_TEMPLATES: { id: string; spec: MotionTemplate }[] = [
   { id: "mt_launch_story", spec: MotionTemplateSchema.parse(LAUNCH_STORY) },
+  { id: "mt_talking_head_ad", spec: MotionTemplateSchema.parse(TALKING_HEAD_AD) },
 ];
 export const builtinMotionTemplate = (id: string) => MOTION_TEMPLATES.find((t) => t.id === id) ?? null;

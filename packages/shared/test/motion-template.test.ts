@@ -68,3 +68,34 @@ describe("motion templates", () => {
     expect(t).toContain("SLOTS: brand (text");
   });
 });
+
+describe("talking-head ad template (broken down from a reference)", () => {
+  const t = MOTION_TEMPLATES.find((x) => x.id === "mt_talking_head_ad")!;
+  it("is a valid template with code from a reference", () => {
+    expect(t).toBeTruthy();
+    const r = checkMotionTemplate(t.spec);
+    expect(r.ok).toBe(true);
+    expect(t.spec.source).toBe("reference");
+    expect(t.spec.w).toBe(1080);
+    expect(t.spec.h).toBe(1920);
+  });
+  it("maps every element: shots, captions, title, disc, logo, flashes, end card", () => {
+    const kinds = new Set(t.spec.layers.map((l) => l.kind));
+    for (const k of ["backdrop", "flash", "captions", "titlebox", "disc", "bug", "endcard", "cursor"]) expect(kinds.has(k as never)).toBe(true);
+    expect(t.spec.edit?.shots.length).toBe(18);
+    expect(t.spec.elements!.length).toBeGreaterThan(12);
+    const cap = t.spec.layers.find((l) => l.kind === "captions") as unknown as { groups: unknown[] };
+    const script = t.spec.slots.find((s) => s.id === "script")!.default!;
+    expect(script.split("|").length).toBe(cap.groups.length);
+  });
+  it("says its shots in the breakdown", () => {
+    const text = motionTemplateText(t.spec);
+    expect(text).toMatch(/SHOTS: 0-0.97s speaker/);
+    expect(text).toMatch(/whip left in/);
+  });
+  it("refuses a shot on a slot that takes no video", () => {
+    const bad = { ...t.spec, edit: { shots: [{ id: "x", slot: "brand", t0: 0, t1: 1 }] } };
+    const r = checkMotionTemplate(bad);
+    expect(r.ok).toBe(false);
+  });
+});

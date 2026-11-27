@@ -178,7 +178,11 @@
       comment: "<path d='M12 3.5c5 0 9 3.4 9 7.7s-4 7.7-9 7.7c-1 0-2-.1-2.9-.4L4 20.5l1.4-4.1A7.4 7.4 0 0 1 3 11.2c0-4.3 4-7.7 9-7.7z' fill='" + color + "'/>",
       share: "<path d='M21 3L10 14M21 3l-7 18-3.5-7.5L3 10z' stroke='" + color + "' stroke-width='2.2' fill='none' stroke-linejoin='round'/>",
       bookmark: "<path d='M6 3h12v18l-6-4.5L6 21z' fill='" + color + "'/>",
-      plus: "<path d='M12 5v14M5 12h14' stroke='" + color + "' stroke-width='2.6' stroke-linecap='round'/>"
+      plus: "<path d='M12 5v14M5 12h14' stroke='" + color + "' stroke-width='2.6' stroke-linecap='round'/>",
+      globe: "<circle cx='12' cy='12' r='8.5' stroke='" + color + "' stroke-width='1.8' fill='none'/><path d='M3.5 12h17M12 3.5c3 3.2 3 13.8 0 17M12 3.5c-3 3.2-3 13.8 0 17' stroke='" + color + "' stroke-width='1.6' fill='none'/>",
+      clock: "<circle cx='12' cy='12' r='8.5' stroke='" + color + "' stroke-width='1.8' fill='none'/><path d='M12 7v5.2l3.4 2' stroke='" + color + "' stroke-width='1.9' fill='none' stroke-linecap='round'/>",
+      shield: "<path d='M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z' stroke='" + color + "' stroke-width='1.8' fill='none'/><path d='M8.5 12.2l2.4 2.4 4.6-4.8' stroke='" + color + "' stroke-width='1.9' fill='none' stroke-linecap='round'/>",
+      badge: "<circle cx='12' cy='10' r='5.8' stroke='" + color + "' stroke-width='1.8' fill='none'/><path d='M12 7.4l.9 1.8 2 .3-1.45 1.4.35 2-1.8-.95-1.8.95.35-2L9.1 9.5l2-.3z' fill='" + color + "'/><path d='M8.6 14.6L7 21l5-2.4 5 2.4-1.6-6.4' stroke='" + color + "' stroke-width='1.6' fill='none' stroke-linejoin='round'/>"
     }[name] || "<circle cx='12' cy='12' r='8' fill='" + color + "'/>";
     return "<svg viewBox='0 0 24 24' width='100%' height='100%'>" + p + "</svg>";
   }
@@ -261,7 +265,8 @@
     }
     return { w: ww, h: hh, x: x, y: y };
   }
-  function live(s, t) { return t >= (s.t0 || 0) - 0.001 && t <= (s.t1 != null ? s.t1 : DUR) + 0.001; }
+  // showFrom / showUntil: a window inside t0-t1 (a layer split between two graphics keeps its timing).
+  function live(s, t) { return t >= Math.max(s.t0 || 0, s.showFrom || 0) - 0.001 && t <= Math.min(s.t1 != null ? s.t1 : DUR, s.showUntil != null ? s.showUntil : DUR) + 0.001; }
   function fadeIO(s, t) {
     var o = 1;
     if (s.fadeIn) o *= prog(t, s.t0 || 0, s.fadeIn * 1000, "out");
@@ -388,7 +393,8 @@
       var vis = live(s, t); L.root.style.display = vis ? "block" : "none"; if (!vis) return;
       var life = clamp((t - (s.t0 || 0)) / Math.max(1, (s.t1 || DUR) - (s.t0 || 0)), 0, 1);
       im.style.transform = "scale(" + lerp(s.kb ? s.kb[0] : 1.0, s.kb ? s.kb[1] : 1.08, life) + ")";
-      im.style.filter = "blur(" + keyVal(L.keys, "bblur", t, 0) + "px)";
+      var fl = s.flash ? 1 - prog(t, s.flash.at != null ? s.flash.at : s.t0 || 0, s.flash.ms || 350, "out") : 0;
+      im.style.filter = "blur(" + keyVal(L.keys, "bblur", t, 0) + "px)" + (fl > 0.01 ? " brightness(" + (1 + fl * 2.4).toFixed(2) + ")" : "");
       dim.style.opacity = keyVal(L.keys, "dim", t, s.dim || 0);
       if (tint) tint.style.opacity = keyVal(L.keys, "tint", t, s.tintOpacity != null ? s.tintOpacity : 0.5);
       place(L, t, { o: fadeIO(s, t) });
@@ -918,6 +924,168 @@
   };
 
   // Cursor: a mac arrow that glides between points (ease in-out) and presses on clicks.
+  // Word-timed captions, one line at a time, laid out whole so words land in place: each word appears at its time,
+  // dim and a little soft for a beat (the newest word reads grey), then full white. text: lines split by |;
+  // groups: each line's window {t0, t1} and, when the words match, each word's time (w).
+  B.captions = function (s) {
+    s.fixedSize = true;
+    var L = base(s), size = s.size || 44;
+    L.root.style.cssText += ";width:" + W + "px;height:" + size * 1.4 + "px;font-family:'" + (s.font || "Poppins") + "',Inter,sans-serif;font-weight:" + (s.weight || 700) + ";font-size:" + size + "px;color:" + (s.color || "#fff") + ";text-shadow:" + (s.shadow || "0 2px 7px rgba(0,0,0,.38),0 0 2px rgba(0,0,0,.25)") + ";letter-spacing:" + (s.tracking != null ? s.tracking : -0.01) + "em;line-height:1.4";
+    var wins = s.groups || [];
+    var lines = String(s.text || "").split("|").map(function (g, gi) {
+      var ws = g.trim().split(/\s+/).filter(Boolean), win = wins[gi];
+      var row = el("div", "", null, L.root); row.style.cssText = "position:absolute;left:0;right:0;top:0;text-align:center;white-space:nowrap;display:none";
+      if (!win) return { row: row, t0: -1, t1: -1, spans: [] };
+      var times = win.w && win.w.length === ws.length ? win.w : null, span = Math.max(0.05, (win.t1 - win.t0) * 0.6);
+      var spans = ws.map(function (w, i) { var sp = el("span", "", esc(w) + (i < ws.length - 1 ? " " : ""), row); sp.__t = times ? times[i] : win.t0 + span * i / Math.max(1, ws.length); return sp; });
+      return { row: row, t0: win.t0, t1: win.t1, spans: spans };
+    });
+    var fade = s.fadeMs || 180, dim = s.dim != null ? s.dim : 0.4;
+    L.draw = function (t) {
+      var vis = live(s, t); L.root.style.display = vis ? "block" : "none"; if (!vis) return;
+      lines.forEach(function (ln) {
+        var on = t >= ln.t0 && t < ln.t1; ln.row.style.display = on ? "block" : "none"; if (!on) return;
+        ln.spans.forEach(function (sp) {
+          if (t < sp.__t) { sp.style.opacity = 0; return; }
+          var p = prog(t, sp.__t, fade, "out"); sp.style.opacity = lerp(dim, 1, p);
+          sp.style.filter = p < 0.99 ? "blur(" + ((1 - p) * 1.6).toFixed(2) + "px)" : "none";
+        });
+      });
+      place(L, t, { o: fadeIO(s, t) });
+    };
+    return L;
+  };
+
+  // Kinetic title: all-caps words land one by one, each line on its own dark box that grows to fit its words (eased),
+  // letters filled with a soft top-to-bottom gradient. text: lines split by |; times: each line's word times.
+  B.titlebox = function (s) {
+    var L = base(s), size = s.size || 88, rowH = s.rowH || size * 1.17, pad = s.pad != null ? s.pad : size * 0.2;
+    L.root.style.cssText += ";font-family:'" + (s.font || "Archivo Black") + "',Inter,sans-serif;font-weight:900;font-size:" + size + "px;line-height:1;text-transform:uppercase;white-space:nowrap;width:" + (s.w || W * 0.8) + "px;height:" + rowH * 3 + "px";
+    var times = s.times || [];
+    var rows = String(s.text || "").split("|").map(function (ln, li) {
+      var ws = ln.trim().split(/\s+/).filter(Boolean);
+      var row = el("div", "", null, L.root); row.style.cssText = "position:absolute;left:0;top:" + li * (rowH + (s.gap || 0)) + "px;height:" + rowH + "px;width:100%";
+      var box = el("div", "", null, row); box.style.cssText = "position:absolute;left:0;top:0;height:100%;width:0;background:" + (s.box || "rgba(32,32,32,.93)");
+      var txt = el("div", "", null, row); txt.style.cssText = "position:absolute;left:" + pad + "px;top:" + ((rowH - size) / 2 + size * 0.03) + "px;display:flex;gap:" + size * 0.22 + "px";
+      var tt = times[li] && times[li].length === ws.length ? times[li] : null;
+      var spans = ws.map(function (w, i) {
+        var sp = el("span", "", esc(w), txt);
+        sp.style.cssText = "display:inline-block;transform-origin:50% 60%;background:" + (s.fill || "linear-gradient(180deg,#FFFFFF 35%,#D2D2D2)") + ";-webkit-background-clip:text;background-clip:text;color:transparent";
+        sp.__t = tt ? tt[i] : (s.t0 || 0) + (li * 2 + i) * 0.4; return sp;
+      });
+      return { box: box, spans: spans };
+    });
+    L.draw = function (t) {
+      var vis = live(s, t); L.root.style.display = vis ? "block" : "none"; if (!vis) return;
+      rows.forEach(function (r) {
+        var widths = r.spans.map(function (sp) { return sp.offsetLeft + sp.offsetWidth + pad * 2; });
+        var k = -1; r.spans.forEach(function (sp, i) {
+          var shown = t >= sp.__t, p = shown ? prog(t, sp.__t, s.popMs || 120, "out") : 0; if (shown) k = i;
+          sp.style.opacity = shown ? clamp(p * 1.8, 0, 1) : 0; sp.style.transform = "scale(" + lerp(1.14, 1, p) + ")";
+        });
+        if (k < 0) { r.box.style.width = "0px"; return; }
+        var from = k > 0 ? widths[k - 1] : widths[0] * 0.92, bp = prog(t, r.spans[k].__t, s.boxMs || 150, "out");
+        r.box.style.width = lerp(from, widths[k], bp) + "px"; r.box.style.opacity = k > 0 ? 1 : clamp(bp * 3, 0, 1);
+      });
+      place(L, t, { o: fadeIO(s, t) });
+    };
+    return L;
+  };
+
+  // Number disc: a circle with a top-to-bottom gradient pops in (overshoot, blurred while it grows) holding the logo;
+  // the logo slides out to the right inside the circle, a big italic number pops in (from larger, blurred) and its
+  // label rises under it.
+  B.disc = function (s) {
+    var L = base(s), r = s.radius || 330; s.w = s.h = r * 2;
+    L.root.style.cssText += ";width:" + 2 * r + "px;height:" + 2 * r + "px;border-radius:50%;overflow:hidden;background:linear-gradient(180deg," + (s.top || "#45519A") + "," + (s.bottom || "#2C3253") + ");box-shadow:0 34px 70px -24px rgba(10,15,40,.5)";
+    var logo = el("div", "", null, L.root); logo.style.cssText = "position:absolute;inset:0 12%;display:flex;align-items:center;justify-content:center;gap:" + r * 0.05 + "px;color:#fff;font-family:'Poppins',Inter,sans-serif;font-weight:600;font-size:" + r * 0.34 + "px;letter-spacing:-0.03em";
+    logo.innerHTML = s.logo ? "<div style='width:100%;height:" + r * 0.5 + "px;background:" + img(s.logo) + " center/contain no-repeat'></div>" : "<span style='width:" + r * 0.3 + "px;height:" + r * 0.3 + "px;display:block'>" + iconSvg("bolt", "#fff") + "</span><span>" + esc(s.brand || "") + "</span>";
+    var num = el("div", "", esc(s.number || ""), L.root); num.style.cssText = "position:absolute;left:0;right:0;top:" + r * 0.4 + "px;text-align:center;color:#fff;font-family:'Poppins',Inter,sans-serif;font-weight:800;font-style:italic;font-size:" + r * 0.98 + "px;line-height:1;letter-spacing:-0.02em";
+    var lab = el("div", "", esc(s.label || ""), L.root); lab.style.cssText = "position:absolute;left:0;right:0;top:" + r * 1.3 + "px;text-align:center;color:#fff;font-family:'Poppins',Inter,sans-serif;font-weight:600;font-style:italic;font-size:" + r * 0.15 + "px";
+    L.draw = function (t) {
+      var vis = live(s, t); L.root.style.display = vis ? "block" : "none"; if (!vis) return;
+      var pin = prog(t, s.t0 || 0, s.popMs || 450, "pop");
+      var lo = s.swapAt != null ? prog(t, s.swapAt, 240, "in") : 0;
+      logo.style.transform = "translateX(" + lo * r * 2.4 + "px)"; logo.style.opacity = 1 - clamp((lo - 0.7) / 0.3, 0, 1);
+      var np = s.numberAt != null ? prog(t, s.numberAt, 320, "pop") : 0;
+      num.style.opacity = clamp(np * 2.2, 0, 1); num.style.transform = "scale(" + lerp(1.4, 1, np) + ")"; num.style.filter = np > 0 && np < 0.99 ? "blur(" + ((1 - np) * 9).toFixed(1) + "px)" : "none";
+      var lp = s.labelAt != null ? prog(t, s.labelAt, 260, "out") : 0;
+      lab.style.opacity = lp; lab.style.transform = "translateY(" + (1 - lp) * r * 0.12 + "px)";
+      var out = s.outAt != null ? prog(t, s.outAt, s.outMs || 160, "in") : 0;
+      place(L, t, { s: lerp(0.15, 1, pin) * (1 - out * 0.25), o: clamp(pin * 3, 0, 1) * (1 - out) * fadeIO(s, t), blur: (1 - clamp(pin, 0, 1)) * 12 + out * 10 });
+    };
+    return L;
+  };
+
+  // Corner logo (a watermark): the logo picture, or a mark and the brand name, in white; hidden over set windows.
+  B.bug = function (s) {
+    var L = base(s), hgt = s.size || 62;
+    L.root.style.cssText += ";display:flex;align-items:center;gap:" + hgt * 0.1 + "px;color:" + (s.color || "#fff") + ";font-family:'Poppins',Inter,sans-serif;font-weight:600;font-size:" + hgt * 0.8 + "px;letter-spacing:-0.035em;line-height:1;white-space:nowrap;filter:drop-shadow(0 1px 3px rgba(0,0,0,.2))";
+    L.root.innerHTML = s.src ? "<div style='width:" + (s.logoW || hgt * 3.4) + "px;height:" + hgt + "px;background:" + img(s.src) + " right center/contain no-repeat'></div>" : "<span style='width:" + hgt * 0.72 + "px;height:" + hgt * 0.72 + "px;display:block'>" + iconSvg("bolt", s.color || "#fff") + "</span><span>" + esc(s.text || "") + "</span>";
+    L.draw = function (t) {
+      var vis = live(s, t), hide = (s.hide || []).some(function (h) { return t >= h[0] - 0.001 && t < h[1]; });
+      L.root.style.display = vis && !hide ? "flex" : "none"; if (!vis || hide) return;
+      place(L, t, { o: fadeIO(s, t) });
+    };
+    return L;
+  };
+
+  // End card: the brand colour with a soft light in the middle and a faint dot grid; the logo, a headline whose last
+  // lines take the accent colour, a 2x2 grid of features (a metal coin icon, an accent title, a white line) split by
+  // hairlines that fade at their ends, and a gradient button. It arrives as a panel rising from the bottom whose
+  // leading edge drags the picture into vertical streaks.
+  function coin(icon, r) {
+    return "<div style='width:" + 2 * r + "px;height:" + 2 * r + "px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#FFFFFF,#C9CBD0 45%,#7D8088 100%);box-shadow:0 6px 12px rgba(0,0,0,.35),inset 0 0 0 " + r * 0.09 + "px rgba(255,255,255,.55),inset 0 0 0 " + r * 0.14 + "px rgba(90,92,100,.45);display:flex;align-items:center;justify-content:center'>" +
+      (typeof icon === "string" && /^(data:|https?:)/.test(icon) ? "<div style='width:70%;height:70%;border-radius:50%;background:" + img(icon) + " center/cover'></div>" : "<span style='width:" + r * 1.05 + "px;height:" + r * 1.05 + "px;display:block'>" + iconSvg(icon || "check", "#3A3D45") + "</span>") + "</div>";
+  }
+  B.endcard = function (s) {
+    s.fixedSize = true;
+    var L = base(s); L.root.style.cssText += ";width:" + W + "px;height:" + H + "px;overflow:hidden;font-family:'Poppins',Inter,sans-serif;color:#fff";
+    var panel = el("div", "", null, L.root); panel.style.cssText = "position:absolute;inset:0";
+    var bg = el("div", "", null, panel); bg.style.cssText = "position:absolute;inset:0;background:radial-gradient(ellipse 75% 55% at 50% 46%," + (s.light || "#4B61C6") + "," + (s.color || "#3A4DAA") + " 78%)";
+    var dots = el("div", "", null, panel); dots.style.cssText = "position:absolute;inset:0;background-image:radial-gradient(rgba(255,255,255,.12) 1.5px,transparent 1.8px);background-size:" + W * 0.026 + "px " + W * 0.026 + "px;-webkit-mask-image:radial-gradient(ellipse 55% 48% at 50% 50%,#000 30%,transparent);mask-image:radial-gradient(ellipse 55% 48% at 50% 50%,#000 30%,transparent)";
+    var acc = s.accent || "#6EE3A8", head = el("div", "", null, panel), hs = s.size || W * 0.066, hh = s.headSize || W * 0.074;
+    head.style.cssText = "position:absolute;left:6%;right:6%;top:" + (s.headTop || H * 0.162) + "px;text-align:center";
+    var lg = el("div", "", null, head); lg.style.cssText = "display:flex;justify-content:center;align-items:center;gap:" + hs * 0.12 + "px;font-weight:600;font-size:" + hs * 0.72 + "px;letter-spacing:-0.035em;margin-bottom:" + hs * 0.36 + "px";
+    lg.innerHTML = s.logo ? "<div style='width:" + hs * 3.2 + "px;height:" + hs * 0.9 + "px;background:" + img(s.logo) + " center/contain no-repeat'></div>" : "<span style='width:" + hs * 0.62 + "px;height:" + hs * 0.62 + "px;display:block'>" + iconSvg("bolt", "#fff") + "</span><span>" + esc(s.brand || "") + "</span>";
+    (s.lines || []).forEach(function (ln, i) { var d = el("div", "", esc(ln), head); d.style.cssText = "font-weight:600;font-size:" + hh + "px;line-height:.9;letter-spacing:-0.02em;color:" + (i >= (s.accentFrom != null ? s.accentFrom : 2) ? acc : "#fff"); });
+    var gridTop = s.gridTop || H * 0.395, rowGap = s.rowGap || H * 0.141, cx = [W * 0.31, W * 0.667];
+    (s.features || []).slice(0, 4).forEach(function (f, i) {
+      var c = el("div", "", null, panel), col = i % 2, row = Math.floor(i / 2);
+      c.style.cssText = "position:absolute;width:" + W * 0.4 + "px;left:" + (cx[col] - W * 0.2) + "px;top:" + (gridTop + row * rowGap) + "px;display:flex;flex-direction:column;align-items:center;text-align:center;font-size:" + hs * 0.5 + "px;line-height:1.2";
+      c.innerHTML = coin(f.icon, hs * 0.62) + "<div style='margin-top:" + hs * 0.38 + "px;color:" + acc + ";font-weight:700'>" + esc(f.title || "") + "</div><div style='font-weight:500'>" + esc(f.sub || "") + "</div>";
+    });
+    function hair(x, y, w, h) { var d = el("div", "", null, panel); d.style.cssText = "position:absolute;left:" + x + "px;top:" + y + "px;width:" + w + "px;height:" + h + "px;background:linear-gradient(" + (w > h ? "90deg" : "180deg") + ",transparent,rgba(255,255,255,.45),transparent)"; }
+    if ((s.features || []).length >= 4) {
+      hair(W * 0.504, gridTop, 2, rowGap * 0.75); hair(W * 0.504, gridTop + rowGap, 2, rowGap * 0.75);
+      hair(W * 0.25, gridTop + rowGap * 0.86, W * 0.21, 2); hair(W * 0.56, gridTop + rowGap * 0.86, W * 0.21, 2);
+    }
+    var btn = el("div", "", esc(s.cta || ""), panel), bh = hs * 1.0;
+    btn.style.cssText = "position:absolute;left:50%;top:" + (s.ctaY || H * 0.695) + "px;transform:translate(-50%,-50%);height:" + bh + "px;padding:0 " + bh * 0.48 + "px;border-radius:" + bh + "px;display:flex;align-items:center;font-weight:700;font-size:" + hs * 0.46 + "px;white-space:nowrap;background:linear-gradient(90deg," + (s.ctaFrom || "#5DC48A") + "," + (s.ctaTo || "#1E8E55") + ");box-shadow:0 8px 18px -8px rgba(0,0,0,.4)";
+    var streak = el("div", "", null, L.root); streak.style.cssText = "position:absolute;left:0;right:0;height:" + H * 0.5 + "px;background:repeating-linear-gradient(90deg,rgba(255,255,255,.0) 0 " + W * 0.012 + "px,rgba(255,255,255,.16) " + W * 0.012 + "px " + W * 0.016 + "px,rgba(255,255,255,0) " + W * 0.016 + "px " + W * 0.03 + "px),linear-gradient(180deg,rgba(58,77,170,0),rgba(58,77,170,.85) 70%);filter:blur(1.5px)";
+    L.draw = function (t) {
+      var vis = live(s, t); L.root.style.display = vis ? "block" : "none"; if (!vis) return;
+      var rp = prog(t, s.t0 || 0, s.revealMs || 220, s.revealEase || "inOut"), top = (1 - rp) * H;
+      panel.style.clipPath = "inset(" + top + "px 0 0 0)";
+      streak.style.display = rp < 0.999 ? "block" : "none"; streak.style.top = (top - H * 0.02) + "px"; streak.style.opacity = 1 - rp * 0.6;
+      place(L, t, { o: fadeIO(s, t) });
+    };
+    return L;
+  };
+
+  // Flash: the frame blows out to white and comes back (an overexposure flash on a cut); hits: {t, ms, peak, in}.
+  B.flash = function (s) {
+    s.fixedSize = true; s.fixed = true;
+    var L = base(s); L.root.style.cssText += ";width:" + W + "px;height:" + H + "px;background:" + (s.color || "#fff") + ";pointer-events:none";
+    L.draw = function (t) {
+      var o = 0;
+      (s.hits || []).forEach(function (h) { var a = prog(t, h.t - (h["in"] || 0.04), (h["in"] || 0.04) * 1000, "linear"), d = 1 - prog(t, h.t, h.ms || 320, "out"); if (t >= h.t - (h["in"] || 0.04)) o = Math.max(o, (t < h.t ? a : d) * (h.peak != null ? h.peak : 0.9)); });
+      L.root.style.display = o > 0.003 ? "block" : "none"; L.root.style.opacity = o;
+      L.root.style.transform = "translate(0px,0px)";
+    };
+    return L;
+  };
+
   B.cursor = function (s) {
     var L = base(s); L.root.style.cssText += ";width:34px;height:34px;z-index:" + (s.z || 50);
     L.root.innerHTML = "<svg viewBox='0 0 24 24' width='34' height='34'><path d='M4 2l15 11.5-6.6.9 3.9 7.4-3 1.4-3.8-7.5L4 20z' fill='#111' stroke='#fff' stroke-width='1.4' stroke-linejoin='round'/></svg>";

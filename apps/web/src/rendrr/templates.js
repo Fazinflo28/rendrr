@@ -110,6 +110,12 @@ export function TemplatePage({ id }) {
               <ul class="mt-list">${t.text.split("\n").filter((l) => /^(WORDS|MOTION|CAMERA|SOUND):/.test(l)).map((l) => html`<li>${l.replace(/^(\w+):\s*/, "")}</li>`)}</ul></section>
             <section class="card mt-sec"><h2 class="t-h3">Scenes</h2>
               <ol class="mt-scenes">${(t.spec.scenes || []).map((s) => html`<li><span class="mt-at">${s.start.toFixed(1)}s</span><span>${s.what}</span></li>`)}</ol></section>
+            ${t.spec.elements?.length ? html`<section class="card mt-sec"><h2 class="t-h3">Elements</h2>
+              <ul class="mt-list">${t.spec.elements.map((l) => html`<li>${l}</li>`)}</ul></section>` : null}
+            <section class="card mt-sec" id="template-code"><div class="row between"><h2 class="t-h3">Code</h2>
+              <${Btn} size="sm" kind="secondary" icon="copy" onClick=${() => { copyText(JSON.stringify(t.spec, null, 2)); toast("Code copied"); }}>Copy the code<//></div>
+              <p class="t-small muted">Every element, keyframe, ease, colour and timing of this video as code. Anyone can read and copy it, and any AI can recreate the video from it.${t.source === "reference" ? " Broken down from a reference video." : ""}</p>
+              <details><summary class="t-small">Show the code</summary><pre class="mt-code">${JSON.stringify(t.spec, null, 2)}</pre></details></section>
             <section class="card mt-sec"><h2 class="t-h3">A new video in this style</h2>
               <p class="t-small muted">Your AI writes new scenes that keep this template's design, animations and camera. Say what the video is about, then send the prompt to Claude or ChatGPT with Rendrr connected.</p>
               <textarea class="input" rows="2" id="template-about" placeholder="What the new video is about" value=${about} onInput=${(e) => setAbout(e.target.value)} />

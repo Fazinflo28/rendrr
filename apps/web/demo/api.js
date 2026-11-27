@@ -626,7 +626,7 @@ Object.assign(api, {
 });
 
 // Motion templates: Rendrr's built-in ones, as the API serves them; Recreate makes a demo edit.
-const demoTemplate = (t) => ({ id: t.id, name: t.spec.name, builtin: true, status: "ready", seconds: t.spec.duration, width: t.spec.w, height: t.spec.h, description: t.spec.description || "", spec: motionTemplateLite(t.spec), text: motionTemplateText(t.spec) });
+const demoTemplate = (t) => ({ id: t.id, name: t.spec.name, builtin: true, status: "ready", seconds: t.spec.duration, width: t.spec.w, height: t.spec.h, description: t.spec.description || "", spec: motionTemplateLite(t.spec), text: motionTemplateText(t.spec), source: t.spec.source || "rendrr", codeUrl: `/templates/${t.id}/code` });
 Object.assign(api, {
   listTemplates: async () => { await wait(120); return MOTION_TEMPLATES.map(demoTemplate); },
   getTemplate: async (id) => { await wait(120); const t = MOTION_TEMPLATES.find((x) => x.id === id); if (!t) throw Object.assign(new Error("There is no template with that id."), { code: "not-found", status: 404, friendly: true }); return demoTemplate(t); },
