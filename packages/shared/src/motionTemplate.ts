@@ -59,6 +59,9 @@ const ShotSchema = z.object({
   blur: z.number().min(1).max(100).optional(),
   what: z.string().max(300).optional(),
 });
+// A silhouette flash: the person in a video slot, cut out and filled solid white, laid over the edit for a few frames
+// (1 to 3 at 24 fps) on a cut. from: the video's second (default t, so a talking head keeps its pose in sync).
+const SilhouetteSchema = z.object({ t: time, dur: z.number().min(0.03).max(1), slot: SlotId, from: z.number().min(0).max(36000).optional() });
 export const MotionTemplateSchema = z.object({
   v: z.literal(1),
   name: z.string().min(1).max(80),
@@ -84,7 +87,7 @@ export const MotionTemplateSchema = z.object({
   source: z.enum(MOTION_SOURCES).optional(),
   /** The reference video this template was broken down from (its Rendrr id), when source is reference. */
   fromVideo: z.string().max(80).optional(),
-  edit: z.object({ shots: z.array(ShotSchema).max(80) }).optional(),
+  edit: z.object({ shots: z.array(ShotSchema).max(80), silhouettes: z.array(SilhouetteSchema).max(60).optional() }).optional(),
 });
 export type MotionTemplate = z.infer<typeof MotionTemplateSchema>;
 export type MotionSlot = z.infer<typeof MotionSlotSchema>;
@@ -114,6 +117,11 @@ export function checkMotionTemplate(input: unknown): { ok: true; spec: MotionTem
     const sl = s.slots.find((x) => x.id === sh.slot);
     if (!sl || sl.type !== "image" || !sl.video) return { ok: false, error: `Shot ${sh.id} plays slot "${sh.slot}", which must be a declared picture slot that takes video (video: true).` };
     if (!(sh.t1 > sh.t0) || sh.t0 > s.duration) return { ok: false, error: `Shot ${sh.id} must end after it starts, inside the template (${s.duration}s).` };
+  }
+  for (const si of s.edit?.silhouettes ?? []) {
+    const sl = s.slots.find((x) => x.id === si.slot);
+    if (!sl || sl.type !== "image" || !sl.video) return { ok: false, error: `A silhouette at ${si.t}s cuts out slot "${si.slot}", which must be a declared picture slot that takes video (video: true).` };
+    if (si.t > s.duration) return { ok: false, error: `A silhouette at ${si.t}s starts after the template ends (${s.duration}s).` };
   }
   const late = s.layers.find((l) => (l.t0 ?? 0) > s.duration);
   if (late) return { ok: false, error: `Layer ${late.id || late.kind} starts at ${late.t0}s, after the template ends (${s.duration}s).` };
@@ -195,6 +203,8 @@ export function motionTemplateText(spec: MotionTemplate): string {
   for (const s of spec.scenes ?? []) lines.push(`SCENE ${f2(s.start)}-${f2(s.end)}s ${s.id}: ${s.what}`);
   const shots = spec.edit?.shots ?? [];
   if (shots.length) lines.push(`SHOTS: ${shots.map((x) => `${f2(x.t0)}-${f2(x.t1)}s ${x.slot}${x.in?.type === "whip" ? ` (whip ${x.in.dir ?? "left"} in)` : ""}${x.keys?.some((k) => k.scale != null && k.scale !== 1) ? " (zoom)" : ""}${x.blur ? ` (blur ${x.blur})` : ""}`).join("; ")}.`);
+  const sils = spec.edit?.silhouettes ?? [];
+  if (sils.length) lines.push(`SILHOUETTE FLASHES: ${sils.map((x) => `${f2(x.t)}s ${x.slot} ${Math.max(1, Math.round(x.dur * 24))}f`).join("; ")} (the person cut out and filled white over the cut).`);
   for (const e of spec.elements ?? []) lines.push(`ELEMENT: ${e}`);
   lines.push(`SLOTS: ${spec.slots.map((s) => `${s.id} (${s.type}${s.video ? ", or a video" : ""}${s.maxChars ? `, ${s.maxChars} chars` : ""}: ${s.label}${s.type !== "image" && s.default ? ` = ${JSON.stringify(s.default)}` : ""})`).join("; ")}.`);
   if (spec.audio?.music || spec.audio?.sfx?.length) lines.push(`SOUND: ${spec.audio.music ? `music ${spec.audio.music} at ${spec.audio.musicDb ?? -8} dB` : "no music"}${spec.audio.sfx?.length ? `, ${spec.audio.sfx.length} sound effects on transitions and pops` : ""}.`);

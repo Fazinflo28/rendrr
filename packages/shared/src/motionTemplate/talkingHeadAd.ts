@@ -47,44 +47,62 @@ const slots = [
   { id: "cta_to", type: "color", label: "Button gradient right", default: "#1E8E55" },
 ];
 
-// The talking head and b-roll shots. A whip pushes the last shot out (motion blurred, ~0.1-0.3 s); the flashes are
-// the graphic's (an overexposure on the cut). Times in the reference's seconds.
+// The talking head and b-roll shots, cut end to end (re-mapped frame by frame at 24 fps). Every cut is a hard cut:
+// nothing slides. A whip is 2 frames of whip pan either side of the cut (the frame shoots off and the next lands, heavy
+// directional motion blur); the flashes are silhouette flashes (edit.silhouettes) and two white flash frames (layer
+// "flashes"). Times in the reference's seconds.
 type Shot = { id: string; slot: string; t0: number; t1: number; from?: number; in?: { type: "whip" | "cut"; dur?: number; dir?: "left" | "right" | "up" | "down" }; keys?: { t: number; scale?: number; x?: number; y?: number; ease?: "linear" | "in" | "out" | "in-out" }[]; blur?: number; what: string };
-const whip = (dur: number) => ({ type: "whip" as const, dur, dir: "left" as const });
+const F = 1 / 24; // one frame of the reference
+const whip = (dir: "left" | "right" | "up" | "down" = "left") => ({ type: "whip" as const, dur: 2 * F, dir });
+const cut = { type: "cut" as const };
 const shots: Shot[] = [
-  { id: "s1", slot: "speaker", t0: 0, t1: 0.97, in: { type: "cut" }, what: "Speaker walks into frame in a corridor; opens on a white flash" },
-  { id: "s2", slot: "broll_logo", t0: 0.97, t1: 1.93, from: 0, in: whip(0.12), keys: [{ t: 0.28, scale: 1 }, { t: 0.78, scale: 1.058, ease: "linear" }], what: "Logo on a laptop screen, a 6% push in" },
-  { id: "s3", slot: "broll_site", t0: 1.93, t1: 3.13, from: 0, in: whip(0.12), what: "The website on a laptop on a concrete shelf, hard window light" },
-  { id: "s4", slot: "speaker", t0: 3.13, t1: 4.62, in: whip(0.2), what: "Close-up of the speaker under the kinetic title" },
-  { id: "s5", slot: "broll_walk", t0: 4.62, t1: 4.93, from: 0, in: { type: "cut" }, what: "Walking away down the corridor, white flash" },
-  { id: "s6", slot: "speaker", t0: 4.93, t1: 6.47, in: whip(0.3), what: "Speaker in a kitchen, holding a mug" },
-  { id: "s7", slot: "broll_old1", t0: 6.47, t1: 7.17, from: 0, in: whip(0.3), what: "The old way: a hand writing on paper, white flash" },
-  { id: "s8", slot: "broll_old2", t0: 7.17, t1: 7.93, from: 0, in: whip(0.13), what: "The old way: a calculator and paperwork" },
-  { id: "s9", slot: "speaker", t0: 7.93, t1: 11.67, in: { type: "cut" }, keys: [{ t: 0.2, scale: 1 }, { t: 3.74, scale: 1.22, ease: "linear" }], what: "Speaker in the kitchen, a slow 22% push in" },
-  { id: "s10", slot: "broll_walk", t0: 11.67, t1: 11.97, from: 0.4, in: { type: "cut" }, what: "Walking away in the open office, white flash" },
-  { id: "s11", slot: "speaker", t0: 11.97, t1: 14.17, in: whip(0.2), what: "Speaker in the open office; the disc pops in beside her and she steps in front of it" },
-  { id: "s12", slot: "speaker", t0: 14.17, t1: 15.6, in: { type: "cut" }, blur: 40, what: "The same shot blurred hard behind the number disc" },
-  { id: "s13", slot: "screen", t0: 15.6, t1: 18.67, from: 0, in: whip(0.1), keys: [{ t: 0, scale: 1.16, x: 0.06 }, { t: 1.25, scale: 1, x: 0, ease: "linear" }, { t: 1.48, y: 0 }, { t: 1.98, y: -0.12, ease: "linear" }], what: "Screen recording: zooms out and pans right, then scrolls down; a hand cursor clicks" },
-  { id: "s14", slot: "speaker", t0: 18.67, t1: 21.63, in: { type: "cut" }, what: "Speaker in the open office, back from a white dip" },
-  { id: "s15", slot: "broll_fees1", t0: 21.63, t1: 22.15, from: 0, in: whip(0.12), what: "A printed headline, the cost highlighted in yellow, sliding with motion blur" },
-  { id: "s16", slot: "broll_fees2", t0: 22.15, t1: 23.1, from: 0, in: whip(0.12), what: "A book page, the same words highlighted, shallow focus" },
-  { id: "s17", slot: "speaker", t0: 23.1, t1: 24.7, in: whip(0.15), what: "Speaker in the open office" },
-  { id: "s18", slot: "speaker", t0: 24.7, t1: 28.93, in: { type: "cut" }, what: "Speaker at a glass door, the sign-off" },
+  { id: "s1", slot: "speaker", t0: 0, t1: 0.958, in: cut, what: "Speaker walks into frame in a corridor; her white silhouette strobes on frames 0 and 2" },
+  { id: "s2", slot: "broll_logo", t0: 0.958, t1: 1.875, from: 0, in: cut, keys: [{ t: 0.28, scale: 1 }, { t: 0.78, scale: 1.058, ease: "linear" }], what: "Logo on a laptop screen, a 6% push in" },
+  { id: "s3", slot: "broll_site", t0: 1.875, t1: 3.25, from: 0, in: whip("right"), what: "The website on a laptop on a concrete shelf, hard window light; whips in from the left" },
+  { id: "s4", slot: "speaker", t0: 3.25, t1: 4.917, in: cut, what: "Close-up of the speaker under the kinetic title; she turns and walks off at the end" },
+  { id: "s5", slot: "speaker", t0: 4.917, t1: 6.417, in: cut, what: "Speaker in a kitchen, holding a mug" },
+  { id: "s6", slot: "broll_old1", t0: 6.417, t1: 7.167, from: 0, in: cut, what: "The old way: a hand writing on paper; whips off up and left" },
+  { id: "s7", slot: "broll_old2", t0: 7.167, t1: 7.958, from: 0, in: whip("left"), what: "The old way: a calculator and paperwork" },
+  { id: "s8", slot: "speaker", t0: 7.958, t1: 11.75, in: cut, keys: [{ t: 0.2, scale: 1 }, { t: 3.6, scale: 1.22, ease: "linear" }], what: "Speaker in the kitchen, a slow 22% push in; ends on her white silhouette" },
+  { id: "s9", slot: "broll_walk", t0: 11.75, t1: 11.958, from: 0.4, in: cut, what: "The empty open office under her white silhouette" },
+  { id: "s10", slot: "speaker", t0: 11.958, t1: 14.167, in: whip("left"), what: "Speaker swings into the open office; the disc pops in beside her and she steps in front of it" },
+  { id: "s11", slot: "speaker", t0: 14.167, t1: 15.583, in: cut, blur: 40, what: "The same shot blurred hard behind the number disc" },
+  { id: "s12", slot: "screen", t0: 15.583, t1: 18.583, from: 0, in: cut, keys: [{ t: 0.08, scale: 1.16, x: 0.06 }, { t: 1.33, scale: 1, x: 0, ease: "linear" }, { t: 1.56, y: 0 }, { t: 2.06, y: -0.12, ease: "linear" }], what: "Screen recording out of a white flash: zooms out and pans right, then scrolls down; a hand cursor clicks" },
+  { id: "s13", slot: "speaker", t0: 18.583, t1: 21.625, in: cut, what: "Speaker in the open office, out of a white flash" },
+  { id: "s14", slot: "broll_fees1", t0: 21.625, t1: 22.167, from: 0, in: whip("left"), what: "A printed headline, the cost highlighted in yellow, the rest smeared with motion blur" },
+  { id: "s15", slot: "broll_fees2", t0: 22.167, t1: 23.083, from: 0, in: whip("left"), what: "A book page, the same words highlighted, the rest smeared" },
+  { id: "s16", slot: "speaker", t0: 23.083, t1: 24.667, in: cut, what: "Speaker in the open office" },
+  { id: "s17", slot: "speaker", t0: 24.667, t1: 28.93, in: cut, what: "Speaker at a glass door, the sign-off; opens under the last shot's white silhouette" },
+];
+
+// Silhouette flashes, frame by frame: the person cut out and filled solid white (soft 4 px edge) over the picture,
+// on for 1 to 3 frames. Some keep the pose of the shot before across the cut (from), so the white shape bridges two
+// places. Objects (the laptop, a hand) flash the same way in the reference; the person matte covers people only.
+const silhouettes = [
+  { t: 0, dur: F, slot: "speaker", from: 0 },
+  { t: 2 * F, dur: F, slot: "speaker", from: 2 * F },
+  { t: 3.125, dur: 3 * F, slot: "speaker", from: 3.292 },
+  { t: 3.375, dur: F, slot: "speaker", from: 3.375 },
+  { t: 4.583, dur: F, slot: "speaker", from: 4.583 },
+  { t: 11.625, dur: 3 * F, slot: "speaker", from: 11.625 },
+  { t: 11.792, dur: 4 * F, slot: "speaker", from: 11.708 },
+  { t: 24.667, dur: 2 * F, slot: "speaker", from: 24.6 },
 ];
 
 // Picture fallback for each shot (a picture slot plays here; a video plays as b-roll under the graphic instead):
 // the same whip as keys, so a still pushes in with motion blur too.
 const backdrops = shots.map((s, i) => {
-  const next = shots[i + 1], d = s.in?.type === "whip" ? s.in.dur ?? 0.12 : 0, nd = next?.in?.type === "whip" ? next.in.dur ?? 0.12 : 0;
+  const next = shots[i + 1], d = s.in?.type === "whip" ? s.in.dur ?? 2 * F : 0, nd = next?.in?.type === "whip" ? next.in.dur ?? 2 * F : 0;
+  const dx = (dir?: string) => (dir === "right" ? 1 : -1) * W * 0.18;
   const keys: Record<string, unknown>[] = [];
-  if (d) keys.push({ t: s.t0 - d / 2, x: W / 2 + W }, { t: s.t0 + d / 2, x: W / 2, e: "inOut" });
-  if (nd) keys.push({ t: s.t1 - nd / 2, x: W / 2 }, { t: s.t1 + nd / 2, x: W / 2 - W, e: "inOut" });
+  if (d) keys.push({ t: s.t0, x: W / 2 - dx(s.in?.dir) }, { t: s.t0 + d, x: W / 2, e: "out" });
+  if (nd) keys.push({ t: s.t1 - nd, x: W / 2 }, { t: s.t1, x: W / 2 + dx(next?.in?.dir), e: "in" });
   if (s.blur) keys.push({ t: s.t0, bblur: 26 });
   if (s.slot === "screen") keys.push({ t: s.t0, bblur: 22 }, { t: s.t0 + 0.25, bblur: 0, e: "out" });
   const zoom = s.keys?.filter((k) => k.scale != null) ?? [];
   return {
-    id: "shot_" + s.id, kind: "backdrop", src: `{{${s.slot}}}`, t0: Math.max(0, s.t0 - d / 2), t1: s.t1 + nd / 2, z: 1 + i * 0.01,
-    vignette: 0, dim: 0, mb: 0.7, x: W / 2, y: H / 2,
+    id: "shot_" + s.id, kind: "backdrop", src: `{{${s.slot}}}`, t0: s.t0, t1: s.t1, z: 1 + i * 0.01,
+    vignette: 0, dim: 0, mb: 1, ...(d || nd ? { scale: 1.4 } : {}), x: W / 2, y: H / 2,
     kb: zoom.length >= 2 ? [zoom[0].scale, zoom[zoom.length - 1].scale] : [1, 1.03],
     keys: keys.sort((a, b) => (a.t as number) - (b.t as number)),
   };
@@ -107,9 +125,10 @@ const capWins: [number, number, number[]][] = [
 const elements = [
   "Talking head: one speaker to camera, five places (corridor, kitchen, open office, glass door), cut every 1 to 2 s; the speech runs on across every cut (one take, slot speaker).",
   "B-roll: 7 shots of 0.3 to 1.2 s and one 3 s screen recording, each on the words it shows (laptop logo, website, old way writing, calculator, headline, book page).",
-  "Whip transition: the new shot pushes the last one out to the left in 0.1 to 0.3 s with heavy horizontal motion blur (8 of the 17 cuts).",
-  "Overexposure flash: the frame blows out to white in 0.04 s and settles back over 0.3 s (on 4 cuts: 0, 4.6, 6.5, 11.7 s); the brightest parts, often the person, burn out first.",
-  "White dip: 18.6 s, the screen recording fades to white (grey at the bottom) and the talking head comes back out of it.",
+  "Cuts: every cut is a hard cut (0 frames); nothing slides over anything.",
+  "Whip: on 5 cuts (1.9, 7.2, 12.0, 21.6, 22.2 s) the frame whip-pans for 2 frames either side of the cut, thrown about 18% of the width with heavy directional motion blur, then lands sharp (the b-roll itself is often smeared too, only the key words sharp).",
+  "Silhouette flash: the person cut out and filled solid white (soft 4 px edge) over the picture for 1 to 3 frames, strobing on and off (frames 0 and 2; 3.1, 3.4, 4.6, 11.6, 11.8, 24.7 s); at 11.8 and 24.7 the white shape keeps the last shot's pose over the new place, bridging the cut. The laptop and a hand flash white the same way (1.0, 2.0, 6.4 s).",
+  "Flash frames: 2 frames of a white card (pure white down to half height, fading to grey #9A9A9A at the bottom) cut in hard, no ramp, at 15.58 s (into the screen recording) and 18.58 s (out of it).",
   "Captions: Poppins Bold, white with a soft dark shadow, about 44 px at 1080 wide, centred 65% down; 1 to 4 words a caption, laid out whole so each word lands in place; the newest word shows dim and slightly soft for 0.18 s.",
   "Kinetic title (3.1 to 4.9 s): Archivo Black all caps on near-black boxes (rgba 32,32,32,.93), left-aligned at 9.6% from the left, 52% down; each word lands on its spoken word (pops from 114% in 0.12 s), the line's box grows to fit it (eased 0.15 s); letters white to light grey top to bottom; holds across the next cut.",
   "Number disc (12.35 to 15.6 s): a circle 61% of the width, centred 40% down, navy gradient #45519A to #2C3253 top to bottom with a deep soft shadow; pops in with overshoot and blur, holds the logo; the speaker steps in front of it (behind-person); the logo slides out to the right inside the circle, a big italic Poppins ExtraBold number pops in from 140% blurred, its label (Poppins SemiBold italic) rises under it.",
@@ -128,7 +147,7 @@ export const TALKING_HEAD_AD = {
   v: 1,
   name: "Talking-head ad",
   source: "reference",
-  description: "A 34 s vertical founder ad: one person talks to camera, cut every 1 to 2 s with whips and white flashes to b-roll, word-timed captions, a kinetic title on dark boxes, a number disc, a corner logo and a blue end card with a feature grid. Recreate it with your talking-head video, b-roll, logo and words.",
+  description: "A 34 s vertical founder ad: one person talks to camera, hard cuts every 1 to 2 s with 2-frame whip pans, white silhouette strobes and flash frames to b-roll, word-timed captions, a kinetic title on dark boxes, a number disc, a corner logo and a blue end card with a feature grid. Recreate it with your talking-head video, b-roll, logo and words.",
   w: W, h: H, duration: 33.6, fps: 30,
   design: {
     bg: "#121212", ink: "#FFFFFF", muted: "#BFBFBF", brand: "{{brand_color}}", accent: ["{{accent}}", "{{brand_color}}"],
@@ -138,27 +157,27 @@ export const TALKING_HEAD_AD = {
     word: { ms: 180, stagger: 0, blur: 1.6, rise: 0 },
     notes: [
       "Captions follow the speech word by word; each word lands in place, dim for 0.18 s, then white.",
-      "Cuts every 1 to 2 s; whips push left with motion blur, flashes blow out to white on the other cuts.",
+      "Cuts every 1 to 2 s, all hard: 2-frame whip pans with motion blur on 5, 1 to 3 frame white silhouette strobes on 6, two 2-frame white flash cards.",
       "Pops overshoot (spring) and blur while they grow; boxes grow with an expo ease-out.",
     ],
   },
   scenes: [
-    { id: "hook", start: 0, end: 3.13, what: "You've seen it: the speaker, then the logo and the website on a laptop (whips)." },
-    { id: "problem", start: 3.13, end: 7.93, what: "The kinetic title on the key phrase, then the old way (hand writing, calculator)." },
-    { id: "objection", start: 7.93, end: 11.67, what: "Talking head with a slow push in: switching sounds like effort, but it isn't." },
-    { id: "promise", start: 11.67, end: 15.6, what: "The number disc: the logo, then the number of minutes, the background blurred." },
-    { id: "product", start: 15.6, end: 18.67, what: "Screen recording of the product, out to a white dip." },
-    { id: "savings", start: 18.67, end: 24.7, what: "Talking head, the cost on a headline and a book page." },
-    { id: "signoff", start: 24.7, end: 28.93, what: "Talking head at a glass door: give it a try." },
+    { id: "hook", start: 0, end: 3.25, what: "You've seen it: the speaker, then the logo and the website on a laptop (whips)." },
+    { id: "problem", start: 3.25, end: 7.958, what: "The kinetic title on the key phrase, then the old way (hand writing, calculator)." },
+    { id: "objection", start: 7.958, end: 11.75, what: "Talking head with a slow push in: switching sounds like effort, but it isn't." },
+    { id: "promise", start: 11.75, end: 15.583, what: "The number disc: the logo, then the number of minutes, the background blurred." },
+    { id: "product", start: 15.583, end: 18.583, what: "Screen recording of the product, between two white flash frames." },
+    { id: "savings", start: 18.583, end: 24.667, what: "Talking head, the cost on a headline and a book page." },
+    { id: "signoff", start: 24.667, end: 28.93, what: "Talking head at a glass door: give it a try." },
     { id: "endcard", start: 28.93, end: 33.6, what: "Blue end card: headline, four features, the button and a cursor." },
   ],
   elements,
   slots,
   audio: { music: "m_ambient", musicDb: -14, musicStart: 28.93, sfx: [{ t: 12.35, id: "sfx_hit" }, { t: 14.44, id: "sfx_hit" }, { t: 15.55, id: "sfx_whoosh" }] },
-  edit: { shots },
+  edit: { shots, silhouettes },
   layers: [
     ...backdrops,
-    { id: "flashes", kind: "flash", z: 20, hits: [{ t: 0, in: 0.001, ms: 380, peak: 0.85 }, { t: 4.62, ms: 300, peak: 0.8 }, { t: 6.47, ms: 300, peak: 0.8 }, { t: 11.67, ms: 320, peak: 0.85 }, { t: 18.62, in: 0.12, ms: 300, peak: 1 }] },
+    { id: "flashes", kind: "flash", z: 25, grad: { from: 0.52, to: "#9A9A9A" }, hits: [{ t: 15.583, hard: true, ms: 83, peak: 1 }, { t: 18.583, hard: true, ms: 83, peak: 1 }] },
     {
       id: "captions", kind: "captions", z: 30, t0: 0, t1: 28.93, x: W / 2, y: H * 0.655, size: 44, font: "Poppins", weight: 700,
       text: "{{script}}", groups: capWins.map(([t0, t1, w]) => ({ t0, t1, w })),
@@ -172,7 +191,7 @@ export const TALKING_HEAD_AD = {
       logo: "{{logo}}", brand: "{{brand}}", number: "{{disc_number}}", label: "{{disc_label}}", top: "{{disc_top}}", bottom: "{{disc_bottom}}",
       swapAt: 14.17, numberAt: 14.44, labelAt: 14.82, outAt: 15.5,
     },
-    { id: "bug", kind: "bug", z: 40, t0: 0, t1: 33.6, anchor: "right", x: W * 0.906, y: H * 0.099, size: 62, src: "{{logo}}", text: "{{brand}}", hide: [[15.6, 18.67], [28.93, 33.7]] },
+    { id: "bug", kind: "bug", z: 40, t0: 0, t1: 33.6, anchor: "right", x: W * 0.906, y: H * 0.099, size: 62, src: "{{logo}}", text: "{{brand}}", hide: [[15.625, 18.583], [28.93, 33.7]] },
     {
       id: "endcard", kind: "endcard", z: 50, t0: 28.93, t1: 33.6, revealMs: 220,
       color: "{{brand_color}}", accent: "{{accent}}", logo: "{{logo}}", brand: "{{brand}}",
