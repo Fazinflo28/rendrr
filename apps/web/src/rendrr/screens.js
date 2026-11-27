@@ -6,6 +6,7 @@ import {
   Masonry, MasonrySkeleton, MoreMenu, Dropdown, useNav, useApp,
 } from "./ui";
 import { api } from "./api";
+import { MotionTemplatesStrip } from "./templates";
 import { BrandLogo } from "./brandLogos";
 import { DropboxPanel, GooglePhotosPanel } from "./cloudSources";
 import { AppIcon } from "./logo";
@@ -1050,7 +1051,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
     ${embedded ? html`<div class="row between">${sortSeg}${actions}</div>` : html`<div class="page-head"><div><h1 class="t-title">${title}</h1>${sub && html`<p class="muted">${sub}</p>`}</div>${!types && onCommunity && actions}</div>
     ${hasSwitch && html`<${ExploreSwitch} value=${side} onChange=${setSide} />`}
     ${onCommunity && html`<div class="row">${sortSeg}</div>`}`}
-    ${!onCommunity && html`<div id="rendrr-presets"><${StylePacks} rendrrOnly wall /></div>`}
+    ${!onCommunity && html`<div id="rendrr-presets"><${MotionTemplatesStrip} /><${StylePacks} rendrrOnly wall /></div>`}
     ${onCommunity && html`<${Async} q=${q} skeleton=${html`<${MasonrySkeleton} />`} whenEmpty=${html`<${EmptyState} icon="globe" title="The gallery is empty" text="Be the first. Publish a finished project and others can recreate it." action=${html`<${Btn} onClick=${() => setPublish(true)}>Publish a video<//>`} />`}>${(list) => {
       let shown = list.filter((g) => (!types || types.includes(g.style?.type)) && (ori === "All" || g.ori === ori) && (plat === "all" || g.platforms.includes(plat)) && (!mine || g.mine));
       shown = [...shown].sort((a, b) => sort === "newest" ? b.at - a.at : sort === "recreated" ? b.recreates - a.recreates : (b.likes * 3 + b.views / 100) - (a.likes * 3 + a.views / 100));

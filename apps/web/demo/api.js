@@ -7,6 +7,7 @@ import { aiName, handoffPrompt, handoffUrl } from "../../../packages/shared/src/
 import { desktopApp, forgetVerifier, newChallenge, s256, savedVerifier } from "../src/rendrr/desktopLogin.ts";
 import { demoBillingApi } from "./billingDemo.js";
 import { demoAssetsApi } from "./assetsDemo.js";
+import { MOTION_TEMPLATES, motionTemplateLite, motionTemplateText } from "../../../packages/shared/src/motionTemplate.ts";
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const waitingEdits = new Set(); // Recreate's edits still waiting for their footage
@@ -622,6 +623,14 @@ Object.assign(api, {
     }, 700 + k * 300));
     return pickView(p);
   },
+});
+
+// Motion templates: Rendrr's built-in ones, as the API serves them; Recreate makes a demo edit.
+const demoTemplate = (t) => ({ id: t.id, name: t.spec.name, builtin: true, status: "ready", seconds: t.spec.duration, width: t.spec.w, height: t.spec.h, description: t.spec.description || "", spec: motionTemplateLite(t.spec), text: motionTemplateText(t.spec) });
+Object.assign(api, {
+  listTemplates: async () => { await wait(120); return MOTION_TEMPLATES.map(demoTemplate); },
+  getTemplate: async (id) => { await wait(120); const t = MOTION_TEMPLATES.find((x) => x.id === id); if (!t) throw Object.assign(new Error("There is no template with that id."), { code: "not-found", status: 404, friendly: true }); return demoTemplate(t); },
+  recreateTemplate: async (id, body) => { await wait(300); (globalThis.__demoRecreates ||= []).push({ id, slots: Object.keys(body?.slots || {}) }); const list = await api.listProjects?.(); return { projectId: list?.[0]?.id || "demo" }; },
 });
 
 export { api };

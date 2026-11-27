@@ -1,0 +1,25 @@
+/* Motion templates: the Explore strip, the list and a template's page (templates.js). */
+.mt-strip { display: grid; gap: var(--s3); margin: 0 0 var(--s4); }
+.mt-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(240px, 300px); gap: var(--s3); overflow-x: auto; padding-bottom: 4px; }
+.mt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--s3); }
+.mt-card { all: unset; cursor: pointer; display: grid; gap: 10px; border-radius: var(--r-lg); background: var(--raised); border: 1px solid var(--hair); padding: 10px; transition: transform .2s var(--ease-out), box-shadow .2s var(--ease-out); }
+.mt-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-card); }
+.mt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mt-art { position: relative; aspect-ratio: 16 / 9; border-radius: var(--r-md); overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.mt-name-big { color: #fff; font-weight: 800; font-size: 22px; letter-spacing: -0.03em; text-shadow: 0 2px 12px rgba(0, 0, 0, .25); }
+.mt-len { position: absolute; right: 8px; bottom: 8px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 12px; padding: 2px 7px; border-radius: 99px; }
+.mt-meta { display: grid; gap: 2px; padding: 0 4px 4px; }
+.mt-detail { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(300px, 1fr); gap: var(--s3); align-items: start; }
+@media (max-width: 900px) { .mt-detail { grid-template-columns: 1fr; } }
+.mt-sec { display: grid; gap: 10px; padding: var(--s3); }
+.mt-form { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+.mt-group { margin: 6px 0 0; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.mt-sw { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--hair-strong); }
+.mt-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--ink-dim); }
+.mt-scenes { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.mt-scenes li { display: grid; grid-template-columns: 52px 1fr; gap: 10px; color: var(--ink-dim); }
+.mt-at { font-variant-numeric: tabular-nums; color: var(--muted); }
+.mt-pic { display: flex; gap: 10px; align-items: flex-start; }
+.mt-pic img, .mt-pic-empty { width: 64px; height: 64px; border-radius: var(--r-sm); object-fit: cover; flex: none; background: var(--surface); display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.mt-file { cursor: pointer; }
+.mt-color { width: 44px; height: 32px; border: 1px solid var(--hair-strong); border-radius: var(--r-sm); background: none; padding: 2px; }

@@ -196,6 +196,7 @@ Only when all pass, render the preview.
 - Another shape or a shorter cut: \`create_project\` with \`fromProjectId\`, plus \`aspect\` and \`reframe\`. The first edit stays untouched.
 - Shorts from a long video: \`create_shorts\`.
 - No footage (promo, explainer, animated text): \`create_project\` with \`blank\`, then build with \`create_graphic\`, text, music and sound effects. Check a look with \`test_graphic\` or \`render_samples\` first.
+- Motion templates (a motion-graphic video to reuse): \`list_graphics\` names them (Rendrr's start with mt). Swap the words, pictures and colours: \`create_project\` with \`templateId\` and \`slots\`. A new video in the same design and motion: \`create_graphic\` with \`template\` and \`templateFrom\`, keeping its word timing, easings and camera moves. To make one from a reference: \`analyze_reference\`, look at the frames, then write the template.
 
 ## Hooks (first 3 to 10 s)
 

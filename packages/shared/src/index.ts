@@ -41,3 +41,4 @@ export * from "./storyboard";
 export * from "./changes";
 export * from "./pins";
 export * from "./clipRefs";
+export * from "./motionTemplate";
