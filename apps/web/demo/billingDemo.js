@@ -91,6 +91,7 @@ function overview() {
     renders30: { done: 196, failed: 3, stopped: 2 },
     storage: { totalGB: r2(list.reduce((t, u) => t + u.storageGB, 0)), day: iso(Date.now()).slice(0, 10) },
     issues: { failedRenders24h: 1, failedJobs24h: 2, clientErrors24h: 1, aiToolErrors24h: 3, stuckRenders: 0 },
+    product: { edits: 56, edits30: 31, videos: 86, folders: 9, reviews: 14, reviewComments: 47, gallery: 6, aiConnections: 5, aiUsed30: 4, finals30: 41, onComputers30: 63, styles: 12 },
     queues: { render: { waiting: 0, active: 1, failed: 2, delayed: 0 }, proxy: { waiting: 1, active: 0, failed: 0, delayed: 0 }, analyze: { waiting: 0, active: 0, failed: 1, delayed: 0 }, graphic: { waiting: 0, active: 0, failed: 0, delayed: 0 } },
     rates: { ...COST_RATES, fixedMonthly: 15 },
     series: s,
@@ -148,7 +149,8 @@ function change(id, c) {
   if (c.bonusFootageMinutes) u.bonus.footageMinutes = Math.max(0, u.bonus.footageMinutes + c.bonusFootageMinutes);
   if (c.spendLimitCents != null) u.spendLimitCents = Math.max(0, Math.round(c.spendLimitCents));
   if (c.role) u.role = c.role;
-  state.actions.unshift({ targetId: id, action: Object.keys(c).join(","), meta: c, adminId: "u1", at: iso(Date.now()) });
+  const { reason, ...what } = c;
+  state.actions.unshift({ targetId: id, action: Object.keys(what).join(","), meta: { ...what, ...(reason ? { reason } : {}) }, adminId: "u1", at: iso(Date.now()) });
   globalThis.__demoAdminChanges = [...(globalThis.__demoAdminChanges || []), { id, ...c }];
   return userDetail(id);
 }
@@ -205,6 +207,74 @@ function jobs(o = {}) {
   return rows.filter((r) => (!o.queue || r.queue === o.queue) && (!o.event || r.event === o.event));
 }
 
+// ---- The admin sections modelled on Dragly's panel ----
+const person = (id) => { const u = users().find((x) => x.id === id); return u ? { id: u.id, name: u.name, email: u.email, plan: u.plan } : { id, name: "", email: "", plan: "" }; };
+function folders(o = {}) {
+  const now = Date.now();
+  const all = [["Fazinflo", "Ronnii's studio", "u1"], ["Engine Room PT", "Ronnii's studio", "u1"], ["Movemend PT", "Ronnii's studio", "u1"], ["Podcast clips", "Maya Chen", "u2"], ["Brand ads", "Maya Chen", "u2"], ["Shorts", "Leo Park", "u3"], ["Wedding", "Ana Ruiz", "u4"], ["Agency reels", "Sam Ode", "u5"], ["Launch video", "Jo Lee", "u6"]]
+    .map(([name, workspace, uid], i) => ({ id: "fd" + (i + 1), name, workspace, members: 1, hasFootage: i % 3 !== 2, owner: person(uid), edits: [9, 14, 6, 11, 5, 8, 3, 2, 6][i], edits30: [5, 9, 6, 4, 1, 6, 1, 0, 3][i], finals30: [6, 12, 8, 4, 0, 7, 1, 0, 3][i], reviews: [2, 4, 3, 1, 0, 2, 1, 0, 1][i], reviewViews: [11, 37, 18, 6, 0, 9, 4, 0, 2][i], createdAt: iso(now - (60 - i * 5) * DAY), lastActive: iso(now - i * 5 * 3600_000) }));
+  const q = (o.q || "").toLowerCase();
+  const list = q ? all.filter((f) => [f.name, f.workspace, f.owner.email].some((x) => x.toLowerCase().includes(q))) : all;
+  return { total: list.length, all: all.length, offset: o.offset || 0, folders: list.slice(o.offset || 0, (o.offset || 0) + 50) };
+}
+function billingAdmin(o = {}) {
+  const now = Date.now();
+  const inv = [["u2", "RENDRR-0006", "paid", 500, 742], ["u3", "RENDRR-0005", "paid", 500, 0], ["u6", "RENDRR-0004", "failed", 500, 318], ["u2", "RENDRR-0003", "paid", 500, 410], ["u6", "RENDRR-0002", "paid", 500, 0], ["u3", "RENDRR-0001", "open", 500, 120]]
+    .map(([uid, number, status, base, usage], i) => ({ id: "bi" + i, user: person(uid), number, status, base: base / 100, usage: usage / 100, total: (base + usage) / 100, url: "#", periodStart: iso(now - (30 + i * 6) * DAY), periodEnd: iso(now - i * 6 * DAY), paidAt: status === "paid" ? iso(now - i * 6 * DAY) : null, createdAt: iso(now - i * 6 * DAY) }));
+  const list = o.status ? inv.filter((i) => i.status === o.status) : inv;
+  return {
+    payments: globalThis.__demoPaymentsOn !== false, revenueAll: 46.7, paidInvoices: 4, revenue30: 27.42, payments30: 3, base30: 15, usage30: 12.42, failed30: 1, openCount: 1, openAmount: 6.2, mrr: 15,
+    plans: [{ plan: "starter", label: "Starter", users: 3, pastDue: 1, canceled: 0, mrr: 15 }, { plan: "trial", label: "Trial", users: 1, ended: 1, mrr: 0 }, { plan: "comp", label: "Complimentary", users: 1, mrr: 0 }],
+    given30: { exportMinutes: 30, footageMinutes: 0 }, total: list.length, offset: 0, invoices: list,
+  };
+}
+function renders(days = 7) {
+  const now = Date.now();
+  const perDay = Array.from({ length: days }, (_, i) => ({ day: iso(now - (days - 1 - i) * DAY).slice(0, 10), renders: 8 + ((i * 5) % 7), failed: i % 4 === 1 ? 1 : 0, computer: 4 + (i % 3) }));
+  return {
+    days, since: iso(now - days * DAY), total: 74, done: 70, failed: 3, successRate: 95.89, onComputers: 38, medianSeconds: 48,
+    groups: [
+      { key: "preview:computer", label: "Previews on people's computers", total: 30, done: 30, failed: 0, running: 0, minutes: 41.5, successRate: 100, medianSeconds: 14, lastOk: iso(now - 600_000), lastFail: null, reasons: [] },
+      { key: "preview:cloud", label: "Previews on the cloud", total: 18, done: 17, failed: 1, running: 0, minutes: 22, successRate: 94.44, medianSeconds: 36, lastOk: iso(now - 3600_000), lastFail: { at: iso(now - 8 * 3600_000), error: "Clip missing" }, reasons: [{ reason: "clip_missing", n: 1 }] },
+      { key: "final:computer", label: "Finals on people's computers", total: 8, done: 8, failed: 0, running: 0, minutes: 9.1, successRate: 100, medianSeconds: 58, lastOk: iso(now - 2 * 3600_000), lastFail: null, reasons: [] },
+      { key: "final:cloud", label: "Finals on the cloud", total: 18, done: 15, failed: 2, running: 1, minutes: 19.4, successRate: 88.24, medianSeconds: 96, lastOk: iso(now - 3 * 3600_000), lastFail: { at: iso(now - 5 * 3600_000), error: "ffmpeg exited with code 1" }, reasons: [{ reason: "render_failed", n: 2 }] },
+    ],
+    byWho: { user: 41, claude: 30, chatgpt: 3 }, perDay,
+    recentFailures: [{ id: "r3", at: iso(now - 5 * 3600_000), kind: "final", place: "cloud", project: "Ad v12", error: "ffmpeg exited with code 1", errorCode: "render_failed", by: "claude", user: person("u3") }, { id: "r9", at: iso(now - 8 * 3600_000), kind: "preview", place: "cloud", project: "Lifter v14", error: "Clip missing", errorCode: "clip_missing", by: "user", user: person("u2") }],
+  };
+}
+function audit(o = {}) {
+  const now = Date.now();
+  const seed = [{ id: "a1", at: iso(now - 26 * 3600_000), admin: person("u1"), target: person("u5"), action: "trialDays", change: { trialDays: 7 }, reason: "Asked for more time to test" }, { id: "a2", at: iso(now - 3 * DAY), admin: person("u1"), target: person("u2"), action: "bonusExportMinutes", change: { bonusExportMinutes: 30 }, reason: "Render failed twice on our side" }];
+  const live = state.actions.map((a, i) => { const { reason, ...change } = a.meta || {}; return { id: "live" + i, at: a.at, admin: person(a.adminId), target: person(a.targetId), action: a.action, change, reason: reason || null }; });
+  const q = (o.q || "").toLowerCase();
+  const rows = [...live, ...seed].filter((r) => !q || [r.admin.email, r.target.email, r.target.name, r.action, r.reason || ""].some((x) => x.toLowerCase().includes(q)));
+  return { total: rows.length, offset: 0, rows };
+}
+function connectionsDemo() {
+  const now = Date.now();
+  const ai = [["u1", "claude", "Claude"], ["u2", "claude", "Claude"], ["u3", "chatgpt", "ChatGPT"], ["u6", "claude", "Claude"]].map(([uid, client, clientName], i) => ({ id: "ai" + i, user: person(uid), client, clientName, lastSeenAt: iso(now - i * 9 * 3600_000), revoked: false, createdAt: iso(now - (20 + i) * DAY) }));
+  const computers = [{ userId: "u1", id: "m1", name: "Ronnii's MacBook Pro", platform: "mac", version: "0.1.20", at: iso(now - 20_000), online: true, canRender: true, user: person("u1") }, { userId: "u2", id: "w1", name: "MAYA-PC", platform: "windows", version: "0.1.10", at: iso(now - 4 * 3600_000), online: false, canRender: true, user: person("u2") }];
+  return { ai, aiSummary: { claude: 3, chatgpt: 1, other: 0, used7d: 3 }, computers, versions: [{ version: "mac 0.1.20", n: 1 }, { version: "windows 0.1.10", n: 1 }] };
+}
+function galleryDemo() {
+  const now = Date.now();
+  const items = [["The Lifter", "u1", "Bold captions", "9:16", 31, 140, 12, 3], ["Just Stop", "u1", "Clean", "9:16", 24, 96, 7, 1], ["Podcast hook", "u2", "Podcast", "16:9", 58, 51, 4, 2]].map(([title, uid, style, ori, seconds, views, likes, recreates], i) => ({ id: "g" + i, title, author: person(uid).name, user: person(uid), style, shape: ori, platforms: ["Instagram", "TikTok"], likes, views, recreates, allowRecreate: i !== 2, seconds, hasVideo: true, createdAt: iso(now - (i + 2) * DAY) }));
+  return { total: items.length, views: 287, likes: 23, recreates: 6, items };
+}
+function healthDemo() {
+  const now = Date.now();
+  return {
+    checkedAt: iso(now), live: { db: { ok: true, ms: 12 }, redis: { ok: true, ms: 3 }, worker: { lastSeen: iso(now - 240_000), lastJob: { at: iso(now - 240_000), queue: "preview", event: "finish" } } },
+    jobs: { finished1h: 14, failed1h: 0, failed24h: 2, browserErrors24h: 1 },
+    keys: { storage: true, signIn: true, transcription: true, google: true, payments: false, webhook: false, encryption: true },
+    switches: { maintenance: false, billingEnforce: "auto", localRendersFree: false, macRender: "default" },
+    deploy: { commit: "c6f14f7", environment: "production", node: "v22.20.0", upSeconds: 5400 },
+    migrations: [{ name: "20261126120000_folder_footage", ok: true, at: iso(now - DAY) }, { name: "20261124090000_render_made", ok: true, at: iso(now - 3 * DAY) }],
+    queues: overview().queues,
+  };
+}
+
 export const demoBillingApi = {
   getBillingOverview: async () => { await wait(120); return demoBillingOverview(); },
   startCheckout: async () => { await wait(100); globalThis.__demoCheckout = (globalThis.__demoCheckout || 0) + 1; return { url: "/usage?paid=1" }; },
@@ -220,5 +290,12 @@ export const demoBillingApi = {
   adminIssues: async (days) => { await wait(80); return issues(days); },
   adminResolveClientError: async (id) => { await wait(60); state.resolved.add(id); return { ok: true }; },
   adminJobs: async (o) => { await wait(60); return jobs(o); },
+  adminFolders: async (o) => { await wait(70); return folders(o); },
+  adminBilling: async (o) => { await wait(70); return billingAdmin(o); },
+  adminRenders: async (days) => { await wait(70); return renders(days); },
+  adminAudit: async (o) => { await wait(60); return audit(o); },
+  adminConnections: async () => { await wait(60); return connectionsDemo(); },
+  adminHealth: async () => { await wait(60); return healthDemo(); },
+  adminGallery: async () => { await wait(60); return galleryDemo(); },
   reportClientError: async () => ({ ok: true }),
 };

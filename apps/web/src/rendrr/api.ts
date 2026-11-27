@@ -115,6 +115,9 @@ async function followRender(started: any, label: string, minutes: number, onProg
 }
 
 // ---------------- the api ----------------
+/** A query string from the values that are set (admin lists). */
+const adminQs = (o: Record<string, unknown>) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== "").map(([k, v]) => [k, String(v)])).toString();
+
 export const api: any = {
   demo, PROC_STEPS, DRIVE_STEPS, LOCAL_STEPS, CATEGORIES,
 
@@ -713,6 +716,13 @@ export const api: any = {
   adminStorage: () => get("/admin/storage"),
   adminIssues: (days = 7) => get(`/admin/issues?days=${days}`),
   adminResolveClientError: (id: string) => post(`/admin/issues/client/${enc(id)}/resolve`, {}),
+  adminFolders: (o: { q?: string; offset?: number } = {}) => get(`/admin/folders?${adminQs(o)}`),
+  adminBilling: (o: { status?: string; offset?: number } = {}) => get(`/admin/billing?${adminQs(o)}`),
+  adminRenders: (days = 7) => get(`/admin/renders?days=${days}`),
+  adminAudit: (o: { q?: string; action?: string; days?: number; offset?: number } = {}) => get(`/admin/audit?${adminQs(o)}`),
+  adminConnections: () => get("/admin/connections"),
+  adminHealth: () => get("/admin/health"),
+  adminGallery: () => get("/admin/gallery"),
   adminJobs: (o: { queue?: string; event?: string } = {}) => get(`/admin/jobs?${new URLSearchParams(Object.entries(o).filter(([, v]) => v) as [string, string][]).toString()}`),
   reportClientError: (e: { message: string; stack?: string; url?: string; userId?: string | null }) => post("/telemetry/client-error", e).catch(() => {}),
   getSettings: () => get("/account/settings"),

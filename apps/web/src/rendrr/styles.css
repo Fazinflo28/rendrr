@@ -1619,6 +1619,42 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
 .plan.plan-on { box-shadow: 0 0 0 1px var(--accent); }
 .admin .adm-user .mono { font-size: 11px; }
 .client-err { padding: 8px 0; border-top: 1px solid var(--hair); }
+/* The admin panel's layout, as in Dragly's: a side panel of sections beside the one picked; on a phone, a menu button. */
+.admin { max-width: 1400px; }
+.adm { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: var(--s6); align-items: start; }
+.adm-top, .adm-scrim { display: none; }
+.adm-nav { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 2px; padding: 8px; border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow-card); }
+.adm-nav-title { padding: 6px 10px 10px; }
+.adm-navitem { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: none; color: var(--ink-dim); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.adm-navitem:hover { background: var(--raised); color: var(--ink); }
+.adm-navitem.on { background: var(--raised); color: var(--ink); box-shadow: inset 0 0 0 1px var(--hair-strong); font-weight: 600; }
+.adm-navitem.on svg { color: var(--accent); }
+.adm-main { min-width: 0; }
+.adm-head h1 { margin: 0; }
+.adm-head p { margin: 4px 0 0; }
+.adm-mini { gap: var(--s3); }
+.adm-mini-cell { gap: 2px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--raised); }
+.adm-mini-cell .big { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.adm-pager { padding-top: 4px; }
+.adm-check { gap: 4px; }
+.adm-check .adm-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--muted); }
+.adm-check.good .adm-dot { background: var(--accent); }
+.adm-check.warn .adm-dot { background: #f2c94c; }
+.adm-check.bad .adm-dot { background: #ff8a6b; }
+.adm-check.bad .t-heading { color: #ff8a6b; }
+.seg-ok, .dot.sw-ok { background: var(--accent); }
+.seg-failed, .dot.sw-failed { background: #ff8a6b; }
+.dot.sw-ok, .dot.sw-failed { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+@media (max-width: 900px) {
+  .adm { grid-template-columns: minmax(0, 1fr); gap: var(--s3); }
+  .adm-top { display: flex; align-items: center; gap: 10px; }
+  .adm-menu { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border: 0; border-radius: 10px; background: var(--raised); color: var(--ink); cursor: pointer; }
+  .adm-nav { position: fixed; z-index: 60; top: 0; bottom: 0; left: 0; width: min(280px, 82vw); border-radius: 0; overflow-y: auto; transform: translateX(-105%); transition: transform .2s ease; padding-top: max(12px, env(safe-area-inset-top)); }
+  .adm-nav[data-open] { transform: none; }
+  .adm-scrim { display: block; position: fixed; inset: 0; z-index: 59; background: rgba(0, 0, 0, .45); }
+  .adm-mini { grid-template-columns: repeat(2, 1fr); }
+  .adm-checks { grid-template-columns: 1fr; }
+}
 @media (max-width: 760px) { .chart { height: 120px; } }
 /* Where a render runs (always Rendrr's cloud server): a small line in the Export window. */
 .where-line { display: flex; align-items: center; gap: 6px; }
