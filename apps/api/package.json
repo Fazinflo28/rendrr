@@ -8,7 +8,7 @@
     "start": "tsx src/server.ts",
     "typecheck": "tsc -p tsconfig.json",
     "vercel-build": "pnpm --filter @rendrr/db exec prisma generate && pnpm --filter @rendrr/db exec prisma migrate deploy && pnpm --filter @rendrr/db exec tsx src/seed.ts && node vercel-build.mjs",
-    "test": "tsx --env-file-if-exists=../../.env --test --test-force-exit test/*.test.ts"
+    "test": "tsx --env-file-if-exists=../../.env --test --test-force-exit --test-concurrency=1 test/*.test.ts"
   },
   "dependencies": {
     "@clerk/backend": "3.26.0",

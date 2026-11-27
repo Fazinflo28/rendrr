@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { applyOp, buildInitialTimeline, type EditContext, type Op, type Snapshot } from "@rendrr/shared";
 import { ffmpegArgs, planRender, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
@@ -26,7 +26,9 @@ const source: SourceInfo = { width: SW, height: SH, fps: 30, seconds: SECONDS, h
 // at (560, 184): 156 px right at the source's size, 117 px at the preview's (past the plain morph's 64 px search).
 const A = { x: 420, y: 200, s: 320 }, B = { x: 560, y: 184, s: 352 };
 
-describe("face-aware Morph Cut, rendered", () => {
+// Needs Python with OpenCV (the worker image has it): skipped without it, as the faces test is.
+const cv = (() => { try { execFileSync(process.env.PYTHON_BIN || "python3", ["-c", "import cv2"]); return true; } catch { return false; } })();
+describe("face-aware Morph Cut, rendered", { skip: !cv && "needs Python with OpenCV" }, () => {
   let dir = "", main = "";
   before(async () => {
     dir = await mkdtemp(join(tmpdir(), "morph-face-"));

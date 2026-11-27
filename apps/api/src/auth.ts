@@ -1,5 +1,5 @@
 import { createClerkClient, verifyToken } from "@clerk/backend";
-import { env, internalSecrets, isSupabaseLogin, isSupabaseToken, safeEqual, supabaseLoginById, trialFields, unauthorized, verifySupabaseToken, AppError, type SupabaseLogin } from "@rendrr/core";
+import { env, internalSecrets, isSupabaseLogin, isSupabaseToken, safeEqual, supabaseConfigured, supabaseLoginById, trialFields, unauthorized, verifySupabaseToken, AppError, type SupabaseLogin } from "@rendrr/core";
 import { prisma, type User } from "@rendrr/db";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
@@ -123,7 +123,11 @@ async function authenticateInner(req: FastifyRequest, _reply: FastifyReply) {
     req.loginId = login.loginId;
     return;
   }
-  if (!env().CLERK_SECRET_KEY) throw new AppError("Login is not set up on the server yet.", 500, "auth-config");
+  if (!env().CLERK_SECRET_KEY) {
+    // Supabase is the login and Clerk is off: a token Supabase did not sign is simply not a login.
+    if (supabaseConfigured()) throw unauthorized();
+    throw new AppError("Login is not set up on the server yet.", 500, "auth-config");
+  }
   const r = await verifyToken(tok, { secretKey: env().CLERK_SECRET_KEY }).catch(() => null);
   const payload = (r && typeof r === "object" && "data" in r ? (r as { data?: { sub?: string } }).data : (r as { sub?: string } | null)) || null;
   if (!payload?.sub) throw unauthorized();
