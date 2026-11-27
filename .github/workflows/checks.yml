@@ -274,6 +274,10 @@ jobs:
     name: Tests worker
     runs-on: ubuntu-latest
     timeout-minutes: 50
+    # Run on the live worker's own system (Debian trixie, as apps/worker/Dockerfile) with its FFmpeg 7.1 and Chromium:
+    # renders are checked with the tools that make them. The runner's own FFmpeg is newer and renders some frames,
+    # colours and measurements differently.
+    container: node:22-trixie-slim
     services:
       postgres:
         image: postgres:16
@@ -288,8 +292,9 @@ jobs:
         options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       NODE_ENV: test
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rendrr
-      REDIS_URL: redis://localhost:6379
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/rendrr
+      REDIS_URL: redis://redis:6379
+      CHROMIUM_PATH: /usr/bin/chromium
       S3_ENDPOINT: http://localhost:9000
       S3_BUCKET: rendrr-test
       S3_REGION: us-east-1
@@ -302,6 +307,9 @@ jobs:
       PUBLIC_WEB_URL: http://localhost:3000
       PUBLIC_MCP_URL: http://localhost:4100
     steps:
+      - name: System tools (as the worker image)
+        run: apt-get update -q && apt-get install -y -q --no-install-recommends ffmpeg chromium fonts-dejavu-core fonts-noto-core python3 python3-venv ca-certificates openssl curl git procps && ffmpeg -hide_banner -version | head -1
+        timeout-minutes: 8
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -314,15 +322,12 @@ jobs:
       - name: Prisma client
         run: pnpm db:generate
         timeout-minutes: 5
-      - name: FFmpeg
-        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
-        timeout-minutes: 8
       - name: File storage (a stand-in S3)
         run: |
-          pipx install "moto[server]"
-          nohup moto_server -H 127.0.0.1 -p 9000 > /tmp/s3.log 2>&1 &
+          python3 -m venv /tmp/moto && /tmp/moto/bin/pip install -q "moto[server]"
+          nohup /tmp/moto/bin/moto_server -H 127.0.0.1 -p 9000 > /tmp/s3.log 2>&1 &
           for i in $(seq 1 30); do curl -fs http://localhost:9000/ > /dev/null && break; sleep 2; done
-          AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin aws --endpoint-url http://localhost:9000 --region us-east-1 s3 mb s3://rendrr-test
+          curl -fsS -X PUT http://localhost:9000/rendrr-test
         timeout-minutes: 5
       - name: Database tables
         run: pnpm --filter @rendrr/db exec prisma migrate deploy
