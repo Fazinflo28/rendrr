@@ -2,7 +2,9 @@
 // money goes, usage, problems, queues); Users (search, plan filter, sort; open one: usage, bill, costs, renders,
 // problems, and the changes: trial +7 days, complimentary, back to trial, bonus minutes, spending limit, each logged);
 // Costs (totals, per export minute, by kind of job, top users); Storage; Issues (grouped errors, stuck work, browser
-// errors with Mark fixed); Jobs; a normal account sees "Admins only"; nothing wider than a phone.
+// errors with Mark fixed); Jobs; the sections modelled on Dragly's panel (Client folders, Billing, Render health,
+// Connections, Gallery, Audit log with reasons, System health) in a side panel, the section in the address; a normal
+// account sees "Admins only"; nothing wider than a phone.
 // Runs on the demo build (node demo/build.mjs first).   node demo/admin-panel.mjs   (from apps/web)
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -28,7 +30,12 @@ async function login(page) {
   const email = page.locator('input[type="email"]').first();
   if (await email.count()) { await email.fill("you@example.com"); await page.locator('input[type="password"]').first().fill("x"); await page.locator('button[type="submit"]').first().click(); await sleep(900); }
 }
-const tab = async (page, label) => { await page.locator(".page-head .seg button", { hasText: label }).click(); await sleep(400); };
+// A section from the side panel (on a phone, the menu button opens it first).
+const tab = async (page, label) => {
+  if (await page.locator("#adm-menu").isVisible().catch(() => false)) { await page.locator("#adm-menu").click(); await sleep(300); }
+  await page.locator(".adm-nav .adm-navitem", { hasText: new RegExp(`^${label}$`) }).click(); await sleep(400);
+};
+const why = (page, reason = "Testing the panel") => page.locator("#adm-reason").fill(reason);
 const fits = (page) => page.evaluate(() => {
   const W = document.documentElement.clientWidth;
   const wide = [...document.querySelectorAll("#admin *")].filter((e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.right > W + 1 && !e.closest(".tbl-wrap, table, .seg"); }).map((e) => e.id || e.className || e.tagName).slice(0, 5);
@@ -87,16 +94,19 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
   check(/Sam Ode/.test(await text(page, "#adm-user")) && (await text(page, "#adm-user-plan")) === "trial", `${tag}: the user window shows the account and its plan`);
   const user = await text(page, "#adm-user");
   check(/What they cost us/.test(user) && /Latest renders/.test(user) && /Problems/.test(user) && /render/.test(user), `${tag}: it shows their cost by kind of job, latest renders and problems`);
-  await page.locator("#adm-extend").click(); await sleep(500);
-  await page.locator("#adm-bonus").fill("15"); await page.locator("#adm-add-bonus").click(); await sleep(500);
+  await page.locator("#adm-extend").click(); await sleep(400);
+  check(await page.evaluate(() => (globalThis.__demoAdminChanges || []).length) === 0, `${tag}: a change without a reason is not sent`);
+  await why(page, "Asked for more time"); await page.locator("#adm-extend").click(); await sleep(500);
+  await why(page); await page.locator("#adm-bonus").fill("15"); await page.locator("#adm-add-bonus").click(); await sleep(500);
   check(/bonus 15 export/.test(await text(page, "#adm-actions")), `${tag}: bonus export minutes are added (${(await text(page, "#adm-actions")).match(/bonus[^·]*/)?.[0]})`);
-  await page.locator("#adm-limit").fill("50"); await page.locator("#adm-set-limit").click(); await sleep(500);
+  await why(page); await page.locator("#adm-limit").fill("50"); await page.locator("#adm-set-limit").click(); await sleep(500);
   check(/limit \$50\.00/.test(await text(page, "#adm-actions")), `${tag}: the spending limit is set to $50`);
-  await page.locator("#adm-comp").click(); await sleep(500);
+  await why(page); await page.locator("#adm-comp").click(); await sleep(500);
   check((await text(page, "#adm-user-plan")) === "comp" && await page.locator("#adm-trial").count() === 1, `${tag}: Make complimentary turns the plan to comp (and offers Back to trial)`);
-  await page.locator("#adm-trial").click(); await sleep(500);
+  await why(page); await page.locator("#adm-trial").click(); await sleep(500);
   check((await text(page, "#adm-user-plan")) === "trial", `${tag}: Back to trial puts them on the trial again`);
   const changes = await page.evaluate(() => globalThis.__demoAdminChanges || []);
+  check(changes.every((c) => c.reason) && changes[0].reason === "Asked for more time", `${tag}: every change carries its reason`);
   check(changes.length === 5 && changes[0].trialDays === 7 && changes[1].bonusExportMinutes === 15 && changes[2].spendLimitCents === 5000 && changes[3].plan === "comp" && changes[4].plan === "trial", `${tag}: each change is sent to the server (${changes.map((c) => Object.keys(c).filter((k) => k !== "id").join("+")).join(", ")})`);
   check(/Changes by the team/.test(await text(page, "#adm-user")), `${tag}: the user window lists the team's changes`);
   if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `admin-user-${tag}.png`), fullPage: true });
@@ -121,6 +131,37 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
   check(await page.locator("#adm-jobs tbody tr").count() === 4, `${tag}: Jobs lists the latest job log`);
   await page.locator("#adm-jobs select").selectOption("fail"); await sleep(400);
   check(await page.locator("#adm-jobs tbody tr").count() === 1, `${tag}: Jobs filters by event (failed)`);
+
+  // The sections modelled on Dragly's panel.
+  const sections = await page.$$eval(".adm-nav .adm-navitem", (els) => els.map((e) => e.textContent.trim()));
+  check(["Overview", "Users", "Client folders", "Billing", "Render health", "Costs", "Storage", "Connections", "Gallery", "Jobs", "Audit log", "Issues", "System health"].every((x) => sections.includes(x)), `${tag}: the side panel lists every section (${sections.join(", ")})`);
+  check(/[?&]s=jobs/.test(page.url()), `${tag}: the section is in the address (${page.url().replace(base, "")})`);
+  await tab(page, "Client folders"); await page.locator("#adm-folders [data-folder]").first().waitFor({ timeout: 6000 });
+  check(await page.locator("#adm-folders [data-folder]").count() === 9, `${tag}: Client folders lists every folder`);
+  await page.locator("#adm-folder-search").fill("maya"); await sleep(800);
+  check(await page.locator("#adm-folders [data-folder]").count() === 2, `${tag}: folder search finds an owner's folders`);
+  await tab(page, "Billing"); await page.locator("#adm-invoices").waitFor({ timeout: 6000 });
+  check(/\$15\.00/.test(await text(page, "#adm-billing-totals")) && await page.locator("#adm-invoices tbody tr").count() === 6, `${tag}: Billing shows recurring revenue and every bill`);
+  await page.locator("#adm-invoices .seg button", { hasText: "Failed" }).click(); await sleep(500);
+  check(await page.locator("#adm-invoices tbody tr").count() === 1, `${tag}: bills filter by status (failed)`);
+  check(/Starter/.test(await text(page, "#adm-plans")) && /Complimentary/.test(await text(page, "#adm-plans")), `${tag}: recurring revenue by plan`);
+  await tab(page, "Render health"); await page.locator("#adm-render-groups").waitFor({ timeout: 6000 });
+  const rg = await text(page, "#adm-render-groups");
+  check(/people's computers/.test(rg) && /the cloud/.test(rg) && /render_failed/.test(rg), `${tag}: Render health splits cloud and people's computers, with why renders failed`);
+  check(/ffmpeg exited/.test(await text(page, "#adm-render-fails")), `${tag}: the latest render failures are listed`);
+  check((await fits(page)).ok, `${tag}: Render health fits the screen (${(await fits(page)).wide.join(", ") || "ok"})`);
+  await tab(page, "Connections"); await page.locator("#adm-ai").waitFor({ timeout: 6000 });
+  check(/ChatGPT/.test(await text(page, "#adm-ai")) && /0\.1\.20/.test(await text(page, "#adm-computers")) && /open now/.test(await text(page, "#adm-computers")), `${tag}: Connections lists AI apps and desktop apps with versions`);
+  await tab(page, "Gallery"); await page.locator("#adm-gallery").waitFor({ timeout: 6000 });
+  check(/The Lifter/.test(await text(page, "#adm-gallery")), `${tag}: Gallery lists published edits`);
+  await tab(page, "Audit log"); await page.locator("#adm-audit [data-audit]").first().waitFor({ timeout: 6000 });
+  check(/Asked for more time/.test(await text(page, "#adm-audit")) && /Sam Ode/.test(await text(page, "#adm-audit")), `${tag}: the audit log shows the changes made here, to whom and why`);
+  await page.locator("#adm-audit-search").fill("Render failed twice"); await sleep(800);
+  check(await page.locator("#adm-audit [data-audit]").count() === 1, `${tag}: the audit log searches reasons`);
+  await tab(page, "System health"); await page.locator("#adm-health-live").waitFor({ timeout: 6000 });
+  check(/Database/.test(await text(page, "#adm-health-live")) && /Worker/.test(await text(page, "#adm-health-live")) && /Not set/.test(await text(page, "#adm-keys")) && /c6f14f7/.test(await text(page, "#adm-deploy")), `${tag}: System health shows live checks, keys and this deployment`);
+  check((await fits(page)).ok, `${tag}: System health fits the screen (${(await fits(page)).wide.join(", ") || "ok"})`);
+  if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `admin-health-${tag}.png`), fullPage: true });
 
   check(errors.length === 0, `${tag}: no page errors${errors.length ? ": " + errors.join(" | ") : ""}`);
   await ctx.close();
