@@ -2,7 +2,7 @@
 // Ported from ui/rendrr-ui-v2.html (app script). The route is the real URL (Next.js); `go` pushes it.
 // Screen paths:
 //   /explore (public)  /create/:cat (public, actions gated)  /styles (public)  /library  /library/:id  /projects  /projects/:id
-//   /editor/:id  /review/:token  /connect  /usage (Usage & billing)  /billing (its Billing tab)  /admin (team)  /settings
+//   /pricing (public: the plans)  /editor/:id  /review/:token  /connect  /usage (Usage & billing)  /billing (its Billing tab)  /admin (team)  /settings
 //   Login is a modal over Explore (Higgsfield-style): browse free, act after logging in. /login opens that modal.
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect, useCallback, html, ToastHost, useToast, readTheme, applyTheme, NavCtx, AppCtx, EmptyState, Btn, Icon, useNav, useApp, forgetPages } from "./ui";
@@ -13,12 +13,14 @@ import { AddPickPage } from "./addPick";
 import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage, FolderPage, StylesPage, ClientReviewPage, ConnectPage, SettingsPage, Shell } from "./screens";
 import { UsageBillingPage, LimitDialog } from "./billing";
 import { AdminPage } from "./admin";
+import { PricingPage } from "./pricing";
 import { EditorPage } from "./editor";
 import { api } from "./api";
 const ROUTES = [
   [/^\/(explore|home)?$/, () => html`<${HomePage} />`, { pub: true }],
   [/^\/create\/([^/]+)$/, (m) => html`<${CreatePage} cat=${m[1]} />`, { pub: true }],
   [/^\/styles$/, () => html`<${StylesPage} />`, { pub: true }],
+  [/^\/pricing$/, () => html`<${PricingPage} />`, { pub: true }],
   [/^\/library$/, () => html`<${AssetsPage} section="videos" />`],
   [/^\/assets$/, () => html`<${AssetsPage} section="all" />`],
   [/^\/assets\/(videos|images|elements|audio|favorites|trash)$/, (m) => html`<${AssetsPage} key=${m[1]} section=${m[1]} />`],
