@@ -1,7 +1,7 @@
 /* ===================== Usage & billing (like Railway's usage page) ===================== */
 // The plan and its period, what is used of each allowance, pay as you go so far and the bill it makes, the
 // spending limit, day by day usage, usage by project, then the plans, the card and the invoices.
-import { useState, html, Btn, Chip, Seg, Field, Modal, useToast, useAsync, Async, Skeleton, useNav, Icon } from "./ui";
+import { React, useState, html, Btn, Chip, Seg, Field, Modal, useToast, useAsync, Async, Skeleton, useNav, Icon } from "./ui";
 import { api } from "./api";
 
 const money = (c) => "$" + ((c || 0) / 100).toFixed(2);
@@ -65,6 +65,8 @@ function UsageTab({ b, onLimit }) {
       ${b.meters.map((m) => html`<${MeterRow} key=${m.metric} m=${m} plan=${b.plan} />`)}
       ${(b.bonus.exportMinutes > 0 || b.bonus.footageMinutes > 0) && html`<p class="t-small muted" id="bonus-note">Includes bonus minutes from Rendrr: ${num(b.bonus.exportMinutes)} export, ${num(b.bonus.footageMinutes)} footage.</p>`}
     </div>
+    ${b.renders && html`<${WhereRendersRan} r=${b.renders} />`}
+    ${b.footage && html`<${FootageFrom} f=${b.footage} />`}
     <${DailyChart} days=${b.days} />
     ${b.lines.length > 0 && html`<div class="card col" style="gap:8px" id="payg-lines"><b class="t-heading">Pay as you go this period</b>
       <table class="tbl"><thead><tr><th>Item</th><th class="num">Quantity</th><th class="num">Price</th><th class="num">Amount</th></tr></thead><tbody>
@@ -88,6 +90,97 @@ function MeterRow({ m, plan }) {
   return html`<div class="meter" data-metric=${m.metric}>
     <div class="row between"><span class="t-label">${label}</span><span class="t-small ${over ? "" : "muted"}">${num(m.used)} ${m.unit}${free ? "" : ` of ${num(m.included)} ${m.unit}`}${over ? ` · ${num(m.over)} over` : ""}</span></div>
     ${!free && html`<div class=${"bar" + (over ? " over" : pct(m.used, m.included) >= 80 ? " near" : "")}><i style=${{ width: pct(m.used, m.included) + "%" }} /></div>`}
+  </div>`;
+}
+
+/* ---------- Where your renders ran: your own computer or Rendrr's cloud ---------- */
+// Straight from the rows the bill is made from: minutes on the user's computer and on the cloud, previews and exports,
+// then each video with every render (when, length, where, quality, minutes counted), so nothing is a guess.
+const mins = (m) => { m = m || 0; if (m > 0 && m < 1) return Math.max(1, Math.round(m * 60)) + " s"; return num(m) + " min"; };
+const machine = (p) => (p === "windows" ? "PC" : "Mac");
+const dur = (sec) => { if (sec == null) return "–"; sec = Math.round(sec); if (sec < 60) return sec + " s"; const m = Math.floor(sec / 60), r = sec % 60; return m < 60 ? `${m} m${r ? ` ${r} s` : ""}` : `${Math.floor(m / 60)} h ${m % 60} m`; };
+const gb = (g) => (g == null ? "–" : g < 1 ? Math.round(g * 1024) + " MB" : num(g) + " GB");
+const when = (iso) => new Date(iso).toLocaleString("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+function WhereRendersRan({ r }) {
+  const [all, setAll] = useState(false);
+  const [open, setOpen] = useState(null);
+  const total = r.minutes.computer + r.minutes.cloud;
+  const share = total ? Math.round((r.minutes.computer / total) * 100) : 0;
+  const videos = all ? r.videos : r.videos.slice(0, 8);
+  return html`<${React.Fragment}><div class="card col" style="gap:16px" id="where-renders">
+      <div class="row between" style="flex-wrap:wrap"><b class="t-heading">Where your renders ran</b><span class="t-small muted">This period</span></div>
+      ${r.total.renders === 0 ? html`<p class="t-small muted" id="where-empty">No renders yet this period. Each preview and export you make shows up here.</p>` : html`<${React.Fragment}>
+      <div class="two" style="gap:12px" id="where-split">
+        <div class="col" style="gap:4px" data-where="computer"><span class="t-title" style="font-size:32px;line-height:40px" id="where-computer">${mins(r.minutes.computer)}</span>
+          <span class="t-small muted">On your computer · ${r.count.computer} ${r.count.computer === 1 ? "render" : "renders"}</span></div>
+        <div class="col" style="gap:4px" data-where="cloud"><span class="t-title" style="font-size:32px;line-height:40px" id="where-cloud">${mins(r.minutes.cloud)}</span>
+          <span class="t-small muted">On Rendrr's cloud · ${r.count.cloud} ${r.count.cloud === 1 ? "render" : "renders"}</span></div>
+      </div>
+      <div class="meter" title=${share + "% on your computer"}><div class="bar"><i style=${{ width: share + "%" }} /></div></div>
+      <table class="tbl" id="where-kinds"><thead><tr><th></th><th class="num">Your computer</th><th class="num">Cloud</th></tr></thead><tbody>
+        <tr><td>Previews</td><td class="num">${mins(r.preview.computer)}</td><td class="num">${mins(r.preview.cloud)}</td></tr>
+        <tr><td>Exports</td><td class="num">${mins(r.export.computer)}</td><td class="num">${mins(r.export.cloud)}</td></tr>
+        <tr class="total"><td><b>Counted toward your plan</b></td><td class="num" id="counted-computer">${mins(r.counted.computer)}</td><td class="num" id="counted-cloud">${mins(r.counted.cloud)}</td></tr>
+      </tbody></table>
+      <p class="t-small muted" style="margin:0">Rendrr renders on your own computer while the Rendrr app is open, and on Rendrr's cloud when it is not. A render's minutes are the length of the video it made.</p><//>`}
+    </div>
+    ${r.total.renders > 0 && r.compute && html`<div class="card col" style="gap:14px" id="real-meters">
+      <div class="row between" style="flex-wrap:wrap"><b class="t-heading">Real meters</b><span class="t-small muted">What your renders actually used this period</span></div>
+      <div class="three" style="gap:12px">
+        <div class="col" style="gap:4px"><span class="t-title" style="font-size:28px;line-height:36px" id="meter-run-computer">${dur(r.compute.runMinutes.computer * 60)}</span><span class="t-small muted">Rendering on your computer</span></div>
+        <div class="col" style="gap:4px"><span class="t-title" style="font-size:28px;line-height:36px" id="meter-run-cloud">${dur(r.compute.runMinutes.cloud * 60)}</span><span class="t-small muted">Rendering on Rendrr's cloud</span></div>
+        <div class="col" style="gap:4px"><span class="t-title" style="font-size:28px;line-height:36px" id="meter-cpu">${num(r.compute.serverCpuMinutes)} min</span><span class="t-small muted">Server CPU time</span></div>
+      </div>
+      <table class="tbl" id="meter-table"><tbody>
+        <tr><td>Server CPU time</td><td class="num">${num(r.compute.serverCpuMinutes)} vCPU min</td></tr>
+        <tr><td>Server memory, on average while rendering</td><td class="num">${gb(r.compute.avgMemoryGB)}</td></tr>
+        <tr><td>Server memory over time</td><td class="num">${num(r.compute.serverMemoryGbMinutes)} GB min</td></tr>
+        <tr><td>GPU</td><td class="num">None: Rendrr's cloud renders on CPUs</td></tr>
+      </tbody></table>
+      <p class="t-small muted" style="margin:0">Measured by Rendrr's servers for every render, from the machine's own CPU and memory counters, shared fairly when several jobs run at once. A render made on your computer still uses a little server time to plan it and hand it over; the video itself is made by your computer's own chip, which Rendrr does not meter.</p>
+    </div>`}
+    ${r.videos.length > 0 && html`<div class="card col" style="gap:8px" id="render-videos"><div class="row between"><b class="t-heading">Each video</b><span class="t-small muted">Tap a video to see every render</span></div>
+      <div class="tbl-wrap"><table class="tbl click"><thead><tr><th>Video</th><th class="num">Your computer</th><th class="num">Cloud</th><th class="num">Counted</th></tr></thead><tbody>
+        ${videos.map((v) => html`<${React.Fragment} key=${v.id}>
+          <tr data-video=${v.id} onClick=${() => setOpen(open === v.id ? null : v.id)}>
+            <td><b class="t-label">${v.name}</b>${v.folder && html`<span class="t-small muted"> · ${v.folder}</span>`}<div class="t-small muted">${v.renders.length} ${v.renders.length === 1 ? "render" : "renders"} · last ${day(v.last)}</div></td>
+            <td class="num">${mins(v.computer)}</td><td class="num">${mins(v.cloud)}</td><td class="num">${mins(v.counted)}</td></tr>
+          ${open === v.id && html`<tr class="renders-of"><td colSpan="4" style="padding:0 0 8px"><div class="tbl-wrap"><table class="tbl" data-renders-of=${v.id}>
+            <thead><tr><th>When</th><th>Render</th><th class="num">Length</th><th>Where</th><th>Quality</th><th class="num">Took</th><th class="num">Server CPU</th><th class="num">Memory</th><th class="num">Counted</th></tr></thead><tbody>
+            ${v.renders.map((x) => html`<tr key=${x.id} data-render=${x.id}>
+              <td style="white-space:nowrap">${when(x.at)}</td>
+              <td>${x.kind === "export" ? "Export" : x.samples ? "Samples" : "Preview"}${x.version ? " v" + x.version : ""}</td>
+              <td class="num">${mins(x.minutes)}</td>
+              <td>${x.where === "computer" ? html`<div>${"Your " + machine(x.platform)}${x.device && html`<div class="t-small muted">${x.device}</div>`}</div>` : html`<div title=${x.why || ""}>Rendrr cloud${x.why && html`<div class="t-small muted">${x.why}</div>`}</div>`}</td>
+              <td>${x.quality || "–"}${x.fourK || x.heavy ? html`<span class="tag" style="margin-left:4px" title=${"Counts more: " + (x.fourK ? "4K" : "heavy effects")}>${x.fourK ? "4K" : "Heavy"}</span>` : ""}</td>
+              <td class="num">${dur(x.runSeconds)}</td>
+              <td class="num" title="CPU time on Rendrr's servers">${x.server ? dur(x.server.cpuSeconds) : "–"}</td>
+              <td class="num" title="Server memory on average while it ran">${x.server ? gb(x.server.avgMemoryGB) : "–"}</td>
+              <td class="num">${x.counted === 0 && x.minutes > 0 ? "0 (free)" : mins(x.counted)}</td></tr>`)}
+            </tbody></table></div></td></tr>`}<//>`)}
+      </tbody></table></div>
+      ${r.videos.length > 8 && html`<button class="link" id="all-videos" onClick=${() => setAll(!all)}>${all ? "Show fewer" : `Show all ${r.videos.length} videos`}</button>`}
+      ${r.more > 0 && html`<p class="t-small muted" style="margin:0">The ${r.more} oldest renders this period are in the totals above but not listed.</p>`}
+    </div>`}<//>`;
+}
+
+/** Footage added this period: from the user's computer or from cloud storage (Google Drive and the like). */
+function FootageFrom({ f }) {
+  const [all, setAll] = useState(false);
+  if (!f.videos.length) return null;
+  const SRC = { upload: "Uploaded from your computer", local: "From the Rendrr app", drive: "Google Drive", dropbox: "Dropbox", google_photos: "Google Photos", canvas: "Made in Rendrr", placeholder: "Made in Rendrr" };
+  const list = all ? f.videos : f.videos.slice(0, 6);
+  return html`<div class="card col" style="gap:14px" id="footage-from">
+    <div class="row between" style="flex-wrap:wrap"><b class="t-heading">Footage added</b><span class="t-small muted">This period</span></div>
+    <div class="two" style="gap:12px">
+      <div class="col" style="gap:4px"><span class="t-title" style="font-size:28px;line-height:36px" id="footage-computer">${mins(f.minutes.computer)}</span><span class="t-small muted">From your computer · counted ${mins(f.counted.computer)}</span></div>
+      <div class="col" style="gap:4px"><span class="t-title" style="font-size:28px;line-height:36px" id="footage-cloud">${mins(f.minutes.cloud)}</span><span class="t-small muted">From cloud storage · counted ${mins(f.counted.cloud)}</span></div>
+    </div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Footage</th><th>From</th><th class="num">Length</th><th class="num">Counted</th></tr></thead><tbody>
+      ${list.map((v) => html`<tr key=${v.id} data-footage=${v.id}><td>${v.name}<div class="t-small muted">${day(v.at)}</div></td><td>${SRC[v.source] || (v.from === "computer" ? "Your computer" : "Cloud storage")}</td><td class="num">${mins(v.minutes)}</td><td class="num">${v.counted === 0 && v.minutes > 0 ? "0 (free)" : mins(v.counted)}</td></tr>`)}
+    </tbody></table></div>
+    ${f.videos.length > 6 && html`<button class="link" id="all-footage" onClick=${() => setAll(!all)}>${all ? "Show fewer" : `Show all ${f.videos.length}`}</button>`}
   </div>`;
 }
 
