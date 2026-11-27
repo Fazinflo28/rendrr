@@ -221,7 +221,7 @@ async function nativePreview(videoId: string, file: File, report: (status: strin
     const urls = await post(`/videos/${enc(videoId)}/local/upload-urls`);
     const up = await desk.preview.upload(made.id, { proxy: urls.proxy, audio: urls.audio }, (p: number) => report("uploading", p));
     if (!up?.ok) throw fail("We could not upload the preview of this file. Check your connection, then add it again.");
-    await post(`/videos/${enc(videoId)}/local/complete`, { seconds: made.info.seconds, width: made.info.width, height: made.info.height, fps: made.info.fps, proxySize: made.proxySize, audioSize: made.audioSize });
+    await post(`/videos/${enc(videoId)}/local/complete`, { seconds: made.info.seconds, width: made.info.width, height: made.info.height, fps: made.info.fps, proxySize: made.proxySize, audioSize: made.audioSize, by: "app", ...(desk.device ? { device: String(desk.device) } : {}) });
     return true;
   } finally { desk.preview.drop?.(made.id)?.catch?.(() => {}); }
 }
@@ -246,7 +246,7 @@ async function run(videoId: string) {
       put(urls.proxy.url, proxy, urls.proxy.contentType, (n) => { a = n; tick(); }),
       put(urls.audio.url, audio, urls.audio.contentType, (n) => { b = n; tick(); }),
     ]);
-    await post(`/videos/${enc(videoId)}/local/complete`, { seconds: info.seconds, width: info.width, height: info.height, fps: info.fps, proxySize: proxy.size, audioSize: audio.size });
+    await post(`/videos/${enc(videoId)}/local/complete`, { seconds: info.seconds, width: info.width, height: info.height, fps: info.fps, proxySize: proxy.size, audioSize: audio.size, by: "browser" });
   } catch (e: any) {
     const msg = e?.friendly ? e.message : "We could not read this file. Check it plays on your computer, then add it again.";
     await post(`/videos/${enc(videoId)}/local/progress`, { status: "failed", error: msg }).catch(() => {});

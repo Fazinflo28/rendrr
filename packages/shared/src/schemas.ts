@@ -83,6 +83,10 @@ export const LocalCompleteInput = z.object({
   width: z.number().int().min(16).max(8192),
   height: z.number().int().min(16).max(8192),
   fps: z.number().min(1).max(240).optional(),
+  /** Who made the preview copy on this computer: the Rendrr app's FFmpeg ("app") or the page's ffmpeg.wasm ("browser"),
+   *  and that computer's name (the app's), for the usage page. */
+  by: z.enum(["app", "browser"]).optional(),
+  device: z.string().max(200).optional(),
   proxySize: z.number().int().min(1),
   audioSize: z.number().int().min(1),
 });

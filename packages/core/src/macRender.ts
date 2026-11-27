@@ -49,7 +49,13 @@ export type MacTaskSpec = {
   /** FFmpeg features this task uses (the Mac must have them all, or the cloud makes it). */
   needs: string[];
   stallSec?: number;
+  /** After the runs: the speech in one of the task's files written out as timed words, by the app's own speech model
+   *  (whisper.cpp; only a computer whose app reports "whisper" is given one). input: a 16 kHz mono WAV a run made;
+   *  output: the JSON file it writes ({ words: [{ text, start, end }] }, seconds), which must also be an output. */
+  transcribe?: MacTranscribe;
 };
+/** The speech of a task's file made into words on the user's computer (see MacTaskSpec.transcribe). */
+export type MacTranscribe = { input: string; output: string; language: string; seconds: number };
 export type MacTask = MacTaskSpec & { id: string; createdAt: number };
 export type MacRun = {
   state: "running" | "done" | "failed"; device: string | null; claimedAt: number; at: number; tokenHash: string;
@@ -294,5 +300,5 @@ export async function macManifest(task: MacTask, token: string, api: string) {
   }));
   const fonts = await Promise.all((task.fonts ?? []).map(async (f) => ({ name: f.name, url: await signGet(f.key, life), size: f.size })));
   const outputs = await Promise.all(task.outputs.map(async (o) => ({ name: o.name, url: await signPut(o.key, o.type, life), type: o.type, ...(o.save ? { save: o.save } : {}) })));
-  return { v: MAC_RENDER_PROTOCOL, id: task.id, token, api: api.replace(/\/$/, ""), renderId: task.renderId, kind: task.kind, label: task.label, inputs, fonts, commands: task.commands, outputs, stallSec: task.stallSec ?? 120 };
+  return { v: MAC_RENDER_PROTOCOL, id: task.id, token, api: api.replace(/\/$/, ""), renderId: task.renderId, kind: task.kind, label: task.label, inputs, fonts, commands: task.commands, outputs, stallSec: task.stallSec ?? 120, ...(task.transcribe ? { transcribe: task.transcribe } : {}) };
 }

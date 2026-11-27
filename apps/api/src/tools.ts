@@ -569,7 +569,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       ...(isRef ? ["REFERENCE: copy its rhythm, shot lengths, hook and look onto the user's footage, not its content. Then save_style with fromVideoId so it is not read again."] : []),
       code.text,
       `RAW FILE ${v.sample ? "Rendrr's sample" : v.source === "drive" ? "in Google Drive" : v.source === "upload" ? `kept by Rendrr (brought in from the chat)${v.still ? `; a picture, played as a still clip of ${v.seconds.toFixed(0)} s` : ""}` : "on the user's computer"}${v.status === "expired" ? " | preview copy expired: rebuild it in the Library to edit or take frames" : ""}`,
-      `TRANSCRIPT (${v.analysis.transcriber === "stub" ? "SAMPLE: transcription is not set up" : "AssemblyAI"}) ${words.length} words. Line id [start] text${i.detail === "words" ? "; words as text(wordId@start-end)" : ""}:`,
+      `TRANSCRIPT (${v.analysis.transcriber === "stub" ? "SAMPLE: transcription is not set up" : v.analysis.transcriber === "whisper" ? "made on the user's computer" : "AssemblyAI"}) ${words.length} words. Line id [start] text${i.detail === "words" ? "; words as text(wordId@start-end)" : ""}:`,
       transcriptAsText(tr, undefined, i.detail === "words" ? "words" : "sentences") || "(no speech found)",
       `SILENCES 0.4s+ (${sil.length}): ${sil.slice(0, 80).map((s) => `${s.start.toFixed(1)}-${s.end.toFixed(1)}`).join(", ") || "none"}${sil.length > 80 ? ", …" : ""}`,
       `FILLERS ${fillers.length}${fillers.length ? " (" + Object.entries(counts).map(([k, n]) => `${k} x${n}`).join(", ") + ")" : ""}${i.detail === "words" && fillers.length ? ". Ids: " + fillers.slice(0, 200).map((f) => f.id).join(" ") : ""}`,
