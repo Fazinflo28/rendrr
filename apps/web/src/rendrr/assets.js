@@ -45,7 +45,7 @@ export function AssetsPage({ section = "all" }) {
       <div class="as-foot" id="assets-foot">
         <div class="as-label" style="margin:0 8px">Bring in from</div>
         <div class="as-sources" style="padding:0 8px">${SOURCES.map(([b, name]) => html`<button key=${b} type="button" title=${"Add from " + name} aria-label=${"Add from " + name} data-source=${b} onClick=${() => openAdd()}><${BrandLogo} brand=${b} size=${36} /></button>`)}<button type="button" class="btn quiet sm icon" title="Add from this computer" aria-label="Add from this computer" onClick=${() => openAdd()}><${Icon} name="laptop" size="18" /></button></div>
-        ${gb != null && html`<div class="as-store" id="assets-storage"><span><b>${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB</b><span class="muted"> stored with Rendrr</span></span><span class="muted">Free has 5 GB, Starter 10 GB, Pro 100 GB.</span><button type="button" class="link" style="text-align:left" onClick=${() => go("/pricing")}>See plans</button></div>`}
+        ${gb != null && html`<div class="as-store" id="assets-storage"><span><b>${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB</b><span class="muted"> stored with Rendrr</span></span><span class="muted">Free has 5 GB, Editor Pro 10 GB, Agency Pro 100 GB.</span><button type="button" class="link" style="text-align:left" onClick=${() => go("/pricing")}>See plans</button></div>`}
       </div>
     </aside>
     <section class="as-main">${section === "videos"

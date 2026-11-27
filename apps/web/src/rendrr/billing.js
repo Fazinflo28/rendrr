@@ -3,6 +3,7 @@
 // spending limit, day by day usage, usage by project, then the plans, the card and the invoices.
 import { React, useState, html, Btn, Chip, Seg, Field, Modal, useToast, useAsync, Async, Skeleton, useNav, Icon } from "./ui";
 import { api } from "./api";
+import { PLANS } from "./pricing";
 
 const money = (c) => "$" + ((c || 0) / 100).toFixed(2);
 const day = (iso) => new Date(iso).toLocaleDateString("en", { month: "short", day: "numeric" });
@@ -23,7 +24,7 @@ export function UsageBillingPage({ initialTab = "usage" }) {
   return html`<div class="page" id="usage-billing">
     <div class="page-head"><div><h1 class="t-title">Usage & billing</h1></div>
       <${Seg} value=${tab} options=${[{ value: "usage", label: "Usage" }, { value: "billing", label: "Billing" }]} onChange=${setTab} /></div>
-    ${paid && html`<div class="note ok" id="paid-note"><${Icon} name="check" size="16" /> Thanks. Starter is on: your allowance renews every month.</div>`}
+    ${paid && html`<div class="note ok" id="paid-note"><${Icon} name="check" size="16" /> Thanks. Editor Pro is on: your allowance renews every month.</div>`}
     <${Async} q=${q} skeleton=${sk}>${(b) => html`
       <${PlanBar} b=${b} busy=${busy} onStart=${start} onManage=${manage} />
       ${tab === "usage" ? html`<${UsageTab} b=${b} onLimit=${() => setLimitOpen(true)} />` : html`<${BillingTab} b=${b} busy=${busy} onStart=${start} onManage=${manage} />`}
@@ -32,13 +33,13 @@ export function UsageBillingPage({ initialTab = "usage" }) {
   </div>`;
 }
 
-/** The plan, its period, and the one thing to do next (start Starter, or manage it). */
+/** The plan, its period, and the one thing to do next (start Editor Pro, or manage it). */
 function PlanBar({ b, busy, onStart, onManage }) {
   const trial = b.trial;
   const tone = b.status === "active" || b.status === "trialing" ? "brand" : "ink";
   const status = trial ? (trial.ended ? "Trial ended" : `${trial.daysLeft} ${trial.daysLeft === 1 ? "day" : "days"} left`) : ({ active: "Active", past_due: "Payment failed", canceled: "Cancelled", expired: "Ended" }[b.status] || b.status);
   const cta = b.plan === "comp" ? null
-    : b.plan === "trial" || b.status === "canceled" ? html`<${Btn} id="start-starter" disabled=${busy || !b.payments.enabled} onClick=${onStart}>${b.payments.enabled ? "Start Starter · $5/mo" : "Payments coming soon"}<//>`
+    : b.plan === "trial" || b.status === "canceled" ? html`<${Btn} id="start-starter" disabled=${busy || !b.payments.enabled} onClick=${onStart}>${b.payments.enabled ? "Start Editor Pro · $5/mo" : "Payments coming soon"}<//>`
     : html`<${Btn} kind="secondary" id="manage-billing" disabled=${busy} onClick=${onManage}>${b.status === "past_due" ? "Update card" : "Manage billing"}<//>`;
   return html`<div class=${"card plan-bar" + (trial?.ended || b.status === "past_due" ? " warn" : "")} id="plan-bar">
     <div class="row" style="gap:14px;flex-wrap:wrap">
@@ -47,8 +48,8 @@ function PlanBar({ b, busy, onStart, onManage }) {
       <div class="grow" />
       ${cta}
     </div>
-    ${trial && !trial.ended && html`<p class="t-small muted" style="margin:10px 0 0">${b.blurb} No card needed. When it ends, start Starter to keep exporting; your edits stay.</p>`}
-    ${trial?.ended && html`<p class="t-small" style="margin:10px 0 0" id="trial-ended">Your free trial has ended. Your edits and videos are kept; start Starter to export again.</p>`}
+    ${trial && !trial.ended && html`<p class="t-small muted" style="margin:10px 0 0">${b.blurb} No card needed. When it ends, start Editor Pro to keep exporting; your edits stay.</p>`}
+    ${trial?.ended && html`<p class="t-small" style="margin:10px 0 0" id="trial-ended">Your free trial has ended. Your edits and videos are kept; start Editor Pro to export again.</p>`}
     ${b.status === "past_due" && html`<p class="t-small" style="margin:10px 0 0">Your last payment did not go through, so exports are paused. Update your card to go on.</p>`}
   </div>`;
 }
@@ -85,7 +86,7 @@ function UsageTab({ b, onLimit }) {
 
 function MeterRow({ m, plan }) {
   const free = m.included == null;
-  const label = m.metric === "preview" && plan === "starter" ? "Preview minutes (free on Starter)" : m.label;
+  const label = m.metric === "preview" && plan === "starter" ? "Preview minutes (free on Editor Pro)" : m.label;
   const over = m.over > 0;
   return html`<div class="meter" data-metric=${m.metric}>
     <div class="row between"><span class="t-label">${label}</span><span class="t-small ${over ? "" : "muted"}">${num(m.used)} ${m.unit}${free ? "" : ` of ${num(m.included)} ${m.unit}`}${over ? ` · ${num(m.over)} over` : ""}</span></div>
@@ -197,27 +198,34 @@ function DailyChart({ days }) {
   </div>`;
 }
 
+// The plans, the same as on /pricing (pricing.js PLANS): Free, Editor Pro ($5) and Agency Pro ($24). The account's plan in the
+// billing code maps onto them (trial: Free, starter: Editor Pro). Editor Pro's button opens the checkout that already exists;
+// Agency Pro has none yet, so it says Coming soon.
+const ON_PLAN = { trial: "free", starter: "editor" };
 function BillingTab({ b, busy, onStart, onManage }) {
+  const { go } = useNav();
+  const current = ON_PLAN[b.plan];
   return html`
-    <div class="two" style="align-items:stretch" id="plans">${b.plans.map((p) => html`<div key=${p.id} class=${"card col plan" + (b.plan === p.id ? " plan-on" : "")} style="gap:10px" data-plan=${p.id}>
-      <div class="row between"><b class="t-heading">${p.name}</b>${b.plan === p.id && html`<span class="tag accent">Current</span>`}</div>
-      <span class="t-title" style="font-size:28px">${p.priceCents ? money(p.priceCents) : "Free"}<span class="t-small muted per-month">${p.priceCents ? " / month" : " for 7 days"}</span></span>
+    <div class="three" style="align-items:stretch" id="plans">${PLANS.map((p) => html`<div key=${p.id} class=${"card col plan" + (current === p.id ? " plan-on" : "")} style="gap:10px" data-plan=${p.id}>
+      <div class="row between"><b class="t-heading">${p.name}</b>${current === p.id && html`<span class="tag accent">Current</span>`}</div>
+      <span class="t-title" style="font-size:28px">${"$" + p.price}<span class="t-small muted per-month">${p.price ? " / month" : ""}</span></span>
       <ul class="incl">
-        <li>${p.allowance.exportMinutes} export minutes${p.id === "trial" ? " (about 10 short videos)" : ""}</li>
-        <li>${p.allowance.footageMinutes} minutes of footage uploaded and processed</li>
-        <li>${p.allowance.previewMinutes == null ? "Previews free" : p.allowance.previewMinutes + " preview minutes"}</li>
-        <li>${p.allowance.storageGB} GB storage</li>
-        <li>${p.fourK ? "4K exports (count double)" : "Up to 1080p"}</li>
-        <li>Captions, motion graphics, color, sound, Mac and Drive export</li>
-        ${p.payAsYouGo && html`<li>Then pay as you go: ${money(b.rates.exportMinuteCents)} an export minute, $1 an hour of footage, $0.10 a GB</li>`}
+        <li>${p.minutes} cloud render minutes a month (about ${Math.floor(p.minutes / 5)} short videos)</li>
+        <li>${p.storageGB} GB storage</li>
+        <li>${p.watermark ? "Rendrr watermark on exports" : "No watermark"}</li>
+        ${p.priority && html`<li>Faster cloud renders, front of the line</li>`}
+        <li>${p.extra != null ? "Extra minutes $" + p.extra.toFixed(2) + " each" : "No extra minutes"}</li>
+        <li>Renders on your own Mac or PC, and footage from your computer: free</li>
       </ul>
       <div class="grow" />
-      ${p.id === "starter" && b.plan !== "starter" && b.plan !== "comp" && html`<${Btn} id="plan-start" disabled=${busy || !b.payments.enabled} onClick=${onStart}>${b.payments.enabled ? "Start Starter" : "Payments coming soon"}<//>`}
+      ${p.checkout && b.plan !== "starter" && b.plan !== "comp" && html`<${Btn} id="plan-start" disabled=${busy || !b.payments.enabled} onClick=${onStart}>${b.payments.enabled ? "Start Editor Pro" : "Payments coming soon"}<//>`}
+      ${p.id === "agency" && html`<${Btn} kind="secondary" id="plan-agency" disabled=${true}>Coming soon<//>`}
     </div>`)}</div>
+    <div class="row" style="justify-content:center"><button class="link" id="plans-compare" onClick=${() => go("/pricing")}>Compare plans and what uses minutes</button></div>
     <div class="two" style="align-items:start">
       <div class="card col" style="gap:12px" id="payment-card"><b class="t-heading">Payment method</b>
         ${b.payments.customer ? html`<p class="t-small muted">Your card, receipts and cancelling are on Stripe's secure page.</p><div class="row"><${Btn} kind="secondary" size="sm" id="open-portal" disabled=${busy} onClick=${onManage}>Manage card and billing<//></div>`
-          : html`<p class="t-small muted">${b.payments.enabled ? "No card on file. You add one when you start Starter." : "Payments are being set up. Your free trial keeps working until then."}</p>`}</div>
+          : html`<p class="t-small muted">${b.payments.enabled ? "No card on file. You add one when you start Editor Pro." : "Payments are being set up. Your free trial keeps working until then."}</p>`}</div>
       <div class="card col" style="gap:8px" id="invoices"><b class="t-heading">Invoices</b>
         ${b.invoices.length ? html`<table class="tbl"><thead><tr><th>Invoice</th><th>Period</th><th class="num">Amount</th><th>Status</th></tr></thead><tbody>
           ${b.invoices.map((i) => html`<tr key=${i.id}><td>${i.url ? html`<a href=${i.url} target="_blank" rel="noreferrer">${i.number || "Invoice"}</a>` : i.number || "Invoice"}</td><td>${day(i.periodStart)} – ${day(i.periodEnd)}</td><td class="num">${money(i.totalCents)}</td><td><${Chip} tone=${i.status === "paid" ? "brand" : "neutral"} size="sm">${i.status}<//></td></tr>`)}</tbody></table>`

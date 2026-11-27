@@ -19,11 +19,11 @@ export const PLANS = [
     watermark: true, priority: false, tone: "free",
   },
   {
-    id: "starter", name: "Starter", tag: "For creators posting every week", price: 5, minutes: 100, storageGB: 10, extra: 0.05,
-    watermark: false, priority: false, tone: "starter",
+    id: "editor", name: "Editor Pro", tag: "For editors and creators posting every week", price: 5, minutes: 100, storageGB: 10, extra: 0.05,
+    watermark: false, priority: false, tone: "starter", checkout: true,
   },
   {
-    id: "pro", name: "Pro", tag: "For agencies and daily posting", price: 24, minutes: 600, storageGB: 100, extra: 0.04,
+    id: "agency", name: "Agency Pro", tag: "For agencies and daily posting", price: 24, minutes: 600, storageGB: 100, extra: 0.04,
     watermark: false, priority: true, tone: "pro", badge: "Best value",
   },
 ];
@@ -118,10 +118,10 @@ const ROWS = [
 const FAQ = [
   ["What is a render minute?", "One minute of video that our cloud makes for you. A preview counts, and so does an export."],
   ["Why is my own computer free?", "Your Mac or PC does the work, not ours. Keep the Rendrr app open and renders run there for free."],
-  ["What if I use up my minutes?", "On Starter and Pro, each extra minute is added to the same monthly bill. On Free, keep rendering on your own computer or pick a plan."],
+  ["What if I use up my minutes?", "On Editor Pro and Agency Pro, each extra minute is added to the same monthly bill. On Free, keep rendering on your own computer or pick a plan."],
   ["Does the AI cost extra?", "No. Your own Claude or ChatGPT does the thinking, so Rendrr charges nothing for AI edits."],
   ["What counts more?", "4K and heavy effects (slow motion, stabilizing, cutting out a person) count 4 times. Footage from Google Drive or other cloud storage counts half: 2 minutes of footage is 1 render minute."],
-  ["Is there a watermark?", "Free exports carry a small Rendrr mark. Starter and Pro have none."],
+  ["Is there a watermark?", "Free exports carry a small Rendrr mark. Editor Pro and Agency Pro have none."],
 ];
 
 export function PricingPage() {
