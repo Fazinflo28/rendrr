@@ -1074,12 +1074,18 @@
   };
 
   // Flash: the frame blows out to white and comes back (an overexposure flash on a cut); hits: {t, ms, peak, in}.
+  // A hard hit ({hard: true}) is a flash frame: full on for ms, no ramp either side (2 frames at 24 fps = 83 ms).
+  // grad {from, to}: the card is white down to `from` (share of the height) and fades to `to` (a colour) at the bottom.
   B.flash = function (s) {
     s.fixedSize = true; s.fixed = true;
-    var L = base(s); L.root.style.cssText += ";width:" + W + "px;height:" + H + "px;background:" + (s.color || "#fff") + ";pointer-events:none";
+    var c = s.color || "#fff", bg = s.grad ? "linear-gradient(180deg," + c + " 0%," + c + " " + Math.round((s.grad.from != null ? s.grad.from : 0.5) * 100) + "%," + (s.grad.to || "#9a9a9a") + " 100%)" : c;
+    var L = base(s); L.root.style.cssText += ";width:" + W + "px;height:" + H + "px;background:" + bg + ";pointer-events:none";
     L.draw = function (t) {
       var o = 0;
-      (s.hits || []).forEach(function (h) { var a = prog(t, h.t - (h["in"] || 0.04), (h["in"] || 0.04) * 1000, "linear"), d = 1 - prog(t, h.t, h.ms || 320, "out"); if (t >= h.t - (h["in"] || 0.04)) o = Math.max(o, (t < h.t ? a : d) * (h.peak != null ? h.peak : 0.9)); });
+      (s.hits || []).forEach(function (h) {
+        if (h.hard) { if (t >= h.t && t < h.t + (h.ms || 83) / 1000) o = Math.max(o, h.peak != null ? h.peak : 1); return; }
+        var a = prog(t, h.t - (h["in"] || 0.04), (h["in"] || 0.04) * 1000, "linear"), d = 1 - prog(t, h.t, h.ms || 320, "out"); if (t >= h.t - (h["in"] || 0.04)) o = Math.max(o, (t < h.t ? a : d) * (h.peak != null ? h.peak : 0.9));
+      });
       L.root.style.display = o > 0.003 ? "block" : "none"; L.root.style.opacity = o;
       L.root.style.transform = "translate(0px,0px)";
     };

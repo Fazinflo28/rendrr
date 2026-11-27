@@ -82,7 +82,7 @@ describe("talking-head ad template (broken down from a reference)", () => {
   it("maps every element: shots, captions, title, disc, logo, flashes, end card", () => {
     const kinds = new Set(t.spec.layers.map((l) => l.kind));
     for (const k of ["backdrop", "flash", "captions", "titlebox", "disc", "bug", "endcard", "cursor"]) expect(kinds.has(k as never)).toBe(true);
-    expect(t.spec.edit?.shots.length).toBe(18);
+    expect(t.spec.edit?.shots.length).toBe(17);
     expect(t.spec.elements!.length).toBeGreaterThan(12);
     const cap = t.spec.layers.find((l) => l.kind === "captions") as unknown as { groups: unknown[] };
     const script = t.spec.slots.find((s) => s.id === "script")!.default!;
@@ -90,8 +90,24 @@ describe("talking-head ad template (broken down from a reference)", () => {
   });
   it("says its shots in the breakdown", () => {
     const text = motionTemplateText(t.spec);
-    expect(text).toMatch(/SHOTS: 0-0.97s speaker/);
+    expect(text).toMatch(/SHOTS: 0-0.96s speaker/);
     expect(text).toMatch(/whip left in/);
+    expect(text).toMatch(/SILHOUETTE FLASHES: 0s speaker 1f/);
+  });
+  it("cuts hard: shots end to end, whips only 2 frames, no white ramps", () => {
+    const shots = t.spec.edit!.shots;
+    for (let i = 1; i < shots.length; i++) expect(shots[i].t0).toBeCloseTo(shots[i - 1].t1, 3);
+    const whips = shots.filter((s) => s.in?.type === "whip");
+    expect(whips.length).toBe(5);
+    for (const w of whips) expect(w.in!.dur!).toBeLessThan(0.1);
+    const flash = t.spec.layers.find((l) => l.kind === "flash") as unknown as { hits: { t: number; hard?: boolean; ms: number }[] };
+    expect(flash.hits.map((h) => h.t)).toEqual([15.583, 18.583]);
+    for (const h of flash.hits) { expect(h.hard).toBe(true); expect(h.ms).toBe(83); }
+    expect(t.spec.edit!.silhouettes!.length).toBe(8);
+  });
+  it("refuses a silhouette on a slot that takes no video", () => {
+    const bad = { ...t.spec, edit: { shots: t.spec.edit!.shots, silhouettes: [{ t: 1, dur: 0.05, slot: "brand" }] } };
+    expect(checkMotionTemplate(bad).ok).toBe(false);
   });
   it("refuses a shot on a slot that takes no video", () => {
     const bad = { ...t.spec, edit: { shots: [{ id: "x", slot: "brand", t0: 0, t1: 1 }] } };

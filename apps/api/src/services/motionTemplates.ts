@@ -124,30 +124,49 @@ export async function resolveSlotPictures(userId: string, spec: MotionTemplate, 
 
 type ShotKey = { t: number; x?: number; y?: number; scale?: number; ease?: "linear" | "in" | "out" | "in-out" };
 /**
- * The template's shots whose slot got a video, as b-roll clips: a whip-in starts the clip half the whip early and
- * slides it in from the right; the shot before it slides out to the left over the same time (both motion blurred).
+ * The template's shots whose slot got a video, as b-roll clips, cut end to end. A whip is a hard cut with a whip pan
+ * either side of it: the outgoing shot shoots off over its last `dur` seconds and the incoming one lands over its first
+ * (scaled up so no edge shows, heavily motion blurred), as the reference's 2-frame whips; nothing slides over anything.
  * The source second: the shot's from, or (a talking head) its start, so the speech runs on across cuts; kept inside
  * the video (a short video starts earlier).
  */
 export function shotPlan(spec: MotionTemplate, videos: Map<string, { videoId: string; seconds: number }>) {
   const shots = spec.edit?.shots ?? [];
   const r3 = (n: number) => Math.round(n * 1000) / 1000;
+  const push = 0.18, cover = 1.4; // how far a whip throws the frame (share of the width), and the scale that hides the edge
+  const vec = (dir?: string) => (dir === "right" ? [1, 0] : dir === "up" ? [0, -1] : dir === "down" ? [0, 1] : [-1, 0]);
   return shots.flatMap((s, i) => {
     const v = videos.get(s.slot);
     if (!v) return [];
     const next = shots[i + 1];
-    const d = s.in?.type === "whip" ? s.in.dur ?? 0.12 : 0, nd = next?.in?.type === "whip" && videos.has(next.slot) ? next.in.dur ?? 0.12 : 0;
-    const start = Math.max(0, s.t0 - d / 2), end = Math.min(spec.duration, s.t1 + nd / 2), len = end - start;
-    let from = (s.from ?? s.t0) - (s.t0 - start);
+    const d = s.in?.type === "whip" ? s.in.dur ?? 0.083 : 0, nd = next?.in?.type === "whip" && videos.has(next.slot) ? next.in.dur ?? 0.083 : 0;
+    const start = s.t0, end = Math.min(spec.duration, s.t1), len = end - start;
+    let from = s.from ?? s.t0;
     if (v.seconds > 0 && from + len > v.seconds) from = Math.max(0, v.seconds - len);
     from = Math.max(0, from);
-    const sign = (dir?: string) => (dir === "right" ? -1 : 1);
     const keys: ShotKey[] = [];
-    if (d) keys.push({ t: 0, x: sign(s.in?.dir) }, { t: r3(d), x: 0, ease: "in-out" });
-    for (const k of s.keys ?? []) keys.push({ ...k, t: r3(k.t + (s.t0 - start)) });
-    if (nd) keys.push({ t: r3(len - nd), x: 0 }, { t: r3(len), x: -sign(next?.in?.dir), ease: "in-out" });
+    // The shot's own scale just after it lands and just before it leaves, so a zoom carries on around the whip.
+    const own = (s.keys ?? []).filter((k) => k.scale != null).sort((a, b) => a.t - b.t);
+    const scaleAt = (t: number) => { let v = own.length ? own[0].scale! : 1; for (const k of own) if (k.t <= t) v = k.scale!; return v; };
+    if (d) { const [dx, dy] = vec(s.in?.dir); keys.push({ t: 0, x: -dx * push, y: -dy * push, scale: cover }, { t: r3(d), x: 0, y: 0, scale: cover, ease: "out" }, { t: r3(Math.min(len, d + 0.001)), scale: scaleAt(d) }); }
+    for (const k of s.keys ?? []) keys.push({ ...k, t: r3(k.t) });
+    if (nd) { const [dx, dy] = vec(next?.in?.dir); keys.push({ t: r3(Math.max(0, len - nd - 0.001)), scale: scaleAt(len - nd) }, { t: r3(len - nd), x: 0, y: 0, scale: cover }, { t: r3(len), x: dx * push, y: dy * push, scale: cover, ease: "in" }); }
     keys.sort((a, b) => a.t - b.t);
     return [{ id: s.id, videoId: v.videoId, start: r3(start), end: r3(end), sourceStart: r3(from), keys, whip: !!(d || nd), blur: s.blur }];
+  });
+}
+
+/** The template's silhouette flashes whose slot got a video: short b-roll clips of that video, cut out and made white. */
+export function silhouettePlan(spec: MotionTemplate, videos: Map<string, { videoId: string; seconds: number }>) {
+  const r3 = (n: number) => Math.round(n * 1000) / 1000;
+  return (spec.edit?.silhouettes ?? []).flatMap((x, i) => {
+    const v = videos.get(x.slot);
+    if (!v) return [];
+    const end = Math.min(spec.duration, x.t + x.dur);
+    if (end - x.t < 0.02) return [];
+    let from = x.from ?? x.t;
+    if (v.seconds > 0 && from + (end - x.t) > v.seconds) from = Math.max(0, v.seconds - (end - x.t));
+    return [{ id: `f${i + 1}`, videoId: v.videoId, start: r3(x.t), end: r3(end), sourceStart: r3(Math.max(0, from)) }];
   });
 }
 
@@ -198,6 +217,8 @@ export async function recreateMotionTemplate(userId: string, id: string, slots: 
   }
   const plan = shotPlan(spec, videoOf);
   for (const p of plan) ops.push({ op: "add_broll", videoId: p.videoId, start: p.start, end: p.end, sourceStart: p.sourceStart, label: `shot ${p.id}` });
+  const sils = silhouettePlan(spec, videoOf);
+  for (const f of sils) ops.push({ op: "add_broll", videoId: f.videoId, start: f.start, end: f.end, sourceStart: f.sourceStart, label: `silhouette ${f.id}` });
   if (behindId) ops.push({ op: "add_graphic", graphicId: behindId, start: 0, end: spec.duration, behind: true, label: "behind the person" });
   ops.push({ op: "add_graphic", graphicId, start: 0, end: spec.duration });
   if (spec.audio?.music) ops.push({ op: "add_music", trackId: spec.audio.music, gainDb: spec.audio.musicDb ?? -8, ...(spec.audio.musicStart != null ? { start: spec.audio.musicStart } : {}) });
@@ -222,7 +243,10 @@ export async function recreateMotionTemplate(userId: string, id: string, slots: 
     if (sp.keys.length) more.push({ op: "set_keyframes", track: "v2", clipId: c.id, keys: sp.keys, motionBlur: sp.whip ? 80 : 50 });
     if (sp.blur) more.push({ op: "set_effects", clipIds: [c.id], effects: [{ type: "blur", amount: sp.blur }] });
   }
+  // Silhouette flashes: the person cut out (an AI matte) and every pixel left pushed to white.
+  const silIds = sils.map((f) => v2.find((x) => x.label === `silhouette ${f.id}`)?.id).filter((x): x is string => !!x);
+  if (silIds.length) more.push({ op: "remove_background", clipIds: silIds, soft: 25 }, { op: "set_grade", clipIds: silIds, saturation: 0, curves: { master: [[0, 1], [1, 1]] } });
   if (more.length) await applyTimelineChange(p.id, { op: "batch", ops: more } as unknown as Op, actor);
   const { width, height } = aspectSize(aspect, 1080);
-  return { projectId: p.id, graphicId, name, aspect, width, height, seconds: spec.duration, videos: pics.videos.length, shots: plan.length, ...(voice ? { voiceVideoId: voice.videoId } : {}), ...(behindId ? { behindGraphicId: behindId } : {}) };
+  return { projectId: p.id, graphicId, name, aspect, width, height, seconds: spec.duration, videos: pics.videos.length, shots: plan.length, silhouettes: silIds.length, ...(voice ? { voiceVideoId: voice.videoId } : {}), ...(behindId ? { behindGraphicId: behindId } : {}) };
 }
