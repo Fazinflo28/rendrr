@@ -999,7 +999,9 @@
     var L = base(s), r = s.radius || 330; s.w = s.h = r * 2;
     L.root.style.cssText += ";width:" + 2 * r + "px;height:" + 2 * r + "px;border-radius:50%;overflow:hidden;background:linear-gradient(180deg," + (s.top || "#45519A") + "," + (s.bottom || "#2C3253") + ");box-shadow:0 34px 70px -24px rgba(10,15,40,.5)";
     var logo = el("div", "", null, L.root); logo.style.cssText = "position:absolute;inset:0 12%;display:flex;align-items:center;justify-content:center;gap:" + r * 0.05 + "px;color:#fff;font-family:'Poppins',Inter,sans-serif;font-weight:600;font-size:" + r * 0.34 + "px;letter-spacing:-0.03em";
-    logo.innerHTML = s.logo ? "<div style='width:100%;height:" + r * 0.5 + "px;background:" + img(s.logo) + " center/contain no-repeat'></div>" : "<span style='width:" + r * 0.3 + "px;height:" + r * 0.3 + "px;display:block'>" + iconSvg("bolt", "#fff") + "</span><span>" + esc(s.brand || "") + "</span>";
+    // The name stays on one line: sized down to fit the circle's width beside the mark (about 0.55 em a letter).
+    var nm = String(s.brand || ""), room = r * 2 * 0.76 - r * 0.35, fs = Math.min(r * 0.34, nm.length ? room / (nm.length * 0.55) : r * 0.34);
+    logo.innerHTML = s.logo ? "<div style='width:100%;height:" + r * 0.5 + "px;background:" + img(s.logo) + " center/contain no-repeat'></div>" : "<span style='width:" + r * 0.3 + "px;height:" + r * 0.3 + "px;display:block;flex:none'>" + iconSvg("bolt", "#fff") + "</span><span style='white-space:nowrap;font-size:" + fs.toFixed(1) + "px'>" + esc(nm) + "</span>";
     var num = el("div", "", esc(s.number || ""), L.root); num.style.cssText = "position:absolute;left:0;right:0;top:" + r * 0.4 + "px;text-align:center;color:#fff;font-family:'Poppins',Inter,sans-serif;font-weight:800;font-style:italic;font-size:" + r * 0.98 + "px;line-height:1;letter-spacing:-0.02em";
     var lab = el("div", "", esc(s.label || ""), L.root); lab.style.cssText = "position:absolute;left:0;right:0;top:" + r * 1.3 + "px;text-align:center;color:#fff;font-family:'Poppins',Inter,sans-serif;font-weight:600;font-style:italic;font-size:" + r * 0.15 + "px";
     L.draw = function (t) {
