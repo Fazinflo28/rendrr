@@ -19,9 +19,9 @@
   --accent: #bde816; --accent-edge: #7f9a1a; --accent-soft: rgba(189,232,22,.1); --accent-tint: rgba(189,232,22,.24); --accent-ring: rgba(189,232,22,.48);
   --on-accent: #1a1a1a;
   --shadow-card: 0 0 0 1px var(--hair);
-  --shadow-button: inset 0 -3px 0 0 var(--accent-edge), 0 6px 4px rgba(0,0,0,.25);
-  --shadow-quiet: inset 0 1.5px 3px rgba(255,255,255,.05);
-  --shadow-indicator: 0 2px 2px rgba(0,0,0,.12), inset 0 2px 3px rgba(255,255,255,.05);
+  --shadow-button: none; /* flat rounded buttons, same as the web app */
+  --shadow-quiet: none;
+  --shadow-indicator: none;
   --shadow-pop: 0 0 0 1px var(--hair-strong), 0 16px 40px rgba(0,0,0,.6);
   --r-xs: 6px; --r-sm: 8px; --r-btn: 10px; --r-md: 12px; --r-lg: 16px; --pill: 999px;
   --font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -49,7 +49,7 @@ button:disabled { cursor: default; opacity: .45; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: var(--r-btn); background: var(--raised); color: var(--ink); font-weight: 500; font-size: 14px; white-space: nowrap; box-shadow: var(--shadow-quiet); transition: transform .2s var(--ease), background-color .2s var(--ease), box-shadow .15s var(--ease); user-select: none; }
 .btn:hover:not(:disabled) { background: var(--raised-strong); }
 .btn:active:not(:disabled) { transform: scale(.96); }
-.btn.primary { background: var(--accent); color: var(--on-accent); font-weight: 600; box-shadow: var(--shadow-button); padding-bottom: 2px; }
+.btn.primary { background: var(--accent); color: var(--on-accent); font-weight: 600; box-shadow: none; }
 .btn.primary:hover:not(:disabled) { background: #c8ee3a; }
 .btn.primary:disabled { background: var(--accent-tint); color: var(--accent); box-shadow: none; opacity: .7; }
 .btn.ghost { background: transparent; box-shadow: none; }

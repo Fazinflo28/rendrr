@@ -15,9 +15,10 @@
   --badge-grey: #23262a; --disabled: #292b2c; --ink-disabled: #737475; --toggle-off: #5c626a;
   --hair: rgba(255,255,255,.05); --hair-strong: rgba(255,255,255,.1);
   --shadow-card: 0 0 0 1px var(--hair);
-  --shadow-button: inset 0 -3px 0 0 var(--accent-edge), 0 6px 4px rgba(0,0,0,.25), 0 32px 24px rgba(0,0,0,.15);
-  --shadow-quiet: inset 0 1.5px 3px rgba(255,255,255,.05);
-  --shadow-indicator: 0 2px 2px rgba(0,0,0,.12), inset 0 2px 3px rgba(255,255,255,.05);
+  /* Buttons are flat rounded rectangles (Higgsfield's product buttons): no bottom edge, no drop shadow, no inner gloss. */
+  --shadow-button: none;
+  --shadow-quiet: none;
+  --shadow-indicator: none;
   --shadow-pop: 0 0 0 1px var(--hair-strong), 0 16px 40px rgba(0,0,0,.6);
   --scrim: rgba(0,0,0,.65);
   --r-xs: 6px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 24px; --r-btn: 10px; --pill: 999px;
@@ -68,21 +69,24 @@ html.scaled .toasts { right: 24px; bottom: 24px; }
 /* ---------- buttons ---------- */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); height: 40px; padding: 0 16px; border-radius: var(--r-md); font-weight: 600; font-size: 14px; line-height: 20px; white-space: nowrap; transition: transform .2s var(--ease), background-color .2s var(--ease), color .2s var(--ease), opacity .2s var(--ease), box-shadow .15s var(--ease); user-select: none; }
 .btn:active { transform: scale(.96); }
-.btn:focus-visible { outline: 0; box-shadow: 0 0 0 2px var(--accent-ring); }
-.btn.primary { background: var(--accent); color: var(--button-ink); box-shadow: var(--shadow-button); padding-bottom: 2px; }
-.btn.primary:hover { box-shadow: inset 0 -3px 0 0 var(--accent-edge), 0 8px 6px rgba(0,0,0,.3), 0 32px 24px rgba(0,0,0,.2); }
-.btn.white { background: var(--white-button); color: var(--button-ink); box-shadow: inset 0 -3px 0 0 var(--white-edge), 0 6px 4px rgba(0,0,0,.25), 0 32px 24px rgba(0,0,0,.15); padding-bottom: 2px; }
-.btn.tertiary { background: var(--accent-tint); color: var(--accent); box-shadow: 0 0 0 2px rgba(0,0,0,.09); }
+.btn:focus-visible { outline: 0; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-ring); }
+.btn.primary { background: var(--accent); color: var(--button-ink); box-shadow: none; }
+.btn.primary:hover { background: var(--accent-hi); }
+.btn.white { background: var(--white-button); color: var(--button-ink); box-shadow: none; }
+.btn.white:hover { background: #e6e6e6; }
+.btn.tertiary { background: var(--accent-tint); color: var(--accent); box-shadow: none; }
+.btn.tertiary:hover { background: rgba(189,232,22,.32); }
 .btn.lime { background: var(--accent-soft); color: var(--accent); }
+.btn.lime:hover { background: var(--accent-tint); }
 .btn.secondary, .btn.quiet { background: var(--raised); color: var(--ink); font-weight: 500; border-radius: var(--r-btn); box-shadow: var(--shadow-quiet); }
 .btn.secondary:hover, .btn.quiet:hover { background: var(--raised-strong); }
 .btn.ghost { background: transparent; color: var(--ink); font-weight: 500; }
 .btn.ghost:hover { background: var(--raised); }
-.btn:disabled, .btn.primary:disabled { background: var(--disabled); color: var(--ink-disabled); box-shadow: inset 0 -3px 0 0 rgba(0,0,0,.43); cursor: not-allowed; transform: none; }
+.btn:disabled, .btn.primary:disabled { background: var(--disabled); color: var(--ink-disabled); box-shadow: none; cursor: not-allowed; transform: none; }
 .btn.ghost:disabled { background: transparent; box-shadow: none; }
 .btn.sm { height: 36px; padding: 0 12px; font-size: 14px; border-radius: var(--r-btn); }
 .btn.xs { height: 28px; padding: 0 10px; font-size: 12px; font-weight: 500; gap: 6px; border-radius: var(--r-sm); }
-.btn.primary.xs { box-shadow: none; padding-bottom: 0; }
+.btn.primary.xs { box-shadow: none; }
 .btn.primary.xs:disabled { box-shadow: none; }
 .btn.icon { width: 36px; height: 36px; padding: 0; border-radius: var(--r-btn); }
 .btn.icon.sm { width: 32px; height: 32px; border-radius: var(--r-sm); }
@@ -1266,7 +1270,7 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .cbox-icon:hover:not(:disabled) { background: var(--hover, rgba(255,255,255,.06)); color: var(--ink); }
 .cbox-icon.on { background: var(--accent-soft, rgba(190,242,100,.14)); color: var(--accent-ink, var(--accent)); }
 .cbox-icon:disabled { opacity: .4; cursor: default; }
-.cbox-send { width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--accent); color: var(--button-ink, #0a0a0c); display: grid; place-items: center; cursor: pointer; box-shadow: var(--shadow-button, none); flex: none; }
+.cbox-send { width: 34px; height: 34px; border-radius: var(--r-btn); border: 0; background: var(--accent); color: var(--button-ink, #0a0a0c); display: grid; place-items: center; cursor: pointer; box-shadow: var(--shadow-button, none); flex: none; }
 .cbox-send:disabled { background: var(--raised-2, rgba(255,255,255,.08)); color: var(--ink-ghost); box-shadow: none; cursor: default; }
 .cbox-send .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
 #comment-box { position: relative; }
@@ -1382,9 +1386,9 @@ input.swatch { width: 32px; height: 28px; padding: 0; border: none; background: 
 .editor .ed-work.lib-closed { grid-template-columns: 196px minmax(0, 1fr) 352px; }
 .editor .ed-top { height: 60px; border-bottom: 1px solid var(--ed-line); }
 .editor .ed-top .name { font-size: 15px; }
-.editor .ed-top .btn.secondary, .editor .ed-top .btn.ghost, .editor .ed-top .btn.quiet, .editor .tb-chip, .editor .tb-search-box { background: transparent; box-shadow: none; border: 1px solid rgba(255,255,255,.12); border-radius: var(--pill); height: 34px; font-size: 13px; font-weight: 500; color: var(--ink); }
+.editor .ed-top .btn.secondary, .editor .ed-top .btn.ghost, .editor .ed-top .btn.quiet, .editor .tb-chip, .editor .tb-search-box { background: transparent; box-shadow: none; border: 1px solid rgba(255,255,255,.12); border-radius: var(--r-btn); height: 34px; font-size: 13px; font-weight: 500; color: var(--ink); }
 .editor .ed-top .btn.secondary:hover, .editor .ed-top .btn.ghost:hover, .editor .tb-chip:hover, .editor .tb-chip[aria-expanded=true] { background: rgba(255,255,255,.06); }
-.editor .ed-top #render-final { background: #f1f1f2; color: #0b0c0e; box-shadow: none; border-radius: var(--pill); height: 34px; padding: 0 16px; font-size: 13px; }
+.editor .ed-top #render-final { background: #f1f1f2; color: #0b0c0e; box-shadow: none; border-radius: var(--r-btn); height: 34px; padding: 0 16px; font-size: 13px; }
 .editor .ed-top #render-final:hover { background: #fff; box-shadow: none; }
 .editor .ed-top #version-btn { background: transparent; border: 1px solid rgba(255,255,255,.12); box-shadow: none; }
 .editor .tb-search-box:focus-within { background: rgba(255,255,255,.04); box-shadow: none; border-color: rgba(255,255,255,.24); }
@@ -1875,11 +1879,10 @@ pre.stack { margin: 0; padding: 8px; border-radius: 6px; background: var(--raise
 .skeleton { animation: none; }
 .skeleton::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent); transform: translateX(-100%); animation: rdShimmer 1.4s linear infinite; }
 
-/* Buttons: a quick press, a tiny bounce back. The main button's lip sinks when pressed, like a key. */
+/* Buttons: a quick press, a tiny bounce back. Flat: pressing dims the fill a touch, no lip. */
 .btn { transition: transform var(--t-base) var(--ease-spring), background-color var(--t-base) var(--ease-out), color var(--t-base) var(--ease-out), opacity var(--t-base) var(--ease-out), box-shadow var(--t-fast) var(--ease-out); }
 .btn:active { transform: scale(.96); transition-duration: 80ms; }
-.btn.primary:active { transform: translateY(1px) scale(.97); box-shadow: inset 0 -1px 0 0 var(--accent-edge), 0 2px 2px rgba(0,0,0,.2); }
-.btn.white:active { transform: translateY(1px) scale(.97); box-shadow: inset 0 -1px 0 0 var(--white-edge), 0 2px 2px rgba(0,0,0,.2); }
+.btn.primary:active, .btn.white:active { transform: scale(.97); box-shadow: none; filter: brightness(.92); }
 .glike, .grec { transition: background-color var(--t-fast) var(--ease-out), transform var(--t-base) var(--ease-spring); }
 .glike:active, .grec:active { transition-duration: 80ms; }
 
