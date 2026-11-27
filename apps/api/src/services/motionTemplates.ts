@@ -156,14 +156,16 @@ export function shotPlan(spec: MotionTemplate, videos: Map<string, { videoId: st
   });
 }
 
+const SIL_MIN = 0.055; // add_broll refuses under 0.05 s; a little over, so rounding never drops under it
 /** The template's silhouette flashes whose slot got a video: short b-roll clips of that video, cut out and made white. */
 export function silhouettePlan(spec: MotionTemplate, videos: Map<string, { videoId: string; seconds: number }>) {
   const r3 = (n: number) => Math.round(n * 1000) / 1000;
   return (spec.edit?.silhouettes ?? []).flatMap((x, i) => {
     const v = videos.get(x.slot);
     if (!v) return [];
-    const end = Math.min(spec.duration, x.t + x.dur);
-    if (end - x.t < 0.02) return [];
+    // A b-roll clip is at least 0.05 s (one frame at 24 fps is 0.042), so a one-frame strobe is held just past it.
+    const end = Math.min(spec.duration, x.t + Math.max(x.dur, SIL_MIN));
+    if (end - x.t < SIL_MIN - 1e-6) return [];
     let from = x.from ?? x.t;
     if (v.seconds > 0 && from + (end - x.t) > v.seconds) from = Math.max(0, v.seconds - (end - x.t));
     return [{ id: `f${i + 1}`, videoId: v.videoId, start: r3(x.t), end: r3(end), sourceStart: r3(Math.max(0, from)) }];
