@@ -151,6 +151,17 @@ export function shotPlan(spec: MotionTemplate, videos: Map<string, { videoId: st
   });
 }
 
+/**
+ * The talking head for V1: the video in the first shot slot that runs on its own seconds (no `from`), from its start
+ * for the template's length (or the video's, if shorter). None when no such slot got a video.
+ */
+export function voiceClip(spec: MotionTemplate, videos: Map<string, { videoId: string; seconds: number }>) {
+  const slot = (spec.edit?.shots ?? []).find((x) => x.from == null && videos.has(x.slot))?.slot;
+  const v = slot ? videos.get(slot) : undefined;
+  if (!v) return null;
+  return { slot: slot as string, videoId: v.videoId, end: Math.round(Math.min(spec.duration, v.seconds > 0 ? v.seconds : spec.duration) * 1000) / 1000 };
+}
+
 const aspectOf = (w: number, h: number): Aspect => { const r = w / h; return r > 1.4 ? "16:9" : r < 0.65 ? "9:16" : r < 0.9 ? "4:5" : "1:1"; };
 
 /**
@@ -199,6 +210,12 @@ export async function recreateMotionTemplate(userId: string, id: string, slots: 
   // The shots' moves: whips (a push with motion blur), zooms and pans as keyframes, and the blur, on the clips made.
   const v2 = ((res.snapshot as { timeline?: { tracks?: { v2?: { id: string; label?: string }[] } } }).timeline?.tracks?.v2 ?? []);
   const more: Record<string, unknown>[] = [];
+  // The talking head (the slot whose shots run on its own seconds, no `from`) goes on V1 in place of the canvas, so
+  // its speech plays the whole way through (b-roll has no sound) and the person matte is made from it. The canvas
+  // clip keeps its id, so everything placed on it stays where it is.
+  const voice = voiceClip(spec, videoOf);
+  const v1 = ((res.snapshot as { timeline?: { tracks?: { v1?: { id: string }[] } } }).timeline?.tracks?.v1 ?? []);
+  if (voice && v1[0]) more.push({ op: "set_clips", track: "v1", clips: [{ id: v1[0].id, videoId: voice.videoId, start: 0, end: voice.end, label: "talking head" }] });
   for (const sp of plan) {
     const c = v2.find((x) => x.label === `shot ${sp.id}`);
     if (!c) continue;
@@ -207,5 +224,5 @@ export async function recreateMotionTemplate(userId: string, id: string, slots: 
   }
   if (more.length) await applyTimelineChange(p.id, { op: "batch", ops: more } as unknown as Op, actor);
   const { width, height } = aspectSize(aspect, 1080);
-  return { projectId: p.id, graphicId, name, aspect, width, height, seconds: spec.duration, videos: pics.videos.length, shots: plan.length, ...(behindId ? { behindGraphicId: behindId } : {}) };
+  return { projectId: p.id, graphicId, name, aspect, width, height, seconds: spec.duration, videos: pics.videos.length, shots: plan.length, ...(voice ? { voiceVideoId: voice.videoId } : {}), ...(behindId ? { behindGraphicId: behindId } : {}) };
 }
