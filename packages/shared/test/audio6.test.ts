@@ -70,7 +70,7 @@ describe("the render", () => {
     expect(p.audioMix!.dialogue[0].keys).toEqual([{ t: 4, gainDb: 0 }, { t: 6, gainDb: -10 }]);
     expect(g.filterGraph).toMatch(/\[sxd1\]aformat=sample_fmts=fltp:channel_layouts=stereo,aresample=48000,asplit\[rdd1\]\[rwd1\]/);
     expect(g.filterGraph).toMatch(/equalizer=f=1000:t=q:w=0\.9198:g=-4,pan=stereo\|c0=0\.5000\*c0\|c1=1\.0000\*c1/);
-    expect(g.filterGraph).toMatch(/afir=dry=1:wet=1:gtype=none,volume=0\.3000/);
+    expect(g.filterGraph).toMatch(/afir=dry=1:wet=1:irnorm=-1,volume=0\.3000/);
     expect(g.filterGraph).toMatch(/pow\(10,\(0\.000\+-10\.000\*clip\(\(t-4\.0000\)\/2\.0000,0,1\)\)\/20\)/);
     expect(g.args.join(" ")).toContain("/tmp/ir_20.wav");
     expect(p.operations.join("\n")).toMatch(/clips with their own sound: b pan R 50%, EQ mid -4 dB, reverb 50/);

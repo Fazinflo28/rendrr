@@ -2,6 +2,7 @@
 // a product brought toward the camera), the box drawn on it half way through the clip. The tracker follows it forward
 // and backward; on every frame its box overlaps the patch's true box by most of their area and its centre is within a
 // few percent of the frame. A patch that leaves the frame is reported lost (low confidence). Needs ffmpeg and OpenCV.
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,7 +19,9 @@ const iou = (a: { x: number; y: number; w: number; h: number }, b: typeof a) => 
   const i = ix * iy; return i / (a.w * a.h + b.w * b.h - i);
 };
 
-describe("object tracking", () => {
+// Needs Python with OpenCV (the worker image has it): skipped without it, as the faces test is.
+const cv = (() => { try { execFileSync(process.env.PYTHON_BIN || "python3", ["-c", "import cv2"]); return true; } catch { return false; } })();
+describe("object tracking", { skip: !cv && "needs Python with OpenCV" }, () => {
   let dir = "", clip = "";
   before(async () => {
     dir = await mkdtemp(join(tmpdir(), "track-"));

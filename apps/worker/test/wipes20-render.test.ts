@@ -2,6 +2,7 @@
 // FFmpeg and drawn by the player's CSS in Chromium, each read on a 32 x 18 grid at the middle of the window and checked
 // against the shared rule (wipeCovers): B (blue) where it says, A (red) elsewhere. Points within a few hundredths of
 // progress of the shape's edge are left out (a frame's exact progress differs a little). Needs ffmpeg and Chromium.
+import { existsSync } from "node:fs";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -22,6 +23,8 @@ type Wipe = "box" | "cross" | "blinds" | "checker" | "wedge";
 const CASES: [Wipe, Dir | undefined][] = [["box", undefined], ["cross", undefined], ["blinds", undefined], ["blinds", "left"], ["checker", undefined], ["wedge", undefined]];
 const GRID = Array.from({ length: 18 }, (_, j) => Array.from({ length: 32 }, (_, i) => [(i + 0.5) / 32, (j + 0.5) / 18] as [number, number])).flat();
 
+// The Chromium the graphics recorder uses (CHROMIUM_PATH, the system's, or Playwright's); without one this is skipped.
+const exe = [process.env.CHROMIUM_PATH, "/usr/bin/chromium", "/usr/bin/chromium-browser", "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"].find((x) => x && existsSync(x));
 describe("phase 20 shape wipes: render and player against the shared rule", () => {
   let dir = "", redblue = "";
   before(async () => {
@@ -56,9 +59,9 @@ describe("phase 20 shape wipes: render and player against the shared rule", () =
     }
   });
 
-  it("the player's CSS draws the same shapes", async () => {
+  it("the player's CSS draws the same shapes", { skip: !exe && "needs Chromium" }, async () => {
     const { chromium } = require(require.resolve("playwright-core", { paths: [resolve(import.meta.dirname, "../../web")] }));
-    const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" }).catch(() => chromium.launch());
+    const browser = await chromium.launch({ executablePath: exe });
     try {
       const page = await browser.newPage({ viewport: { width: W, height: H } });
       for (const [type, d] of CASES) {

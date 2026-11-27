@@ -20,9 +20,11 @@ const source: SourceInfo = { width: 640, height: 360, fps: 30, seconds: SECONDS,
 describe("Phase 12b transitions and effects, rendered", () => {
   let dir = "";
   const files: Record<string, string> = {};
+  // BT.709 and tagged, as footage is and as the render reads it (untagged, FFmpeg 8 and later convert it on the plain
+  // path but not on the effects path, so a picture with and without an effect would not be the same colours).
   const make = async (name: string, vf: string) => {
     const p = join(dir, `${name}.mp4`);
-    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", `color=black:s=640x360:r=30:d=${SECONDS}`, "-f", "lavfi", "-i", `sine=f=440:d=${SECONDS}:sample_rate=48000`, "-vf", `${vf},format=yuv420p`, "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-c:a", "aac", "-shortest", p]);
+    await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", `color=black:s=640x360:r=30:d=${SECONDS}`, "-f", "lavfi", "-i", `sine=f=440:d=${SECONDS}:sample_rate=48000`, "-vf", `${vf},scale=out_color_matrix=bt709:out_range=tv,format=yuv420p`, "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-c:a", "aac", "-shortest", p]);
     files[name] = p;
   };
   before(async () => {

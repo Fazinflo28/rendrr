@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { applyOp, buildInitialTimeline, type EditContext, type Op, type Snapshot } from "@rendrr/shared";
 import { ffmpegArgs, lookFileData, planRender, type PlanFiles, type SourceInfo } from "@rendrr/shared/renderPlan";
@@ -23,7 +23,9 @@ const source: SourceInfo = { width: W, height: H, fps: 30, seconds: SECONDS, has
 // The square's left edge at footage second t (pixels): 60 px, then 50 px a second; 96 px wide, 132 px down.
 const sqX = (t: number) => 60 + 50 * t, SQ = 96, SQY = 132;
 
-describe("object tracking, rendered", () => {
+// Needs Python with OpenCV (the worker image has it): skipped without it, as the faces test is.
+const cv = (() => { try { execFileSync(process.env.PYTHON_BIN || "python3", ["-c", "import cv2"]); return true; } catch { return false; } })();
+describe("object tracking, rendered", { skip: !cv && "needs Python with OpenCV" }, () => {
   let dir = "", clip = "";
   before(async () => {
     dir = await mkdtemp(join(tmpdir(), "track-render-"));

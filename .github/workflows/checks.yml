@@ -136,6 +136,10 @@ jobs:
       - name: Database tables
         run: pnpm --filter @rendrr/db exec prisma migrate deploy
         timeout-minutes: 5
+      # The built-in styles and graphic templates, as every deploy adds them (tests use them by id).
+      - name: Built-in content
+        run: pnpm --filter @rendrr/db seed
+        timeout-minutes: 5
       - name: Tests core
         run: pnpm --filter @rendrr/core test
         timeout-minutes: 20
@@ -192,6 +196,10 @@ jobs:
         timeout-minutes: 5
       - name: Database tables
         run: pnpm --filter @rendrr/db exec prisma migrate deploy
+        timeout-minutes: 5
+      # The built-in styles and graphic templates, as every deploy adds them (tests use them by id).
+      - name: Built-in content
+        run: pnpm --filter @rendrr/db seed
         timeout-minutes: 5
       - name: Tests mcp
         run: pnpm --filter @rendrr/mcp test
@@ -253,13 +261,19 @@ jobs:
       - name: Database tables
         run: pnpm --filter @rendrr/db exec prisma migrate deploy
         timeout-minutes: 5
+      # The built-in styles and graphic templates, as every deploy adds them (tests use them by id).
+      - name: Built-in content
+        run: pnpm --filter @rendrr/db seed
+        timeout-minutes: 5
+      # One file at a time (package.json): the files share one database and one Redis, and several run their own
+      # workers on the same job lines, which took each other's jobs when files ran side by side.
       - name: Tests api
         run: pnpm --filter @rendrr/api test
         timeout-minutes: 20
   worker:
     name: Tests worker
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     services:
       postgres:
         image: postgres:16
@@ -313,9 +327,18 @@ jobs:
       - name: Database tables
         run: pnpm --filter @rendrr/db exec prisma migrate deploy
         timeout-minutes: 5
+      # The built-in styles and graphic templates, as every deploy adds them (tests use them by id).
+      - name: Built-in content
+        run: pnpm --filter @rendrr/db seed
+        timeout-minutes: 5
+      # One file at a time (package.json): the browser tests count and stop the browsers on the machine, so they cannot
+      # share it with another file. The 10-minute stress test (a 6-minute busy graphic) runs only when Checks is started
+      # by hand.
       - name: Tests worker
         run: pnpm --filter @rendrr/worker test
-        timeout-minutes: 20
+        env:
+          LONG_TESTS: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+        timeout-minutes: 40
   web:
     name: Web build
     runs-on: ubuntu-latest

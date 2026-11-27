@@ -33,7 +33,8 @@ async function barAt(file: string, t: number): Promise<number> {
   return n;
 }
 
-describe("a 6-minute busy graphic", () => {
+// About 10 minutes on its own, so it runs when asked: LONG_TESTS=1 (Checks started by hand set it).
+describe("a 6-minute busy graphic", { skip: !process.env.LONG_TESTS && "a 10-minute stress test: set LONG_TESTS=1" }, () => {
   let dir = "";
   before(async () => { dir = await mkdtemp(join(tmpdir(), "graphic-busy-")); });
   after(async () => { await rm(dir, { recursive: true, force: true }); });

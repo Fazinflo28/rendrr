@@ -19,7 +19,9 @@ test("CPU used while two jobs run is shared by their weights, and adds up to wha
   const end = Date.now() + 600; while (Date.now() < end) Math.sqrt(Math.random()); // burn some CPU
   await sample();
   const after = await readUsage();
-  const r = await jobEnded("render:1"), a = await jobEnded("analyze:1");
+  // Ended in the reverse order they started, so only the render ever runs alone (at both ends): ended the other way,
+  // the analyze job got the moment between the two ends to itself and its share came out too high on a busy machine.
+  const a = await jobEnded("analyze:1"), r = await jobEnded("render:1");
   const measured = after.cpuSeconds - before.cpuSeconds;
   console.log(`render ${r.cpuSeconds.toFixed(3)} s, analyze ${a.cpuSeconds.toFixed(3)} s, measured ${measured.toFixed(3)} s`);
   // The container's CPU counts every process in it (other tests too), so the shares are checked, not an amount.

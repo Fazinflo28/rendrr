@@ -2452,7 +2452,10 @@ const keyVolume = (keys: AudioKey[] | undefined) => (keys?.length ? `,asetnsampl
 /**
  * Phase 6: pan and EQ on [from], then reverb: the sound split, one side convolved with the room's impulse response
  * (afir: its dry is the gain going in, its output only the room; no gain of its own: the response is made as loud as it
- * lets in) at the reverb's level, mixed back with the dry sound. Returns the label of the result.
+ * lets in) at the reverb's level, mixed back with the dry sound. irnorm=-1 keeps the response as it is: since FFmpeg 7
+ * afir scales it down by its own size unless told not to (about 40 dB quieter: the room was gone), and the old
+ * gtype=none is ignored there. The worker (Debian, FFmpeg 7.1) and the Mac app (latest FFmpeg) both take irnorm.
+ * Returns the label of the result.
  */
 function soundFx(g: string[], inputs: string[], next: () => number, files: PlanFiles, from: string, fx: Omit<ClipSoundFx, "keys">, tag: string): string {
   let cur = from;
@@ -2464,7 +2467,7 @@ function soundFx(g: string[], inputs: string[], next: () => number, files: PlanF
     const ii = next();
     g.push(`[${cur}]aformat=sample_fmts=fltp:channel_layouts=stereo,aresample=48000,asplit[rd${tag}][rw${tag}]`);
     g.push(`[${ii}:a]aformat=sample_fmts=fltp:channel_layouts=stereo,aresample=48000[ri${tag}]`);
-    g.push(`[rw${tag}][ri${tag}]afir=dry=1:wet=1:gtype=none,volume=${reverbWet(fx.reverb.amount).toFixed(4)}[rv${tag}]`);
+    g.push(`[rw${tag}][ri${tag}]afir=dry=1:wet=1:irnorm=-1,volume=${reverbWet(fx.reverb.amount).toFixed(4)}[rv${tag}]`);
     g.push(`[rd${tag}][rv${tag}]amix=inputs=2:normalize=0:duration=first[rx${tag}]`);
     cur = `rx${tag}`;
   }

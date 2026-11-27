@@ -4,6 +4,7 @@
 // softly, as the shared curve says; the player's CSS gives the same values. A white dip at the same cut is a flat white
 // frame. Needs ffmpeg and Chromium.
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -71,9 +72,11 @@ describe("the overexposure flash, rendered", () => {
     assert.ok(rise(peak + 3) > 2, "still a little bright three frames on (the soft tail)");
   });
 
-  it("the player's CSS (brightness under a white layer) gives the render's values", { timeout: 60_000 }, async () => {
+  // The Chromium the graphics recorder uses (CHROMIUM_PATH, the system's, or Playwright's); without one this part is skipped.
+  const exe = [process.env.CHROMIUM_PATH, "/usr/bin/chromium", "/usr/bin/chromium-browser", "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"].find((x) => x && existsSync(x));
+  it("the player's CSS (brightness under a white layer) gives the render's values", { timeout: 60_000, skip: !exe && "needs Chromium" }, async () => {
     const { chromium } = require(require.resolve("playwright-core", { paths: [resolve(import.meta.dirname, "../../web")] }));
-    const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" }).catch(() => chromium.launch());
+    const browser = await chromium.launch({ executablePath: exe });
     try {
       const page = await browser.newPage({ viewport: { width: 300, height: 60 } });
       for (const p of [0.45, 0.5, 0.6, 0.75]) {

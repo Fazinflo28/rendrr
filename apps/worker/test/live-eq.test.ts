@@ -2,6 +2,7 @@
 // FFmpeg (eqChain: bass, equalizer, treble, the parametric bands), measured at each frequency, against the live
 // player's Web Audio biquads for the same EQ (eqBiquads), their response read from Chromium's own filters. Needs ffmpeg
 // and Chromium (as the browser tests).
+import { existsSync } from "node:fs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
@@ -26,10 +27,12 @@ async function renderGain(chain: string, f: number): Promise<number> {
   return 20 * Math.log10((await rms(chain)) / (await rms("")));
 }
 
-describe("the live EQ is the render's EQ", () => {
+// The Chromium the graphics recorder uses (CHROMIUM_PATH, the system's, or Playwright's); without one this is skipped.
+const exe = [process.env.CHROMIUM_PATH, "/usr/bin/chromium", "/usr/bin/chromium-browser", "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"].find((x) => x && existsSync(x));
+describe("the live EQ is the render's EQ", { skip: !exe && "needs Chromium" }, () => {
   it("the same response at every frequency, shelves, the 1 kHz bell and parametric bands", async () => {
     const { chromium } = require(require.resolve("playwright-core", { paths: [web] }));
-    const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" }).catch(() => chromium.launch());
+    const browser = await chromium.launch({ executablePath: exe });
     const page = await browser.newPage();
     await page.setContent("<!doctype html><title>eq</title>");
     const cases: Eq[] = [
