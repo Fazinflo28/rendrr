@@ -1,10 +1,11 @@
 import { downloadFile, enqueue, noteCost, recordUsage, signGet, transcriber, type AnalyzeJob, type DeepJob } from "@rendrr/core";
 import { prisma, type Prisma } from "@rendrr/db";
-import { buildTranscript, DAY_MS, DEEP_VERSION, PREVIEW_RETENTION_DAYS, stubTranscript, type Transcript } from "@rendrr/shared";
+import { buildTranscript, DAY_MS, DEEP_VERSION, PREVIEW_RETENTION_DAYS, sentencesFromWords, stubTranscript, type Transcript } from "@rendrr/shared";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JobError, run, silences } from "../lib/ffmpeg";
-import type { Ctx } from "../lib/job";
+import { throttle, type Ctx } from "../lib/job";
+import { madeOnMeta, transcriptOnComputer, withMadeOn, type StepWhere } from "../lib/onComputer";
 import { breakdownVideo } from "./breakdown";
 
 const SCENES_PY = join(dirname(fileURLToPath(import.meta.url)), "../../python/scenes.py");
@@ -38,19 +39,33 @@ export async function analyzeJob(ctx: Ctx) {
 
   await step(0);
   const t = transcriber();
-  let transcript: Transcript;
+  let transcript: Transcript | null = null;
   let by = "stub";
-  if (t) {
+  let heard: StepWhere = { on: "cloud", by: t?.name ?? "stub", why: null, at: Date.now() };
+  // On the user's computer first, while the Rendrr app is open and has its speech model (lib/onComputer.ts): the
+  // preview's 16 kHz sound goes to the app, which writes the words; nothing goes to the transcription service. Samples
+  // keep the cloud's (free) transcript. Anything that stops it: the cloud transcribes as before, the reason kept.
+  if (!v.sample && v.hasAudio !== false) {
+    const progress = throttle((f: number) => prisma.video.update({ where: { id: v.id }, data: { progress: Math.min(99, Math.round(f * 100)) } }).catch(() => {}), 1500);
+    const r = await transcriptOnComputer({ userId: v.userId, videoId: v.id, signal: ctx.signal, dir: ctx.dir, extend: ctx.extend, audioKey: v.audioKey, seconds: v.seconds, language: "en", onProgress: progress });
+    if (r.words) { transcript = buildTranscript(sentencesFromWords(r.words)); by = "whisper"; heard = r.where; }
+    else heard.why = r.why;
+    await prisma.video.update({ where: { id: v.id }, data: { progress: null } }).catch(() => {});
+  }
+  if (!transcript && t) {
     // TODO(key): without ASSEMBLYAI_API_KEY every video gets the sample transcript below.
     const sentences = await t.transcribe(await signGet(v.audioKey, 2 * 3600), { signal: ctx.signal });
     transcript = buildTranscript(sentences);
     by = t.name;
-  } else {
+  } else if (!transcript) {
     transcript = stubTranscript(v.seconds);
   }
-  // Billing: this video's footage minutes, once (a video processed again is not counted again).
+  const madeOn = withMadeOn(v.madeOn, { transcript: heard });
+  await prisma.video.update({ where: { id: v.id }, data: { madeOn } }).catch(() => {});
+  // Billing: this video's footage minutes, once (a video processed again is not counted again). Where its preview copy
+  // and transcript were made goes with it (the usage page shows it).
   noteCost({ kind: "analyze", refId: v.id });
-  if (!v.sample) await recordUsage({ userId: v.userId, metric: "footage", quantity: Math.round((v.seconds / 60) * 1000) / 1000, refId: v.id, meta: { name: v.name } });
+  if (!v.sample) await recordUsage({ userId: v.userId, metric: "footage", quantity: Math.round((v.seconds / 60) * 1000) / 1000, refId: v.id, meta: { name: v.name, source: v.source, ...madeOnMeta(madeOn) } });
 
   await step(1);
   const audio = join(ctx.dir, "audio.m4a"), proxy = join(ctx.dir, "proxy.mp4");

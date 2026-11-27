@@ -27,6 +27,8 @@ export async function videoOut(v: Video) {
     previewDays: expires != null && v.status !== "expired" ? Math.max(0, Math.ceil((expires - Date.now()) / DAY_MS)) : v.status === "expired" ? 0 : null,
     width: v.width ?? undefined, height: v.height ?? undefined, fps: v.fps ?? undefined, hdr: v.hdr ?? undefined,
     thumb: v.thumbKey ? await signGet(v.thumbKey, 3600) : null,
+    // Where its preview copy and transcript were made (the user's computer or Rendrr's cloud), for the usage page.
+    madeOn: (v.madeOn as Record<string, unknown> | null) ?? null,
     ...stepInfo(v),
   };
 }

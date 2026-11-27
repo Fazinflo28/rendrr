@@ -309,6 +309,9 @@ export default async function library(app: FastifyInstance) {
         proxyKey, audioKey, seconds: b.seconds, width: b.width, height: b.height, fps: b.fps ?? 30, orientation: orientationOf(b.width, b.height),
         previewSizeBytes: BigInt(ph.size + ah.size), status: "processing", step: 0, progress: null, error: null,
         previewExpiresAt: new Date(Date.now() + PREVIEW_RETENTION_DAYS * DAY_MS), // a fresh copy gets the full 30 days
+        // Made on the user's computer (the usage page shows where each footage step ran; the worker adds the transcript).
+        madeOn: { ...(v.madeOn && typeof v.madeOn === "object" && !Array.isArray(v.madeOn) ? (v.madeOn as object) : {}),
+          preview: { on: "computer", by: b.by ?? "browser", ...(b.device ? { device: deviceName(b.device) } : {}), at: Date.now() } },
       } });
       await enqueue<AnalyzeJob>("analyze", { videoId: v.id });
       return videoOut(u);
