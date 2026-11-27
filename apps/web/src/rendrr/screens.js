@@ -781,7 +781,7 @@ function CreatePage({ cat }) {
   const cq = useAsync(() => api.getCategories(), []); const c = (cq.data || api.CATEGORIES).find((x) => x.slug === cat) || api.CATEGORIES[0];
   return html`<${ExploreFeed} key=${c.slug} types=${c.types} title=${c.label} />`;
 }
-function StylePacks({ fixedTypes, hideFilters, onPick, cols = 4, wall }) {
+function StylePacks({ fixedTypes, hideFilters, onPick, cols = 4, wall, rendrrOnly }) {
   const { go } = useNav(); const { requireUser } = useApp(); const toast = useToast(); const q = useAsync(() => api.listStyles(), []); const fq = useAsync(() => api.getStyleFilters(), []);
   const [open, setOpen] = useState(null); const [np, setNp] = useState(null);
   const [ori, setOri] = useState("All"); const [plat, setPlat] = useState("all"); const [types, setTypes] = useState([]); const [search, setSearch] = useState(""); const [mOri, setMOri] = useState(null);
@@ -803,11 +803,14 @@ function StylePacks({ fixedTypes, hideFilters, onPick, cols = 4, wall }) {
         ${types_.map(([k, l]) => html`<button key=${k} data-type=${k} class=${"chip sm " + (types.includes(k) ? "brand" : "neutral")} aria-pressed=${types.includes(k)} onClick=${() => toggleType(k)}>${types.includes(k) && html`<${Icon} name="check" />`}${l}</button>`)}
       </div>
     </div>`}
-    <${Async} q=${q} skeleton=${html`<${GridSkeleton} n=${6} />`} whenEmpty=${html`<${EmptyState} icon="styles" title="No styles yet" text="Style packs will show up here once your team adds them." />`}>${(list) => {
+    <${Async} q=${q} skeleton=${html`<${GridSkeleton} n=${6} />`} whenEmpty=${html`<${EmptyState} icon="styles" title=${rendrrOnly ? "No Rendrr presets yet" : "No styles yet"} text=${rendrrOnly ? "Rendrr's own presets will show up here once they are added." : "Style packs will show up here once your team adds them."} />`}>${(all) => {
+      // Rendrr presets: the built-in styles only (a style a user or their AI saved is theirs, not Rendrr's).
+      const list = rendrrOnly ? all.filter((s) => !s.mine) : all;
+      if (!list.length) return html`<${EmptyState} icon="styles" title="No Rendrr presets yet" text="Rendrr's own presets will show up here once they are added." />`;
       const shown = list.filter((s) => (!fixedTypes || fixedTypes.includes(s.type)) && (ori === "All" || s.ori.includes(ori)) && (plat === "all" || s.platforms.includes(plat)) && (types.length === 0 || types.includes(s.type)) && (s.name + " " + s.vibe + " " + label(s.type)).toLowerCase().includes(search.toLowerCase()));
       return html`<div class="col" style="gap:16px">
-        ${!fixedTypes && html`<span class="t-small muted" id="style-count">${shown.length} of ${list.length} styles</span>`}
-        ${shown.length === 0 ? html`<${EmptyState} icon="search" title="No style matches those filters" text="Try another shape or platform, or clear the filters." action=${html`<${Btn} kind="secondary" size="sm" onClick=${clear}>Clear filters<//>`} />` : wall ? html`<div class="masonry wall" id="style-wall">
+        ${!fixedTypes && html`<span class="t-small muted" id="style-count">${shown.length} of ${list.length} ${rendrrOnly ? "presets" : "styles"}</span>`}
+        ${shown.length === 0 ? html`<${EmptyState} icon="search" title="No style matches those filters" text="Try another shape or platform, or clear the filters." action=${html`<${Btn} kind="secondary" size="sm" onClick=${clear}>Clear filters<//>`} />` : rendrrOnly ? html`<div class="rp-wall" id="style-wall"><${Masonry} items=${shown.map((s) => ({ s, o: ori !== "All" && s.ori.includes(ori) ? ori : s.ori[0] }))} oriOf=${(x) => x.o} render=${({ s, o }) => html`<div key=${s.id} class="gcard" role="button" tabindex="0" data-id=${s.id} data-type=${s.type} data-ori=${o} aria-label=${s.name} onClick=${() => { setMOri(o); setOpen(s); }} onKeyDown=${(e) => e.key === "Enter" && (setMOri(o), setOpen(s))}><${StyleVideo} s=${s} ori=${o} className="fill" /><span class="by-rendrr"><${AppIcon} size=${14} />Rendrr</span><span class="wname">${s.name}</span></div>`} /></div>` : wall ? html`<div class="masonry wall" id="style-wall">
           ${shown.flatMap((s) => s.ori.map((o) => ({ s, o }))).sort((a, b) => (a.o === b.o ? 0 : a.o === "9:16" ? -1 : 1) * ((a.s.id + b.s.id).length % 2 ? 1 : -1)).map(({ s, o }) => html`<div key=${s.id + o} class="gcard" role="button" tabindex="0" data-id=${s.id} data-type=${s.type} data-ori=${o} aria-label=${s.name} onClick=${() => { setMOri(o); setOpen(s); }} onKeyDown=${(e) => e.key === "Enter" && setOpen(s)}><${StyleVideo} s=${s} ori=${o} className="fill" /><span class="wname">${s.name} · ${ORI_LABEL[o]}</span></div>`)}
         </div>` : html`<div class="grid" style=${{ gridTemplateColumns: "repeat(" + cols + ",1fr)" }}>
           ${shown.map((s) => html`<div key=${s.id} class="card tight click" role="button" tabindex="0" data-id=${s.id} data-type=${s.type} onClick=${() => { setMOri(null); setOpen(s); }} onKeyDown=${(e) => e.key === "Enter" && setOpen(s)}>
@@ -993,8 +996,32 @@ function CreatorTicker({ list }) {
   return html`<div class="ct" aria-label="Top creators"><div class="ct-track">${row}<span class="ct-dup" aria-hidden="true">${row}</span></div></div>`;
 }
 function HomePage() { return html`<${ExploreFeed} />`; }
+// Explore's two sides, as one sliding switch: Rendrr presets (left: Rendrr's own styles, free for everyone to use)
+// and Community presets (right: videos people published, ready to recreate). The lime thumb slides to the side that is on.
+const EXPLORE_SIDES = [
+  { value: "presets", label: "Rendrr presets", sub: "Made by Rendrr. Anyone can use them." },
+  { value: "community", label: "Community presets", sub: "Videos people published. Recreate any of them." },
+];
+function ExploreSwitch({ value, onChange }) {
+  const at = Math.max(0, EXPLORE_SIDES.findIndex((o) => o.value === value));
+  const key = (e) => { if (e.key === "ArrowRight" || e.key === "ArrowLeft") { e.preventDefault(); const n = EXPLORE_SIDES[e.key === "ArrowRight" ? 1 : 0]; onChange(n.value); e.currentTarget.parentElement.querySelectorAll("button")[e.key === "ArrowRight" ? 1 : 0]?.focus(); } };
+  return html`<div class="ex-side">
+    <div class="ex-switch" role="tablist" aria-label="Which presets" id="explore-switch" data-side=${value}>
+      <span class="ex-thumb" aria-hidden="true" style=${{ transform: "translateX(" + at * 100 + "%)" }} />
+      ${EXPLORE_SIDES.map((o, i) => html`<button key=${o.value} type="button" role="tab" id=${"side-" + o.value} aria-selected=${i === at} tabindex=${i === at ? 0 : -1} class=${i === at ? "on" : ""} onClick=${() => onChange(o.value)} onKeyDown=${key}>
+        ${o.value === "presets" ? html`<${AppIcon} size=${18} />` : html`<${Icon} name="globe" size="16" />`}<span>${o.label}</span></button>`)}
+    </div>
+    <p class="t-small muted ex-sub" aria-live="polite">${EXPLORE_SIDES[at].sub}</p>
+  </div>`;
+}
 function ExploreFeed({ types, embedded, title = "Explore", sub }) {
   const { go } = useNav(); const toast = useToast(); const { requireUser, user } = useApp();
+  // The switch shows on Explore itself only (category walls stay community videos). Rendrr presets is the default;
+  // a link to a published video (?v=) or ?side=community opens the community side.
+  const hasSwitch = !types && !embedded;
+  const [side, setSide] = useState(() => { if (!hasSwitch || typeof window === "undefined") return "community"; const p = new URL(window.location.href).searchParams; return p.get("v") || p.get("side") === "community" ? "community" : "presets"; });
+  useEffect(() => { if (!hasSwitch) return; const u = new URL(window.location.href); const want = side === "community" ? "community" : null; if (u.searchParams.get("side") === want) return; if (want) u.searchParams.set("side", want); else u.searchParams.delete("side"); window.history.replaceState(null, "", u); }, [side]);
+  const onCommunity = !hasSwitch || side === "community";
   const q = useAsync(() => api.listGallery(), []); const fq = useAsync(() => api.getStyleFilters(), []);
   const [ori, setOri] = useState("All"); const [plat, setPlat] = useState("all"); const [sort, setSort] = useState("trending"); const [mine, setMine] = useState(false);
   const [open, setOpen] = useState(null); const [publish, setPublish] = useState(false); const [recreate, setRecreate] = useState(null); const [limit, setLimit] = useState(60);
@@ -1020,9 +1047,11 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
   const actions = html`<div class="row"><${Btn} kind=${mine ? "primary" : "secondary"} size="sm" icon="user" id="gallery-mine" aria-pressed=${mine} onClick=${() => requireUser(() => setMine((m) => !m))}>My videos<//><${Btn} size="sm" icon="globe" id="publish-video" onClick=${() => requireUser(() => setPublish(true))}>Publish a video<//></div>`;
   const sortSeg = html`<${Dropdown} id="sort-dd" left value=${sort} options=${[{ value: "trending", label: "Trending" }, { value: "newest", label: "Newest" }, { value: "recreated", label: "Most recreated" }]} onChange=${setSort} />`;
   return html`<div class=${embedded ? "col" : "page wide"} style=${embedded ? "gap:16px" : ""}>
-    ${embedded ? html`<div class="row between">${sortSeg}${actions}</div>` : html`<div class="page-head"><div><h1 class="t-title">${title}</h1>${sub && html`<p class="muted">${sub}</p>`}</div>${!types && actions}</div>
-    <div class="row">${sortSeg}</div>`}
-    <${Async} q=${q} skeleton=${html`<${MasonrySkeleton} />`} whenEmpty=${html`<${EmptyState} icon="globe" title="The gallery is empty" text="Be the first. Publish a finished project and others can recreate it." action=${html`<${Btn} onClick=${() => setPublish(true)}>Publish a video<//>`} />`}>${(list) => {
+    ${embedded ? html`<div class="row between">${sortSeg}${actions}</div>` : html`<div class="page-head"><div><h1 class="t-title">${title}</h1>${sub && html`<p class="muted">${sub}</p>`}</div>${!types && onCommunity && actions}</div>
+    ${hasSwitch && html`<${ExploreSwitch} value=${side} onChange=${setSide} />`}
+    ${onCommunity && html`<div class="row">${sortSeg}</div>`}`}
+    ${!onCommunity && html`<div id="rendrr-presets"><${StylePacks} rendrrOnly wall /></div>`}
+    ${onCommunity && html`<${Async} q=${q} skeleton=${html`<${MasonrySkeleton} />`} whenEmpty=${html`<${EmptyState} icon="globe" title="The gallery is empty" text="Be the first. Publish a finished project and others can recreate it." action=${html`<${Btn} onClick=${() => setPublish(true)}>Publish a video<//>`} />`}>${(list) => {
       let shown = list.filter((g) => (!types || types.includes(g.style?.type)) && (ori === "All" || g.ori === ori) && (plat === "all" || g.platforms.includes(plat)) && (!mine || g.mine));
       shown = [...shown].sort((a, b) => sort === "newest" ? b.at - a.at : sort === "recreated" ? b.recreates - a.recreates : (b.likes * 3 + b.views / 100) - (a.likes * 3 + a.views / 100));
       const all = shown; shown = shown.slice(0, limit); shownRef.current = all;
@@ -1038,7 +1067,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
               <button class="grec" data-recreate=${g.id} disabled=${recreate === g.id} onClick=${(e) => startRecreate(e, g)}><${Icon} name="refresh" size="14" />${recreate === g.id ? "Opening…" : "Recreate"}</button></div>
           </div>`} />`}
         ${all.length > shown.length && html`<div class="row" style="justify-content:center;padding:8px 0"><${Btn} kind="secondary" id="show-more" onClick=${() => setLimit((l) => l + 60)}>Show more (${all.length - shown.length} left)<//></div>`}
-      </div>`; }}<//>
+      </div>`; }}<//>`}
     ${open && html`<${GalleryViewer} g=${open} list=${shownRef.current} onPick=${setOpen} onClose=${closeOpen} like=${like} recreate=${startRecreate} unpublish=${unpublish} recreating=${recreate === open.id} />`}
 
     ${publish && html`<${PublishModal} plats=${plats} onClose=${() => setPublish(false)} onPublished=${(g) => { q.setData((d) => [g, ...(d || [])]); setPublish(false); setMine(true); }} />`}

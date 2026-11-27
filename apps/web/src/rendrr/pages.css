@@ -112,3 +112,22 @@
   .st-plan { flex-wrap: wrap; }
 }
 .srcopt > span.brand-mark { flex: none; display: inline-grid; min-width: 0; }
+
+/* ===== Explore: Rendrr presets / Community presets switch (screens.js ExploreSwitch) ===== */
+.ex-side { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.ex-switch { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 4px; border-radius: 999px; background: var(--raised); box-shadow: 0 0 0 1px var(--hair-strong); isolation: isolate; }
+.ex-thumb { position: absolute; z-index: 0; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border-radius: 999px; background: var(--accent); box-shadow: 0 2px 10px rgba(189,232,22,.25); transition: transform .32s cubic-bezier(.2,.8,.2,1); }
+.ex-switch button { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 40px; padding: 0 20px; border-radius: 999px; font-size: 14px; font-weight: 600; white-space: nowrap; color: var(--ink-faint); transition: color .25s var(--ease); }
+.ex-switch button:hover { color: var(--ink); }
+.ex-switch button.on { color: #000; }
+.ex-switch button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.ex-switch button svg { flex: none; }
+.ex-sub { margin: 0; }
+#rendrr-presets, .rp-wall { width: 100%; min-width: 0; }
+.rp-wall .wname { opacity: 1; font-size: 12px; padding: 4px 10px; }
+.by-rendrr { position: absolute; top: 8px; left: 8px; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px 0 4px; border-radius: 999px; background: rgba(0,0,0,.55); backdrop-filter: blur(6px); color: #fff; font-size: 11px; font-weight: 500; pointer-events: none; }
+@media (max-width: 640px) {
+  .ex-side { gap: 8px; } .ex-switch { width: 100%; }
+  .ex-switch button { padding: 0 10px; font-size: 13px; gap: 6px; }
+}
+@media (prefers-reduced-motion: reduce) { .ex-thumb { transition: none; } }
