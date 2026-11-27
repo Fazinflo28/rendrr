@@ -32,7 +32,7 @@ export async function starterPrice(): Promise<string> {
   const s = stripe();
   const found = await s.prices.list({ lookup_keys: [STARTER_LOOKUP_KEY], active: true, limit: 1 });
   if (found.data[0]) return (starterPriceId = found.data[0].id);
-  const product = await s.products.create({ name: "Rendrr Starter", description: PLAN_INFO.starter.blurb });
+  const product = await s.products.create({ name: "Rendrr Editor Pro", description: PLAN_INFO.starter.blurb });
   const price = await s.prices.create({ product: product.id, currency: "usd", unit_amount: PLAN_INFO.starter.priceCents, recurring: { interval: "month" }, lookup_key: STARTER_LOOKUP_KEY, nickname: "Starter monthly" });
   return (starterPriceId = price.id);
 }
@@ -64,7 +64,7 @@ export async function checkoutUrl(userId: string): Promise<string> {
 /** Stripe's own page for the card, the invoices and cancelling. */
 export async function portalUrl(userId: string): Promise<string> {
   const u = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-  if (!u.stripeCustomerId) throw new AppError("There is no card on this account yet. Start Starter first.", 400, "no_customer");
+  if (!u.stripeCustomerId) throw new AppError("There is no card on this account yet. Start Editor Pro first.", 400, "no_customer");
   const s = await stripe().billingPortal.sessions.create({ customer: u.stripeCustomerId, return_url: `${WEB()}/usage` });
   return s.url;
 }

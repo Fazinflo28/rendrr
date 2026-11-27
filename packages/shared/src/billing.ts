@@ -25,7 +25,7 @@ export const PLAN_INFO: Record<PlanId, { name: string; priceCents: number; allow
     blurb: "7 days free. About 10 short videos of a minute, or one 10-minute video.",
   },
   starter: {
-    name: "Starter", priceCents: 500, payAsYouGo: true, fourK: true,
+    name: "Editor Pro", priceCents: 500, payAsYouGo: true, fourK: true,
     allowance: { exportMinutes: 25, previewMinutes: null, footageMinutes: 60, storageGB: 10 },
     blurb: "$5 a month. 25 export minutes, 1 hour of footage and 10 GB, then pay as you go.",
   },
@@ -172,25 +172,25 @@ export function mayUse(acct: Account, u: PeriodUsage, ask: Ask, now = new Date()
   const minutes = Math.max(0, ask.minutes) * (ask.metric === "export" ? exportMultiplier(ask) : 1);
   if (plan === "trial") {
     if (new Date(acct.trialEndsAt).getTime() <= now.getTime() || acct.status === "expired") {
-      return { ok: false, code: "trial_ended", message: `Your 7-day free trial has ended. Start the $5 Starter plan to keep exporting: ${URL_HINT}.` };
+      return { ok: false, code: "trial_ended", message: `Your 7-day free trial has ended. Start the $5 Editor Pro plan to keep exporting: ${URL_HINT}.` };
     }
     const a = PLAN_INFO.trial.allowance!;
-    if (ask.metric === "export" && ask.fourK) return { ok: false, code: "trial_4k", message: `4K exports come with the $5 Starter plan. Export in 1080p during the trial, or start Starter: ${URL_HINT}.` };
+    if (ask.metric === "export" && ask.fourK) return { ok: false, code: "trial_4k", message: `4K exports come with the $5 Editor Pro plan. Export in 1080p during the trial, or start Editor Pro: ${URL_HINT}.` };
     const check = (used: number, included: number, what: string): Verdict =>
       used >= included || used + minutes > included + ALLOWANCE_GRACE_MINUTES
-        ? { ok: false, code: "trial_limit", message: `This needs ${round2(minutes)} ${what} and your free trial has ${round2(Math.max(0, included - used))} left. Start the $5 Starter plan for more: ${URL_HINT}.` }
+        ? { ok: false, code: "trial_limit", message: `This needs ${round2(minutes)} ${what} and your free trial has ${round2(Math.max(0, included - used))} left. Start the $5 Editor Pro plan for more: ${URL_HINT}.` }
         : { ok: true };
     if (ask.metric === "export") return check(u.exportMinutes, a.exportMinutes + (acct.bonusExportMinutes ?? 0), "export minutes");
     if (ask.metric === "preview") return check(u.previewMinutes, a.previewMinutes!, "preview minutes");
     if (ask.metric === "footage") {
-      if ((ask.storageGBAfter ?? u.storageGBNow) > a.storageGB) return { ok: false, code: "trial_storage", message: `Your free trial's ${a.storageGB} GB of storage is full. Delete videos you no longer need, or start the $5 Starter plan: ${URL_HINT}.` };
+      if ((ask.storageGBAfter ?? u.storageGBNow) > a.storageGB) return { ok: false, code: "trial_storage", message: `Your free trial's ${a.storageGB} GB of storage is full. Delete videos you no longer need, or start the $5 Editor Pro plan: ${URL_HINT}.` };
       return check(u.footageMinutes, a.footageMinutes + (acct.bonusFootageMinutes ?? 0), "footage minutes");
     }
     return { ok: true };
   }
   // Starter
   if (acct.status === "past_due") return { ok: false, code: "past_due", message: `Your last payment did not go through. Update your card to keep exporting: ${URL_HINT}.` };
-  if (acct.status !== "active") return { ok: false, code: "no_plan", message: `Your Starter plan is not active. Start it again to keep exporting: ${URL_HINT}.` };
+  if (acct.status !== "active") return { ok: false, code: "no_plan", message: `Your Editor Pro plan is not active. Start it again to keep exporting: ${URL_HINT}.` };
   if (ask.metric === "preview") return { ok: true };
   const a = PLAN_INFO.starter.allowance!;
   const s = statement("starter", u, { exportMinutes: acct.bonusExportMinutes, footageMinutes: acct.bonusFootageMinutes });

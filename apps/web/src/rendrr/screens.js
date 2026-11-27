@@ -1306,7 +1306,7 @@ function SettingsPage() {
   const deleteFinals = async () => { setDbusy(true); try { const r = await api.deleteAllFinals(); setConfirmFinals(false); toast(r.deleted + (r.deleted === 1 ? " final deleted" : " finals deleted"), { icon: "trash" }); } catch (e) { toast(e.message); } finally { setDbusy(false); } };
   return html`<div class="page">
     <div class="page-head"><div><h1 class="t-title">Settings</h1><p class="muted">Your profile, your brand and the apps Rendrr works with.</p></div></div>
-    <div class="st-plan" id="st-plan"><span class="ico sm"><${Icon} name="zap" size="18" /></span><div class="grow"><b class="t-label">Plans</b><p>Free, Starter at $5 and Pro at $24 a month. Renders on your own computer are always free.</p></div><${Btn} kind="secondary" size="sm" id="st-see-plans" onClick=${() => go("/pricing")}>See plans<//><${Btn} kind="quiet" size="sm" onClick=${() => go("/usage")}>Usage<//></div>
+    <div class="st-plan" id="st-plan"><span class="ico sm"><${Icon} name="zap" size="18" /></span><div class="grow"><b class="t-label">Plans</b><p>Free, Editor Pro at $5 and Agency Pro at $24 a month. Renders on your own computer are always free.</p></div><${Btn} kind="secondary" size="sm" id="st-see-plans" onClick=${() => go("/pricing")}>See plans<//><${Btn} kind="quiet" size="sm" onClick=${() => go("/usage")}>Usage<//></div>
     <div class="two" style="align-items:start">
       <div class="col" style="gap:24px">
         <div class="card col" style="gap:16px"><b class="t-heading">Profile</b>

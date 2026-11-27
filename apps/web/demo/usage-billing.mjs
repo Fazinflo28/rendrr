@@ -38,7 +38,7 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
 
   // --- Starter account (the demo default): 31.5 export min of 25, 72 footage min of 60, 6.4 GB of 10. ---
   await page.evaluate(() => globalThis.__rendrrNav.go("/usage")); await page.locator("#meters").waitFor({ timeout: 8000 }); await sleep(300);
-  check((await text(page, "#plan-name")) === "Starter", `${tag}: the plan bar names the plan (${await text(page, "#plan-name")})`);
+  check((await text(page, "#plan-name")) === "Editor Pro", `${tag}: the plan bar names the plan (${await text(page, "#plan-name")})`);
   check(/Active/.test(await text(page, "#plan-status")), `${tag}: the plan is Active`);
   check(/This period: .* days left/.test(await text(page, "#plan-period")), `${tag}: the plan bar shows the period and days left (${await text(page, "#plan-period")})`);
   // 6.5 export minutes over at $0.10 = $0.65, 12 footage minutes over = 0.2 h at $1 = $0.20: $0.85 so far.
@@ -51,7 +51,7 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
   const ex = meters.find((x) => x.m === "export");
   check(ex && /31\.5 min of 25 min/.test(ex.t) && /6\.5 over/.test(ex.t) && ex.over, `${tag}: the export meter says 31.5 of 25 min, 6.5 over, in the over colour (${ex?.t})`);
   const pv = meters.find((x) => x.m === "preview");
-  check(pv && /free on Starter/.test(pv.t) && !pv.bar, `${tag}: previews are free on Starter (no bar) (${pv?.t})`);
+  check(pv && /free on Editor Pro/.test(pv.t) && !pv.bar, `${tag}: previews are free on Editor Pro (no bar) (${pv?.t})`);
   const bars = await page.locator("#daily-chart .col-bar").count();
   check(bars === 12, `${tag}: the day by day chart has a column per day of the period so far (${bars})`);
   const segs = await page.locator("#daily-chart .col-bar i").count();
@@ -68,17 +68,19 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
   check(await page.locator("input#limit-input").count() === 0, `${tag}: the window closes after saving`);
   if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `usage-${tag}.png`), fullPage: true });
 
-  // Billing tab: both plans with what they include, Current on Starter, the card and invoices, Manage billing.
+  // Billing tab: the three plans with what they include, Current on Editor Pro, the card and invoices, Manage billing.
   await page.locator(".page-head .seg button", { hasText: "Billing" }).click(); await page.locator("#plans").waitFor({ timeout: 4000 }); await sleep(200);
   const plans = await page.$$eval("#plans [data-plan]", (els) => els.map((e) => ({ id: e.dataset.plan, on: e.classList.contains("plan-on"), t: e.textContent })));
-  check(plans.length === 2 && plans.find((p) => p.id === "starter")?.on, `${tag}: the Billing tab shows the trial and Starter, Starter marked current`);
-  const st = plans.find((p) => p.id === "starter")?.t || "";
-  check(/\$5\.00/.test(st) && /25 export minutes/.test(st) && /60 minutes of footage/.test(st) && /10 GB/.test(st) && /Previews free/.test(st) && /4K/.test(st) && /pay as you go/i.test(st), `${tag}: Starter says $5, 25 export min, 60 footage min, 10 GB, previews free, 4K, then pay as you go`);
-  const tr = plans.find((p) => p.id === "trial")?.t || "";
-  check(/Free/.test(tr) && /7 days/.test(tr) && /10 export minutes/.test(tr) && /30 minutes of footage/.test(tr) && /60 preview minutes/.test(tr) && /5 GB/.test(tr) && /1080p/.test(tr), `${tag}: the trial says free for 7 days, 10 export, 30 footage, 60 preview min, 5 GB, up to 1080p`);
+  check(plans.length === 3 && plans.find((p) => p.id === "editor")?.on, `${tag}: the Billing tab shows Free, Editor Pro and Agency Pro, Editor Pro marked current`);
+  const st = plans.find((p) => p.id === "editor")?.t || "";
+  check(/\$5/.test(st) && /100 cloud render minutes/.test(st) && /10 GB/.test(st) && /No watermark/.test(st) && /\$0\.05/.test(st), `${tag}: Editor Pro says $5, 100 cloud minutes, 10 GB, no watermark, extra minutes $0.05`);
+  const ag = plans.find((p) => p.id === "agency")?.t || "";
+  check(/\$24/.test(ag) && /600 cloud render minutes/.test(ag) && /100 GB/.test(ag) && /Faster/.test(ag) && /Coming soon/.test(ag), `${tag}: Agency Pro says $24, 600 cloud minutes, 100 GB, faster renders, coming soon`);
+  const fr = plans.find((p) => p.id === "free")?.t || "";
+  check(/Free/.test(fr) && /25 cloud render minutes/.test(fr) && /5 GB/.test(fr) && /watermark/.test(fr), `${tag}: Free says 25 cloud minutes, 5 GB, watermark`);
   check(await page.locator("#invoices tbody tr").count() === 2, `${tag}: invoices are listed`);
   check(await page.locator("#open-portal").count() === 1 && await page.locator("#manage-billing").count() === 1, `${tag}: Manage billing opens Stripe's card page (two ways in)`);
-  check(await page.locator("#plan-start").count() === 0 && await page.locator("#start-starter").count() === 0, `${tag}: no Start button when Starter is already on`);
+  check(await page.locator("#plan-start").count() === 0 && await page.locator("#start-starter").count() === 0, `${tag}: no Start button when Editor Pro is already on`);
   if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `billing-${tag}.png`), fullPage: true });
   const portal0 = await page.evaluate(() => globalThis.__demoPortal || 0);
   await Promise.all([page.waitForURL(/\/billing$/, { timeout: 6000 }).catch(() => {}), page.locator("#open-portal").click()]);
@@ -95,7 +97,7 @@ for (const [tag, w, h, mobile] of [["desktop", 1440, 900, false], ["phone", 390,
   await page.evaluate(() => { globalThis.__demoPlan = "trial"; globalThis.__demoUsage = { exportMinutes: 4, previewMinutes: 12, footageMinutes: 9, storageGBNow: 1.2 }; globalThis.__rendrrWrites = (globalThis.__rendrrWrites || 0) + 1; });
   await page.evaluate(() => globalThis.__rendrrNav.go("/usage")); await page.locator("#start-starter").waitFor({ timeout: 8000 }); await sleep(200);
   check((await text(page, "#plan-name")) === "Free trial" && /days? left/.test(await text(page, "#plan-status")), `${tag}: a trial shows Free trial and the days left (${await text(page, "#plan-status")})`);
-  check(/Start Starter · \$5\/mo/.test(await text(page, "#start-starter")), `${tag}: the trial's button is Start Starter · $5/mo`);
+  check(/Start Editor Pro · \$5\/mo/.test(await text(page, "#start-starter")), `${tag}: the trial's button is Start Editor Pro · $5/mo`);
   check((await text(page, "#spend-limit")) === "–" && await page.locator("#edit-limit").count() === 0, `${tag}: no spending limit on the trial (nothing is charged)`);
   const tmeter = await page.$$eval("#meters .meter", (els) => Object.fromEntries(els.map((e) => [e.dataset.metric, e.textContent])));
   check(/4 min of 10 min/.test(tmeter.export || "") && /12 min of 60 min/.test(tmeter.preview || "") && /9 min of 30 min/.test(tmeter.footage || ""), `${tag}: the trial meters show 10 export, 60 preview and 30 footage minutes`);

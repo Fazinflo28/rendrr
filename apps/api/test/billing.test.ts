@@ -77,10 +77,10 @@ describe("billing: trial, Starter with Stripe, pay as you go, admin panel", { sk
     await recordUsage({ userId, metric: "export", quantity: 9.5, refId: `r1_${run}` }); // a retried job: counted once
     await assert.rejects(assertMay(userId, { metric: "export", minutes: 3 }), (e: Error & { status?: number; code?: string }) => {
       assert.equal(e.status, 402); assert.equal(e.code, "billing_trial_limit");
-      assert.match(e.message, /needs 3 export minutes and your free trial has 0\.5 left\. Start the \$5 Starter plan for more: Open Usage & billing/);
+      assert.match(e.message, /needs 3 export minutes and your free trial has 0\.5 left\. Start the \$5 Editor Pro plan for more: Open Usage & billing/);
       return true;
     });
-    await assert.rejects(assertMay(userId, { metric: "export", minutes: 1, fourK: true }), /4K exports come with the \$5 Starter plan/);
+    await assert.rejects(assertMay(userId, { metric: "export", minutes: 1, fourK: true }), /4K exports come with the \$5 Editor Pro plan/);
     await assertMay(userId, { metric: "footage", minutes: 20 });
     await recordUsage({ userId, metric: "footage", quantity: 29, refId: `v1_${run}` });
     await assert.rejects(assertMay(userId, { metric: "footage", minutes: 5 }), /free trial has 1 left/);
@@ -171,7 +171,7 @@ describe("billing: trial, Starter with Stripe, pay as you go, admin panel", { sk
     const u = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
     assert.deepEqual([u.plan, u.billingStatus, u.stripeSubscriptionId], ["starter", "canceled", null]);
     assert.equal(calls.filter((c) => c.what === "invoice").length, before + 1);
-    await assert.rejects(assertMay(userId, { metric: "export", minutes: 1 }), /Your Starter plan is not active/);
+    await assert.rejects(assertMay(userId, { metric: "export", minutes: 1 }), /Your Editor Pro plan is not active/);
   });
 
   it("storage is measured once a day per user (the storage bill and the admin panel)", async () => {

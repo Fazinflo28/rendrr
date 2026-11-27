@@ -50,7 +50,7 @@ describe("mayUse", () => {
     expect(mayUse(trial(), { ...none, exportMinutes: 9 }, { metric: "export", minutes: 1.8 }).ok).toBe(true);
     const no = mayUse(trial(), { ...none, exportMinutes: 9 }, { metric: "export", minutes: 3 });
     expect(no).toMatchObject({ ok: false, code: "trial_limit" });
-    expect((no as { message: string }).message).toMatch(/needs 3 export minutes and your free trial has 1 left\. Start the \$5 Starter plan/);
+    expect((no as { message: string }).message).toMatch(/needs 3 export minutes and your free trial has 1 left\. Start the \$5 Editor Pro plan/);
     expect(mayUse(trial(), { ...none, exportMinutes: 10 }, { metric: "export", minutes: 0.2 }).ok).toBe(false);
   });
   it("trial: no 4K, previews and footage have their own limits, storage 5 GB, ends after 7 days", () => {
