@@ -34,7 +34,7 @@ const res = await build({
   logLevel: "warning",
 });
 const js = res.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
-const css = readFileSync(resolve(web, "src/rendrr/styles.css"), "utf8");
+const css = ["styles.css", "pages.css"].map((f) => readFileSync(resolve(web, "src/rendrr", f), "utf8")).join("\n");
 
 const html = `<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">

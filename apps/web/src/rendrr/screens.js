@@ -6,6 +6,7 @@ import {
   Masonry, MasonrySkeleton, MoreMenu, Dropdown, useNav, useApp,
 } from "./ui";
 import { api } from "./api";
+import { BrandLogo } from "./brandLogos";
 import { DropboxPanel, GooglePhotosPanel } from "./cloudSources";
 import { AppIcon } from "./logo";
 import { Breakdown } from "./breakdown";
@@ -77,7 +78,7 @@ function LoginPage({ onClose, after, initialMode = "login" }) {
 
 /* ---------- app shell: one top bar (Higgsfield-style), no side rail ---------- */
 const TOP = [["/explore", "Explore"], ["/projects", "Projects"], ["/assets", "Assets"]];
-const MENU = [["/assets", "Assets", "library"], ["/usage", "Usage & billing", "usage"], ["/settings", "Settings", "settings"], ["/connect", "Connect AI", "connect"]];
+const MENU = [["/assets", "Assets", "library"], ["/usage", "Usage & billing", "usage"], ["/pricing", "Plans", "zap"], ["/settings", "Settings", "settings"], ["/connect", "Connect AI", "connect"]];
 // Rendrr's team also sees the admin panel.
 const menuFor = (user) => (user?.admin ? [...MENU, ["/admin", "Admin", "key"]] : MENU);
 function Shell({ children }) {
@@ -123,7 +124,7 @@ function Shell({ children }) {
           </div>`}
         </div>`
       : pending ? (wasIn ? html`<span class="avatar skeleton" aria-hidden="true" />` : null)
-      : html`<${Btn} kind="secondary" size="sm" id="login-btn" onClick=${() => openLogin()}>Log in<//><${Btn} size="sm" id="signup-btn" onClick=${() => openLogin(null, "signup")}>Sign up<//>`}
+      : html`<${Btn} kind="ghost" size="sm" id="pricing-btn" onClick=${() => go("/pricing")}>Pricing<//><${Btn} kind="secondary" size="sm" id="login-btn" onClick=${() => openLogin()}>Log in<//><${Btn} size="sm" id="signup-btn" onClick=${() => openLogin(null, "signup")}>Sign up<//>`}
     </header>
     <main class="main" ref=${mainRef}>${children}</main>
     ${looksIn && html`<nav class="mnav" aria-label="Main">
@@ -228,10 +229,10 @@ function AddFootageModal({ onClose, initialKind = "footage", folder = null }) {
     ${folder && html`<p class="t-small row" id="add-into-folder" style="gap:6px"><${Icon} name="folder" size="14" />They go in the folder <b>${folder.name}</b>.</p>`}
     <div class="row between card flat" id="as-ref-row" style="gap:12px;padding:10px 14px"><b class="t-label" title="A video your AI copies the style of, not one you edit">Add as a reference</b><${Toggle} id="as-ref" on=${asRef} onChange=${setAsRef} label="Add as a reference" /></div>
     <div class="srcpick">
-      <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${Icon} name="drive" size="20" /><span><b>Google Drive</b></span></button>
+      <button class=${"srcopt" + (tab === "drive" ? " on" : "")} id="src-drive" onClick=${() => setTab("drive")}><${BrandLogo} brand="drive" size=${22} bare /><span><b>Google Drive</b></span></button>
       <button class=${"srcopt" + (tab === "local" ? " on" : "")} id="src-local" onClick=${() => setTab("local")}><${Icon} name="laptop" size="20" /><span><b>This computer</b></span></button>
-      <button class=${"srcopt" + (tab === "dropbox" ? " on" : "")} id="src-dropbox" onClick=${() => setTab("dropbox")}><${Icon} name="folder" size="20" /><span><b>Dropbox</b></span></button>
-      <button class=${"srcopt" + (tab === "gphotos" ? " on" : "")} id="src-gphotos" onClick=${() => setTab("gphotos")}><${Icon} name="image" size="20" /><span><b>Google Photos</b></span></button>
+      <button class=${"srcopt" + (tab === "dropbox" ? " on" : "")} id="src-dropbox" onClick=${() => setTab("dropbox")}><${BrandLogo} brand="dropbox" size=${22} bare /><span><b>Dropbox</b></span></button>
+      <button class=${"srcopt" + (tab === "gphotos" ? " on" : "")} id="src-gphotos" onClick=${() => setTab("gphotos")}><${BrandLogo} brand="photos" size=${22} bare /><span><b>Google Photos</b></span></button>
     </div>
     ${tab === "dropbox" && html`<${DropboxPanel} kind=${kind} onArrived=${arrivedInLibrary} />`}
     ${tab === "gphotos" && html`<${GooglePhotosPanel} kind=${kind} onArrived=${arrivedInLibrary} />`}
@@ -1167,6 +1168,8 @@ function ClientReviewPage({ token }) {
 }
 
 /* ---------- /connect ---------- */
+// The AI apps that edit through Rendrr's connector, each with its real logo. Gemini cannot add a custom connector yet.
+const AI_APPS = [{ id: "claude", name: "Claude" }, { id: "chatgpt", name: "ChatGPT" }, { id: "gemini", name: "Gemini", soon: true }];
 function ConnectPage() {
   const { user } = useApp();
   const toast = useToast(); const q = useAsync(() => api.getConnectStatus(), []); const aq = useAsync(() => api.getAiActivity(), []);
@@ -1176,14 +1179,15 @@ function ConnectPage() {
   const disc = async () => { setBusy(true); try { const d = await api.disconnect(tab); q.setData(d); toast("Disconnected"); } catch (e) { toast(e.message); } finally { setBusy(false); } };
   // The logins card and the activity list load beside the connector card (each on its own), not after it.
   return html`<div class="page">
-    <div class="page-head"><div><h1 class="t-title">Connect AI</h1></div></div>
+    <div class="page-head"><div><h1 class="t-title">Connect AI</h1><p class="muted">Your own AI edits your videos through Rendrr. Rendrr charges nothing for it.</p></div></div>
     <div class="two" style="align-items:start">
       <div class="col" style="gap:24px">
         <${Async} q=${q} skeleton=${html`<div class="col" style="gap:24px"><div class="card col" style="gap:16px"><div class="skeleton sk-line" style="width:40%" /><div class="skeleton" style="height:56px;border-radius:12px" /><div class="skeleton sk-line" style="width:70%" /></div><div class="card col" style="gap:16px"><div class="skeleton sk-pill" style="width:180px;height:36px" />${[0, 1, 2].map((i) => html`<div key=${i} class="skeleton" style="height:52px;border-radius:12px" />`)}<div class="skeleton sk-pill" style="width:130px;height:36px" /></div></div>`}>${(c) => { const on = c[tab] === "connected"; return html`
           <div class="card col" style="gap:16px"><b class="t-heading">Your connector URL</b><div class="copybox" id="mcp-url"><code>${c.url}</code><${Btn} size="sm" icon="copy" id="copy-url" onClick=${() => copyText(c.url, toast)}>Copy<//></div>${user?.email && html`<p class="t-small muted" id="connect-email">When your AI asks, log in with <b style="color:var(--ink)">${user.email}</b>.</p>`}</div>
           <div class="card col" style="gap:16px">
-            <div class="row between"><${Seg} value=${tab} options=${[{ value: "claude", label: "Claude" }, { value: "chatgpt", label: "ChatGPT" }]} onChange=${setTab} />
+            <div class="row between"><b class="t-heading">Pick your AI</b>
               <${Chip} tone=${on ? "brand" : "neutral"} id="conn-status"><i class=${"dot " + (on ? "on" : "")} />${on ? "Connected" : "Not connected"}<//></div>
+            <div class="ai-pick" role="tablist" aria-label="AI app">${AI_APPS.map((a) => { const isOn = c[a.id] === "connected"; return html`<button key=${a.id} type="button" role="tab" aria-selected=${tab === a.id} class=${"ai-opt" + (tab === a.id ? " on" : "")} data-ai=${a.id} disabled=${!!a.soon} onClick=${() => setTab(a.id)}><${BrandLogo} brand=${a.id} size=${36} /><span class="grow"><b>${a.name}</b><small>${a.soon ? "Coming soon" : html`<i class=${"dot " + (isOn ? "on" : "")} />${isOn ? "Connected" : "Not connected"}`}</small></span></button>`; })}</div>
             <div class="col" style="gap:16px">${steps[tab].map((st, i) => html`<div key=${i} class="step-card"><div class="n">${i + 1}</div><p>${st}</p></div>`)}</div>
             <div class="row">${on ? html`<${Btn} kind="secondary" size="sm" disabled=${busy} onClick=${disc}>Disconnect<//>` : html`<${Btn} size="sm" id="test-conn" icon="zap" disabled=${busy} onClick=${test}>${busy ? "Checking…" : "Test connection"}<//>`}</div>
           </div>`; }}<//>
@@ -1288,7 +1292,7 @@ function FontsCard() {
 }
 
 function SettingsPage() {
-  const toast = useToast(); const { go } = useNav(); const { user, setUser } = useApp();
+  const toast = useToast(); const { go } = useNav(); const { user, setUser, openAdd } = useApp();
   const q = useAsync(() => api.getSettings(), []);
   const [name, setName] = useState(user?.name || ""); const [email, setEmail] = useState(user?.email || ""); const [busy, setBusy] = useState(false);
   const photoRef = useRef(); const logoRef = useRef();
@@ -1298,9 +1302,11 @@ function SettingsPage() {
   const dq = useAsync(() => api.getDriveStatus(), []); const [confirmFinals, setConfirmFinals] = useState(false); const [dbusy, setDbusy] = useState(false);
   const toggleDrive = async () => { setDbusy(true); try { const d = dq.data?.connected ? await api.disconnectDrive() : await api.connectDrive(); dq.setData(d); toast(d.connected ? "Google Drive connected" : "Google Drive disconnected", { icon: "drive" }); } catch (e) { toast(e.message); } finally { setDbusy(false); } };
   const allowWrite = async () => { setDbusy(true); try { const d = await api.connectDrive(true); dq.setData(d); toast(d.saveAnywhere ? "Finals can now be saved into your folders" : "Google did not allow saving into your folders", { icon: "drive" }); } catch (e) { toast(e.message); } finally { setDbusy(false); } };
+  const connectPhotos = async () => { setDbusy(true); try { const d = await api.connectDrive(false, true); dq.setData(d); toast(d.photos ? "Google Photos connected" : "Google did not allow Google Photos. Try again and tick Google Photos.", { icon: "image" }); } catch (e) { toast(e.message); } finally { setDbusy(false); } };
   const deleteFinals = async () => { setDbusy(true); try { const r = await api.deleteAllFinals(); setConfirmFinals(false); toast(r.deleted + (r.deleted === 1 ? " final deleted" : " finals deleted"), { icon: "trash" }); } catch (e) { toast(e.message); } finally { setDbusy(false); } };
   return html`<div class="page">
-    <div class="page-head"><div><h1 class="t-title">Settings</h1></div></div>
+    <div class="page-head"><div><h1 class="t-title">Settings</h1><p class="muted">Your profile, your brand and the apps Rendrr works with.</p></div></div>
+    <div class="st-plan" id="st-plan"><span class="ico sm"><${Icon} name="zap" size="18" /></span><div class="grow"><b class="t-label">Plans</b><p>Free, Starter at $5 and Pro at $24 a month. Renders on your own computer are always free.</p></div><${Btn} kind="secondary" size="sm" id="st-see-plans" onClick=${() => go("/pricing")}>See plans<//><${Btn} kind="quiet" size="sm" onClick=${() => go("/usage")}>Usage<//></div>
     <div class="two" style="align-items:start">
       <div class="col" style="gap:24px">
         <div class="card col" style="gap:16px"><b class="t-heading">Profile</b>
@@ -1308,13 +1314,20 @@ function SettingsPage() {
           <${Field} label="Name" id="st-name"><input id="st-name" class="input" value=${name} onInput=${(e) => setName(e.target.value)} /><//>
           <${Field} label="Email" id="st-email"><input id="st-email" class="input" type="email" value=${email} onInput=${(e) => setEmail(e.target.value)} /><//>
           <div class="row" style="justify-content:flex-end"><${Btn} id="save-profile" disabled=${busy} onClick=${save}>${busy ? "Saving…" : "Save"}<//></div></div>
+        <div class="card col" style="gap:16px" id="st-ai"><div class="row between"><b class="t-heading">AI apps</b><${Btn} kind="secondary" size="sm" id="st-manage-ai" onClick=${() => go("/connect")}>Manage<//></div>
+          ${AI_APPS.map((a) => html`<div key=${a.id} class="conn-row" data-ai-row=${a.id}><${BrandLogo} brand=${a.id} size=${36} /><div class="grow"><b>${a.name}</b><p>${a.soon ? "Coming soon" : "Edits your videos through your Rendrr connector"}</p></div></div>`)}</div>
       </div>
       <div class="col" style="gap:24px">
         <div class="card col" style="gap:16px"><b class="t-heading">Logo on review pages</b>
           <div class="row" style="gap:16px"><div class="logo-prev">${user?.logo ? html`<img src=${user.logo} alt="Your logo" />` : html`<span class="t-small muted">No logo</span>`}</div><input type="file" accept="image/*" class="hide" ref=${logoRef} onChange=${(e) => { const f = e.target.files[0]; e.target.value = ""; if (f) readFile(f, setLogo); }} /><${Btn} kind="secondary" size="sm" id="upload-logo" onClick=${() => logoRef.current.click()}>Upload logo<//>${user?.logo && html`<${Btn} kind="ghost" size="sm" onClick=${() => setLogo(null)}>Remove<//>`}</div></div>
         <${FontsCard} />
-        <div class="card col" style="gap:16px" id="st-storage"><b class="t-heading">Storage</b>
-          <${Async} q=${dq} skeleton=${html`<${Skeleton} card=${false} rows=${1} />`}>${(d) => html`<div class="row between"><div class="row" style="gap:12px"><div class="ico sm"><${Icon} name="drive" size="18" /></div><div><b class="t-label">Google Drive</b><p class="t-small muted">${d.connected ? "Connected as " + d.email : "Not connected"}</p></div></div><${Btn} kind="secondary" size="sm" id="drive-toggle" disabled=${dbusy} onClick=${toggleDrive}>${d.connected ? "Disconnect" : "Connect"}<//></div>${d.connected && !d.saveAnywhere ? html`<div class="row between" id="drive-write-row" style="gap:12px"><p class="t-small muted grow">Save finals into any of your folders.</p><${Btn} kind="secondary" size="sm" id="drive-write" disabled=${dbusy} onClick=${allowWrite}>Allow saving to my folders<//></div>` : d.connected ? html`<p class="t-small muted" id="drive-write-on">Saving into any folder is on.</p>` : null}`}<//>
+        <div class="card col" style="gap:16px" id="st-storage"><b class="t-heading">Cloud storage</b>
+          <${Async} q=${dq} skeleton=${html`<${Skeleton} card=${false} rows=${3} />`}>${(d) => html`<div class="col" style="gap:14px">
+            <div class="conn-row" data-storage="drive"><${BrandLogo} brand="drive" size=${36} /><div class="grow"><b>Google Drive</b><p>${d.connected ? "Connected as " + d.email : "Not connected"}</p></div><${Btn} kind="secondary" size="sm" id="drive-toggle" disabled=${dbusy} onClick=${toggleDrive}>${d.connected ? "Disconnect" : "Connect"}<//></div>
+            ${d.connected && !d.saveAnywhere ? html`<div class="row between" id="drive-write-row" style="gap:12px"><p class="t-small muted grow">Save finals into any of your folders.</p><${Btn} kind="secondary" size="sm" id="drive-write" disabled=${dbusy} onClick=${allowWrite}>Allow saving to my folders<//></div>` : d.connected ? html`<p class="t-small muted" id="drive-write-on">Saving into any folder is on.</p>` : null}
+            <div class="conn-row" data-storage="photos"><${BrandLogo} brand="photos" size=${36} /><div class="grow"><b>Google Photos</b><p>${d.photos ? "Allowed. Rendrr only sees what you choose." : "Not connected"}</p></div>${d.photos ? html`<span class="conn-state t-small muted"><i class="dot on" />Ready</span>` : html`<${Btn} kind="secondary" size="sm" id="photos-connect" disabled=${dbusy} onClick=${connectPhotos}>Connect<//>`}</div>
+            <div class="conn-row" data-storage="dropbox"><${BrandLogo} brand="dropbox" size=${36} /><div class="grow"><b>Dropbox</b><p>Paste a share link when you add footage. No sign-in needed.</p></div><${Btn} kind="secondary" size="sm" id="dropbox-add" onClick=${() => openAdd()}>Add footage<//></div>
+          </div>`}<//>
           <div class="hr" />
           <div class="row between" style="gap:12px"><div><b class="t-label">Final exports</b><p class="t-small muted">Kept until you delete them.</p></div><${Btn} kind="ghost" size="sm" id="delete-finals" onClick=${() => setConfirmFinals(true)}>Delete all finals<//></div></div>
         ${confirmFinals && html`<${Modal} title="Delete all finals?" sub="Every exported final is removed from our servers. Your previews and edits stay, so you can render again." onClose=${() => setConfirmFinals(false)} footer=${html`<${Btn} kind="secondary" onClick=${() => setConfirmFinals(false)}>Keep them<//><${Btn} id="confirm-delete-finals" disabled=${dbusy} onClick=${deleteFinals}>${dbusy ? "Deleting…" : "Delete all finals"}<//>`} />`}

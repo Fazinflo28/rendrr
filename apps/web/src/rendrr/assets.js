@@ -6,6 +6,7 @@ import { useState, useEffect, useRef, useMemo, html, fmtLen, fmtAgo, Icon, Btn, 
 import { api } from "./api";
 import { ASSET_SECTIONS, ELEMENT_ACCEPT, TRASH_DAYS, fmtBytes } from "@rendrr/shared";
 import { LibraryPage, DeleteVideoModal } from "./screens";
+import { BrandLogo } from "./brandLogos";
 
 const SEC = Object.fromEntries(ASSET_SECTIONS.map((s) => [s.id, s]));
 const TYPE_LABEL = { video: "Video", image: "Image", element: "Element", audio: "Audio" };
@@ -24,8 +25,13 @@ const fromAny = (x) => (x.type === "element" ? fromElement(x) : x.type === "audi
 /** Which kind of upload a file is, from its type and name. */
 const kindOfFile = (f) => (/^audio\//.test(f.type) || /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(f.name) ? "audio" : /^image\//.test(f.type) || /\.(png|jpe?g|webp|gif|svg)$/i.test(f.name) ? "image" : /^video\//.test(f.type) || /\.(mp4|mov|m4v|webm|mkv)$/i.test(f.name) ? "video" : null);
 
+// Where footage can come from, shown with each service's real logo at the foot of the side bar (each opens Add footage).
+const SOURCES = [["drive", "Google Drive"], ["photos", "Google Photos"], ["dropbox", "Dropbox"]];
+
 export function AssetsPage({ section = "all" }) {
-  const { go } = useNav();
+  const { go } = useNav(); const { openAdd } = useApp();
+  const bq = useAsync(() => api.getBillingOverview().catch(() => null), []);
+  const gb = bq.data?.storage?.totalGB;
   const sq = useAsync(() => api.assetsSummary(), []);
   const n = sq.data || {};
   useEffect(() => { const k = () => sq.reload(); window.addEventListener("rendrr:library", k); window.addEventListener("rendrr:assets", k); return () => { window.removeEventListener("rendrr:library", k); window.removeEventListener("rendrr:assets", k); }; }, []);
@@ -36,6 +42,11 @@ export function AssetsPage({ section = "all" }) {
       ${["all", "favorites", "trash"].map(item)}
       <div class="as-label">Types</div>
       ${["videos", "images", "elements", "audio"].map(item)}
+      <div class="as-foot" id="assets-foot">
+        <div class="as-label" style="margin:0 8px">Bring in from</div>
+        <div class="as-sources" style="padding:0 8px">${SOURCES.map(([b, name]) => html`<button key=${b} type="button" title=${"Add from " + name} aria-label=${"Add from " + name} data-source=${b} onClick=${() => openAdd()}><${BrandLogo} brand=${b} size=${36} /></button>`)}<button type="button" class="btn quiet sm icon" title="Add from this computer" aria-label="Add from this computer" onClick=${() => openAdd()}><${Icon} name="laptop" size="18" /></button></div>
+        ${gb != null && html`<div class="as-store" id="assets-storage"><span><b>${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB</b><span class="muted"> stored with Rendrr</span></span><span class="muted">Free has 5 GB, Starter 10 GB, Pro 100 GB.</span><button type="button" class="link" style="text-align:left" onClick=${() => go("/pricing")}>See plans</button></div>`}
+      </div>
     </aside>
     <section class="as-main">${section === "videos"
       ? html`<${LibraryPage} embedded only="videos" />`
