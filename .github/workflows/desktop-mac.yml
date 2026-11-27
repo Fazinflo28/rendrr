@@ -53,6 +53,30 @@ jobs:
           get x64 "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip" || get x64 "https://evermeet.cx/ffmpeg/getrelease/zip" || { echo "No Intel FFmpeg"; exit 1; }
           echo "Apple Silicon: $(lipo -archs vendor/ffmpeg-arm64/ffmpeg)  Intel: $(lipo -archs vendor/ffmpeg-x64/ffmpeg)"
 
+      # Transcripts are made on the Mac with whisper.cpp (transcribe.js; MIT licence), built here for each chip with
+      # Metal. Should it not build, the app still ships: Rendrr's cloud keeps making transcripts for those Macs.
+      - name: Build whisper.cpp for each chip
+        run: |
+          set -uo pipefail
+          WTAG=v1.7.6
+          mkdir -p vendor/whisper-arm64 vendor/whisper-x64
+          if git clone -q --depth 1 --branch "$WTAG" https://github.com/ggml-org/whisper.cpp "$RUNNER_TEMP/whisper"; then
+            for pair in arm64:arm64 x64:x86_64; do
+              a=${pair%%:*}; osx=${pair#*:}
+              extra="-DGGML_NATIVE=OFF"; [ "$a" = x64 ] && extra="$extra -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
+              { cmake -S "$RUNNER_TEMP/whisper" -B "$RUNNER_TEMP/wb-$a" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=$osx -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+                  -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON $extra > /dev/null \
+                && cmake --build "$RUNNER_TEMP/wb-$a" -j 4 --target whisper-cli > /dev/null \
+                && cp "$RUNNER_TEMP/wb-$a/bin/whisper-cli" "vendor/whisper-$a/whisper-cli" \
+                && codesign --force -s - "vendor/whisper-$a/whisper-cli" \
+                && cp "$RUNNER_TEMP/whisper/LICENSE" "vendor/whisper-$a/LICENSE.txt" \
+                && printf 'whisper.cpp %s (MIT) from https://github.com/ggml-org/whisper.cpp\n' "$WTAG" > "vendor/whisper-$a/README.txt"; } \
+                || { echo "::warning::No whisper.cpp for $a: transcripts on those Macs stay on Rendrr's cloud"; rm -f "vendor/whisper-$a/whisper-cli"; }
+            done
+          else echo "::warning::whisper.cpp could not be fetched: transcripts stay on Rendrr's cloud"; fi
+          [ -x vendor/whisper-arm64/whisper-cli ] && vendor/whisper-arm64/whisper-cli --help 2>&1 | head -3 || true
+          ls -la vendor/whisper-*
+
       - name: Check FFmpeg has what renders use
         run: |
           node scripts/check-ffmpeg.js vendor/ffmpeg-arm64/ffmpeg

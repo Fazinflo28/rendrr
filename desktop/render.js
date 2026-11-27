@@ -111,6 +111,14 @@ function checkTask(t, { allowHttp = false } = {}) {
     if (o.save != null && !FILE.test(o.save)) throw bad("bad file name");
   }
   if (!(t.outputs || []).length) throw bad("nothing to make");
+  // A transcript of one of its files (transcribe.js): both names inside the folder, the words one of its outputs.
+  if (t.transcribe != null) {
+    const x = t.transcribe;
+    if (typeof x !== "object" || !NAME.test(x.input) || !NAME.test(x.output) || x.input === x.output) throw bad("bad transcript step");
+    if (!t.outputs.some((o) => o.name === x.output)) throw bad("the transcript is not sent back");
+    if (x.language != null && !/^[a-z]{2,3}$/.test(String(x.language))) throw bad("bad transcript language");
+    if (x.seconds != null && !(Number(x.seconds) >= 0)) throw bad("bad transcript length");
+  }
 }
 
 /** POST to Rendrr with the task's token; the answer's JSON (null on failure). */
@@ -351,6 +359,8 @@ function freeName(dir, name) {
  * Runs a task to the end and tells Rendrr how it went. o: ffmpeg (its path), cacheDir, workDir (the render's folder
  * goes in it), saveDir (where a final is kept: Downloads), allowHttp (tests), cacheBytes, onState ({phase, frac}),
  * localFile(videoId, size): where this Mac keeps that video's original (null when it no longer has that file).
+ * transcribe({ input, output, language, seconds, signal, onModel, onFrac }): writes the speech in input as words to
+ * output (transcribe.js; none: this app makes no transcripts, and a task asking for one fails).
  * Rendrr may answer a report with stop (the user stopped it, or the cloud took over): it stops at once and says nothing more.
  */
 async function runTask(t, o) {
@@ -428,6 +438,19 @@ async function runTask(t, o) {
       args = adaptArgs(args, major).map((a) => direct[a] || a);
       state = { phase: "render", frac: 0, cmd: k, seconds: 0 }; say(true);
       await runFfmpeg(o.ffmpeg, args, { cwd: job, signal: ac.signal, stallSec: t.stallSec || 120, onSeconds: (s) => { state = { ...state, seconds: s, frac: c.seconds ? Math.min(1, s / c.seconds) : 0 }; say(); } });
+    }
+    if (stop) throw Object.assign(new Error("stopped"), { stopped: true });
+    // ---- The transcript: the speech in one of the files made into words by this computer's speech model ----
+    if (t.transcribe) {
+      if (!o.transcribe) throw new Error(`this ${MACHINE}'s app cannot make transcripts`);
+      const x = t.transcribe, secs = Number(x.seconds) || 0, cmd = t.commands.length;
+      state = { phase: "render", frac: 0, cmd, seconds: 0 }; say(true);
+      await o.transcribe({
+        input: path.join(job, x.input), output: path.join(job, x.output), language: x.language || "en", seconds: secs, signal: ac.signal,
+        // The speech model's first download is a download (the time it takes is this computer's line, not the cloud's).
+        onModel: (pct) => { state = { phase: "download", frac: Math.min(1, pct / 100), cmd, seconds: 0 }; say(); },
+        onFrac: (f) => { state = { phase: "render", frac: f, cmd, seconds: f * secs }; say(); },
+      });
     }
     if (stop) throw Object.assign(new Error("stopped"), { stopped: true });
     // ---- What they made ----

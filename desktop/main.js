@@ -11,6 +11,7 @@ const { START_URL, linkKind, cleanUserAgent, uniquePath, fitBounds, authGrant, b
 const os = require("node:os");
 const { execFileSync } = require("node:child_process");
 const render = require("./render");
+const transcriber = require("./transcribe");
 const IS_WIN = process.platform === "win32";
 // "Mac" or "PC", for what the app says ("Made on this PC").
 const MACHINE = IS_WIN ? "PC" : "Mac";
@@ -93,8 +94,40 @@ const syncAwake = () => { if (!IS_WIN) keepAwake.sync(shouldKeepAwake(renders));
 const tellWindows = () => { syncAwake(); for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("rendrr:render-state", renderInfo()); };
 async function checkFfmpeg() {
   const p = await render.probeFfmpeg(ffmpegPath());
-  Object.assign(renders, { ready: p.ok && p.have.includes("libx264"), version: p.version, have: p.have, why: p.ok ? (p.have.includes("libx264") ? null : `this ${MACHINE}'s FFmpeg cannot make H.264`) : p.why });
+  // "whisper": this app can make transcripts here (transcribe.js), so Rendrr hands it footage's transcripts too.
+  const speech = await transcriber.whisperWorks(whisperPath()).catch(() => false);
+  Object.assign(renders, { ready: p.ok && p.have.includes("libx264"), version: p.version, have: [...p.have, ...(speech ? ["whisper"] : [])], why: p.ok ? (p.have.includes("libx264") ? null : `this ${MACHINE}'s FFmpeg cannot make H.264`) : p.why });
   tellWindows();
+}
+
+// ---- Transcripts on this computer (transcribe.js) ----
+// whisper.cpp ships in the app's Resources (RENDRR_WHISPER, or whisper-cli on the PATH, when run from source); its
+// speech model is fetched once, the first time a transcript is made, into the app's own folder.
+const whisperPath = () => process.env.RENDRR_WHISPER || (app.isPackaged ? path.join(process.resourcesPath, "whisper", IS_WIN ? "whisper-cli.exe" : "whisper-cli") : "whisper-cli");
+const modelsDir = () => path.join(app.getPath("userData"), "speech");
+// Two transcripts in a row that fail here: Rendrr stops handing this computer transcripts until the app starts again
+// (the cloud makes them), so a computer whose speech model cannot run never makes footage wait twice.
+let speechFails = 0;
+let modelNoticed = false;
+async function transcribeHere({ input, output, language, seconds, signal, onModel, onFrac }) {
+  const cpus = os.availableParallelism ? os.availableParallelism() : os.cpus().length;
+  const bar = (v) => { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setProgressBar(v); };
+  try {
+    const model = await transcriber.ensureModel(modelsDir(), language, {
+      download: render.download, signal,
+      onPct: (pct) => {
+        if (!modelNoticed) { modelNoticed = true; notify("Getting the speech model", `Rendrr is downloading its speech model once, so transcripts are made on this ${MACHINE}.`); }
+        renders.current = `Getting the speech model (${Math.round(pct)}%)`; bar(pct / 100); onModel(pct);
+      },
+    });
+    if (modelNoticed && renders.current && /speech model/.test(renders.current)) { renders.current = "Making a transcript"; tellWindows(); }
+    const r = await transcriber.transcribe(whisperPath(), model, input, output, { language, seconds, threads: Math.max(1, Math.min(8, cpus - 1)), signal, onFrac: (f) => { bar(f); onFrac(f); } });
+    speechFails = 0;
+    return r;
+  } catch (e) {
+    if (!e.stopped && !(signal && signal.aborted) && ++speechFails >= 2) { renders.have = renders.have.filter((x) => x !== "whisper"); tellWindows(); }
+    throw e;
+  }
 }
 const fromApp = (e) => linkKind(e.senderFrame?.url || "") === "app";
 ipcMain.handle("rendrr:render-info", (e) => (fromApp(e) ? renderInfo() : null));
@@ -179,7 +212,7 @@ ipcMain.handle("rendrr:render-run", (e, task) => {
     const v = st.phase === "download" ? 0.1 * (st.frac || 0) : st.phase === "render" ? 0.1 + 0.85 * (st.frac || 0) : 0.95 + 0.05 * (st.frac || 0);
     for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.setProgressBar(Math.max(0, Math.min(1, v)));
   };
-  render.runTask(task, { ffmpeg: ffmpegPath(), cacheDir: cacheDir(), workDir: os.tmpdir(), saveDir: app.getPath("downloads"), onState: progress, localFile })
+  render.runTask(task, { ffmpeg: ffmpegPath(), cacheDir: cacheDir(), workDir: os.tmpdir(), saveDir: app.getPath("downloads"), onState: progress, localFile, transcribe: renders.have.includes("whisper") ? transcribeHere : null })
     .then((r) => {
       if (r.ok && r.savedPath) {
         if (app.dock) app.dock.downloadFinished(r.savedPath);

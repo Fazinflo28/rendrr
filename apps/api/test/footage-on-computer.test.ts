@@ -1,8 +1,8 @@
 // Footage work on the user's computer, end to end with the real pieces: footage kept in Rendrr's storage is given its
 // preview copy by the worker's proxy job, which hands the run to the user's "Mac" (desktop/render.js, the app's own
 // code) while its app is open: the Mac fetches the original, makes the proxy, the sound and the key frames, uploads them
-// and the video is recorded as made on that computer. An app without a speech model is not handed the transcript; with
-// no app open the cloud makes the preview copy.
+// and the video is recorded as made on that computer. Then its transcript is made there by the app's speech model (a
+// stand-in here) and read back as words. With no app open, or an app that fails, the cloud does it and says why.
 // Needs a database, Redis and storage.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -97,6 +97,33 @@ describe("footage made ready on the user's computer", { skip: !ready && "needs D
     const an = await prisma.footageAnalysis.findUniqueOrThrow({ where: { videoId: v.id } });
     assert.equal((an.keyFrames as unknown[]).length, 5, "five key frames");
     assert.ok(after.thumbKey);
+  });
+
+  it("its transcript is made there by the app's speech model and comes back as words", async () => {
+    const v = await prisma.video.findFirstOrThrow({ where: { userId, name: `Clip ${run}` } });
+    const [r, m] = await Promise.all([
+      transcriptOnComputer({ userId, videoId: v.id, signal: new AbortController().signal, dir, audioKey: v.audioKey!, seconds: v.seconds, language: "en", onProgress: () => {} }),
+      macTakes({ transcribe: async ({ input, output }: { input: string; output: string }) => {
+        assert.match((await sh("ffprobe", ["-v", "error", "-show_entries", "stream=sample_rate,channels,codec_name", "-of", "compact", input])).stdout, /pcm_s16le\|sample_rate=16000\|channels=1/);
+        await writeFile(output, JSON.stringify({ words: [{ text: "Hello", start: 0.2, end: 0.6 }, { text: "there.", start: 0.6, end: 1.1 }] }));
+      } }),
+    ]);
+    assert.equal(m.kind, "footage_transcript");
+    assert.equal(m.res.ok, true, m.res.error);
+    assert.ok(r.words, `made there (${"why" in r ? r.why : ""})`);
+    assert.deepEqual(r.words, [{ text: "Hello", start: 0.2, end: 0.6 }, { text: "there.", start: 0.6, end: 1.1 }]);
+    assert.equal((r as { where: { by: string; device: string } }).where.by, "whisper");
+  });
+
+  it("an app whose speech model fails: the cloud makes the transcript, and the reason is kept", async () => {
+    const v = await prisma.video.findFirstOrThrow({ where: { userId, name: `Clip ${run}` } });
+    const [r, m] = await Promise.all([
+      transcriptOnComputer({ userId, videoId: v.id, signal: new AbortController().signal, dir, audioKey: v.audioKey!, seconds: v.seconds, language: "en", onProgress: () => {} }),
+      macTakes({ transcribe: async () => { throw new Error("the speech model failed (1)"); } }),
+    ]);
+    assert.equal(m.res.ok, false);
+    assert.equal(r.words, null);
+    assert.match((r as { why: string }).why, /speech model failed/);
   });
 
   it("an app without a speech model is not asked for a transcript", async () => {

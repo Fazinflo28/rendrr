@@ -28,3 +28,6 @@ lid still puts it to sleep; turning rendering off in Settings lets it sleep agai
 Finals you save go straight to your Downloads folder. Links to other sites open in your browser.
 
 Rendrr for Mac includes FFmpeg (GPL, ffmpeg.org).
+
+**Footage on your Mac**
+While the app is open, footage from Google Drive is downloaded straight to this Mac and its preview copy is made here, and transcripts are made here too with a speech model (whisper.cpp). The speech model downloads once, the first time it is needed (about 190 MB); the Dock shows its progress. If the Mac cannot do it, Rendrr's cloud does it as before.

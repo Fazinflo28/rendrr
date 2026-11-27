@@ -9,7 +9,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/links.test.js test/render.test.js test/download.test.js test/preview.test.js",
+    "test": "node --test test/links.test.js test/render.test.js test/download.test.js test/preview.test.js test/transcribe.test.js",
     "dist:mac": "electron-builder --mac dmg --arm64 --x64 --publish never",
     "dist:win": "electron-builder --win nsis --x64 --publish never"
   },
@@ -30,6 +30,7 @@
       "preload.js",
       "links.js",
       "render.js",
+      "transcribe.js",
       "offline.html",
       "package.json"
     ],
@@ -40,6 +41,17 @@
         "filter": [
           "ffmpeg",
           "ffmpeg.exe",
+          "LICENSE*",
+          "README*"
+        ]
+      },
+      {
+        "from": "vendor/whisper-${arch}",
+        "to": "whisper",
+        "filter": [
+          "whisper-cli",
+          "whisper-cli.exe",
+          "*.dll",
           "LICENSE*",
           "README*"
         ]

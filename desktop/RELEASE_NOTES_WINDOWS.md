@@ -23,3 +23,6 @@ keeps the PC from going to sleep (the screen can still turn off).
 Finals you save go straight to your Downloads folder. Links to other sites open in your browser.
 
 Rendrr for Windows includes FFmpeg (GPL, ffmpeg.org; the build from github.com/BtbN/FFmpeg-Builds).
+
+**Footage on your PC**
+While the app is open, footage from Google Drive is downloaded straight to this PC and its preview copy is made here, and transcripts are made here too with a speech model (whisper.cpp). The speech model downloads once, the first time it is needed (about 190 MB); the taskbar shows its progress. If the PC cannot do it, Rendrr's cloud does it as before.

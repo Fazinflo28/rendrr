@@ -61,6 +61,28 @@ jobs:
           get arm64 winarm64
           ls -la vendor/*
 
+      # Transcripts are made on the PC with whisper.cpp (transcribe.js; MIT licence): its own release build for most
+      # PCs (Windows on Arm runs the same one). Should it not come, the app still ships: Rendrr's cloud keeps making
+      # transcripts for those PCs.
+      - name: Get whisper.cpp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          WTAG=v1.7.6
+          mkdir -p vendor/whisper-x64 vendor/whisper-arm64
+          if gh release download "$WTAG" -R ggml-org/whisper.cpp -p whisper-bin-x64.zip -D "$RUNNER_TEMP" --clobber && 7z x -y -o"$RUNNER_TEMP/wh" "$RUNNER_TEMP/whisper-bin-x64.zip" > /dev/null; then
+            f=$(find "$RUNNER_TEMP/wh" -type f -name whisper-cli.exe | head -1 || true)
+            if [ -n "$f" ]; then
+              d=$(dirname "$f")
+              cp "$d"/whisper-cli.exe vendor/whisper-x64/ && cp "$d"/*.dll vendor/whisper-x64/ 2>/dev/null || true
+              printf 'whisper.cpp %s (MIT) from https://github.com/ggml-org/whisper.cpp\r\n' "$WTAG" > vendor/whisper-x64/README.txt
+              cp vendor/whisper-x64/* vendor/whisper-arm64/
+              vendor/whisper-x64/whisper-cli.exe --help 2>&1 | head -3 || true
+            else echo "::warning::whisper-cli.exe not in the release: transcripts stay on Rendrr's cloud"; fi
+          else echo "::warning::whisper.cpp could not be fetched: transcripts stay on Rendrr's cloud"; fi
+          ls -la vendor/whisper-* || true
+
       - name: Check FFmpeg has what renders use
         run: node scripts/check-ffmpeg.js "$(cygpath -w "$PWD/vendor/ffmpeg-x64/ffmpeg.exe")"
 
