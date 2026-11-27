@@ -1663,7 +1663,10 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
   // put back to the footage's own (setpts), so every trim below keeps footage seconds.
   const srcPath: Record<string, string> = {};
   for (const vid of plan.sources) {
-    const path = vid === main ? files.source : files.videos?.[vid];
+    // A video V1 plays is read from its own file; the edit's footage file only for the edit's own footage. (The first
+    // source is not always the edit's footage: when V1's only clip was set to another video, as Recreate does over its
+    // blank canvas, that video comes first and files.source is still the canvas.)
+    const path = files.videos?.[vid] ?? (vid === main ? files.source : undefined);
     if (!path) throw new RenderPlanError(`The file of a video on V1 is missing (${vid}).`);
     srcPath[vid] = path;
   }
@@ -1768,7 +1771,7 @@ function ffmpegArgsB(plan: RenderPlan, files: PlanFiles, source: SourceInfo, opt
     let nBranch = 0;
     /** A branch of the video's decoder for footage a..b (seconds): from the window that reads there. */
     const branch = (vid: string, a: number, b: number) => { const l = `sv${nBranch++}`; take("v", vid, a, b, l); return l; };
-    const pathOf = (vid: string) => srcPath[vid] ?? (vid === main ? files.source : files.videos?.[vid])!;
+    const pathOf = (vid: string) => srcPath[vid] ?? files.videos?.[vid] ?? (vid === main ? files.source : undefined)!;
     /**
      * One stretch of picture as exactly round(length x 30) frames at output size: its footage at its rate (reversed in
      * 1 s chunks, each from its own input so memory stays small; frozen = one frame held), turned, fitted, framed and
