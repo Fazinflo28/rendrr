@@ -1,6 +1,7 @@
 // Phase 5: speed, transitions and keyframes. The numbers the render (as FFmpeg expressions) and the editor's player
 // both use, so they agree frame for frame:
-//   keyframes    every property's curve becomes one piecewise-linear table (16 pieces per eased segment)
+//   keyframes    every property's curve becomes one piecewise-linear table (a piece per 60th of a second of each
+//                eased segment, 16 to 120), with After Effects handles (influence, speed), hold, auto and motion paths
 //   speed ramps  steps of at most 0.2 s of edit, each at one speed
 //   transitions  where each side is and how opaque, at each moment of the window
 import { z } from "zod";
@@ -22,6 +23,14 @@ export type KeyProp = (typeof KEY_PROPS)[number];
  * t: seconds from the clip's start in the edit (a V1 clip stores the footage second instead, so keys move with the
  * footage when the clip is cut or split).
  */
+/** An After Effects temporal handle: influence (% of the segment the handle reaches, 33.33 = Easy Ease) and speed at
+ *  the key in the property's units per second (0 = it eases to a stop there). */
+export const KeyHandleSchema = z.object({ influence: z.number().min(0.1).max(100), speed: z.number().min(-1000).max(1000).optional() });
+export type KeyHandle = z.infer<typeof KeyHandleSchema>;
+/** How the segment that leaves a key moves: linear (straight), bezier (the handles; Easy Ease when none are set), hold
+ *  (the value stays until the next key, then jumps), auto (continuous speed through the key: AE's auto bezier). */
+export const KEY_INTERPS = ["linear", "bezier", "hold", "auto"] as const;
+const pathTangent = z.tuple([z.number().min(-3).max(3), z.number().min(-3).max(3)]);
 export const KeySchema = z.object({
   t: z.number().finite().min(0).max(24 * 3600),
   x: z.number().min(-3).max(3).optional(),
@@ -30,6 +39,12 @@ export const KeySchema = z.object({
   rotation: z.number().min(-3600).max(3600).optional(),
   opacity: unit.optional(),
   ease: EaseSchema.optional(),
+  interp: z.enum(KEY_INTERPS).optional(),
+  easeOut: KeyHandleSchema.optional(),
+  easeIn: KeyHandleSchema.optional(),
+  /** Motion path (AE's spatial bezier): x, y tangents leaving / arriving at this key, shares of the frame. */
+  pathOut: pathTangent.optional(),
+  pathIn: pathTangent.optional(),
 });
 export type Key = z.infer<typeof KeySchema>;
 export const KeysSchema = z.array(KeySchema).max(60);
@@ -55,27 +70,80 @@ const curveOf = (e: Ease | undefined) => (Array.isArray(e) ? e : NAMED[e ?? "lin
 const isLinear = (b: [number, number, number, number]) => b[0] === b[1] && b[2] === b[3];
 /** An ease's progress (0-1) at x (0-1). */
 export const easeAt = (e: Ease | undefined, x: number) => { const b = curveOf(e); return isLinear(b) ? x : bezierAt(b, Math.min(1, Math.max(0, x))); };
-const tables = new Map<string, number[]>();
-function tableOf(b: [number, number, number, number]): number[] {
-  const k = b.join(",");
-  let t = tables.get(k);
-  if (!t) { t = Array.from({ length: PIECES + 1 }, (_, j) => (j === 0 ? 0 : j === PIECES ? 1 : bezierAt(b, j / PIECES))); tables.set(k, t); }
-  return t;
-}
-
 /** One property's curve as points of a piecewise-linear function of t (sorted; two points at one t = a jump). */
 export type Track = { t: number; v: number }[];
+
+/** Pieces for an eased segment: one per 60th of a second (16 to 120), so speed changes are drawn frame by frame. */
+const piecesFor = (dt: number) => Math.min(120, Math.max(PIECES, Math.ceil(dt * 60)));
+/** The value of an After Effects segment at time t: a cubic bezier in (time, value) whose handles reach `i0`, `i1` of
+ *  the segment (influence) at speeds `s0`, `s1`, solved for the time exactly. */
+export function aeValueAt(t0: number, v0: number, s0: number, i0: number, t1: number, v1: number, s1: number, i1: number, t: number): number {
+  const dt = Math.max(1e-9, t1 - t0);
+  if (i0 + i1 > 1) { const k = 1 / (i0 + i1); i0 *= k; i1 *= k; }
+  const x1 = i0 * dt, y1 = v0 + s0 * x1, x2 = dt - i1 * dt, y2 = v1 - s1 * i1 * dt, x = Math.min(dt, Math.max(0, t - t0));
+  const bx = (u: number) => 3 * (1 - u) * (1 - u) * u * x1 + 3 * (1 - u) * u * u * x2 + u * u * u * dt;
+  let lo = 0, hi = 1;
+  for (let n = 0; n < 50; n++) { const m = (lo + hi) / 2; if (bx(m) < x) lo = m; else hi = m; }
+  const u = (lo + hi) / 2;
+  return (1 - u) ** 3 * v0 + 3 * (1 - u) * (1 - u) * u * y1 + 3 * (1 - u) * u * u * y2 + u ** 3 * v1;
+}
+const usesAE = (a: Key, b: Key) => !!(a.easeOut || b.easeIn || a.interp === "bezier" || a.interp === "auto" || b.interp === "auto");
+/** Speed and influence of one side of a segment (AE): a handle, an auto key's slope, or the straight line's. */
+function handleOf(ks: Key[], i: number, side: "out" | "in", prop: KeyProp, lin: number): [number, number] {
+  const k = ks[i], h = side === "out" ? k.easeOut : k.easeIn;
+  if (h) return [h.speed ?? 0, h.influence / 100];
+  if (k.interp === "auto") { const a = ks[i - 1], b = ks[i + 1]; return [a && b ? (b[prop]! - a[prop]!) / Math.max(1e-9, b.t - a.t) : 0, 1 / 3]; }
+  if (side === "out" ? k.interp === "bezier" : ks[i - 1]?.interp === "bezier") return [0, 1 / 3]; // Easy Ease
+  return [lin, 1 / 3];
+}
+/** A segment's progress (0-1) at time t, as its own ease or AE handles give it (for a motion path's distance). */
+function segValue(ks: Key[], i: number, prop: KeyProp, t: number): number {
+  const a = ks[i], b = ks[i + 1], va = a[prop]!, vb = b[prop]!;
+  if (a.interp === "hold") return t < b.t ? va : vb;
+  if (usesAE(a, b)) {
+    const lin = (vb - va) / Math.max(1e-9, b.t - a.t);
+    const [s0, i0] = handleOf(ks, i, "out", prop, lin), [s1, i1] = handleOf(ks, i + 1, "in", prop, lin);
+    return aeValueAt(a.t, va, s0, i0, b.t, vb, s1, i1, t);
+  }
+  const c = curveOf(a.ease);
+  return isLinear(c) ? va + (vb - va) * Math.min(1, Math.max(0, (t - a.t) / Math.max(1e-9, b.t - a.t))) : va + (vb - va) * bezierAt(c, Math.min(1, Math.max(0, (t - a.t) / Math.max(1e-9, b.t - a.t))));
+}
+/** Position on a motion path: the segment's spatial bezier, travelled at the speed its temporal ease gives along the
+ *  path's real length (as After Effects does). */
+function pathPoint(a: Key, b: Key, d: number): [number, number] {
+  const P = [[a.x!, a.y!], [a.x! + (a.pathOut?.[0] ?? 0), a.y! + (a.pathOut?.[1] ?? 0)], [b.x! + (b.pathIn?.[0] ?? 0), b.y! + (b.pathIn?.[1] ?? 0)], [b.x!, b.y!]];
+  const at = (u: number): [number, number] => { const m = 1 - u; return [0, 1].map((j) => m * m * m * P[0][j] + 3 * m * m * u * P[1][j] + 3 * m * u * u * P[2][j] + u * u * u * P[3][j]) as [number, number]; };
+  const N = 64, lens = [0]; let prev = at(0);
+  for (let q = 1; q <= N; q++) { const c = at(q / N); lens.push(lens[q - 1] + Math.hypot(c[0] - prev[0], c[1] - prev[1])); prev = c; }
+  const goal = d * lens[N]; let k = 1; while (k < N && lens[k] < goal) k++;
+  const f = (goal - lens[k - 1]) / Math.max(1e-12, lens[k] - lens[k - 1]);
+  return at((k - 1 + Math.min(1, Math.max(0, f))) / N);
+}
 
 export function keyTrack(keys: Key[], prop: KeyProp): Track | null {
   const ks = keys.filter((k) => k[prop] != null).sort((a, b) => a.t - b.t);
   if (!ks.length) return null;
   const pts: Track = [{ t: r6(ks[0].t), v: r6(ks[0][prop]!) }];
+  const spatial = prop === "x" || prop === "y";
   for (let i = 0; i + 1 < ks.length; i++) {
     const a = ks[i], b = ks[i + 1], va = a[prop]!, vb = b[prop]!;
+    if (a.interp === "hold") { pts.push({ t: r6(b.t), v: r6(va) }, { t: r6(b.t), v: r6(vb) }); continue; }
+    if (spatial && (a.pathOut || b.pathIn) && a.x != null && a.y != null && b.x != null && b.y != null && b.t - a.t > 1e-6) {
+      // the distance along the path eases like a 0-1 property with the same handles
+      const n = piecesFor(b.t - a.t), j0 = prop === "x" ? 0 : 1;
+      const prog: Key[] = [{ ...a, x: 0 }, { ...b, x: 1 }];
+      for (let j = 1; j <= n; j++) { const t = a.t + ((b.t - a.t) * j) / n; pts.push({ t: r6(t), v: r6(pathPoint(a, b, segValue(prog, 0, "x", t))[j0]) }); }
+      continue;
+    }
     const c = curveOf(a.ease);
-    if (b.t - a.t < 1e-6 || isLinear(c) || va === vb) { pts.push({ t: r6(b.t), v: r6(vb) }); continue; }
-    const tab = tableOf(c);
-    for (let j = 1; j <= PIECES; j++) pts.push({ t: r6(a.t + ((b.t - a.t) * j) / PIECES), v: r6(va + (vb - va) * tab[j]) });
+    if (b.t - a.t < 1e-6 || va === vb && !usesAE(a, b) || (!usesAE(a, b) && isLinear(c))) { pts.push({ t: r6(b.t), v: r6(vb) }); continue; }
+    if (!usesAE(a, b)) {
+      const n = piecesFor(b.t - a.t);
+      for (let j = 1; j <= n; j++) pts.push({ t: r6(a.t + ((b.t - a.t) * j) / n), v: r6(va + (vb - va) * (j === n ? 1 : bezierAt(c, j / n))) });
+      continue;
+    }
+    const n = piecesFor(b.t - a.t);
+    for (let j = 1; j <= n; j++) { const t = a.t + ((b.t - a.t) * j) / n; pts.push({ t: r6(t), v: r6(j === n ? vb : segValue(ks, i, prop, t)) }); }
   }
   return pts;
 }

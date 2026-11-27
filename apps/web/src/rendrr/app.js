@@ -14,12 +14,15 @@ import { LoginPage, HomePage, CreatePage, LibraryPage, FootagePage, ProjectsPage
 import { UsageBillingPage, LimitDialog } from "./billing";
 import { AdminPage } from "./admin";
 import { PricingPage } from "./pricing";
+import { TemplatesPage, TemplatePage } from "./templates";
 import { EditorPage } from "./editor";
 import { api } from "./api";
 const ROUTES = [
   [/^\/(explore|home)?$/, () => html`<${HomePage} />`, { pub: true }],
   [/^\/create\/([^/]+)$/, (m) => html`<${CreatePage} cat=${m[1]} />`, { pub: true }],
   [/^\/styles$/, () => html`<${StylesPage} />`, { pub: true }],
+  [/^\/templates$/, () => html`<${TemplatesPage} />`, { pub: true }],
+  [/^\/templates\/([^/]+)$/, (m) => html`<${TemplatePage} key=${m[1]} id=${m[1]} />`, { pub: true }],
   [/^\/pricing$/, () => html`<${PricingPage} />`, { pub: true }],
   [/^\/library$/, () => html`<${AssetsPage} section="videos" />`],
   [/^\/assets$/, () => html`<${AssetsPage} section="all" />`],

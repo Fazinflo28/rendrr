@@ -11,6 +11,7 @@ import billing from "./routes/billing";
 import admin from "./routes/admin";
 import { ensureAdmins } from "./services/billing";
 import explore from "./routes/explore";
+import templates from "./routes/templates";
 import internal from "./routes/internal";
 import library from "./routes/library";
 import assets from "./routes/assets";
@@ -127,6 +128,7 @@ export async function buildServer() {
   await app.register(billing);
   await app.register(admin);
   await app.register(explore);
+  await app.register(templates);
   await app.register(library);
   await app.register(assets);
   await app.register(projects);

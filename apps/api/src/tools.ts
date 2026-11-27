@@ -31,6 +31,8 @@ import { audioFramesOf, deepOf, visionDetailsOf } from "./services/deep";
 import { waveformPng } from "./services/waveform";
 import { testGraphic } from "./services/testGraphic";
 import { graphicUploadLink, rerecordFirst, resolveGraphic, saveGraphic } from "./services/graphicCode";
+import { listMotionTemplates, recreateMotionTemplate, saveMotionTemplate, templateOf } from "./services/motionTemplates";
+import { motionTemplateText } from "@rendrr/shared";
 import { addLibraryItem, getLibraryItem, listLibrary, searchIcons, withIcons } from "./services/library";
 import { analyzeReference, styleFileLines, styleFileOut } from "./services/styleFiles";
 import { openProjects } from "./services/claudeApp";
@@ -798,6 +800,7 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
     return { text: [
       "Graphic templates (id | name | seconds | params):",
       ...GRAPHIC_TEMPLATES.map((t) => `${t.id} | ${t.name} | ${t.durationSec}s | ${params(t.paramsSchema)}`),
+      "Motion templates (id | name | seconds | slots; get_graphic on yours, or GET /templates/:id, for the full breakdown; recreate: create_project {templateId, slots}): " + (await listMotionTemplates(c.userId)).map((t) => `\n${t.id} | ${t.name}${t.builtin ? " (Rendrr)" : ""} | ${t.spec.duration}s | ${t.spec.slots.map((x) => x.id).join(", ")}`).join(""),
       "Custom graphics (id | name | status | seconds | size | params = defaults): " + (custom.length ? "\n" + custom.map((g) => `${g.id} | ${g.name} | ${g.status}${progress[g.id] ? ` ${progress[g.id]}` : ""}${g.error ? " (" + g.error.replace(/\s+/g, " ").trim() + (graphicFailedOnServer(g.error) ? "; retry_graphic records it again" : "") + ")" : ""} | ${g.durationSec}s | ${g.width}x${g.height}${defaultsText(g.paramsSchema)}${warningsText(g.warnings)}`).join("\n") : "none (create_graphic)"),
       "Your elements (logos and overlays from Assets > Elements, transparent; id | name | size): " + (elements ? `\n${elements}\nPlace one with add_graphic {graphicId}; it fills the frame as large as it fits, so size it with set_keyframes (a corner logo: scale about 0.15-0.3, x/y about ±0.38).` : "none (add_footage as: \"element\" keeps a logo the user gives you)"),
       "Your fonts (add_font; use by name): " + (fonts.length ? fontsText(fonts) : "none"),
@@ -963,6 +966,12 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
 
   async create_project(c, i) {
     const actor = { actorKind: c.ai === "chatgpt" ? "chatgpt" as const : "claude" as const };
+    if (i.templateId) {
+      if (i.blank || i.videoId || i.videoIds?.length || i.fromProjectId || i.clips?.length || i.libraryFolder) throw new AppError("templateId makes the edit from the template: send it without blank, videoId, videoIds, libraryFolder, fromProjectId or clips.", 400, "invalid-input");
+      const r = await recreateMotionTemplate(c.userId, i.templateId, i.slots ?? {}, { name: i.name, folderId: i.folderId, actorKind: actor.actorKind });
+      return { text: `Created edit "${r.name}" (${r.projectId}) from the template ${i.templateId}: its graphic ${r.graphicId} (recording now) over a ${r.seconds}s canvas, ${r.aspect}${r.videos ? `, ${r.videos} ${r.videos === 1 ? "video" : "videos"} as b-roll under it` : ""}, with the template's music and sound effects. render_preview shows it (renders wait for the graphic).`, data: { projectId: r.projectId, graphicId: r.graphicId } };
+    }
+    if (i.slots) throw new AppError("slots go with templateId (the template to recreate).", 400, "invalid-input");
     if (i.libraryFolder) {
       if (i.blank || i.videoId || i.videoIds?.length || i.fromProjectId || i.clips?.length) throw new AppError("libraryFolder makes an edit of every ready video in that folder: send it without blank, videoId, videoIds, fromProjectId or clips.", 400, "invalid-input");
       const lf = await findLibraryFolder(c.userId, i.libraryFolder);
@@ -1089,6 +1098,14 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
   },
 
   async create_graphic(c, i) {
+    // A motion template (JSON) instead of code: saved as a graphic that plays it; templateFrom keeps that template's
+    // design and motion for a new video.
+    if (i.template || i.templateFrom) {
+      if (!i.template) throw new AppError("templateFrom makes a new video in that template's design and motion: send template too (its new scenes, layers, camera and slots).", 400, "bad-template");
+      const t = await saveMotionTemplate(c.userId, i.template, { templateFrom: i.templateFrom, name: i.name });
+      const lead = `Saved motion template ${t.id} "${t.spec.name}" (${t.spec.duration}s, ${t.spec.slots.length} slots${i.templateFrom ? `, design and motion from ${i.templateFrom}` : ""}). Recreate it: create_project {templateId: "${t.id}", slots: {...}}. `;
+      return graphicAnswer(t.id, i.images === true, lead);
+    }
     // The code by a one-time link the AI's code workspace sends the file to (the graphic is made when it comes).
     if (i.upload) {
       const u = await graphicUploadLink(c.userId, i);
@@ -1207,7 +1224,9 @@ export const TOOL_HANDLERS: Record<string, (c: Ctx, input: any) => Promise<ToolO
       return { text: `${head} | ${p ? `recording: ${p.percent}% done${p.etaSec != null ? `, about ${fmtLeft(p.etaSec)} left` : ""}` : g.status} | ${size}. wait_seconds waits for it (up to 120); add_graphic can place it now.${pl}` };
     }
     const images = i.images === true ? await Promise.all(((g.checkFrames as string[]) || []).slice(0, 4).map((k) => signGet(k, 900))) : [];
-    return { text: `${head} | ready | ${size}${defaultsText(g.paramsSchema).replace(/^ \| /, " | params ")}.${warningsText(g.warnings)}${images.length ? " 4 check frames attached." : ""} Place it with apply_edits add_graphic.${pl}`, images };
+    const tpl = templateOf(g.paramsSchema);
+    const tplText = tpl ? `\nMOTION TEMPLATE (recreate: create_project {templateId: "${g.id}", slots}; new video in its style: create_graphic {template, templateFrom: "${g.id}"}):\n${motionTemplateText(tpl)}` : "";
+    return { text: `${head} | ready | ${size}${defaultsText(g.paramsSchema).replace(/^ \| /, " | params ")}.${warningsText(g.warnings)}${images.length ? " 4 check frames attached." : ""} Place it with apply_edits add_graphic.${pl}${tplText}`, images };
   },
 
   async retry_graphic(c, i) {

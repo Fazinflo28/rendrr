@@ -521,6 +521,10 @@ export const api: any = {
   deleteFont: (id: string) => del(`/fonts/${enc(id)}`),
   colorSamples: async (projectId: string, clipIds: string[]) => (await post(`/projects/${enc(projectId)}/color-samples`, { clipIds }))?.measured || {},
   getStyleFilters: () => get("/styles/filters"),
+  // ---- motion templates (open to everyone; Recreate needs a login) ----
+  listTemplates: async () => emptyIf(await get("/templates")),
+  getTemplate: (id: string) => get(`/templates/${enc(id)}`),
+  recreateTemplate: (id: string, body: { slots: Record<string, string>; name?: string; folderId?: string | null }) => post(`/templates/${enc(id)}/recreate`, body),
   getStyle: (id: string) => get(`/styles/${enc(id)}`),
 
   // ---- community gallery ----
