@@ -6,7 +6,6 @@ import {
   Masonry, MasonrySkeleton, MoreMenu, Dropdown, useNav, useApp,
 } from "./ui";
 import { api } from "./api";
-import { MotionTemplatesStrip } from "./templates";
 import { BrandLogo } from "./brandLogos";
 import { DropboxPanel, GooglePhotosPanel } from "./cloudSources";
 import { AppIcon } from "./logo";
@@ -810,8 +809,8 @@ function StylePacks({ fixedTypes, hideFilters, onPick, cols = 4, wall, rendrrOnl
       if (!list.length) return html`<${EmptyState} icon="styles" title="No Rendrr presets yet" text="Rendrr's own presets will show up here once they are added." />`;
       const shown = list.filter((s) => (!fixedTypes || fixedTypes.includes(s.type)) && (ori === "All" || s.ori.includes(ori)) && (plat === "all" || s.platforms.includes(plat)) && (types.length === 0 || types.includes(s.type)) && (s.name + " " + s.vibe + " " + label(s.type)).toLowerCase().includes(search.toLowerCase()));
       return html`<div class="col" style="gap:16px">
-        ${!fixedTypes && html`<span class="t-small muted" id="style-count">${shown.length} of ${list.length} ${rendrrOnly ? "presets" : "styles"}</span>`}
-        ${shown.length === 0 ? html`<${EmptyState} icon="search" title="No style matches those filters" text="Try another shape or platform, or clear the filters." action=${html`<${Btn} kind="secondary" size="sm" onClick=${clear}>Clear filters<//>`} />` : rendrrOnly ? html`<div class="rp-wall" id="style-wall"><${Masonry} items=${shown.map((s) => ({ s, o: ori !== "All" && s.ori.includes(ori) ? ori : s.ori[0] }))} oriOf=${(x) => x.o} render=${({ s, o }) => html`<div key=${s.id} class="gcard" role="button" tabindex="0" data-id=${s.id} data-type=${s.type} data-ori=${o} aria-label=${s.name} onClick=${() => { setMOri(o); setOpen(s); }} onKeyDown=${(e) => e.key === "Enter" && (setMOri(o), setOpen(s))}><${StyleVideo} s=${s} ori=${o} className="fill" /><span class="by-rendrr"><${AppIcon} size=${14} />Rendrr</span><span class="wname">${s.name}</span></div>`} /></div>` : wall ? html`<div class="masonry wall" id="style-wall">
+        ${!fixedTypes && !rendrrOnly && html`<span class="t-small muted" id="style-count">${shown.length} of ${list.length} styles</span>`}
+        ${shown.length === 0 && rendrrOnly ? html`<${EmptyState} icon="styles" title="No Rendrr presets here yet" text="Try Community presets, or another category." />` : shown.length === 0 ? html`<${EmptyState} icon="search" title="No style matches those filters" text="Try another shape or platform, or clear the filters." action=${html`<${Btn} kind="secondary" size="sm" onClick=${clear}>Clear filters<//>`} />` : rendrrOnly ? html`<div class="rp-wall" id="style-wall"><${Masonry} items=${shown.map((s) => ({ s, o: ori !== "All" && s.ori.includes(ori) ? ori : s.ori[0] }))} oriOf=${(x) => x.o} render=${({ s, o }) => html`<div key=${s.id} class="gcard" role="button" tabindex="0" data-id=${s.id} data-type=${s.type} data-ori=${o} aria-label=${s.name} onClick=${() => { setMOri(o); setOpen(s); }} onKeyDown=${(e) => e.key === "Enter" && (setMOri(o), setOpen(s))}><${StyleVideo} s=${s} ori=${o} className="fill" /><span class="by-rendrr"><${AppIcon} size=${14} />Rendrr</span><span class="wname">${s.name}</span></div>`} /></div>` : wall ? html`<div class="masonry wall" id="style-wall">
           ${shown.flatMap((s) => s.ori.map((o) => ({ s, o }))).sort((a, b) => (a.o === b.o ? 0 : a.o === "9:16" ? -1 : 1) * ((a.s.id + b.s.id).length % 2 ? 1 : -1)).map(({ s, o }) => html`<div key=${s.id + o} class="gcard" role="button" tabindex="0" data-id=${s.id} data-type=${s.type} data-ori=${o} aria-label=${s.name} onClick=${() => { setMOri(o); setOpen(s); }} onKeyDown=${(e) => e.key === "Enter" && setOpen(s)}><${StyleVideo} s=${s} ori=${o} className="fill" /><span class="wname">${s.name} · ${ORI_LABEL[o]}</span></div>`)}
         </div>` : html`<div class="grid" style=${{ gridTemplateColumns: "repeat(" + cols + ",1fr)" }}>
           ${shown.map((s) => html`<div key=${s.id} class="card tight click" role="button" tabindex="0" data-id=${s.id} data-type=${s.type} onClick=${() => { setMOri(null); setOpen(s); }} onKeyDown=${(e) => e.key === "Enter" && setOpen(s)}>
@@ -1017,9 +1016,10 @@ function ExploreSwitch({ value, onChange }) {
 }
 function ExploreFeed({ types, embedded, title = "Explore", sub }) {
   const { go } = useNav(); const toast = useToast(); const { requireUser, user } = useApp();
-  // The switch shows on Explore itself only (category walls stay community videos). Rendrr presets is the default;
-  // a link to a published video (?v=) or ?side=community opens the community side.
-  const hasSwitch = !types && !embedded;
+  // The switch shows on Explore and on every category page from the header (Clipping, Talking head, Ads...): the
+  // header is how the videos are split, so a category page shows that category's presets or community videos.
+  // Rendrr presets is the default; a link to a published video (?v=) or ?side=community opens the community side.
+  const hasSwitch = !embedded;
   const [side, setSide] = useState(() => { if (!hasSwitch || typeof window === "undefined") return "community"; const p = new URL(window.location.href).searchParams; return p.get("v") || p.get("side") === "community" ? "community" : "presets"; });
   useEffect(() => { if (!hasSwitch) return; const u = new URL(window.location.href); const want = side === "community" ? "community" : null; if (u.searchParams.get("side") === want) return; if (want) u.searchParams.set("side", want); else u.searchParams.delete("side"); window.history.replaceState(null, "", u); }, [side]);
   const onCommunity = !hasSwitch || side === "community";
@@ -1051,7 +1051,7 @@ function ExploreFeed({ types, embedded, title = "Explore", sub }) {
     ${embedded ? html`<div class="row between">${sortSeg}${actions}</div>` : html`<div class="page-head"><div><h1 class="t-title">${title}</h1>${sub && html`<p class="muted">${sub}</p>`}</div>${!types && onCommunity && actions}</div>
     ${hasSwitch && html`<${ExploreSwitch} value=${side} onChange=${setSide} />`}
     ${onCommunity && html`<div class="row">${sortSeg}</div>`}`}
-    ${!onCommunity && html`<div id="rendrr-presets"><${MotionTemplatesStrip} /><${StylePacks} rendrrOnly wall /></div>`}
+    ${!onCommunity && html`<div id="rendrr-presets"><${StylePacks} rendrrOnly wall hideFilters fixedTypes=${types} /></div>`}
     ${onCommunity && html`<${Async} q=${q} skeleton=${html`<${MasonrySkeleton} />`} whenEmpty=${html`<${EmptyState} icon="globe" title="The gallery is empty" text="Be the first. Publish a finished project and others can recreate it." action=${html`<${Btn} onClick=${() => setPublish(true)}>Publish a video<//>`} />`}>${(list) => {
       let shown = list.filter((g) => (!types || types.includes(g.style?.type)) && (ori === "All" || g.ori === ori) && (plat === "all" || g.platforms.includes(plat)) && (!mine || g.mine));
       shown = [...shown].sort((a, b) => sort === "newest" ? b.at - a.at : sort === "recreated" ? b.recreates - a.recreates : (b.likes * 3 + b.views / 100) - (a.likes * 3 + a.views / 100));
